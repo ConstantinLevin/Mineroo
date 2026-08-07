@@ -1,0 +1,11 @@
+# Python-Bytecode und Werkzeug-Zwischenstaende — nichts davon gehoert ins
+# Repository. Das Wurzel-.gitignore dieses Repos deckt sie nicht ab, deshalb
+# hier.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+
+# macOS
+.DS_Store

@@ -1,0 +1,758 @@
+{
+  "delayTime": 147849,
+  "executionTime": 2640,
+  "id": "7ae32b2b-be78-49dd-a4f3-2bb013a1066d-e2",
+  "output": {
+    "debug": {
+      "backend": "vlm-auto-engine",
+      "gpu": {
+        "available": true,
+        "compute_capability": "12.0",
+        "name": "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb",
+        "total_memory_gb": 23.62
+      },
+      "input_format": "image",
+      "model_dir": "/root/.cache/huggingface/hub/models--opendatalab--MinerU2.5-Pro-2605-1.2B/snapshots/bff20d4ae2bf202df9f45284b4d43681555a97ed",
+      "phase_ms": {
+        "fetch_input": 0,
+        "mineru_parse": 2277,
+        "package": 0
+      }
+    },
+    "elapsed_seconds": 2.28,
+    "mineru_version": "unknown",
+    "ok": true,
+    "results": [
+      {
+        "basename": "doc",
+        "content_list": [
+          {
+            "bbox": [
+              80,
+              114,
+              775,
+              259
+            ],
+            "list_items": [
+              "3.6 The binomial model and Black-Scholes 21",
+              "3.7 Options on interest rates 24",
+              "3.8 Creating an interest rate collar 28",
+              "3.9 The volatility smile 30",
+              "Summary 31",
+              "References 32",
+              "Acknowledgements 33"
+            ],
+            "page_idx": 0,
+            "sub_type": "text",
+            "type": "list"
+          },
+          {
+            "bbox": [
+              80,
+              25,
+              343,
+              38
+            ],
+            "page_idx": 0,
+            "text": "Session 3 The Black-Scholes model",
+            "type": "header"
+          },
+          {
+            "bbox": [
+              813,
+              38,
+              874,
+              50
+            ],
+            "page_idx": 0,
+            "text": "17/04/24",
+            "type": "header"
+          },
+          {
+            "bbox": [
+              96,
+              955,
+              363,
+              969
+            ],
+            "page_idx": 0,
+            "text": "Copyright © 2024 The Open University",
+            "type": "footer"
+          },
+          {
+            "bbox": [
+              822,
+              955,
+              874,
+              966
+            ],
+            "page_idx": 0,
+            "text": "2 of 33",
+            "type": "page_number"
+          }
+        ],
+        "images": {},
+        "markdown": "3.6 The binomial model and Black-Scholes 21  \n3.7 Options on interest rates 24  \n3.8 Creating an interest rate collar 28  \n3.9 The volatility smile 30  \nSummary 31  \nReferences 32  \nAcknowledgements 33",
+        "middle": {
+          "_backend": "vlm",
+          "_version_name": "3.4.4",
+          "pdf_info": [
+            {
+              "discarded_blocks": [
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    16,
+                    153,
+                    24
+                  ],
+                  "index": 0,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        16,
+                        153,
+                        24
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            16,
+                            153,
+                            24
+                          ],
+                          "content": "Session 3 The Black-Scholes model",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "header"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    363,
+                    24,
+                    390,
+                    32
+                  ],
+                  "index": 1,
+                  "lines": [
+                    {
+                      "bbox": [
+                        363,
+                        24,
+                        390,
+                        32
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            363,
+                            24,
+                            390,
+                            32
+                          ],
+                          "content": "17/04/24",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "header"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    43,
+                    603,
+                    162,
+                    612
+                  ],
+                  "index": 10,
+                  "lines": [
+                    {
+                      "bbox": [
+                        43,
+                        603,
+                        162,
+                        612
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            43,
+                            603,
+                            162,
+                            612
+                          ],
+                          "content": "Copyright © 2024 The Open University",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "footer"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    367,
+                    603,
+                    390,
+                    610
+                  ],
+                  "index": 11,
+                  "lines": [
+                    {
+                      "bbox": [
+                        367,
+                        603,
+                        390,
+                        610
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            367,
+                            603,
+                            390,
+                            610
+                          ],
+                          "content": "2 of 33",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "page_number"
+                }
+              ],
+              "page_idx": 0,
+              "page_size": [
+                446,
+                631
+              ],
+              "para_blocks": [
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    72,
+                    346,
+                    164
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        72,
+                        346,
+                        83
+                      ],
+                      "index": 3,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            72,
+                            346,
+                            83
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                72,
+                                346,
+                                83
+                              ],
+                              "content": "3.6 The binomial model and Black-Scholes 21",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        85,
+                        346,
+                        95
+                      ],
+                      "index": 4,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            85,
+                            346,
+                            95
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                85,
+                                346,
+                                95
+                              ],
+                              "content": "3.7 Options on interest rates 24",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        98,
+                        346,
+                        109
+                      ],
+                      "index": 5,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            98,
+                            346,
+                            109
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                98,
+                                346,
+                                109
+                              ],
+                              "content": "3.8 Creating an interest rate collar 28",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        112,
+                        346,
+                        124
+                      ],
+                      "index": 6,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            112,
+                            346,
+                            124
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                112,
+                                346,
+                                124
+                              ],
+                              "content": "3.9 The volatility smile 30",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        126,
+                        346,
+                        137
+                      ],
+                      "index": 7,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            126,
+                            346,
+                            137
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                126,
+                                346,
+                                137
+                              ],
+                              "content": "Summary 31",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        140,
+                        346,
+                        150
+                      ],
+                      "index": 8,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            140,
+                            346,
+                            150
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                140,
+                                346,
+                                150
+                              ],
+                              "content": "References 32",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        153,
+                        346,
+                        164
+                      ],
+                      "index": 9,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            153,
+                            346,
+                            164
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                153,
+                                346,
+                                164
+                              ],
+                              "content": "Acknowledgements 33",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    }
+                  ],
+                  "index": 2,
+                  "sub_type": "text",
+                  "type": "list"
+                }
+              ],
+              "preproc_blocks": [
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    72,
+                    346,
+                    164
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        72,
+                        346,
+                        83
+                      ],
+                      "index": 3,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            72,
+                            346,
+                            83
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                72,
+                                346,
+                                83
+                              ],
+                              "content": "3.6 The binomial model and Black-Scholes 21",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        85,
+                        346,
+                        95
+                      ],
+                      "index": 4,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            85,
+                            346,
+                            95
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                85,
+                                346,
+                                95
+                              ],
+                              "content": "3.7 Options on interest rates 24",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        98,
+                        346,
+                        109
+                      ],
+                      "index": 5,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            98,
+                            346,
+                            109
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                98,
+                                346,
+                                109
+                              ],
+                              "content": "3.8 Creating an interest rate collar 28",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        112,
+                        346,
+                        124
+                      ],
+                      "index": 6,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            112,
+                            346,
+                            124
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                112,
+                                346,
+                                124
+                              ],
+                              "content": "3.9 The volatility smile 30",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        126,
+                        346,
+                        137
+                      ],
+                      "index": 7,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            126,
+                            346,
+                            137
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                126,
+                                346,
+                                137
+                              ],
+                              "content": "Summary 31",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        140,
+                        346,
+                        150
+                      ],
+                      "index": 8,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            140,
+                            346,
+                            150
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                140,
+                                346,
+                                150
+                              ],
+                              "content": "References 32",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        36,
+                        153,
+                        346,
+                        164
+                      ],
+                      "index": 9,
+                      "lines": [
+                        {
+                          "bbox": [
+                            36,
+                            153,
+                            346,
+                            164
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                36,
+                                153,
+                                346,
+                                164
+                              ],
+                              "content": "Acknowledgements 33",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    }
+                  ],
+                  "index": 2,
+                  "sub_type": "text",
+                  "type": "list"
+                }
+              ]
+            }
+          ]
+        },
+        "pages_requested": -1,
+        "source": "b64"
+      }
+    ]
+  },
+  "status": "COMPLETED",
+  "workerId": "7vbp39c71bllhb"
+}

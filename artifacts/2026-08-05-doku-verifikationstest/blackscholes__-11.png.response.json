@@ -1,0 +1,1423 @@
+{
+  "delayTime": 144187,
+  "executionTime": 3793,
+  "id": "ee490e57-d7d0-4490-8091-480670dfd0da-e2",
+  "output": {
+    "debug": {
+      "backend": "vlm-auto-engine",
+      "gpu": {
+        "available": true,
+        "compute_capability": "12.0",
+        "name": "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb",
+        "total_memory_gb": 23.62
+      },
+      "input_format": "image",
+      "model_dir": "/root/.cache/huggingface/hub/models--opendatalab--MinerU2.5-Pro-2605-1.2B/snapshots/bff20d4ae2bf202df9f45284b4d43681555a97ed",
+      "phase_ms": {
+        "fetch_input": 0,
+        "mineru_parse": 3610,
+        "package": 1
+      }
+    },
+    "elapsed_seconds": 3.61,
+    "mineru_version": "unknown",
+    "ok": true,
+    "results": [
+      {
+        "basename": "doc",
+        "content_list": [
+          {
+            "bbox": [
+              112,
+              118,
+              517,
+              215
+            ],
+            "img_path": "images/e641e4dd6f392553cd17cc9d6d5fcf3065e80210b7c0c82fd14f9b8f06448d14.jpg",
+            "page_idx": 0,
+            "table_body": "<table><tr><td>Risk-free rate (Rf)</td><td>6%</td></tr><tr><td>r = ln(1 + Rf) = ln(1.06)</td><td>0.058</td></tr><tr><td>Time to expiry of call option (t)</td><td>2 years</td></tr><tr><td>Volatility (standard deviation of share price, σ)</td><td>11%</td></tr></table>",
+            "table_caption": [],
+            "table_footnote": [],
+            "type": "table"
+          },
+          {
+            "bbox": [
+              105,
+              242,
+              650,
+              259
+            ],
+            "page_idx": 0,
+            "text": "Estimate the value of the call option using the Black–Scholes model.",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              118,
+              277,
+              282,
+              291
+            ],
+            "page_idx": 0,
+            "text": "Provide your answer...",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              105,
+              323,
+              192,
+              335
+            ],
+            "page_idx": 0,
+            "text": "Feedback",
+            "text_level": 1,
+            "type": "text"
+          },
+          {
+            "bbox": [
+              105,
+              345,
+              755,
+              361
+            ],
+            "page_idx": 0,
+            "text": "In applying the Black-Scholes equation you first need to calculate the value of $d_{1}$ :",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              141,
+              367,
+              500,
+              529
+            ],
+            "page_idx": 0,
+            "text": "$$\n\\begin{array}{l} d _ {1} = \\frac {1}{\\sigma \\sqrt {t}} \\left[ \\ln \\left(\\frac {S}{X}\\right) + \\left(r + \\frac {\\sigma^ {2}}{2}\\right) t \\right] \\\\ = \\frac {1}{0 . 1 1 \\sqrt {2}} \\left[ \\ln \\left(\\frac {4 7 3}{4 7 0}\\right) + \\left(0. 0 5 8 + \\frac {0 . 1 1 ^ {2}}{2}\\right) 2 \\right] \\\\ = \\frac {0 . 0 0 6 3 6 3 + 0 . 1 2 8 1}{0 . 1 5 5 6} = 0. 8 6 4 2 \\\\ \\end{array}\n$$",
+            "text_format": "latex",
+            "type": "equation"
+          },
+          {
+            "bbox": [
+              105,
+              546,
+              257,
+              562
+            ],
+            "page_idx": 0,
+            "text": "Next, calculate $d_{2}$ :",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              141,
+              572,
+              497,
+              589
+            ],
+            "page_idx": 0,
+            "text": "$$\nd _ {2} = d _ {1} - \\sigma \\sqrt {t} = 0. 8 6 4 2 - 0. 1 1 \\sqrt {2} = 0. 7 0 8 6\n$$",
+            "text_format": "latex",
+            "type": "equation"
+          },
+          {
+            "bbox": [
+              143,
+              614,
+              381,
+              632
+            ],
+            "page_idx": 0,
+            "text": "$$\nN (d _ {1}) = N (0. 8 6 4 2) = 0. 8 0 6 3\n$$",
+            "text_format": "latex",
+            "type": "equation"
+          },
+          {
+            "bbox": [
+              143,
+              657,
+              381,
+              673
+            ],
+            "page_idx": 0,
+            "text": "$$\nN (d _ {2}) = N (0. 7 0 8 6) = 0. 7 6 0 7\n$$",
+            "text_format": "latex",
+            "type": "equation"
+          },
+          {
+            "bbox": [
+              105,
+              694,
+              482,
+              709
+            ],
+            "page_idx": 0,
+            "text": "Finally, enter these values into the call formula.",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              141,
+              719,
+              547,
+              779
+            ],
+            "page_idx": 0,
+            "text": "$$\n\\begin{array}{l} C = S N (d _ {1}) - X e ^ {- r t} N (d _ {2}) \\\\ = 4 7 3 \\times 0. 8 0 6 3 - 4 7 0 e ^ {- 0. 0 5 8 \\times 2} \\times 0. 7 6 0 7 = 6 3. 0 0 9 2 \\\\ \\end{array}\n$$",
+            "text_format": "latex",
+            "type": "equation"
+          },
+          {
+            "bbox": [
+              105,
+              798,
+              408,
+              814
+            ],
+            "page_idx": 0,
+            "text": "The value of the call option is 63.01p.",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              80,
+              25,
+              343,
+              36
+            ],
+            "page_idx": 0,
+            "text": "Session 3 The Black-Scholes model",
+            "type": "header"
+          },
+          {
+            "bbox": [
+              80,
+              38,
+              298,
+              50
+            ],
+            "page_idx": 0,
+            "text": "3.2 The Black-Scholes model",
+            "type": "header"
+          },
+          {
+            "bbox": [
+              813,
+              38,
+              876,
+              50
+            ],
+            "page_idx": 0,
+            "text": "17/04/24",
+            "type": "header"
+          },
+          {
+            "bbox": [
+              96,
+              955,
+              365,
+              969
+            ],
+            "page_idx": 0,
+            "text": "Copyright © 2024 The Open University",
+            "type": "footer"
+          },
+          {
+            "bbox": [
+              818,
+              955,
+              876,
+              968
+            ],
+            "page_idx": 0,
+            "text": "11 of 33",
+            "type": "page_number"
+          }
+        ],
+        "images": {
+          "0ed5db4c41be263f6392bf1503a342e9bd1b6939f5d20174020ee9d0f1def493.jpg": "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCABqAfcDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3aiiuf8XeKrbwppiTyRtcXdxIIbS1jPzTSHgAe3qasyN/NGa5Wy07xbdW/wBrvtZgtLp1ytrDbh4ovZiTlvwxSeA9W1rW9LvbzW4ooZBdyQxRxjhVTCH/AMeDGkB1lFJS5pgFFFY3irX4/DHhi/1mWMyC1j3BAfvMSAB+ZFAGzRXBXcviu18Iza1barBeahJGrLaLADEC2AApBzxnr3x2ra8S3Op6f4OlubW9SG+iiUh3hD+Y54C4yMZYgZpBY6PNFcJ8P/E2qa7ZarpWsPHFr2mzNFKyp8uD9xwM8j+eKveD7nXr23uNQ1fUrWaz8yRIFit9m5FYgOTuPUDOPegLHW0Vy/hC+udfjufEE0ki29zIyWcB4CQqSAxHct1/Kr/ia/ax8O6jPBex2txBbtMrlQ5G0Z+7kZzjH40wNnNGa57wRe6jqfg7Tb/VZFe7uYhKxVNvDcgY+mK1NUs5L/TZraG4kt5mX93NGcFGHIPuM9qALtFYXhPW5Nc0NJrhAl5C7QXKD+GRDhv5ZrdoAKKKKACjNVr+G5ns5I7O5FtOcbZWj8wLz/dyM/nXmeg+ONZWfxJp2v3sK6lYyeRawQW2GkZshGGW+bJ7eg60gseq0Vz3hq18Sx26TeINRtpZWTm3gt9oQ+7bjn8q3ftEPm+V5qeZ/d3DP5UwJKKpSS6iJGEdtAyZ4JkIJH5Vz3jW71W28MPNb3P2K785Ei8khi7MwVRyOnOT9KAOourqCytnuLmVIoUGWdzgCpFYMoZTkEZBFea+K9NvYNNsNN1PxDczJqGoIXLKiBI1XewJxzyuR9a9EsthsYfLkd02Da7j5iPU9KQFjNFeVN4y1/RfH0Vtqd1Dc+H7i6aySdYfLKTADryeMnb710+tT+IX8X2Wn6VqdrDbTQtNMslrvaNVwAQdwzk5/KgLHXUVyusahc3fifT/AA3azNHmI3V7MgwRGDgKPQsc/gK6dnSFMu6oo7scUwH5pM1xOj6xq138TNX0s3yT6XZwJJtEQXaz8hd2TnArtqADNLXLQ31xpHjU6VcTPJZ6lG09qXOTG6/fT6cgiupoAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAry7xkn/F6PBsl8wXThFL5Jf7vn4bjPTONn5CvUaoatouna7Z/ZNTtI7iHcGAbqpHQgjkH3FIEM1rWLfRdNlu5cyOBiKFOXlc8KqjuScCrdmpFpGWhSB2Xc8adFY8n9ay9N8JaPpd0t1BbySXCDCS3EzzMg/2dxOPwrbpgcz4jaAXsQlbXgfL4/s6B3TqepVTz/8AWrH3WX/PTxl/4CS//EV31FIDN0MxnSovLN8Vy2DfIUl69wQD9OOlVNdu9Lu7uDwzqMYkGqQS/KSMYXbx9fmyP92t2snUfDWk6tereX1oJbhI/KSTeysgyT8pBBB56imB5lD4Zm8CfEbw7Y6Bq99PZXpkW4sJpd6xxqv3vQDOOw6V3vimaO5vtF0feubm8EsiFufLiG//AND2Vf0rw1pejTy3FpAxuZRh55pGkkI9NzEkD2FVrrwR4evNbXWbjT/M1FGDrOZpMgjpgbsAe3SkO5wfxCa88F+NLXxVpkLSLqcDWFxGnebH7pvzwPwNdzLYNpXw8nsbXiSDTXSP/eEZx+tbN9ptnqcKQ3tuk8cciyqr/wALqcqR7g1ZZQylSAQRgigVzivDF++mfB2wv4o/MlttJEoT1ZY8/wAxXAa1p0F38M9Jm1KUz+INfuof9IL4kUSHJA/2QvGOlemeE7CbRoLvw5dRvJbW7s1rKwyskDE4Un1X7pH09all8A+GJ7cQyaVGyhg6EyPujI6bDnKj2GBQO5na7rtxpGgaJc6HJbNZS3dtakshOUZgp2/hXaVyfivw5e6lpenado8VpFb2l1BOBI5XAjbIUAA1uX1/cWGjPdvatNdKgxbwZbc54CjjpnvQI5f4fhf7X8ZeWWMf9ty4z67V3Y9s5rqtUOqiFP7Kjs3lz8wupGUY9tqmqHhHRJND0NYrlw97PI1xcuO8jnJ/LOPwreoBnOb/ABn/AM++hf8AgRL/APG62NPN+bRTqS2y3OTuFuzMmM8YJAP6VboxTAz9W1my0WykuryZVVR8qA/M5PAVR3JPFeT63Fe+HPiLofjfVIYI4tSk+yTwhcm3BACEn+90yfrXo+q+B/Duuakuo6lpwuLtCCsjTSDaR0wA2B07VPrnhLRPEkcMer2P2qOH7iNK4A/AEZPvSGil4+1m70XwJqmpabg3KRDynHIXcQN34ZrndG8JPanQrzU7iwgngcSfaY5Wknu3ZTwzsBwc5xz0rurXRdPs9K/suK3BsiCpilZpAQeoO4k4qrY+FtG065W4gtMyp/q2lleTy/8AdDEhfwxQK5s1HLDFMFEsaSBWDAMoOCOhHvUlFMCC5s7a8RUureKdVYMolQMAR0Iz3pLy6hsLKa6nYJFChdiTjgDNWKzNb8P6Z4isxaarbfabcHd5ZkZQT77SM0AcXe+GG8RfCmSLpqEwbUI3U8ickvwfXt+NO+GGq3XieK4129haOaOKOxG7uUGXI/4ETXb6To9joenpYabB5FrHnbHvZsZ9ySaksNNs9MgaCyt0giaRpCqdNzHJP50h3OR0rzf+Fw+IfN+5/Z9t5P05z+tUrp28QfE3ULDVSBomj2iSeTIcJK7jO5vXA/Ct3WrG4sfFFh4htY3lQRm0vIkGSYycq4A67TnPsa077w5pGqXi3l3ZJLNtCliSA69gwBww9jmgDzj4dyi10PW77RYfPv767eW3t2fJWEPsByT04JHNdj4e1vUp/E+raHqDRXH2OOOVLiKPZ98cowyeR9anHhiDQdLvl8K2draX06/I0rMUU5/HA5JwOM1W8IaPrulTT/2qbEROgP8AozMzyy5JZ3JA5xgUAVPGhUeMPBOM+b9vk24/u+Xz/Su4rlYrKfWfG41SeJ47LTI2htg6482RvvOPYAAA11VAgooopgFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUYoooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAMUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUmaXNABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRWbqWuWelSpHcrcEuu4eXAzj8wKANKisD/hMdK/u3v/AICSf4Vq2F/DqNqtxAJBGxIHmIUPHseaALVQJe20iTOk8bLASspDDCEdQfTFZniDU5rWKGwsCDqd8xjgHXyx/FIfZR+ZwO9cR8ONLe78F+JtJ+1OZJr66tzcOctlht3H1POaQWPR49RspY1kju4GRhkESDBp815bW8YkmnjjQ9GZgAa8o1P4WeD5NXsfD9hpgW6KC5u7gyOSkKnHrjc5BH0B9q6TxFoun6Rfrr995lzptpp5tI9MW181R33DrjgY6fjQFjuEdZFDIwZT0IOQaXNcJ8IrO6s/AFr9puVnErvJEEcOI0J4XI9PTtXWaxdXtlZC5srT7UY2BlhBw5Tvt9WHXHegDQornJ/FdvcxWsWihb69uxujjBwI1zgvIf4QPTqTxXRLnaN2M45xTAjnuYLZQ080cQJwC7AZqQMGUMpBB5BFee6FFF4m8eeLDqsCXdrZyJaQQzgOkYC/MQp4BPrVn4W30s+h6hp8krSjTL+W0jZjzsByo/AECkFjt5JY4ULyuqIOrMcCkininTfDIkiHupyK4P4n6hLo0Ok6rNZJf6XbXBF1ZnkvuGFYA8HbzwfWsrw/4itLjSPF3iPQPLtdOSD9zbAAFZlQ5coPu5O3jvjPegdj0/7Xb/aPs/nx+d18vcN35U+WaOGMySyKiDqzHAFeO6lbw2fwQsPE0ca/2zFFBfC8PMpkZhuy3Ug5Ix0xVrWNa/t/4kWOiXNnJqFra6cLo2CYxLMwBBfJC4AP8XHNAWPV4p4p4hLFIjxnoynIpkV7azytFFcRPIv3lVwSK4bwxY6fqvhzxFYaRd3dhPc3MsdxDIqhrKQjBVVXAx9PWueisIR8R/DGlaY4hudJt2N7dPCLdrtcbcBeN/PPGQM0BY9hopM4FN82P++v50xD6KaHVjgMCfY1W1HUINL0+a9uW2xRLuOOp9APUk8CgCY3MIuRbmVBOV3iPPzEeuPSoxqNkZZIvtcHmRna6+YMqfQivNfD66g3xjludSkPn3Ol+aIe0CluEH0HX3p/ifwB4YtkvdW1awGparqF2Rbguy5dz8i4B6AdT6A0h2PTFnidC6SoyDqwYECkhuYLlN0EySL0yjA15VqGhQeE4vB3hKzJW21C+Z70qxHmlV3YPqpJxj0FazqmgfGKws9OhjtrLUdOdp4YlCq0itw20d8cZoFY9Eorjbz4hWscd7cWNjPe2Ng+y5uo3RUBzghdxBcj2ropNPs9UWK6kE/zoCNs8kfB56KwoATXtUXRdBvtTZA4toWkCk43EDgZ+tYml61qKa5p1lqEsMy6jZm5QpGUMbDGV6nIwRV/UvDFne6JqGnxmVTdwNFukneQDI4OGJ71lWGi6w+q2N/dQwwtptg1tCnmbhLIcfNx0Xge/WgC/qur3beJ7TQLGWOCWW1e5eZ037QDgADI6nNc1L401S803QZre8stPkunnjupLiFnUNHgEAAjnqevatqfStZXWtM8QeRBNfx2b2tzbxybV5O4FS3YHNVNK8N634csNNSykhutizG7tmcANJId24MRnAPH+NAyfX/FSaLZaRNLqcKWV2SsmpiLfGGwCvAPAPPOe1ael6+zeF7fVtQX5X+9JEh27c8PjqB39qwLTwXd2Gm6TBcRW+qRWySi4tJX+Tc5zlNwwccjnt0rZ0vQr7SfCw0q0khjkLsFDEukEbH7q5HOBwM0CNaLV7S41H7Fbv5ziPzHaMZVAemT0yfSuUuPEHiLTtR02W+ihSG9vmtfsPlgyBOdrqwY54HPArc0Lw8PDjG2sGU2Dgu6v98SdyD3B9O3asOPTfFk/ig393aacIvM2xTeeWaCHuFXbjce5zQB3VFFYWp68+jatDHfwBNMuMIl4p4jk/uv6A9jTA3M0ZrGsdbfVdVkjsYVk06AFZLsnh5P7qeuO56VP4hvX03w5qN7GcSQ27up9CAcfrQBdN3bicQGePzjzs3DP5VNXjdzBDH8DrXxKIwdYjiS9F4f9aZN3OW645xj0r1nTbhrvSrS5b70sKOfqQDSCwv9o2XnSQ/a4PNjOHQyDK/Wp0mikUtHIjqOpVgQK808U+A/DFumoa1rNiNR1K9usW6l2XLOcImAe3c1k+JbKD4d+CtH8P2TPEdVvVS6khzuYEgsq9++KB2PXYby3uWZYJ4pCvDBHBxSyXdvFMsUk8aSN91WYAmvPtITRNN8Z4TT7jRr+DT38q0byxHcRDkvlc5I9zkVl6Jp8XiD4X6trF+FuNRle4mjunGXi2sSgVuq4x2oCx6pPe21tJGk9xFE8mdgdgN2OuKcl1BK22OeN29FcE157YaDp/xD8JeHtX8Rjz4I7PzGiLFQXPBYkH0FHw+8F6Fa6lP4m0uwW1gmBiskDM37vOC5yTy2PyoFY9Hoqrf38Om2puJxIYwQP3aFzz7Dmsr/AITHSv7t7/4CSf4UwN+is3Tdcs9VleO2E+5Bk+ZCyfzArnfilr8/h3wNc3NrI0c8zpbrIvVNxwWHvigDrUvLaWZoY7iJ5F6orgkfhRNe21u6pNcRRuxwoZwCa810m00Oy8QeHYnsLvSrgoXtp2CYvmK/MHblsnrhsVH4902z0az8QX+pO+oSamgW1SS2G21PQfvP4QOvOKQ7HqgORkcj1pss0cEZklkVEHVmOBWN4Os7mw8H6Va3l0Lq4jt1DzBtwb6HvXOX7/2x8WoNJugJbC008zNbvyjux4LL0OPegR3kcsc0YkidXQ9GU5Bpi3du87QLPG0q8lAwyPwryC/1qbwt/wAJ9p2nyCKO2hW5tY14EJfghQOg71d8U2kHh7wR4e12wjSLUYbi13XIHzyCTG8M3Vs570DsepT3dvapvuJo4lPd2AqQSIY/MDqUxndnjFec2Yi1n4o65FrcEUttbWUZtYZwGQI3VwD3PrWJ4PTVPFXgHVdG02+SE2uptHG84JXyN+dnHOMcUBY9dhure5z5E0cu04OxgcGivK9Ys20n4maPB4WgiivTZyG/ht02REbflZgOAc9KKAsetVRvrbUJpFaz1CO2QDlWt/MyfXO4VeopiMf+z9b/AOg1D/4Bf/Z1oWkVxFbhLq4WeXJy6x7B+WTViigDmtc8ORz6hJraX+rQ3KQCHZZMhJUHOAGQ85Pb0rmfhZpOo6VJqq6hDq0JmupJo1ulURspIw2QPvnvz+FeletB70gucN4WstT/AOFj+L9SvbeWO2lMENqzqcMqBuV9uRU+oapr+keMrp7u2nu/D0tsv2eO0tTK4l7hsdM89eORXZ96SgLnDfC7w/qWgaDeLqEb2wubySeC0Zs+RGei+x74966nWp9RhsNulWyTXkrCNDIcJHn+NvYeg5NaHajuKAOLsvCt14VmOqaU7Xt1ctu1ON8A3JJyZE/ukZPy9CPfr2inKg4xntR2paYHn1vDceEPG2v30the3VhqoSeF7WFpSJACGRgo4z2NHhqx1zwr4Gvb4aW15rF3cvdtZB9pBduhOOoXrXoHeikFzjtehvo/Emia7Lp891Z28EiTW8S+Y8EjbcOFHLcAjis2z8LJqmp+IbqysJdL0/U7D7Pskj8vzZTuzIYzyuMjsM16H2ooC55JPZanqXw2s/Ap0m9jv18q0nlaEiJI0YZkEn3SCBxg962L3SZ/DXxEtvEMdlcXVhPp4s5jbQmV45FxtO1RnaQOvrXoZ7fjQKAueX6VoHiWw0vxfrWmIbbVNVu2ubO3nAyqZz8w7MRn9Kj1Wz1jxd4g8KTW+n3lnc6ZJ5l9fTQGEAYGUXd97OCOM9a9U7UtAXGuiyRsjDKsMEeorO/4R7Sv+fNf++m/xrTopgUrXSLGym823txG+MZBJ4/Oq2vaDB4gtoYJ7q6txDKJla3ZQdw6ZyCD+Va1JQB5HBouqRfE9dQP/CSPZC3WH7U6Jlm3fdOE+5+H410Xiy01O9+IPhAW9rPJp9tLLNcSKCUU7CBu/T867ukpBc43x5pF3c3Gh63YwPcy6RdmZoIxlnjYbWwO5A5xVBNOufFHxETX0truzsbPTmtI5LiJo2kkck5CsM4Ga9BHag0Bc8v8MaKugaLHptx4XurvV45GYb1LQMdxIfefkHXPrXp0O/yU8xVV9o3KpyAfanUtAXCjFFFMAxRRRQAYooooAMUUUUAFc7rthe6/OdIaPydJZQbqY4JmH/PNR29z+VdFSUAc9oWm3nh64XSIY/N0YITayZG63x/yzb1HofzrV1ewGqaNe2BIH2iF4wT2JGAauelFAHkb2WqXPw1t/An9k3q6gAtpLKYWEKxhsmTzMbSMds134udS03VNK0i30pp9PNvtmvQ4AiKjAG3vmt4UnakFzhvGVpqV7418IJbWs8tjBdNNcui5RflIG6pfiLoFzq1npeoWcDXFxpV4twIV5Z0/iAHc47V2lHc0Bc8+XTrnxR8Q7HX1tLq006ysXtybmIxPI7noFbnA9ayrCHVtA8Har4TOl3s9/JLMlpLFCxhdJDwS4GFwDzmvVj0ooC5w+q6Pf6D8H5tH0yOW4vYLAQosQ3MxPBwB16mui8L2j2PhbTLWSIxPFbIrRkYKnHIrX70UAQXcVxLblLW4WCXPDtHvA/DIrO/s/W/+g1D/AOAX/wBnWxRTAo2NtqEMjG8v47lSOFWDy8H/AL6NYXxE8PT+JPCM9paLuuopEuIk6b2Q52/jXV0ncUAebXdrfeMNe8LSxadfWUOkyefdS3MJiw23Gxd3Lc9xxT9QvfEKxeI9J1nTLjUYrolNNW2tSyMhH8TDhcH1NejUUgucJ4ftvEPg74d6VZ/YH1TUY2VJYRIB5Sk889wopdZsrrSfiDZeKFtLm4s5bQ210tuhkeNuqnauSRXdetBoC55evhO/8S2fjG+nhktW1hBDZxzLtcIo4LA9MmmajHqPivw9oPhv+yb+2uIZ4WvZJoWWOFYvRiMNnHGK9TFIOlAXOF8R3Dx+I2W88LTX9tHbA2dxaxM7ySZ5jYrwF9mOKraHpWq+BfAF1JZ6Y95q91M8/wBlhAPls54B9lFeid/woNAXPKdEufEquIbbw1qFle3TmW91K7CnzCFPHsM4wKK9WooC5//Z",
+          "3e8e70214a98ba8b8d4e2bf501cb55599237ad9ad6fc487d85d884264557f9f4.jpg": "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.jpg": "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",
+          "a094e14acf43154977ecee978fab36dc87e560d88af9887b1fae1d2590bb430b.jpg": "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAEcAb0DASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3aiiirMgooooAKKKKACiiigAooooAKKytZ8S6N4fhaTVdRt7YBd213G4j2Xqa00dZEV1OVYZB9qAHUUUUAFGa5nxdrmp6R/ZkGkW1rPd39z5Ci5YhR8pbPH0rR0KTXJLWQ69BZRXAf5BaMxUrgdc985pAatFFFMAoorDfXWuPEa6Rp0SzGAb72Zj8sII4UernrjsKANyiisXVvE9lpV9FYeVcXd/Ku9ba1Te+3+8eQAPqaANqjNY2l+J7DV9UudNthMLq1RXuI5I9pj3ZwD78dqdrmsPoiQ3ckHmWAbbcyL96EHo2O49fSkBr0UyKRJolkjYMjAFWB4Ip9MAooooAKKKKACisXVddNrqNvpVjEtxqM+G8sn5Yo88ux7D09TWyM4GetAC0UUUAFFFFABRRmkoAXNFcHq+veIdHu7W6mC+VcakLRLAIpLxE8SBuuR1NdzJv8pvL2+Zg7d3TPbNAD6Kx9C11dVE9vNEbfULVtlxbk/dPYj1U9jWxQAUU1s7TtxnHGfWuUOu+ILLXdOs9S0+xS3vZWjWSGViwwM9DQB1tFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRXOv4rSPxvH4YaxmE0lublZ9w2lBwTjr14roqACiiigAoozRQAUUUUAeffGW1t2+Gur3DQxmdUjCyFRuA8xe9d1Z/8AHjb/APXNf5VyvxE0TWfE3hy50TTYrYR3KLumlkIKkNnAH4Cuh0j7eLBE1CCKGZAFAifcCAOtIOhoUUUUwOR8Yf8AId8J/wDYSP8A6KeuurkfGH/Id8J/9hI/+inq/wCKPEw8MW9tcS2E9zBNMsLvGQBGWIAJz9aAN+ikVtyhvUZpaAMPxfrw8NeGL3Uwu+aNNsCd3kbhR78movBuivo3h2BLlvMv7j9/dynq8rck/wBK5z4iOb/xR4O0HrHcX5uZR/1yXcv65r0QcCkHQK8q8Q/8JR4U8caj4m0rSU1nTb6CMShW+eEIO3tXpeorctpt0tnt+1GJxDuOBvwcZP1rkLC08Y6T4at9EjtrG5nSLyhfGYqqDpkoRkkfXmgEX/BN/pniKxm8UWELxS6kVE6yHlWjGzb+ldNNDHcQvDMivHIpV1YZBB6isnwr4dg8LeHrfS4HL+Xlnc/xuxyx/M1tUAziPA91Lpup6r4RumYtpziS0ZjktbvyvPt0rt6888TMdK+LXhbUF4GoRS2MnOOnzg/0r0OgGFFFMjmjlDGN1cKxU7TnBHUfWmA+quo30Omadc31wcRW8bSP9AM1argvi7dMngxdPQ4bU7yGzODzhm5/kKARZ+HtrPd6dP4l1Bf9P1d/O5/gi/gQegxXaVBZ262tjBboAFijVAB7DFT0AFFFFABRTIpo541kikWSNujKcg0+gDnvFPidPD0VrDDbtd6jeyeVaWynG9u5J7AetcraeJ/Hs3i3+wrnTtGt5PKFwWEjsPLJwce9dJ4h0O8uPEGl67p8cM9xYrJGYJX2hg2OQexBo0Dw/eQa1e6/rEkbaldosYji5SCNeijPU+ppDMm40nxjc+J2vHj0v7OJFWGUuxeCPI3bV6ZPr713lFLQI4bxsz+HtU03xXbghIpBbX4H8cLHAJ/3T3rt43WSNZEOVYAgjuDWP4t09NU8I6tZSLuElq+B7gZH6gVQ+HWpSar4B0m4mbdMIRHIf9peD/KgOh1Nct4n/wCRi8L/APX4/wD6BW4+rWMWrxaU9wovpYjMkPOSgOCaxPE//IxeGP8Ar7f/ANAoA6iiiimAUUUUAFFFFABRRRQAUUUUAFFFFABXJa/4ju/+EpsfC2kFEv7mJrme4ddwt4QcZC9yTxXW1yup+Gb1/Fw8Q6VdW8Nw9n9jlE0ZbC7twZcd+2Dx0pAc34LF7feP/FGr6nMl02mqumxTRJjIXLOMev3eneu50TX7TXo7t7RZVFrcPbSCRdp3r14rnPCfg++8L315c3uqpcWzSTXHyoVaRpCCWk7EgKAMeppPh5cRPN4kRWO6TWbmZAVI3IW4Ye1A2duc7Tjr2rCN34nycaVY47f6Sf8ACt4qGUg8gjBFYJ8FeHCSTpUOT7t/jTESW914ia4jW402zSEsN7LcEkD1AxW3WJB4Q0C2njnh0yJJI2DKwLcEdO9bdIDnLvxvo9leTWsy3vmROUbZZyMMj0IGDUP/AAsHQ/7uof8AgDL/APE11NFAHK/8LA0P+7qH/gDL/wDE0f8ACwND/u6h/wCAMv8A8TXVUUAct/wsHQ/7uof+AMv/AMTWjo/ibT9cmkisxchoxlvNt3jH4FgM1FfeMdE069ls7i6fz4iA6xwu+0kZwSoIzzV3StZstageexkd40bYxaNkOcZ6MB60AYPjD/kO+E/+wkf/AEU9R/E7/kT/APt8t/8A0atSeMP+Q74T/wCwkf8A0U9T+NvD+p+JdKisNPvLa2UTJLI00ZcnaQQBg+ooGYfijWfEml+MtA07Tr+3+yasXjEUkAPlFEBLbup7nFaHhvXNTfxprvhvUbhbsWEcMsVx5YRiJFyQQOOKr6t4T8R6p4i0LVjqOmodJyyx+Q+HZk2t36elTaR4V12x8d6h4iuNQsJIr9I45oUhYFVQELtJPWgDM1wmX46eHom5SPTJZVHoxYjP5V6RXnfiXFp8YvCl0yj/AEm2mtQfcZavRKBMwNS8YaXpV89nci881ME+Xau68jPUDFVP+FgaH/d1D/wBl/8Aia6k8CuQtfH0Nx4uHhp9Jv4b7aXPmBQoT+9nPI6UATf8LB0P+7qH/gDL/wDE11EciyxrIudrAEZGK5q08YfbteudLttIvpBbTGKW5AHlKfrmunoA84+KQ8rU/B90Dgx6qq7h1G7Ar0evOPiUDceJfBNkoJeTUWfjsFUGvR6AMbUPFOlaXdta3Uk6yqASEtpHHPuFIrmvDXjHRoLfURJLcgvqVy4xaSngyEjotd9WN4es57O3v1njKGTULiVM91aQkH8qANO0uor21iuYSxikUMpZSpx9DyK4H4nJ5+p+EbYthX1QMQRwdozXoledfFdTEvhm+5KwavEpA/2jigFuei15zquv+LE8eW2jWUtqi3ayusMsYPlQocCTPUknt05r0XrXPQeHJF8dXfiKe4SRHtUt7eLbzEBy3PuaARa8NNrLaOn9vLGt8HYHy8YK5+UnHGcVFd+L9HsrqS2nluBLG21gtrIwz9QuDW7SUwPP/BnjHRrXwnYwSy3AdFIOLWUjqe4Wu/R1kjV1+6wBGRisXwjY3GneF7G0uozHPGhDKe3JrcpAznr/AMZ6Tpt7JaXAvPNjOG8u0kYfmBg1W/4WBof93UP/AABl/wDia6qsLVvFFtpdzJbLa3V7PEglmjtUDGND3PIoAp/8LB0P+7qH/gDL/wDE1q6Pr9lriSNZicCM4bzoWj/LcBmn6Hrth4i0yPUNNm823ckZIwQRwQR2IrQoAZOoe3kU8hlIP5VwHwdJPgSWNTgpfXKqTzj5ziu8vZRBY3EzEBY4mYk9sAmuH+DsLR+Aklb/AJb3U8o9wXJFAdDJ8M2Wtav8StZ1KTWVkXTXWyLfZlG8feKj0+orrfE//IxeF/8Ar7f/ANAqnoPg7UNI1G58zUo2sZLx7zEaESSsegc5wQParfif/kYvC/8A19v/AOgUDOpooopiCiiigAooooAKKKKACiiigAooooAKKKKAEIBBBGQexpqxRocpGqn2GKfRQAUUUUAFFFFAEc08VtC008qRRIMs7sFA+pNZCeMPDkkqxJrVi0jMFVRMCST2rm/GcQ1bxnoOi6jKItEaKW5mV22pcOuAEP0zuql4W0PSb34iazqmnabbDSoIoreGVYxskmXJZk+mQMikOx6XnPSqGt6mukaRcXpXe6LiOP8A56SHhV/EkCuO8Ua1rfhjxfo+o3V2jeH7qY2csKJgRFsbGY9zkfgM1uXGNb8Vw2wIay0sCaXHRp2HyD/gKnP/AAIelAjG1vWYPAHgS5mknifWGiM21x80szty2PqTx7V1uiXov9HtbnzYpXeMeY8X3S2OcfjXGfEw291qfhXSbjy0jutR86SZ8ABIlL7ST2Oa7XSLy1v9OS4sojHbsSEym3cAcbgPQ9RQBgeMP+Q74S/7CR/9FPXXVyHjEga54TJIA/tI8n/rk9dcGDD5SD9DTAWiiigDgvifC1raaP4ijUbtIv0kkY/wwv8AK5/lXdRSLLEkiHKuAwPsag1Cwt9U064sbpA8FxGY3U9wRiub8GXNzpySeGNTcm8sBiCRv+XiD+Fh7gcH3FIDra8a+Ltx9j8Q6VrWlyTR3WnnydQuYFz5MLnAyfXkkfhXpviG3166tFi0G9tLOVs75riIyEem0Z+tYsvg27l8AXGgST2ct9dqRc3UkbFZGJyXIznd0NA0dHotnZ2Ok28VgoFuUDhs5L553E9ya0K5rwXous+HtEh0vVL+1vI7aMRwyRRsr4H97J54xWlrusQ6HpM17Ipdx8sUS/elkPCqPcmgRyF1Gdd+M1qqgtbaHZF3PZZpOn/jtehVzfg3Q59J0yW4vyH1S/lNzduP7zdFHsBgfhXSUAwooopgFcl8StKk1bwNfrbrm5tgt1D7NGd38s11tIyhlKsAQRgg96AM3w9qcWseHrDUIm3JPAr5/DmtOuJ8OI3hHXJ/Dk5YafdSNPpsp6DPLRfUHke1dtSAKKKKYBRRRQAVzOrQ6P4avb3xM8UjahdRrAI1YkzEcKqr6101cT4j8I+INW8Rpqdh4hS0jhTbDC1uHCHufqfWkCF+Gvh658PaDcLesgu7q4a5kgRsiHdyF/Ku1rA8LaFe6JaXI1HUTqF5czGWScrtz2Ax7Ct+gGcv8QtTOleCNSkQbp5o/s8Kf33f5QB+Zq94S0gaF4T0zTO9vbqrfXHNYc6N4v8AGEIUBtF0eTezdRPc9gPUL/Ou2oAK5fxP/wAjF4Y/6+3/APQK6jNcr4mdT4j8MAMCftb9D/sUAdVRRRTAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAr3dha38Yju7eOZRyA65xUkFvDbQrDBEkUa9ERcAfhUlFAGL4r0CHxP4avdJmwPOjPlsf4HHKt+BxTfCehP4f0CCznnNzdn57m4brJIep/wAPatyigCreadZ6iiJeW0U6odyiRc4NWFRUUKihVAwABgCnUUAZmteH9N8QW8UGpW4mSJ96ckFWxjORS6PoWn6DbyQafEYo5H3sCxbJxjv9K0qKACiiigAqrcafa3Vzb3M0KtNbsWifuuRg1aooAKKKKACqtxp1rd3dvczwrJLbkmItztJ749atUUAFFFFABRRRQAUUUUAVb7TrXUolju4VkVHEi56qwOQR6VaAwMUUUAFFFFABRRRQAUUUUAFMljWaJ43ztdSpx6Gn0UAQWdnb2FqltaxLFCgwqqOBU9FFADWUOpU9CMGufsvBGgWGpR6hb2eLmNiyO0jHBPXqa6KigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAoqG5ureyt3uLqaOGFPvPIwAH4mqej6/pmvpcPpd2lylvKYZGToHABx+ooA0qKKKACiiigAorP1zUH0rQdQ1CNFd7W3eZVY8MVUnB/Ksvw5feJdQWC61O302K0mhEg+zs5cE4wOeKAOkooooAKKKxtf10aSsFvbxfaNRu22W1uP4j3ZvRR1JoA2aKZEZPKTzQokwN23pn2qhf67p+mahYWN1OEub5ylvH1LEDJ/CgDSornNa8d+HPDupLp+r6lHaTtGJAJAcEEnuPpUul+NPDms291Pp2rQXEVom+d1ziMepyPagDeorGsfFWj6hqC2EF2PtTp5iRupUuv95c9RU2uX15pth9stbT7UsTbpol++Y+5X1I64oA06KrWF/b6nYw3lpIJIJlDIw9Ks0AFFFFABRRRQAUVja7rq6UILaCP7RqN22y2twfvHux9FHc1rReYYkMoUSYG7b0z7UAPooooAKKKKACiiigAooooAKKKRmCqWYgADJJPAoAWisaPxXost7HapeqXlbZG2DsdvQN0JrZoAKKyL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",
+          "cf113a4f3e4780de5eb4bf238397da425f1efd634d98e101211299df3d91067b.jpg": "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.jpg": "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"
+        },
+        "markdown": "<table><tr><td>Risk-free rate (Rf)</td><td>6%</td></tr><tr><td>r = ln(1 + Rf) = ln(1.06)</td><td>0.058</td></tr><tr><td>Time to expiry of call option (t)</td><td>2 years</td></tr><tr><td>Volatility (standard deviation of share price, σ)</td><td>11%</td></tr></table>\n\nEstimate the value of the call option using the Black–Scholes model.\n\nProvide your answer...\n\n# Feedback\n\nIn applying the Black-Scholes equation you first need to calculate the value of $d_{1}$ :\n\n$$\n\\begin{array}{l} d _ {1} = \\frac {1}{\\sigma \\sqrt {t}} \\left[ \\ln \\left(\\frac {S}{X}\\right) + \\left(r + \\frac {\\sigma^ {2}}{2}\\right) t \\right] \\\\ = \\frac {1}{0 . 1 1 \\sqrt {2}} \\left[ \\ln \\left(\\frac {4 7 3}{4 7 0}\\right) + \\left(0. 0 5 8 + \\frac {0 . 1 1 ^ {2}}{2}\\right) 2 \\right] \\\\ = \\frac {0 . 0 0 6 3 6 3 + 0 . 1 2 8 1}{0 . 1 5 5 6} = 0. 8 6 4 2 \\\\ \\end{array}\n$$\n\nNext, calculate $d_{2}$ :\n\n$$\nd _ {2} = d _ {1} - \\sigma \\sqrt {t} = 0. 8 6 4 2 - 0. 1 1 \\sqrt {2} = 0. 7 0 8 6\n$$\n\n$$\nN (d _ {1}) = N (0. 8 6 4 2) = 0. 8 0 6 3\n$$\n\n$$\nN (d _ {2}) = N (0. 7 0 8 6) = 0. 7 6 0 7\n$$\n\nFinally, enter these values into the call formula.\n\n$$\n\\begin{array}{l} C = S N (d _ {1}) - X e ^ {- r t} N (d _ {2}) \\\\ = 4 7 3 \\times 0. 8 0 6 3 - 4 7 0 e ^ {- 0. 0 5 8 \\times 2} \\times 0. 7 6 0 7 = 6 3. 0 0 9 2 \\\\ \\end{array}\n$$\n\nThe value of the call option is 63.01p.",
+        "middle": {
+          "_backend": "vlm",
+          "_version_name": "3.4.4",
+          "pdf_info": [
+            {
+              "discarded_blocks": [
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    16,
+                    153,
+                    23
+                  ],
+                  "index": 0,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        16,
+                        153,
+                        23
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            16,
+                            153,
+                            23
+                          ],
+                          "content": "Session 3 The Black-Scholes model",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "header"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    24,
+                    133,
+                    32
+                  ],
+                  "index": 1,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        24,
+                        133,
+                        32
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            24,
+                            133,
+                            32
+                          ],
+                          "content": "3.2 The Black-Scholes model",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "header"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    363,
+                    24,
+                    391,
+                    32
+                  ],
+                  "index": 2,
+                  "lines": [
+                    {
+                      "bbox": [
+                        363,
+                        24,
+                        391,
+                        32
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            363,
+                            24,
+                            391,
+                            32
+                          ],
+                          "content": "17/04/24",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "header"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    43,
+                    603,
+                    163,
+                    612
+                  ],
+                  "index": 16,
+                  "lines": [
+                    {
+                      "bbox": [
+                        43,
+                        603,
+                        163,
+                        612
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            43,
+                            603,
+                            163,
+                            612
+                          ],
+                          "content": "Copyright © 2024 The Open University",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "footer"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    365,
+                    603,
+                    391,
+                    611
+                  ],
+                  "index": 17,
+                  "lines": [
+                    {
+                      "bbox": [
+                        365,
+                        603,
+                        391,
+                        611
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            365,
+                            603,
+                            391,
+                            611
+                          ],
+                          "content": "11 of 33",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "page_number"
+                }
+              ],
+              "page_idx": 0,
+              "page_size": [
+                446,
+                631
+              ],
+              "para_blocks": [
+                {
+                  "bbox": [
+                    50,
+                    75,
+                    231,
+                    136
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        50,
+                        75,
+                        231,
+                        136
+                      ],
+                      "index": 3,
+                      "lines": [
+                        {
+                          "bbox": [
+                            50,
+                            75,
+                            231,
+                            136
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                50,
+                                75,
+                                231,
+                                136
+                              ],
+                              "html": "<table><tr><td>Risk-free rate (Rf)</td><td>6%</td></tr><tr><td>r = ln(1 + Rf) = ln(1.06)</td><td>0.058</td></tr><tr><td>Time to expiry of call option (t)</td><td>2 years</td></tr><tr><td>Volatility (standard deviation of share price, σ)</td><td>11%</td></tr></table>",
+                              "image_path": "e641e4dd6f392553cd17cc9d6d5fcf3065e80210b7c0c82fd14f9b8f06448d14.jpg",
+                              "type": "table"
+                            }
+                          ]
+                        }
+                      ],
+                      "type": "table_body"
+                    }
+                  ],
+                  "index": 3,
+                  "type": "table"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    153,
+                    290,
+                    164
+                  ],
+                  "index": 4,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        153,
+                        290,
+                        164
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            153,
+                            290,
+                            164
+                          ],
+                          "content": "Estimate the value of the call option using the Black–Scholes model.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    53,
+                    175,
+                    126,
+                    184
+                  ],
+                  "index": 5,
+                  "lines": [
+                    {
+                      "bbox": [
+                        53,
+                        175,
+                        126,
+                        184
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            53,
+                            175,
+                            126,
+                            184
+                          ],
+                          "content": "Provide your answer...",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    204,
+                    86,
+                    212
+                  ],
+                  "index": 6,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        204,
+                        86,
+                        212
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            204,
+                            86,
+                            212
+                          ],
+                          "content": "Feedback",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    218,
+                    337,
+                    228
+                  ],
+                  "index": 7,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        218,
+                        337,
+                        228
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            218,
+                            337,
+                            228
+                          ],
+                          "content": "In applying the Black-Scholes equation you first need to calculate the value of ",
+                          "type": "text"
+                        },
+                        {
+                          "bbox": [
+                            47,
+                            218,
+                            337,
+                            228
+                          ],
+                          "content": "d_{1}",
+                          "type": "inline_equation"
+                        },
+                        {
+                          "bbox": [
+                            47,
+                            218,
+                            337,
+                            228
+                          ],
+                          "content": ":",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    63,
+                    232,
+                    223,
+                    334
+                  ],
+                  "index": 8,
+                  "lines": [
+                    {
+                      "bbox": [
+                        63,
+                        232,
+                        223,
+                        334
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            63,
+                            232,
+                            223,
+                            334
+                          ],
+                          "content": "\\begin{array}{l} d _ {1} = \\frac {1}{\\sigma \\sqrt {t}} \\left[ \\ln \\left(\\frac {S}{X}\\right) + \\left(r + \\frac {\\sigma^ {2}}{2}\\right) t \\right] \\\\ = \\frac {1}{0 . 1 1 \\sqrt {2}} \\left[ \\ln \\left(\\frac {4 7 3}{4 7 0}\\right) + \\left(0. 0 5 8 + \\frac {0 . 1 1 ^ {2}}{2}\\right) 2 \\right] \\\\ = \\frac {0 . 0 0 6 3 6 3 + 0 . 1 2 8 1}{0 . 1 5 5 6} = 0. 8 6 4 2 \\\\ \\end{array}",
+                          "image_path": "a094e14acf43154977ecee978fab36dc87e560d88af9887b1fae1d2590bb430b.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    345,
+                    115,
+                    355
+                  ],
+                  "index": 9,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        345,
+                        115,
+                        355
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            345,
+                            115,
+                            355
+                          ],
+                          "content": "Next, calculate ",
+                          "type": "text"
+                        },
+                        {
+                          "bbox": [
+                            47,
+                            345,
+                            115,
+                            355
+                          ],
+                          "content": "d_{2}",
+                          "type": "inline_equation"
+                        },
+                        {
+                          "bbox": [
+                            47,
+                            345,
+                            115,
+                            355
+                          ],
+                          "content": ":",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    63,
+                    361,
+                    222,
+                    372
+                  ],
+                  "index": 10,
+                  "lines": [
+                    {
+                      "bbox": [
+                        63,
+                        361,
+                        222,
+                        372
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            63,
+                            361,
+                            222,
+                            372
+                          ],
+                          "content": "d _ {2} = d _ {1} - \\sigma \\sqrt {t} = 0. 8 6 4 2 - 0. 1 1 \\sqrt {2} = 0. 7 0 8 6",
+                          "image_path": "cf113a4f3e4780de5eb4bf238397da425f1efd634d98e101211299df3d91067b.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    64,
+                    388,
+                    170,
+                    399
+                  ],
+                  "index": 11,
+                  "lines": [
+                    {
+                      "bbox": [
+                        64,
+                        388,
+                        170,
+                        399
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            64,
+                            388,
+                            170,
+                            399
+                          ],
+                          "content": "N (d _ {1}) = N (0. 8 6 4 2) = 0. 8 0 6 3",
+                          "image_path": "3e8e70214a98ba8b8d4e2bf501cb55599237ad9ad6fc487d85d884264557f9f4.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    64,
+                    415,
+                    170,
+                    425
+                  ],
+                  "index": 12,
+                  "lines": [
+                    {
+                      "bbox": [
+                        64,
+                        415,
+                        170,
+                        425
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            64,
+                            415,
+                            170,
+                            425
+                          ],
+                          "content": "N (d _ {2}) = N (0. 7 0 8 6) = 0. 7 6 0 7",
+                          "image_path": "6ad92468ecfe3d99a3a6c5e1b2fd062bb0f256003613425b1b8b112f8b1ab306.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    438,
+                    215,
+                    448
+                  ],
+                  "index": 13,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        438,
+                        215,
+                        448
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            438,
+                            215,
+                            448
+                          ],
+                          "content": "Finally, enter these values into the call formula.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    63,
+                    454,
+                    244,
+                    492
+                  ],
+                  "index": 14,
+                  "lines": [
+                    {
+                      "bbox": [
+                        63,
+                        454,
+                        244,
+                        492
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            63,
+                            454,
+                            244,
+                            492
+                          ],
+                          "content": "\\begin{array}{l} C = S N (d _ {1}) - X e ^ {- r t} N (d _ {2}) \\\\ = 4 7 3 \\times 0. 8 0 6 3 - 4 7 0 e ^ {- 0. 0 5 8 \\times 2} \\times 0. 7 6 0 7 = 6 3. 0 0 9 2 \\\\ \\end{array}",
+                          "image_path": "0ed5db4c41be263f6392bf1503a342e9bd1b6939f5d20174020ee9d0f1def493.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    504,
+                    182,
+                    514
+                  ],
+                  "index": 15,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        504,
+                        182,
+                        514
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            504,
+                            182,
+                            514
+                          ],
+                          "content": "The value of the call option is 63.01p.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                }
+              ],
+              "preproc_blocks": [
+                {
+                  "bbox": [
+                    50,
+                    75,
+                    231,
+                    136
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        50,
+                        75,
+                        231,
+                        136
+                      ],
+                      "index": 3,
+                      "lines": [
+                        {
+                          "bbox": [
+                            50,
+                            75,
+                            231,
+                            136
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                50,
+                                75,
+                                231,
+                                136
+                              ],
+                              "html": "<table><tr><td>Risk-free rate (Rf)</td><td>6%</td></tr><tr><td>r = ln(1 + Rf) = ln(1.06)</td><td>0.058</td></tr><tr><td>Time to expiry of call option (t)</td><td>2 years</td></tr><tr><td>Volatility (standard deviation of share price, σ)</td><td>11%</td></tr></table>",
+                              "image_path": "e641e4dd6f392553cd17cc9d6d5fcf3065e80210b7c0c82fd14f9b8f06448d14.jpg",
+                              "type": "table"
+                            }
+                          ]
+                        }
+                      ],
+                      "type": "table_body"
+                    }
+                  ],
+                  "index": 3,
+                  "type": "table"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    153,
+                    290,
+                    164
+                  ],
+                  "index": 4,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        153,
+                        290,
+                        164
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            153,
+                            290,
+                            164
+                          ],
+                          "content": "Estimate the value of the call option using the Black–Scholes model.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    53,
+                    175,
+                    126,
+                    184
+                  ],
+                  "index": 5,
+                  "lines": [
+                    {
+                      "bbox": [
+                        53,
+                        175,
+                        126,
+                        184
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            53,
+                            175,
+                            126,
+                            184
+                          ],
+                          "content": "Provide your answer...",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    204,
+                    86,
+                    212
+                  ],
+                  "index": 6,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        204,
+                        86,
+                        212
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            204,
+                            86,
+                            212
+                          ],
+                          "content": "Feedback",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    218,
+                    337,
+                    228
+                  ],
+                  "index": 7,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        218,
+                        337,
+                        228
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            218,
+                            337,
+                            228
+                          ],
+                          "content": "In applying the Black-Scholes equation you first need to calculate the value of ",
+                          "type": "text"
+                        },
+                        {
+                          "bbox": [
+                            47,
+                            218,
+                            337,
+                            228
+                          ],
+                          "content": "d_{1}",
+                          "type": "inline_equation"
+                        },
+                        {
+                          "bbox": [
+                            47,
+                            218,
+                            337,
+                            228
+                          ],
+                          "content": ":",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    63,
+                    232,
+                    223,
+                    334
+                  ],
+                  "index": 8,
+                  "lines": [
+                    {
+                      "bbox": [
+                        63,
+                        232,
+                        223,
+                        334
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            63,
+                            232,
+                            223,
+                            334
+                          ],
+                          "content": "\\begin{array}{l} d _ {1} = \\frac {1}{\\sigma \\sqrt {t}} \\left[ \\ln \\left(\\frac {S}{X}\\right) + \\left(r + \\frac {\\sigma^ {2}}{2}\\right) t \\right] \\\\ = \\frac {1}{0 . 1 1 \\sqrt {2}} \\left[ \\ln \\left(\\frac {4 7 3}{4 7 0}\\right) + \\left(0. 0 5 8 + \\frac {0 . 1 1 ^ {2}}{2}\\right) 2 \\right] \\\\ = \\frac {0 . 0 0 6 3 6 3 + 0 . 1 2 8 1}{0 . 1 5 5 6} = 0. 8 6 4 2 \\\\ \\end{array}",
+                          "image_path": "a094e14acf43154977ecee978fab36dc87e560d88af9887b1fae1d2590bb430b.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    345,
+                    115,
+                    355
+                  ],
+                  "index": 9,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        345,
+                        115,
+                        355
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            345,
+                            115,
+                            355
+                          ],
+                          "content": "Next, calculate ",
+                          "type": "text"
+                        },
+                        {
+                          "bbox": [
+                            47,
+                            345,
+                            115,
+                            355
+                          ],
+                          "content": "d_{2}",
+                          "type": "inline_equation"
+                        },
+                        {
+                          "bbox": [
+                            47,
+                            345,
+                            115,
+                            355
+                          ],
+                          "content": ":",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    63,
+                    361,
+                    222,
+                    372
+                  ],
+                  "index": 10,
+                  "lines": [
+                    {
+                      "bbox": [
+                        63,
+                        361,
+                        222,
+                        372
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            63,
+                            361,
+                            222,
+                            372
+                          ],
+                          "content": "d _ {2} = d _ {1} - \\sigma \\sqrt {t} = 0. 8 6 4 2 - 0. 1 1 \\sqrt {2} = 0. 7 0 8 6",
+                          "image_path": "cf113a4f3e4780de5eb4bf238397da425f1efd634d98e101211299df3d91067b.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    64,
+                    388,
+                    170,
+                    399
+                  ],
+                  "index": 11,
+                  "lines": [
+                    {
+                      "bbox": [
+                        64,
+                        388,
+                        170,
+                        399
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            64,
+                            388,
+                            170,
+                            399
+                          ],
+                          "content": "N (d _ {1}) = N (0. 8 6 4 2) = 0. 8 0 6 3",
+                          "image_path": "3e8e70214a98ba8b8d4e2bf501cb55599237ad9ad6fc487d85d884264557f9f4.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    64,
+                    415,
+                    170,
+                    425
+                  ],
+                  "index": 12,
+                  "lines": [
+                    {
+                      "bbox": [
+                        64,
+                        415,
+                        170,
+                        425
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            64,
+                            415,
+                            170,
+                            425
+                          ],
+                          "content": "N (d _ {2}) = N (0. 7 0 8 6) = 0. 7 6 0 7",
+                          "image_path": "6ad92468ecfe3d99a3a6c5e1b2fd062bb0f256003613425b1b8b112f8b1ab306.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    438,
+                    215,
+                    448
+                  ],
+                  "index": 13,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        438,
+                        215,
+                        448
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            438,
+                            215,
+                            448
+                          ],
+                          "content": "Finally, enter these values into the call formula.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    63,
+                    454,
+                    244,
+                    492
+                  ],
+                  "index": 14,
+                  "lines": [
+                    {
+                      "bbox": [
+                        63,
+                        454,
+                        244,
+                        492
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            63,
+                            454,
+                            244,
+                            492
+                          ],
+                          "content": "\\begin{array}{l} C = S N (d _ {1}) - X e ^ {- r t} N (d _ {2}) \\\\ = 4 7 3 \\times 0. 8 0 6 3 - 4 7 0 e ^ {- 0. 0 5 8 \\times 2} \\times 0. 7 6 0 7 = 6 3. 0 0 9 2 \\\\ \\end{array}",
+                          "image_path": "0ed5db4c41be263f6392bf1503a342e9bd1b6939f5d20174020ee9d0f1def493.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    504,
+                    182,
+                    514
+                  ],
+                  "index": 15,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        504,
+                        182,
+                        514
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            504,
+                            182,
+                            514
+                          ],
+                          "content": "The value of the call option is 63.01p.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                }
+              ]
+            }
+          ]
+        },
+        "pages_requested": -1,
+        "source": "b64"
+      }
+    ]
+  },
+  "status": "COMPLETED",
+  "workerId": "k071smafaf99a8"
+}

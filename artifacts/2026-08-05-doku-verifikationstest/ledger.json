@@ -1,0 +1,38 @@
+{
+  "blackscholes__-01.png": {
+    "job_id": "955b91e1-f4e1-44c0-8684-4cae2e0cc343-e2",
+    "state": "done",
+    "submitted_at": "2026-08-05T11:05:24",
+    "exec_ms": 5221
+  },
+  "blackscholes__-02.png": {
+    "job_id": "7ae32b2b-be78-49dd-a4f3-2bb013a1066d-e2",
+    "state": "done",
+    "submitted_at": "2026-08-05T11:10:26",
+    "exec_ms": 2640
+  },
+  "blackscholes__-03.png": {
+    "job_id": "2980d5e5-9f36-46c9-9265-f0d7447e5d66-e1",
+    "state": "done",
+    "submitted_at": "2026-08-05T11:10:32",
+    "exec_ms": 3699
+  },
+  "blackscholes__-10.png": {
+    "job_id": "5348a208-42c4-4448-bd8c-00e607a71b48-e1",
+    "state": "done",
+    "submitted_at": "2026-08-05T11:10:34",
+    "exec_ms": 4547
+  },
+  "blackscholes__-11.png": {
+    "job_id": "ee490e57-d7d0-4490-8091-480670dfd0da-e2",
+    "state": "done",
+    "submitted_at": "2026-08-05T11:10:35",
+    "exec_ms": 3793
+  },
+  "blackscholes__-12.png": {
+    "job_id": "dcf4c5e1-5d4b-4786-9c4f-5a00994adda0-e2",
+    "state": "done",
+    "submitted_at": "2026-08-05T11:10:38",
+    "exec_ms": 4629
+  }
+}

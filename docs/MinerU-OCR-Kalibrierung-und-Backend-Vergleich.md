@@ -1,256 +1,243 @@
-# OCR-Qualität am echten Bestand: Beispielset, Backend-Vergleich und MinerU-Kalibrierung
+# OCR-Qualität am echten Bestand: Schadensklassen, Engine-Verhalten und Evaluations-Methodik
 
-**Stand:** 01.08.2026.
-**Zweck:** Dieses Dokument ist die Beweisschicht des OCR-Projekts. Es hält fest, (1) wie der beschädigte Dokumentenbestand konkret aussieht (das 15-Beispiel-Kalibrierset mit wörtlichen Müll-Zitaten), (2) was lokale OCR-Backends darauf leisten (der Kreuzberg-Bake-off vom 25.06.2026 samt seiner Integritätsfallen), (3) was die gewählte MinerU-Pipeline darauf leistet (die 15/15-Kalibrierung, Outputs unter `ocr_comparison/_mineru_runpod_vllm/`), und (4) welche Qualitätsfragen offen sind. Wer entscheidet, welche Dokumente OCR brauchen (Zielliste) oder wie der Text zurück nach DEVONthink kommt (Write-back), entscheidet auf dieser Basis.
-**Schwesterdokumente:** [MinerU-RunPod-Betriebshandbuch.md](MinerU-RunPod-Betriebshandbuch.md) (das Wie des Betriebs), [MinerU-RunPod-Geschichte-und-Entscheidungen.md](MinerU-RunPod-Geschichte-und-Entscheidungen.md) (das Warum).
+**Stand:** 05.08.2026.
+**Zweck:** Dieses Dokument ist die Beweis- und Methodikschicht des OCR-Projekts. Es hält generalisiert fest: (1) **welche Schadensklassen** der Bestand enthält und woran man sie erkennt, (2) **was OCR-Engines auf diesen Klassen leisten** — lokale Backends wie MinerU —, (3) **wie man das misst**, ohne sich selbst zu betrügen, und (4) welche Qualitätsfragen offen sind. Es ist bewusst KEIN Dokumenten-Dossier: Einzelbefunde stehen hier nur, wo sie eine generelle Lektion belegen oder auf der Nachprüf-Liste stehen. Die Einzeldokument-Details leben in den Artefakten, auf die Abschnitt 7 zeigt.
+**Einstieg für Leser ohne Vorkontext:** [README.md](README.md) — Landkarte des Dokumentensets, die übertragbaren Lehren des Projekts und die Pflegeregeln dieser Dateien.
+**Schwesterdokumente:** [MinerU-RunPod-Betriebshandbuch.md](MinerU-RunPod-Betriebshandbuch.md) (Engine-Betrieb und Lifecycle), [MinerU-DEVONthink-Integrationsstrecke.md](MinerU-DEVONthink-Integrationsstrecke.md) (Erkennung, Export, Write-back — die Stufen, für die dieses Dokument die Kalibriergrundlage liefert), [MinerU-RunPod-Geschichte-und-Entscheidungen.md](MinerU-RunPod-Geschichte-und-Entscheidungen.md) (Chronik und Entscheidungen).
 
-**Quellen** (Session vom 31.07./01.08.2026, vollständig gelesen soweit nicht anders vermerkt):
-- `/Users/jurgen/CodingProjects/DevonThink886/Examples/OCR-Befunde.md` (das Kalibrierset; gespiegelt als gbrain `projects/devonthink-klassifikation/examples-ocr-befunde`, Quelle dort `file:///Users/jurgen/CodingProjects/DevonThink886/Examples/OCR-Befunde.md`, erfasst 03.07.2026).
-- `/Users/jurgen/CodingProjects/DevonThink886/ocr_comparison/`: `SUMMARY.md` (25.06.2026), `_metrics.md`, `_recovery.md`, `results.jsonl` (147 Läufe), `gemini_truth.sh`, `_examples_minerutest/_failures.log`, `_examples_retest/_failures.log`, alle 15 Markdowns unter `_mineru_runpod_vllm/out_all/*/vlm/*.md`, das Markdown unter `_mineru_baked_test/`, alle 15 Dateien unter `candle-trocr/`.
-- Eigene Prüfungen dieser Session (jeweils als solche markiert): byte-Vergleiche per `diff`, Muster-Suchen per `grep`.
+**Quellen** (Session 31.07.–02.08.2026, vollständig gelesen soweit nicht anders vermerkt): `Examples/OCR-Befunde.md` (das Fixture-Set; gbrain-Spiegel `projects/devonthink-klassifikation/examples-ocr-befunde`); aus `ocr_comparison/`: `SUMMARY.md`, `_metrics.md`, `_recovery.md`, `results.jsonl` (147 Läufe), `gemini_truth.sh`, beide `_failures.log`, alle 15 MinerU-Markdowns unter `_mineru_runpod_vllm/out_all/`, das `_mineru_baked_test`-Markdown, alle 15 `candle-trocr`-Dateien, beide Friendli-`_run.log`; gbrain `projects/mineru-ocr/born-digital-backend-benchmark`; eigene Prüfungen dieser Session (`diff`, `grep`, `stat` — jeweils als solche markiert).
 
-**Rohdaten-Bestände (Beweismaterial, keine Wissensquellen — muss niemand lesen):** Unter `ocr_comparison/` liegen außerdem die Roh-OCR-Dumps je Backend (`candle-glm-ocr/`, `easyocr/`, `paddle-ocr/`, `tesseract/`, `textlayer/`, `_unavailable/`, `candle-deepseek-ocr/`, `candle-hunyuan-ocr/`), die beiden Friendli-`_run.log`, die stderr-Logs unter `_logs/` sowie Bild-/PDF-/Layout-JSON-Artefakte. Das sind die vermessenen Gegenstände, nicht die Messungen: ihr gesamter Erkenntnisgehalt steckt in der oben gelesenen Urteils-Schicht (SUMMARY/_metrics/_recovery/results.jsonl) und den Byte-Vergleichen dieser Session und ist in diesem Dokument konsolidiert. Gebraucht werden die Dumps nur noch, falls jemand Scores neu berechnen oder anzweifeln will (Beweissicherung — deshalb liegen sie noch da). Die Friendli-`_run.log`s wurden am 01.08.2026 per Fehlerzeilen-Extraktion nachdiagnostiziert und ihr Befund ist in Abschnitt 4 konsolidiert (Endpoint-Nichtverfügbarkeit, kein MinerU-Qualitätsbefund).
+**Rohdaten-Bestände (Beweismaterial, keine Wissensquellen — muss niemand lesen):** Unter `ocr_comparison/` liegen die Roh-OCR-Dumps je Backend (`candle-glm-ocr/`, `easyocr/`, `paddle-ocr/`, `tesseract/`, `textlayer/`, `_unavailable/`, `candle-deepseek-ocr/`, `candle-hunyuan-ocr/`), die stderr-Logs unter `_logs/` sowie Bild-/PDF-/Layout-JSON-Artefakte. Das sind die vermessenen Gegenstände, nicht die Messungen: ihr Erkenntnisgehalt steckt in der Urteils-Schicht (SUMMARY/_metrics/_recovery/results.jsonl) und den Byte-Vergleichen dieser Session und ist hier konsolidiert. Gebraucht werden die Dumps nur, falls jemand Scores neu berechnen oder anzweifeln will.
 
 ---
 
 ## 1. Das Kernproblem, das alles hier begründet
 
-Fast alle harten Fälle des Bestands haben eine **vorhandene** Textebene (`kind: PDF+Text`, `word count > 0`) — das naive Signal „word count == 0" winkt sie als „hat Text" durch. **Trotzdem ist der Text Müll.** Dazu kommt: DEVONthink indexiert den zerschossenen Text oft **gar nicht** — die härtesten Fälle (Handschrift, Punkt-Insertion, Fremdsprache) findet man nicht per Müll-Stichwortsuche, nur per Volltext-Lesen. Und: Bei den Finanzamt-Bescheiden überleben die **Aktenzeichen-Ziffern** den OCR-Schaden, während die Wörter zerfallen — Ziffern sind der robusteste Fang für beschädigte Behördenpost. [Quelle: OCR-Befunde.md, Kopfabschnitt]
+**Fast alle harten Fälle haben eine vorhandene Textebene** (`kind: PDF+Text`, `word count > 0`) — das naive Signal „word count == 0" winkt sie als „hat Text" durch, und **trotzdem ist der Text Müll.** Drei generelle Eigenschaften dieses Bestands, die jede Erkennung und jede Bewertung prägen:
 
-Konsequenz für die Klassifikation (Bead `jurgen-oeu`): die als am stärksten eingestuften Suchterme sind exakte Kennungen — und die Erkennungs-Frage „welche Dokumente brauchen OCR" ist nicht mit einem Wortzähler beantwortbar (deshalb die entworfene, nie kalibrierte klassenweise Defekt-Jagd, gbrain `wiki/originals/ideas/2026-06-25-ocr-defect-calibration-compartments-43f26d`).
+1. **Kaputt ist nicht leer.** Die schwierige Klasse ist nicht „kein Text", sondern „Text vorhanden, unbrauchbar". Sie ist mit Zählern allein nicht fangbar (Methodik: Integrationsstrecke, Abschnitt 2).
+2. **Ziffern überleben, Wörter zerfallen.** Bei Behörden-Bescheiden bleiben Aktenzeichen-Ziffernfolgen sauber lesbar, während der Fließtext ringsum zerbricht. Daraus folgt die Grundregel der Suchrahmen: **exakte Kennungen sind der robusteste Fang auf beschädigtem Material** — robuster als jedes Themenwort.
+3. **Müll wird oft gar nicht indexiert.** Die härtesten Fälle (Handschrift, Punkt-Insertion, Fremdsprache) findet man nicht per Müll-Stichwortsuche, sondern nur per Volltext-Lesen — ein Erkenner, der auf Suche baut, sieht sie strukturell nicht.
 
----
-
-## 2. Das 15-Beispiel-Kalibrierset (vollständig)
-
-Alle Dateien sind aus DEVONthink (`Datenbank`) exportierte Kopien unter `/Users/jurgen/CodingProjects/DevonThink886/Examples/`; Originale unverändert. Format je Eintrag: `Müll-Snippet` → *(soll heißen)*. [Quelle: OCR-Befunde.md, hier vollständig übernommen, damit dieses Dokument allein trägt]
-
-### Klasse: Finanzamt-Bescheide, n→h-Substitution (total)
-
-**2017_Privat_Grundsteuer_Bescheid_Einheitswert_Musterberg.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /Steuer/Grundsteuer/ · FA Beispielberg, Einheitswertbescheid 2017
-- `F'ihahzamt Beispielbepg` → *Finanzamt Beispielberg*
-- `Eihheitswept 14.827 €` → *Einheitswert*
-- `Aktehzeicheh` → *Aktenzeichen* (Ziffern `123/456/7890/012/345/7` dagegen sauber)
-- `Grundsteuepmessbescheid Neuveranlaguhg` → *Grundsteuermessbescheid Neuveranlagung*
-
-**2022_Privat_Grundsteuer_Bescheid_Hauptfestellung_MusterhofHaus.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /Steuer/Grundsteuer/ · FA Musterstadt, Äquivalenzbeträge-Hauptfeststellung 2022
-- `rinahzant rnustcrstadt` / `F[ihahzaht Musterstadt` → *Finanzamt Musterstadt*
-- `Crundsteueräquivalehzbeträge Ilauptfeststelluhg auf deh 1.1.2022` → *Grundsteueräquivalenzbeträge Hauptfeststellung auf den*
-- `Art. 3 Abs. 1 Nr. 1 Bay6rstc` → *BayGrStG*
-- `XK4000at "07¥ZZ3t00 3ZI Z3( iiHH` → *(Barcode-Zone als Textsalat)*
-
-**2022_Privat_Grundsteuer_Bescheid_Hauptfestellung_HausMusterberg.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /Steuer/Grundsteuer/ · FA Beispielberg, Äquivalenzbeträge 2022
-- `F'inahzamt Beispielberg` / `PirLarLzamt Beispielbepg` → *Finanzamt Beispielberg*
-- `Grundsteueräquivalehzbeträge Hauptfeststelluhg` → *…Hauptfeststellung*
-- `Bayerischen Grundst®uerges®tz (Bay6rstc)` → *Grundsteuergesetz (BayGrStG)*
-- `Cruhdsteuermessbetrag Hauptverahlaguhg` → *Grundsteuermessbetrag Hauptveranlagung*
-
-**2021_KG_Grundsteuer_Bescheid_Einheitswert_Musterstraße_ETW1.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /Steuer/Grundsteuer/ · FA München, Einheitswert-Nachfeststellung 2021
-- `rinarzamt Hünchen` → *Finanzamt München*
-- `Aktehzeicherl 234/567/8901/234/567/8` → *Aktenzeichen* (Ziffern sauber)
-- `Nachfeststelluhg auf deh 1.1.2021` → *Nachfeststellung auf den*
-- `Z::#:?n!8Zg 3` → *(Adressfeld komplett zerschossen)*; Rechtsbehelfsseiten in reinem Raster-Müll
-
-**2022_Privat_Grundsteuer_Bescheid_Hauptfestellung_BeispielStraße_WHG1.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /Steuer/Grundsteuer/ · FA München, Äquivalenzbeträge 2022
-- `Fihahzabt Nüncheh` → *Finanzamt München* (doppelt korrupt: n→h **und** m→b)
-- `Alctehzeichen 345/678/9012/345/678/9` → *Aktenzeichen*
-- `iiber die Cruhdsteueräquivalenzbeträge Hauptfeststelluhg auf deh 1.1.2022` → *über die Grundsteueräquivalenzbeträge…*
-- `14 pso patExchnlpagocoananapsuchs notraptoanon Honat.` → *(Einspruchsfrist-Satz vollständig Kauderwelsch)*
-
-### Klasse: andere Steuerarten (total)
-
-**Grunderwerbsteuer Muster 1.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /_NochUnsortiert/Immobilien/Musteranwesen/ · FA Musterstein, Grunderwerbsteuerbescheid
-- `Vertragspartner-Gesellschaft` → *Erwerber-Gesellschaft* — **zu diesem Eintrag siehe den benannten Widerspruch in Abschnitt 5.4**
-- `BLATT001234` / `XB16x14X001234*` → *(Barcode/Blattnummer als Text im Adressfeld)*
-- `Rt. 06.10.2016 GrESt` → *(Eingangsstempel)*
-
-**2016_Privat_Bescheid_Einkommensteuer.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /Steuer/Privat/Bescheide/ · FA Beispielberg, Einkommensteuer 2016
-- `Bescheid fiEp =016` → *Bescheid für 2016* (Jahreszahl zerschossen)
-- `B:eispielbei]g` / `Finanzamt Beispiolberg` → *Beispielberg / Finanzamt Beispielberg*
-- `ä=:::=E::gtLe::=u::::P::=±::d:` → *(ganze Seiten in Raster-Müll aufgelöst)*
-
-### Klasse: Handwerker-Rechnungen / Formulare (total, eigene Fehlerprofile)
-
-**Kellerbau_Schlussrechnung-Einmessung.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /_NochUnsortiert/Immobilien/Musterhof/Musterhof_Unterlagen/ · Muster Kellerbau GmbH, Schlussrechnung
-- **Fehlerprofil: Punkt-Insertion** — `Am Wie.sen 12`, `12345 Bei.spi.el` → *Wiesen / Beispiel* (Serifen als Satzzeichen gedeutet)
-- `IBAN: DE00123456780001234S6789` → *…1234**5**6789* (S statt 5 — Bankdaten unbrauchbar)
-- `W&ldweg l2 1S345 Musterdorf` → *Waldweg 12, 12345 Musterdorf*
-- `S \`# €- i, - =\`-+ - - i =- =` → *(Trennlinie als Zeichensalat)*
-
-**492064 - Bauplanung Musterplan, Doppelgarage.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /_NochUnsortiert/Immobilien/Musterhof/ · Bauplanung Musterplan, Rechnung
-- **Fehlerprofil: Handschrift + Druck-Formular kollabieren ineinander** — `Staat gepr Bautechrifter unt Zimmera méster` → *staatl. gepr. Bautechniker und Zimmermeister*
-- `VR Bnuspielsiadt` → *VR Beispielstadt* (Bank-Wasserzeichen als Text erkannt)
-- `Baupiarung Mus terp lan'` → *Bauplanung Musterplan*
-
-### Klasse: reine Handschrift (total — OCR-Totalversagen)
-
-**Notizen1.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /_NochUnsortiert/NochUnzuordnbar/Notizen/ · handgeschriebene persönliche Notizen
-- **Fehlerprofil: kursive Handschrift durch Drucktext-OCR — kein Substring-Muster, komplettes Lexikon-Versagen**
-- `Unthaltskaste landwitshoftlich Fläch` → *Unterhaltungskosten landwirtschaftliche Fläche*
-- `Aufjabn Liste Kcifutey` → *Aufgaben-Liste …*
-- `Mait an Mustcrbau` → *Mail an Musterbau*
-- `Wehen Reing urmich → Kamhan?` → *Wegen Reinigung …*
-
-### Klasse: Fremdsprache
-
-**img20250722_18475997.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /Inbox/Steuer/2025 Umst-Voranmeldung Quartal2/Ausgaben/5. Mai 2025/ · französische SANEF-Mautquittungen
-- **Fehlerprofil: fremdsprachiger Text, Zeichensatz-Mismatch + Zahlenfehler**
-- `EXENPLE LUNSEIL` → *EXEMPLE CONSEIL*
-- `Date 19/05/7076 17:07` → *…/2025…* (Jahr 7076 statt 2025)
-- `SIRET 123 uoü 456 00012` → *(Sonderzeichen ü in Ziffernfolge)*
-
-### Klasse: Bank / Versicherung / Notar (mittel–leicht)
-
-**HVB_April2024.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /_NochUnsortiert/NochUnzuordnbar/_Abgeschlossen/Musterakte/ · HVB/UniCredit Selbstauskunft
-- `® Hypwereinsbank ME„,LX"f üunicrdit` → *HypoVereinsbank … UniCredit*
-- `S E L B S T A U S 1{ U N F T` → *SELBSTAUSKUNFT* (Sperrdruck mit Ziffereinschub)
-- `Bifte fügen Sie lhren Angaben` → *Bitte fügen Sie Ihren Angaben*; Ort `Beispielorf` → *Beispielort*
-
-**20161031144820006.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /Bankwesen/AllianzDepot/ · Allianz ParkDepot, Eröffnungsantrag
-- Adressblock total zerhackt: `MUSTER INMOBLLIEN / ATSH TCOLIGL / AM WIIESEN 121 / 1,2,345-BEEISPIIEI` → *Erwerber-Gesellschaft … Strassenangabe / PLZ Ort*
-
-**Handelregistereintragung_Urkunde_KG.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /_NochUnsortiert/WeitereVerwaltung/2Erwerber-Gesellschaft/ · Notar Muster, Musterheim, Handelsregister-Anmeldung
-- `Amtsgericht Musterstein — F\`egistergericht` → *Registergericht*
-- `_cjmKcmmand itgese üsc haft e.[richtet.` → *…Kommanditgesellschaft errichtet.*
-- `Must®r lmmobill®n QmbH & Co. Ka` → *Muster Immobilien GmbH & Co. KG* (® statt e durchgehend)
-
-**20161116150357250.pdf** — UUID `00000000-0000-0000-0000-000000000000` · /Darlehen/KG_VR_12345678_1000TE/ · VR-Bank, Darlehensvertrag (Entwurf)
-- `Steuamummer baw. Umsatzstever-identifikationsnumner` → *Steuernummer bzw. Umsatzsteuer-Identifikationsnummer*
-- `Darishensnehme:` → *Darlehensnehmer*; `Soltzinssatz` → *Sollzinssatz*
-- `ー` → *(japanisches Katakana-Zeichen — aus dem ENTWURF-Wasserzeichen fehlinterpretiert)*
+[Quelle: `OCR-Befunde.md`, Kopfabschnitt]
 
 ---
 
-## 3. Der Kreuzberg-Backend-Bake-off (25.06.2026)
+## 2. Die Schadensklassen des Bestands
 
-**Setup:** kreuzberg `5.0.0-rc.32` (Homebrew, nativer Rust-Build, `/opt/homebrew/bin/kreuzberg`); Aufruf `kreuzberg extract <pdf> --ocr true --force-ocr true --ocr-backend <B> --ocr-language <L> --format text`; tesseract mit `deu` (tessdata_best, manuell installiert unter `/opt/homebrew/share/tessdata/deu.traineddata`), paddle-ocr mit `german` (Latin-Familie, Mobile-Tier). Erst 3 Grundsteuer-PDFs (Bead `jurgen-0cu`), dann auf alle 15 Beispiele ausgeweitet. [Quelle: SUMMARY.md]
+Der Katalog, gegen den kalibriert wird. Jede Klasse mit ihrem Fehlerprofil, dem generellen Erkennungssignal und einem Beleg-Beispiel aus dem Fixture-Set.
 
-### 3.1 Der Integritätsbefund, der alles andere rahmt: nur 3 Backends waren echt
+### Klasse A — Totalsubstitution auf Behörden-Bescheiden (n→h, teils zusätzlich m→b)
 
-Das `--ocr-backend`-Argument akzeptiert 9 Namen, aber die Laufzeit-Registry meldete nur drei: `tesseract`, `paddle-ocr`, `vlm`. **Stiller-Fallback-Falle:** Ein nicht registriertes Backend erzeugt KEINEN harten Fehler, sondern fällt still auf die Pipeline `tesseract → paddle-ocr` zurück und meldet „ok=True". Beleg per `--no-cache`: `Pipeline: backend failed, trying next  backend=tesseract  error=... Failed to download language pack 'de' ... http status: 404` → danach paddle-ocr → Ausgabe. Die Schein-Ergebnisse liegen unter `_unavailable/` (zur Beweissicherung nicht gelöscht). [Quelle: SUMMARY.md §1]
+Ein Buchstabe wird systematisch durch einen anderen ersetzt, über das ganze Dokument. Erkennungssignal: der Text besteht aus fast-Wörtern, die kein Lexikon kennt, aber ein Substring-Muster tragen — ein Ersetzungs-Rücktausch macht sie wieder lesbar. Belege: `F'ihahzamt Beispielbepg` → *Finanzamt Beispielberg*; `Eihheitswept` → *Einheitswert*; `Ilauptfeststelluhg` → *Hauptfeststellung*; `Bay6rstc` → *BayGrStG*. Doppelt korrupt (n→h **und** m→b): `Fihahzabt Nüncheh` → *Finanzamt München*. **Häufigste und wichtigste Klasse des Steuer-Korpus** (5 der 15 Fixture-Dokumente sind Grundsteuer-Bescheide dieser Art). Bemerkenswert: die Aktenzeichen-Ziffern derselben Dokumente sind sauber.
 
-**Eigene Verifikation (Session 31.07./01.08.2026, `diff`):** Alle 15 Dateien in `candle-hunyuan-ocr/` und alle 3 in `candle-deepseek-ocr/` sind **byte-identisch** mit den gleichnamigen in `paddle-ocr/`. ⇒ Die `_recovery.md`-Spalten „candle-hunyuan-ocr 76%" und „candle-deepseek-ocr 100%" messen in Wahrheit den Paddle-Fallback, nicht diese Modelle; die „100%" beruhen zudem auf nur 3 Dokumenten (Rest „–"). Später liefen glm/trocr offenbar doch als echte Candle-Backends (results.jsonl zeigt eigene Laufzeiten und winzige, andersartige Outputs) — deren Qualität ist mit 3 % Recovery ohnehin indiskutabel.
+### Klasse B — Raster-/Zonenzerfall
 
-### 3.2 Die eingebettete Textebene ist DEFEKT — force-OCR ist Pflicht
+Ganze Seitenbereiche lösen sich in Zeichensalat auf, während andere Bereiche lesbar bleiben — typisch Adressfelder, Barcode-Zonen, Rechtsbehelfsseiten. Erkennungssignal: Zeilen mit hoher Sonderzeichen-Dichte, insbesondere Doppelpunkt-Ketten (das ist die „Junk-Zeilen"-Metrik aus Abschnitt 4). Belege: `Z::#:?n!8Zg 3` (Adressfeld); `XK4000at "07¥ZZ3t00 3ZI Z3( iiHH` (Barcode-Zone); `ä=:::=E::gtLe::=u::::P::=±::d:` (ganze Seiten).
 
-Kaputtes ToUnicode/Font-Encoding liefert Mojibake (`F'inahzamt`, `£quivalehzbeträge`, `Must®rb®rg`, ganze Zeilen `£ä::::I::z!`). Messwerte (Mojibake = Encoding-Artefakte; Junk-Zeilen = Zeilen mit 3+ Doppelpunkten; niedriger = sauberer):
+### Klasse C — Punkt-Insertion
 
-| Dokument | Backend | Mojibake | Junk-Zeilen | Alpha-Token |
-|---|---|---|---|---|
-| 2017 Einheitswert | textlayer | **86** | **33** | 1036 |
-| 2017 Einheitswert | tesseract | 2 | 1 | 1390 |
-| 2017 Einheitswert | paddle-ocr | 0 | 1 | 1374 |
-| 2022 Musterhof | textlayer | **188** | **33** | 681 |
-| 2022 Musterhof | tesseract | 9 | 1 | 1335 |
-| 2022 Musterhof | paddle-ocr | 9 | 1 | 1303 |
-| 2022 HausMusterberg | textlayer | **193** | **28** | 648 |
-| 2022 HausMusterberg | tesseract | 0 | 0 | 1295 |
-| 2022 HausMusterberg | paddle-ocr | 0 | 0 | 1257 |
+Serifen werden als Satzzeichen gedeutet; Wörter zerfallen an falschen Stellen. Erkennungssignal: auffällig viele Ein- bis Dreizeichen-„Wörter" mit eingestreuten Punkten (schlägt auf die Zeichen/Wort-Heuristik durch). Belege: `Am Wie.sen 12`, `12345 Bei.spi.el`. **Warum diese Klasse gefährlich ist:** Sie beschädigt bevorzugt exakte Kennungen — im Fixture-Set wurde eine IBAN unbrauchbar (`S` statt `5` in der Ziffernfolge). Wo Kennungen tragen, ist diese Klasse teurer als Klasse A.
 
-Die Textebene birgt ~40 % weniger echte Wort-Token als OCR. **Folge:** eine automatische Genauigkeits-Metrik „gegen die Textebene" wäre wertlos (Vergleich gegen Müll); es gibt für diese Dokumente keine saubere Referenz außer manueller Erfassung oder (potenziell) VLM. Und: `--disable-ocr` NIE verwenden; auf diesen Bescheiden immer force-OCR. [Quelle: SUMMARY.md §2, §4; _metrics.md]
+### Klasse D — Handschrift und Formular-Kollaps
 
-### 3.3 tesseract vs. paddle-ocr (die zwei brauchbaren lokalen Backends)
+Handschrift wird durch Drucktext-OCR gejagt; wo Handschrift auf Formulardruck trifft, kollabieren beide ineinander. Erkennungssignal: **kein Substring-Muster** — komplettes Lexikon-Versagen, kein Rücktausch möglich. Belege: `Unthaltskaste landwitshoftlich Fläch` → *Unterhaltungskosten landwirtschaftliche Fläche*; `Staat gepr Bautechrifter unt Zimmera méster` → *staatl. gepr. Bautechniker und Zimmermeister*; Bank-Wasserzeichen als Text erkannt (`VR Bnuspielsiadt` → *VR Beispielstadt*). **Kein lokales Backend löst diese Klasse** (Abschnitt 3); MinerU liefert hier Substanz, aber mit Erfindungen (Abschnitt 5).
 
-| Dokument | Backend | Zeichen | Alpha-Token | Sekunden | Mojibake | Junk |
+### Klasse E — Fremdsprache und Zeichensatz-Mismatch
+
+Fremdsprachiger Text plus falscher Zeichensatz erzeugt Wort- UND Zahlenfehler. Erkennungssignal: Sonderzeichen mitten in Ziffernfolgen; implausible Zahlenwerte. Belege: `EXENPLE LUNSEIL` → *EXEMPLE CONSEIL*; `SIRET 123 uoü 456 00012` (ü in einer Ziffernfolge); ein Datum als `19/05/7076` statt 2025. **Zahlenfehler sind hier der Normalfall, nicht die Ausnahme** — für einen Bestand, in dem Beträge und Daten tragen, ist das die stille Gefahr.
+
+### Klasse G — Struktur-Zerstörung bei lesbaren Zeichen (die unsichtbarste Klasse)
+
+**Erkannt beim Roh-Dump-Diff am 02.08.2026; vorher in keiner Quelle benannt.** Ein Dokument kann Zeichen weitgehend korrekt liefern und für Suchrahmen trotzdem unbrauchbar sein, weil die **Zuordnung von Beschriftung und Wert** zerstört ist. Beleg aus der Textebene eines Grundsteuer-Bescheids: Die Beschriftungen („Wohnfläche", „x Äquivalenzzahl", „ergibt den Äquivalenzbetrag für die Wohnfläche") stehen im ersten Drittel der Datei, ihre **Werte** („193 m2", „0'50 €,n2", „96'50 €") als zusammenhangloser Block Dutzende Zeilen später. Dieselbe Zerlegung betrifft die gesamte Berechnungskette, in beiden Bescheiden des Dokuments.
+
+**Warum das für dieses Projekt zentral ist:** Ein Suchrahmen, der zwei Dinge in Nachbarschaft erwartet — ein Themenwort und einen Akt, eine Bezeichnung und einen Betrag —, kann auf solchem Text **nicht** greifen, obwohl beide Bestandteile vorhanden und korrekt sind. Es ist kein Zeichenschaden, sondern ein Lesereihenfolge-Schaden, und keine der Kennzahlen aus Abschnitt 4 (Mojibake, Junk-Zeilen, Alpha-Token) schlägt dabei aus. Genau hier gewinnt eine layoutverstehende Engine strukturell: Sie gibt „ergibt den Äquivalenzbetrag für die Wohnfläche 96,50 €" als einen Zusammenhang zurück.
+
+**Zwei Begleitartefakte derselben Quelle, ebenfalls neu belegt:** Das **Dezimalkomma wird zum Apostroph** (`96'50 €`, `0'04 €/m2`) — und zwar inkonsistent, dieselbe Zahl erscheint im selben Dokument einmal als `96'50 €` und einmal als `96,50 €`. Und das **Euro-Zeichen wird zu einem `e`** (`96,50 e`, `72,80, e`). Wer Beträge per Muster sucht, muss beide Varianten abdecken.
+
+### Klasse F — Encoding-/Sperrdruck-Artefakte (Bank, Versicherung, Notar; mittel bis leicht)
+
+Kaputte ToUnicode-/Font-Maps und Sperrdruck erzeugen systematische Zeichenersetzungen bei sonst intakter Struktur. Erkennungssignal: **Mojibake-Zeichen** (`®`, `£`, `±`, `¥` in deutschem Fließtext) — die zweite Kernmetrik aus Abschnitt 4. Belege: `Must®r lmmobill®n QmbH & Co. Ka` (® statt e durchgehend); `S E L B S T A U S 1{ U N F T` (Sperrdruck mit Ziffereinschub); ein japanisches Katakana-Zeichen, aus einem ENTWURF-Wasserzeichen fehlinterpretiert; Adressblöcke total zerhackt (`AM WIIESEN 121 / 1,2,345-BEEISPIIEI`).
+
+---
+
+## 3. Das Fixture-Set: der stehende Prüfstand
+
+**Was es ist:** 15 aus DEVONthink (`Datenbank`) exportierte Kopien unter `/Users/jurgen/CodingProjects/DevonThink886/Examples/` (Originale unverändert), begleitet von `Examples/OCR-Befunde.md`, das je Dokument UUID, Herkunftsordner, Aussteller und die wörtlichen Müll-Schnipsel mit ihrer korrekten Lesart festhält. **Abdeckung:** alle sechs Klassen aus Abschnitt 2 — 5× Klasse A (Grundsteuer-Bescheide dreier Finanzämter), weitere Steuerarten, 2× Handwerker-Rechnung/Formular (Klassen C und D), 1× reine Handschrift, 1× Fremdsprache, 4× Bank/Versicherung/Notar (Klasse F). **Die entscheidende gemeinsame Eigenschaft:** jedes dieser 15 Dokumente hat `word count > 0` — das Set ist damit exakt der Prüfstand für die schwere Erkennungsklasse „kaputt, aber nicht leer", nicht für die triviale „kein Text".
+
+**Wofür es gebraucht wird — dieses Artefakt bleibt bewusst in Gebrauch:**
+1. **Schwellen-Kalibrierung der Erkennung:** jede Zahlengrenze (Wörter/Seite, Zeichen/Wort) wird gegen dieses Set gesetzt, nie geraten — plus Gegenprobe an einer Zufallsstichprobe, weil das Positiv-Set homogen sein könnte (Integrationsstrecke, Abschnitt 2).
+2. **Engine-Prüfstand:** jede neue oder geänderte OCR-Engine wird zuerst hier durchgefahren, bevor sie den Bestand berührt.
+3. **Regressions-Set:** jede Änderung an Write-back oder Erkennung wird hier durchgespielt (test-before-bulk).
+
+**Wie man eine Engine dagegen fährt:** alle 15 Dokumente durch die Engine; je Dokument die in `OCR-Befunde.md` benannten Zielwörter im Output nachschlagen (korrekt / fehlend / anders falsch) → Recovery-Score je Klasse; die exakten Kennungen (Aktenzeichen, Steuernummern, IBANs) **gesondert** prüfen — und zwar in allen Ausgabeformaten, nicht nur im Haupttext (Grund: Abschnitt 5.1); Rechenketten nachrechnen, wo welche existieren; Ergebnis nach Klassen verdichten, nicht als Gesamtzahl.
+
+---
+
+## 4. Evaluations-Methodik: wie man OCR-Qualität misst, ohne sich zu betrügen
+
+Diese Verfahren sind das Übertragbare am ganzen Bake-off — sie gelten für jede künftige Engine.
+
+**Die drei Kennzahlen aus dem Bake-off:**
+- **Mojibake-Zahl** — Encoding-Artefakte (`®£±¥…`) pro Dokument. Fängt Klasse F direkt.
+- **Junk-Zeilen** — Zeilen mit 3+ Doppelpunkten, also kollabierte Tabellen-/Rasterzeilen. Fängt Klasse B.
+- **Alpha-Token** — Anzahl echter Wort-Token. Fängt Substanzverlust, den die anderen beiden nicht sehen.
+Niedrig/niedrig/hoch = sauber. Die drei zusammen sind billig zu rechnen und trennen die Klassen bereits gut.
+
+- **Recovery-Score** — der Anteil der vorab benannten Zielwörter, die eine Engine korrekt liefert. Vorteil gegenüber Zeichenzahlen: er misst inhaltliche Rettung statt Textmenge; Voraussetzung ist ein Set mit bekannten Sollwerten (das Fixture).
+
+**Das Protokollformat, das sich bewährt hat — übertragbar auf jeden künftigen Engine-Vergleich.** Der Bake-off schrieb je Lauf **eine JSON-Zeile** mit Backend, Datei, Erfolgs-Flag, Rückgabecode, Laufzeit, Zeichen- und Zeilenzahl und dem Fehlertext; die Kennzahlen und die Recovery-Tabelle entstanden daraus, nicht aus den Rohausgaben. Der Wert des Formats liegt in drei Eigenschaften: Es ist **fortschreibbar** (ein abgebrochener Lauf verliert nichts), es hält **auch die Fehlschläge** (die 147 Zeilen dieses Laufs enthalten mehr Fehler- als Erfolgsfälle, und genau die tragen die Fallen unten), und es trennt **Messung von Urteil** — die Rohausgaben bleiben daneben liegen, die Auswertung ist reproduzierbar. Dazu die Ablage-Disziplin: **Schein-Ergebnisse werden aufgehoben, nicht gelöscht.** Die Ausgaben der Backends, die in Wahrheit gar nicht liefen, liegen in einem eigenen Verzeichnis „zur Beweissicherung" — ohne sie wäre der Fallback-Befund unten nicht mehr belegbar.
+
+**Die vier Fallen, jede real eingetreten:**
+
+1. **Nie gegen die eingebettete Textebene messen.** Sie ist auf diesem Material der defekte Gegenstand, nicht die Referenz: gemessen 86–193 Mojibake-Zeichen und 28–33 Junk-Zeilen pro Dokument gegen 0–9 bzw. 0–1 bei sauberem OCR, und ~40 % weniger echte Wort-Token. Eine Metrik „OCR gegen Textebene" wertet damit **rückwärts**. Praktische Folge: `--disable-ocr` nie verwenden; auf diesem Material immer force-OCR.
+2a. **Die Wurzel des Fallbacks war eine tote Download-URL — nachgelesen in den Fehlerprotokollen am 03.08.2026.** Die 99 Fehlerprotokolle des Bake-offs zeigen den Mechanismus vollständig, und er hat **zwei** Ursachen, nicht eine: Neben den gar nicht registrierten Backends scheiterte auch das **registrierte** tesseract reihenweise daran, dass das Werkzeug sein deutsches Sprachpaket zur Laufzeit nachladen wollte — von zwei `tessdata_fast`-Adressen, die beide **HTTP 404** liefern (18-mal protokolliert, jeweils beide Adressen). Erst dieses Scheitern löst den Übergang zur nächsten Stufe der Kette aus, und deshalb landete so vieles bei paddle-ocr. **Das erklärt zugleich, warum der Bake-off das Sprachpaket von Hand installieren musste** — die automatische Beschaffung ist schlicht kaputt. Für jeden künftigen lokalen Lauf heißt das: Sprachdaten vorher lokal bereitstellen und ihre Anwesenheit prüfen, nie darauf vertrauen, dass das Werkzeug sie besorgt.
+
+2b. **Weitere Mechanik aus denselben Protokollen:** Das Werkzeug hat ein **internes Qualitäts-Tor** mit einer Schwelle von 0,5 — bleiben alle Stufen der Kette darunter, meldet es „alle Backends unterhalb der Qualitätsschwelle, nehme das beste Ergebnis" und liefert trotzdem etwas (viermal beobachtet, dabei mit Bewertung 0,0, also nichts Brauchbares). **Ein Ergebnis kann also aus einer Kette stammen, die selbst weiß, dass sie versagt hat** — sichtbar nur im Protokoll, nicht am Ergebnis. Und die Warnung über nicht freigegebene Zwischenspeicher des Texterkenners (45-mal) ist Rauschen: Sie erscheint massenhaft und harmlos, wurde aber in der Ergebnisliste einmal als Fehlerursache eines leeren Laufs vermerkt — ein Fehlschluss, den man nur vermeidet, wenn man Protokoll und Ergebnisliste gegeneinander liest.
+
+2c. **Der Renderer-Ausfall ist häufiger als das eine Totalversagen vermuten lässt.** Die Meldung über nicht darstellbare Bild-Objekte erscheint **68-mal** und betrifft acht verschiedene Objekte in mehreren Dokumenten. Meist wird nur die einzelne Grafik übersprungen und das Dokument läuft weiter; nur in einem Fall führte es zum vollständigen Ausfall aller Wege, die diesen Renderer benutzen. Die Lehre bleibt dieselbe wie in 5.4-3, wird aber breiter: Das Problem ist nicht ein kaputtes Dokument, sondern eine **Klasse von Bild-Objekten**, an denen dieser Renderer generell scheitert.
+
+2. **Stille Fallbacks entlarven, bevor man Zahlen glaubt.** Im Bake-off akzeptierte die CLI neun Backend-Namen, während die Laufzeit-Registry nur drei registrierte (`tesseract`, `paddle-ocr`, `vlm`). Ein nicht registriertes Backend erzeugte **keinen Fehler**, sondern fiel still auf `tesseract → paddle-ocr` zurück und meldete „ok=True". Verifikation dieser Session per `diff`: **alle 15 Dateien von `candle-hunyuan-ocr/` und alle 3 von `candle-deepseek-ocr/` sind byte-identisch mit den gleichnamigen aus `paddle-ocr/`** — ihre Scores maßen Paddle. Generelle Regel: **byte-Vergleich zwischen angeblich verschiedenen Engines gehört zur Auswertung**, sonst misst man Kopien.
+3. **Ein Score aus 3 Dokumenten ist kein Score.** Die höchste Zahl der Recovery-Tabelle (die „100 %") beruhte auf drei Dokumenten und war zugleich ein Fallback-Artefakt (Falle 2). Vollständigkeit der Abdeckung immer mitführen.
+4. **Ground Truth existiert nicht von selbst.** Für dieses Material gibt es keine saubere Referenz außer manueller Erfassung — oder einem VLM, was PII-Übertragung bedeutet und deshalb Jurgens Entscheidung ist (Abschnitt 6).
+
+**Der Zahlen-Nachrechen-Test — der einzige Test, den ein halluzinierendes Modell nicht bestehen kann.** Wo der Output eine Rechenkette enthält, wird sie nachgerechnet; eine erfundene Zahl erfüllt ihre eigene Gleichung nicht. Auf born-digital-Material wurde genau das durchexerziert: vier zusammenhängende Werte einer Optionspreis-Rechnung wurden nachgerechnet und stimmten inklusive zweier Verteilungsfunktions-Werte an genau diesen Stellen — vier gleichzeitig konsistente Zahlen sind gelesen, nicht erfunden. **Auf dem Steuer-Korpus ist dieser Test noch nicht angewandt worden**, obwohl er dort schwerer wiegt: eine halluzinierte Aktenzeichen-Ziffer oder ein falscher Euro-Betrag ist gravierender als in einem Lehrbuch. Die Bescheide bieten die Ketten dafür (Äquivalenzbetrag × Steuermesszahl = Messbetrag; Einheitswert × Promille = Messbetrag; DM/€-Umrechnung).
+
+---
+
+## 5. Engine-Verhalten je Klasse
+
+### 5.1 MinerU (die gewählte Engine)
+
+**Grundlage:** alle 15 Fixture-Dokumente durch die MinerU-Pipeline, Outputs unter `ocr_comparison/_mineru_runpod_vllm/out_all/`, alle 15 vorhanden und nicht leer (665 Bytes bis 41.457 Bytes, zusammen ~225 KB Text), je Dokument zusätzlich `content_list`/`middle`/`model`-JSONs, `layout.pdf`, `origin.pdf` und extrahierte Bild-Crops. **Datierung:** die Dateizeiten aller 15 Markdowns liegen am **25.06.2026 zwischen 22:06 und 22:23 Uhr** (`stat`, diese Session) — also am selben Abend wie Bake-off und Friendli-Versuche, in der LB-Ära. Eine mündliche Angabe nannte den 29.06.; **der Widerspruch wird hier benannt, nicht aufgelöst** (Dateizeiten sind das härtere Indiz, könnten aber theoretisch einen Kopiervorgang datieren). Für die Qualitätsaussage ist die Ära egal: gleiches Modell, gleicher Container.
+
+**Verhalten nach Klassen — fünf generelle Befunde:**
+
+**(1) Auf den Bescheid-Klassen (A, B) ist die Rettung nahezu vollständig.** Genau dort, wo die Textebene total zerstört ist, liefert MinerU sauberen Fließtext: korrekte Behördennamen statt Substitutions-Müll, vollständige Berechnungsketten als Tabellen, seitenübergreifend konsistente Flurstücks- und Miteigentumslisten, Rechtsbehelfsbelehrungen als lesbaren Text. Barcodes und Siegel landen als Bild-Referenzen bzw. strukturierte Blöcke statt als Textsalat — die Klasse-B-Zonen werden also nicht falsch gelesen, sondern korrekt als Nicht-Text behandelt. Restfehler existieren (vereinzelte Buchstabendreher in Firmennamen, Trennfehler, eine verlesene Barcode-Ziffer) und ändern das Bild nicht.
+
+**(2) BEFUND MIT KONSEQUENZ: Wir haben EIN Ausgabeformat bestellt statt aller — und damit alles verloren, was die Engine nicht als Fließtext einstuft.** Per `grep` über alle 15 Markdowns: **kein** Grundsteuer-/Einheitswert-Markdown enthält das Wort „Aktenzeichen" oder eines der AZ-Ziffernmuster (auch nicht in der zusammengeschriebenen Variante ohne Schrägstriche); auch Steuernummern fehlen durchgängig. Einzige Fundstelle: ein Einheitswert-Aktenzeichen, das im **Fließtext** einer Besteuerungsgrundlagen-Tabelle steht.
+
+**Der Umfang ist größer als „die Kopfzeile" — gemessen am 03.08.2026 über alle 15 content_list-Dateien gegen ihr jeweiliges Markdown.** Betroffen sind **fünf** Blockklassen, nicht eine: `header` (219 von 271 Blöcken nicht im Markdown), `footer` (186 von 205), `aside_text` (94 von 102), `page_number` (29 von 57), `page_footnote` (5 von 5). Die Klasse `text` ist mit 0 von 1214 im Markdown vollständig wiederzufinden. **Diese Null ist ausdrücklich KEIN Freibrief und kein Beleg für Verlustfreiheit** — sie vergleicht zwei Ausgaben derselben Engine miteinander und misst damit interne Konsistenz, nicht Vollständigkeit. Was auf der Seite stand und nie ein Block wurde, kann diese Messung nicht sehen; dafür bräuchte es das Seitenbild als externe Referenz (Abruf-Regel, Nachweispflicht). Und selbst wenn sie es könnte, wäre der Verlust der übrigen vier Klassen kein „begrenzter Schaden": Wir wollen alles.
+
+**Was in diesen Klassen steckt, ist der Kern der Dokumentidentität** — nicht Beiwerk: die Kennungen (Aktenzeichen, Steuernummer, Steuer-Identifikationsnummer), das Aktenzeichen **mit angehängtem Veranlagungsjahr**, das Bescheiddatum, die Formular- und Druckkennungen (`Form.Nr`-Zeilen, Eingangsstempel mit Steuerart und Jahr), die Kontaktdaten des Ausstellers und die Blattzählung des Dokuments. Mehrere dieser Feldarten sind zugleich A1-/A2-Anker des Pass-1-Suchrahmens (Bead `jurgen-oeu`) — der Verlust trifft also nicht irgendeinen Randbereich, sondern gleichzeitig mehrere der stärksten Suchterme des Trägerprojekts. Die konkreten Werte stehen in den Artefakten und im Suchrahmen-Bead; sie gehören nicht in dieses Dokument.
+
+**Der Mechanismus, am 02.08.2026 aus den Layout-JSONs desselben Dokuments bestimmt** — und er ist ein anderer als zunächst vermutet:
+
+```
+model.json    → {"type": "header", "angle": 0,
+                 "content": "Aktenzeichen 123/456/7890/012/345/6"}
+middle.json   → derselbe Text, abgelegt unter:  discarded_blocks[6]
+content_list  → {"type": "header", "text": "Aktenzeichen …", "page_idx": 0}
+```
+
+Drei Feststellungen daraus: **(a)** Die Erkennung ist fehlerfrei — der Text steht sauber und vollständig da, an fünf Stellen des Dokuments, mit `"angle": 0`, also nicht einmal rotiert. **(b)** Er liegt typisiert vor, nicht als Bild weggeworfen. **(c)** `middle.json` führt ein eigenes Feld **`discarded_blocks`** — die Engine **protokolliert selbst, was sie weglässt**. ⇒ Weder Fehler noch Erkennungsproblem: Sie hat getan, was sie tut, und es angesagt. **Der Fehler war unserer.** Wir haben ein Format bestellt statt aller und nie nachgesehen, was dieses Format weglässt — obwohl das Weggelassene in einer eigens dafür benannten Liste stand, einen Abruf entfernt.
+
+**Der Filter trifft nicht die Kennung, sondern die Zone.** Deshalb fehlen die Bestandteile eines Briefkopfs immer gemeinsam und nie einzeln — und deshalb ist die Frage „welches Feld fehlt?" der falsche Zugriff. Die richtige lautet: **welche Blockklassen enthält diese Ausgabe überhaupt, und welche nicht?** Gegenprobe, die das bestätigt: Absenderzeile, Post-Matrixcode und Barcode-Zeile desselben Kopfbereichs werden sehr wohl gerendert — sie sind als `text` klassifiziert und fallen damit nicht unter den Filter.
+
+**Konsequenz:** Die Daten sind vollständig und typisiert vorhanden — es braucht keinen Workaround und keine Bildanalyse, sondern alle Formate zu bestellen und die Blöcke **aller fünf betroffenen Klassen** (nicht nur `header`) an den Text zu hängen. Damit verschiebt sich die offene Frage von „wie kommen wir an die Kennungen" zu „wie hängen wir die Möblierungs-Blöcke im Write-back an"; der Preis ist mehr Antwort-Volumen pro Job (Größenordnung im Betriebshandbuch, Abschnitt 14a).
+
+**Aber diese Abhilfe hat eine Falle, die man kennen muss, bevor man sie baut: in den Blöcken steht stellenweise Modell-Prosa statt Dokumentinhalt.** Über die 15 Dokumente stehen 30 Fundstellen englischer Erklärungstexte des Modells darüber, warum ein Bildbereich nichts Lesbares enthalte — im selben Feld und mit demselben Typ wie echter Inhalt, überwiegend in `aside_text`, `footer` und `header`. Wer die Blöcke ungefiltert anhängt, schreibt Werkzeug-Kommentare in deutsche Steuerakten und verunreinigt genau den Index, den er reparieren will. **Generell für jede VLM-gestützte Extraktion: ein generatives Werkzeug legt eigene Kommentare in die Datenfelder; jede Übernahme von Rohblöcken braucht deshalb einen Fremdtext-Filter.** Das ist eine eigene kleine Design-Entscheidung des Write-backs, kein Nebensatz.
+
+**Ein zweiter, positiv verwertbarer Fund in derselben Zone:** Die Bescheide tragen dort ihre eigene Blattzählung („Blatt n von m" und Varianten). **Generell: formalisierte Dokumente liefern ihre Vollständigkeitsangabe oft selbst mit** — bevor man eine erwartete Stückzahl von außen konstruiert, lohnt die Frage, ob der Gegenstand sie mitbringt. Wo er es tut, ist sie die bessere Sollgröße, weil sie pro Objekt gilt statt im Mittel (verwertbar für die Vollzähligkeitsprüfung, Betriebshandbuch 11.3 Punkt 12).
+
+**Warum das tragend ist:** Exakte Kennungen sind laut Abschnitt 1 der robusteste Fang auf beschädigtem Material und der Kern der Pass-1-Suchrahmen — und die **kaputte** Textebene enthielt sie (Ziffern sauber, siehe Klasse A). Ein Write-back, das nur das Markdown auf den Record legt, würde für die Bescheid-Klasse die stärksten Suchterme **verlieren, die vorher da waren** — das Ergebnis wäre also schlechter als der heutige beschädigte Ist-Zustand. Konsequenz: Für diesen Korpus ist eine Beschränkung auf das Markdown nachweislich verlustig; es müssen alle Formate bestellt und der Text aus den Layout-Daten angereichert werden. Die Entscheidung selbst gehört zur Write-back-Frage (Integrationsstrecke, Abschnitt 4).
+
+**Ungeprüft und deshalb nicht behauptet:** ob die MinerU-Bibliothek selbst eine Option kennt, die Möblierungsklassen im Markdown zu behalten — im Job-Contract des Workers gibt es keine (Nachprüf-Liste, Abschnitt 7).
+
+**(3) Auf dichten Formularen und Handschrift (Klassen D, F) ERFINDET das VLM plausiblen Text.** Belegt per `grep` auf CJK-Zeichen: zwei der 15 Outputs enthalten frei erfundene chinesische Passagen — in einem Fall ein vollständiger Börsenmitteilungs-Satz mitten in einem deutschen Bankformular. Dieselben Dokumente zeigen zerhackte, mehrfach wiederholte Legendenzeilen, verfälschte Eigennamen und in einem Rechnungsdokument zu einer Ziffernkette zusammengelaufene Tabellenspalten. Wichtig für die Einordnung: **die tragende Struktur und die Hauptzahlen dieser Dokumente sind gleichzeitig weitgehend korrekt** — die Erfindungen sitzen in den Rand- und Legendenbereichen. Das macht sie gefährlicher, nicht harmloser: Ein Fehler in einem sonst offensichtlich guten Dokument wird nicht gesucht.
+  **Konsequenz (deckungsgleich mit der harten Regel der Engine-Seite):** Der Halluzinations-Verifikationspass auf den schlechtesten Scans ist empirisch begründet, nicht paranoid — und der billige Gegencheck ist der Nachrechen-Test aus Abschnitt 4.
+
+**(4) MinerU rettet exakte Kennungen, die andere Engines zerstören.** Der Beleg aus Klasse C: die von der Textebene als `…1234S6789` verstümmelte IBAN steht im MinerU-Output zweimal korrekt als durchgehende Ziffernfolge. Das ist die positive Kehrseite von (2): wo MinerU den Bereich rendert, sind die Kennungen besser als vorher; das Problem ist ausschließlich, welche Bereiche ins Markdown gelangen.
+
+**(5) Klassen-Sonderverhalten, das man kennen muss.** Kopfstehender oder gespiegelter Druck kommt gespiegelt zurück (im Fixture: eine kopfstehende französische Hinweiszeile). Eine leere Seite kommt als leeres Markdown zurück — **das ist korrektes Verhalten, kein Fehler**; erst das Bild ansehen, dann ggf. neu einreihen (im 593-Seiten-Produktionslauf traf das genau eine Seite, eine echt leere graue Seite mit Kolumnentitel). Handschrift liefert deutlich mehr Substanz als jedes lokale Backend (die ganze Themenliste eines handschriftlichen Notizzettels wird lesbar, wo lokale Engines 0/4 Zielwörter schaffen) — **für Suchzwecke brauchbar, als Wiedergabe nicht vertrauenswürdig.**
+
+### 5.2 Die lokalen Backends (Kreuzberg-Bake-off, 25.06.2026)
+
+**Setup:** kreuzberg `5.0.0-rc.32` (Homebrew, nativer Rust-Build), Aufruf `kreuzberg extract <pdf> --ocr true --force-ocr true --ocr-backend <B> --ocr-language <L> --format text`; tesseract mit `deu` (tessdata_best manuell installiert), paddle-ocr mit `german` (Latin-Familie, Mobile-Tier). Erst 3 Grundsteuer-PDFs (Bead `jurgen-0cu`), dann auf alle 15 Fixture-Dokumente ausgeweitet.
+
+**Engine × Klasse — was womit geht:**
+
+| Engine | Klassen A/B (Bescheide) | Klasse C (Punkt-Insertion) | Klasse D (Handschrift/Formular) | Klasse E (Fremdsprache) | Klasse F (Bank/Notar) | Gesamt-Recovery |
 |---|---|---|---|---|---|---|
-| 2017 Einheitswert | tesseract | 12151 | 1390 | 8,6 | 2 | 1 |
-| 2017 Einheitswert | paddle-ocr | 12391 | 1374 | 6,9 | 0 | 1 |
-| 2022 Musterhof | tesseract | 11737 | 1335 | 7,8 | 9 | 1 |
-| 2022 Musterhof | paddle-ocr | 11698 | 1303 | 6,6 | 9 | 1 |
-| 2022 HausMusterberg | tesseract | 11110 | 1295 | 7,9 | 0 | 0 |
-| 2022 HausMusterberg | paddle-ocr | 11140 | 1257 | 6,3 | 0 | 0 |
+| eingebettete Textebene | schwach (0–4 von 5) | mittel | 0 | gut | gemischt | **44 %** |
+| tesseract `deu` | **stark** (5–6 von 6) | schwach (1/5) | 0 | gut | stark | **72 %** |
+| paddle-ocr `german` | **stark** | schwach (1/5) | 0 | gut | stark | **76 %** |
+| easyocr (direkt als Lib) | **stark** | **am besten lokal** (4/5) | 0 | gut | stark | **80 %** |
+| candle-trocr / candle-glm-ocr | ~0 | ~0 | 0 | ~0 | ~0 | **3 %** |
+| MinerU | **stark** (+ Kennungen in JSONs) | **stark** (IBAN gerettet) | **teilweise, mit Erfindungen** | stark | stark, mit Randerfindungen | nicht gescort (Abschnitt 6) |
 
-Sichtprüfungs-Befund: **tesseract `deu`** — Fließtext großteils korrekt (Rechtsbehelfsbelehrung, Berechnungsblöcke, Beträge `96,50 €`, `140,35 €`); Fehler v. a. an Stempeln/Barcodes/Handschrift, gelegentlich `§`→`3`, „Finanzant", „gesant". **paddle-ocr `german`** — ebenfalls lesbar, aber systematischere m→n/a/s-Verwechslungen („Finanzant", „Geneinde", „ait", „saßgebenden", „Inforsationsschreiben"). Tempo: paddle ~10–20 % schneller; tesseract ~genauer. Wertung von SUMMARY.md für lokale Zwecke: tesseract `deu` beste verfügbare Wahl. (Für die Produktions-Pipeline wurde später MinerU gewählt — Abschnitt 5; tesseract bleibt der beste LOKALE Fallback.)
+**Generelle Lesarten:**
+- **Kein lokales Backend löst Handschrift.** Alle fünf liefern dort 0 von 4 Zielwörtern. Das ist keine Tuning-Frage, sondern eine Fähigkeitsgrenze.
+- **Auf sauber gedruckten Bescheiden sind tesseract, paddle und easyocr praktisch gleichwertig** — die Wahl entscheidet sich an Tempo und Fehlerprofil, nicht an Recovery: tesseract ist ~10–20 % langsamer als paddle, aber genauer; paddle zeigt systematische m→n/a/s-Verwechslungen im Deutschen; easyocr ist der beste lokale Allrounder, aber mit 68–227 s/Dokument um Größenordnungen langsamer als beide (Wert des Vergleichs: 6–9 s).
+- **Die Candle-Backends sind unbrauchbar** (3 % Recovery) — und die Roh-Ausgaben zeigen (gelesen 03.08.2026), dass „unbrauchbar" hier zwei **verschiedene Versagensarten** meint, die man auseinanderhalten muss:
+  - **trocr halluziniert Kassenzettel:** „ITEM", „TOTAL AMOUNT", „CASHIER", „THANK YOU FOR EVER FREE" — auf allen 15 Dokumenten, gleichgültig was daraufsteht. Das Modell erkennt Text, aber setzt ihn aus dem Vokabular ein, auf das es trainiert wurde.
+  - **glm-ocr beschreibt Bilder, statt sie zu lesen** — die interessantere und gefährlichere Art. Seine Ausgabe besteht überwiegend aus Dutzenden **leerer Markdown-Blöcke**, dazwischen frei erfundene Bildunterschriften („Image of a white background with black text that reads **SAVE THE DATE**", an anderer Stelle **BEST BUY NOW**), erfundene Formeln (eine Gleichung, deren rechte Seite das komplette Alphabet ist; bei einem handschriftlichen Notizzettel plötzlich Geometrie-Notation mit Winkeln und Brüchen), **chinesische Tabellenköpfe** (`序号`, `项目`) und Sätze über das Bild statt aus dem Bild („The image contains a single word: …"). **Ein Bildbeschreibungs-Modell, das als Texterkenner eingesetzt wird, liefert Beschreibungen statt Transkriptionen** — und weil die Beschreibungen wohlgeformt sind, sehen sie in einer Ergebnisdatei aus wie Inhalt.
+  - **Und beide Versagensarten mischen sich mit Fallback-Ausgaben:** Bei einem der Rechnungsdokumente ist die glm-Datei **byte-identisch** mit der von tesseract und paddle (dasselbe 381-Byte-Fragment), bei einem Bescheid stehen am Ende der glm-Datei **wörtlich die Zeilen der kaputten Textebene**. Eine Ergebnisdatei kann also Halluzination, Fallback und Textebenen-Rest zugleich enthalten — was jede Auswertung wertlos macht, die die Datei als Ausgabe *einer* Engine behandelt.
+- **Empfehlung für den lokalen Fallback: tesseract `deu`** (Urteil des Bake-offs). Für die Produktionsstrecke wurde MinerU gewählt.
+- **Reproduzierbare Infrastruktur-Fehler, die man wiedererkennen sollte:** HuggingFace-Lock-Datei blockiert paddle-Modell-Download; kreuzbergs Default-Extraktions-Timeout von 60 s reißt bei langsamen Backends; ein PDF mit unrenderbarem Bild-XObject (`Invalid image dimensions`) lässt mehrere Backends leer ausgehen; die reine Textebenen-Extraktion liefert bei 4 von 15 Dokumenten `rc=0` mit 0 Bytes (echte Bild-Scans ohne jede Textebene — die triviale Erkennungsklasse).
+- **Nicht gefahren: kreuzbergs `vlm`-Option** (Claude/GPT-4o-Vision). Sie würde die Steuer-PII an einen externen Dienst senden — Datenschutz-Sperre (Abschnitt 6).
+- **Nicht geprüft, obwohl naheliegend: die OCR des Betriebssystems (Apple Vision).** Sie ist lokal, kostenlos, ohne Datenschutz-Frage und auf diesem Rechner ohnehin vorhanden — ein Leser fragt zu Recht, warum stattdessen eine GPU-Cloud-Pipeline betrieben wird. **Gemessen wurde sie in diesem Projekt genau einmal, und zwar für eine völlig andere Aufgabe:** Beim Erfassen von Seitenzahlen aus einem festen Bildausschnitt (Bead `jurgen-qku`, 12.07.2026) lieferten Apple Vision und tesseract dasselbe Ergebnis, tesseract war dabei rund viermal schneller (Median 0,06 s gegen 0,26 s über fünf Läufe mit frischem Prozess). **Über den beschädigten deutschen Behördenbestand sagt das nichts** — ein zweistelliger Zahlenzuschnitt ist keine Probe auf Substitutions-Müll, Formular-Kollaps oder Handschrift. Apple Vision ist damit ein **unbewerteter Kandidat**, kein ausgeschiedener: Es lief nie gegen das Fixture-Set. Wer die Frage schließen will, fährt es durch dieselbe Strecke wie jede andere Engine (Abschnitt 3) — der Aufwand ist gering, weil das Verfahren steht.
+  **Und die generelle Lehre daran:** Eine Messung trägt nur so weit wie ihr Gegenstand. Dieselbe Engine, dieselbe Zahl, ein anderes Material — und das Ergebnis ist bedeutungslos. Wer eine Messung aus einem Nachbarkontext übernimmt, ohne den Gegenstand zu prüfen, hat nichts gemessen (siehe die Trennung der Kompartimente, Integrationsstrecke 2.9).
+- **Nachrüst-Optionen, die der Bake-off offenließ** (heute nur noch für den lokalen Fallback relevant, da MinerU entschieden ist): paddle Server-Tier statt Mobile (~120 MB Download, fairer Vergleich „paddle at its best"), easyocr als Paket statt Direktlauf, ein Candle-Rust-Build mit Features (~13 GB Modelle) für echte lokale VLM-OCR.
 
-### 3.4 Recovery-Scores über alle 15 Beispiele
+### 5.3 Born-digital-Material: warum dieselbe Engine-Wahl aus dem GEGENTEILIGEN Grund gilt
 
-„Recovery" = wie viele der in OCR-Befunde.md benannten Zielwörter je Dokument korrekt im Output stehen. [Quelle: _recovery.md; Fallback-Korrektur aus 3.1 eingearbeitet]
+Ein zweiter Korpus (932 Seiten Kursmaterial mit makelloser Textebene: 1195–1317 Zeichen/Seite, korrekte Typographie) beantwortete die Frage, ob die Backend-Entscheidung auch dort trägt — sie war ursprünglich ausdrücklich für **beschädigte Scans** hergeleitet worden, und die damalige Begründung sagte selbst, das Hybrid-Argument gelte für born-digital gerade nicht.
 
-| Dokument | textlayer | tesseract | paddle-ocr | easyocr | candle-trocr | candle-glm-ocr |
-|---|---|---|---|---|---|---|
-| 2016 Einkommensteuer | 4/4 | 4/4 | 4/4 | 4/4 | 1/4 | 1/4 |
-| 20161031 (Allianz) | 0/5 | 2/5 | 3/5 | 1/5 | 0/5 | 0/5 |
-| 20161116 (Darlehen) | 0/4 | 0/4 | 0/4 | 3/4 | 0/4 | 0/4 |
-| 2017 Einheitswert Musterberg | 4/5 | 5/5 | 5/5 | 5/5 | 0/5 | 0/5 |
-| 2021 KG Musterstraße | 4/4 | 4/4 | 4/4 | 4/4 | 0/4 | 0/4 |
-| 2022 Musterhof | 2/5 | 5/5 | 5/5 | 5/5 | 0/5 | 0/5 |
-| 2022 HausMusterberg | 2/6 | 6/6 | 6/6 | 6/6 | 0/6 | 0/6 |
-| 2022 Beispielstr | 0/5 | 5/5 | 5/5 | 5/5 | 0/5 | 0/5 |
-| 492064 Musterplan | 0/5 | 0/5 | 2/5 | 2/5 | 0/5 | 0/5 |
-| Grunderwerbsteuer | 0/4 | 4/4 | 4/4 | 3/4 | 0/4 | 0/4 |
-| Handelsregister | 4/6 | 6/6 | 6/6 | 6/6 | 0/6 | 0/6 |
-| HVB April 2024 | 5/5 | 5/5 | 5/5 | 5/5 | 0/5 | 0/5 |
-| img20250722 (SANEF) | 4/4 | 4/4 | 4/4 | 4/4 | 0/4 | 0/4 |
-| Kellerbau Schlussrechnung | 2/5 | 1/5 | 1/5 | 4/5 | 1/5 | 1/5 |
-| Notizen1 (Handschrift) | 0/4 | 0/4 | 0/4 | 0/4 | 0/4 | 0/4 |
-| **GESAMT** | **44%** | **72%** | **76%** | **80%** | **3%** | **3%** |
+- **Warum dort überhaupt OCR:** nicht für Text, sondern für **Struktur** — Überschriften als Markdown, Tabellen als Tabellen, Formeln als LaTeX. Reine Textextraktion macht aus Formeln Zeichensuppe.
+- **Die Messung (gleiche 5 formeldichte Seiten):** `vlm-auto-engine` erkennt **41 Inline-Formeln in 4,1 s**, `hybrid-auto-engine` (effort=high) nur **28 in 8,9 s**. Hybrid verliert 13 von 41 und **lässt Subskripte still fallen** — ein indizierter Zins kommt als nackter Buchstabe zurück. Hybrid ist besser in Typographie und 2,2-mal langsamer.
+- **Verdikt:** pures `vlm-auto-engine` auch hier — **aus dem entgegengesetzten Grund**: auf Scans gewinnt VLM, weil kein CV-Detektor Text verschlucken kann; auf born-digital gewinnt es, weil Hybrid die Mathematik plättet. Dass beide Kompartimente dieselbe Antwort geben, darf nicht verdecken, dass es zwei verschiedene Fragen sind.
+- **Übertragbare Zusatzbefunde:** Durchsatz auf gerenderten 150-dpi-Seiten ~2,35 s/Seite (gegen ~4,3 s auf großen Screenshot-Bildern) bei ~$0,0015/Seite; 12 Leerseiten, jede am Bild verifiziert; und die Scoping-Lektion — von 2733 Seiten im Zielordner waren **1801 (66 %) Geschäftsberichte mit sauberer Textebene**, für die OCR nichts hinzufügt; nur 932 Seiten waren echtes Kursmaterial. **Eine Anweisung wörtlich auszuführen, ohne zu prüfen, ob sie das Gemeinte trifft, ist keine Gehorsamkeit, sondern Faulheit** — direkt relevant für die Ziellisten-Frage des 30k-Laufs.
 
-(Die Original-Tabelle führt zusätzlich „candle-hunyuan-ocr 76%", „candle-paddleocr-vl 0%" und „candle-deepseek-ocr 100%" — hunyuan/deepseek sind Paddle-Kopien (Abschnitt 3.1), paddleocr-vl produzierte 0 Bytes (Validierungsfehler `model_path` erforderlich), die deepseek-„100%" beruhen auf nur 3 Dokumenten. MinerU ist in dieser Tabelle NICHT gescort — das ist eine der Lücken des ausstehenden formalen Diffs, Abschnitt 6.)
-
-Lesarten: easyocr (direkt als Python-Lib gefahren, `pdftoppm` 300 dpi, CPU) ist der beste lokale Allrounder, aber langsam (68–227 s/Dokument); tesseract/paddle sind auf Bescheiden gleichwertig stark und versagen auf Handschrift/Formular-Kollaps (Kellerbau 1/5, Musterplan 0–2/5, Notizen 0/4); **kein lokales Backend löst Handschrift**.
-
-### 3.5 Laufzeit- und Fehlerdaten (aus results.jsonl, 147 Läufe)
-
-- candle-glm-ocr (echt gelaufen): 41–509 s/Dokument, Output winzig (2,3–17,5 KB wo tesseract 11–42 KB liefert) — unbrauchbar langsam UND lückenhaft. candle-trocr: liefert fast nur Kassenzettel-Halluzinationen („ITEM", „TOTAL AMOUNT", „CASHIER") — alle 15 Dateien gelesen, durchgängig so; einmal 60-s-Timeout.
-- Reproduzierbare Infrastruktur-Fehler: paddle-ocr einmal an einer HuggingFace-Lock-Datei gescheitert; kreuzberg-easyocr-Backend „not registered" bzw. TypeError (deshalb der Direktlauf); 20161116150357250.pdf hat ein unrenderbares Bild-XObject (`Invalid image dimensions`), an dem mehrere Backends leer ausstiegen; textlayer liefert bei 4 von 15 Dokumenten `rc=0` mit 0 Bytes (Scans ohne jede Textebene: 20161031, 20161116, Musterplan, Grunderwerbsteuer).
-- Die `vlm`-Option von kreuzberg (Claude/GPT-4o-Vision) wurde NICHT gefahren: sie würde die privaten Steuerdaten an einen externen Dienst senden — Datenschutz-Sperre, nur mit bewusster Entscheidung. [Quelle: SUMMARY.md §4/§6]
+[Quelle: gbrain `projects/mineru-ocr/born-digital-backend-benchmark`, vollständig gelesen]
 
 ---
 
-## 4. Fehlgeschlagene Zwischenanläufe (Beweissicherung)
+## 5.4 Der Roh-Dump-Diff (02.08.2026): was der Vergleich der Engine-Ausgaben ergab
 
-- `_examples_minerutest/_failures.log`: alle 15 Beispiele scheiterten mit HTTP 402 `Insufficient Balance` — das Konto war leer (die €30-Session).
-- `_examples_retest/_failures.log`: alle 15 scheiterten mit HTTP 401 `invalid api key` gegen `https://sbdpcrzwlndrgb.api.runpod.ai` — den inzwischen **gelöschten** LB-Endpoint; das „401" war in Wahrheit „Ziel existiert nicht mehr".
-- `_mineru_friendli_8bit/` und `_mineru_friendli_raw/` (Versuche vom 25.06.2026, MinerU-Backend `vlm-http-client` gegen einen Friendli-gehosteten VLM-Endpoint): **kein einziger brauchbarer Output aus beiden Läufen — aus DREI unterschiedlichen Ursachen** (Logs am 01.08.2026 gelesen: Fehler-Extraktion per grep plus Volllektüre der Abschlusslisten und der Region um die durchgelaufenen Batches):
-  1. **Leere Modellantwort (je Lauf genau EIN Task):** In beiden Läufen scheiterte task#1 (`20161031144820006`) nach ~5 min 18 s mit `ServerError: No choices found in the response.` (die drei grep-Treffer pro Log sind Raise-Zeile plus Traceback-Wiederholungen desselben einen Fehlers, keine drei Vorfälle).
-  2. **Endpoint-Nichtverfügbarkeit (die Masse):** Der 8-bit-Lauf endet mit `Error: 15 task(s) failed` — task#1 wie oben, tasks #2–#15 mit `ServerError: Unexpected status code: [503], response body: Endpoint is unavailable` (dahinter sichtbar: `Inference request failed: dial tcp 10.104.111.154:6000` bzw. im Raw-Lauf `…111.138:6000: connect: connection refused` — der Serving-Prozess hinter Friendlis Gateway lief nicht). Im Raw-Lauf traf das die tasks #2–#11 (`Error: 11 task(s) failed`).
-  3. **Format-Inkompatibilität trotz antwortendem Endpoint (Raw-Lauf, Batches 12–15):** Die letzten vier Batches (Handelsregister, Kellerbau, Notizen1, img20250722) liefen komplett durch (`Completed batch 12/15` … `15/15`, „4 of 15 batches finished") — der Endpoint antwortete wieder, und die Antworten enthielten echten OCR-Text (im Log wörtlich sichtbar, inkl. bemerkenswert guter Handschrift-Lesungen aus Notizen1). Aber JEDE Seite warf `WARNING parse_layout_output: Layout output does not match expected format: <fcel>…`: Auf MinerUs Layout-Detection-Prompt (`'\nLayout Detection:'`) lieferte das Friendli-servierte Modell Inhalts-Zellen im `<fcel>/<lcel>/<ecel>/<nl>`-Tabellenformat statt Layout-Boxen; MinerUs Client verwarf das, und genau diese vier Dokumente sind die 0-Byte-Markdowns auf Platte. Das ist ein echter **Kompatibilitätsbefund MinerU-`vlm-http-client` ↔ Friendli-Hosting** (naheliegende, aber unbewiesene Deutung: das dort servierte Modell/die Quantisierung beherrschte den Layout-Detection-Schritt des Zwei-Stufen-Protokolls nicht) — nicht bloß ein Ausfall.
+Bis zum 02.08.2026 stützte sich dieses Dokument auf die Urteils-Schicht des Bake-offs (SUMMARY, Kennzahlen, Recovery-Tabelle) und auf die MinerU-Ausgaben. Die **Roh-Ausgaben der lokalen Engines** waren ungelesen. Sie wurden nachgeholt — vollständig für sieben Dokumente über alle Engines (die Handwerker-, Handschrift-, Fremdsprache-, Notar-, Grunderwerbsteuer- und Darlehens-Fälle plus eine Bescheid-Stichprobe), dazu ein systematischer Kennungs-Abgleich über **alle** Dumps. Fünf Befunde, die keine der vorhandenen Tabellen zeigte:
 
-  [Quelle: `_mineru_friendli_8bit/_run.log` (2758 Zeilen) und `_mineru_friendli_raw/_run.log` (2001 Zeilen), Abschlusslisten und Batch-Region Zeilen ~1840–1960, Session 01.08.2026] Über die OCR-Qualität von MinerU auf dem eigenen Worker sagt all das nichts aus; der Pfad „fremdgehostetes VLM per `vlm-http-client`" wurde danach nicht weiterverfolgt (die gewählte Architektur hält die Engine im eigenen Worker) — wer ihn je wieder erwägt, muss zusätzlich zur Verfügbarkeit die Layout-Detection-Kompatibilität des servierten Modells testen, nicht nur einen Ping.
-- `_mineru_baked_test/` (ein Dokument, Grunderwerbsteuer): byte-identisch mit dem RunPod-vLLM-Output — eigene `diff`-Prüfung dieser Session.
-- `gemini_truth.sh` (Ground-Truth-Erzeugung via `llm -m openrouter/google/gemini-3.1-pro-preview`, ausdrücklich **vom User selbst** zu starten — der Agent ist für den Upload der Steuer-PII zu OpenRouter/Gemini hart gesperrt): Zielverzeichnis `ocr_comparison/_truth_gemini/` existiert nicht in der Dateiliste ⇒ das Skript hat nie Output erzeugt.
+**(1) Alle brauchbaren Engines tragen die Aktenzeichen im Text — MinerUs Markdown nicht, weil sein Header-Filter sie entfernt (Mechanismus in 5.1-2).** Der Abgleich über sämtliche Dumps zeigt: die Aktenzeichen- und Steuernummern-Muster stehen in der **Textebene**, bei **tesseract**, bei **paddle-ocr** und bei **easyocr** — jeweils im Fließtext, unmittelbar neben dem (oft zerschossenen) Wort „Aktenzeichen". Nur `candle-glm-ocr` hat keine einzige Kennung, passend zu seinen 3 % Recovery. **Das verschärft den Befund aus 5.1-2 erheblich:** Der Verlust der Rand-Kennungen im MinerU-**Markdown** ist nicht nur ein Rückschritt gegenüber den Layout-Daten derselben Engine, sondern gegenüber *jeder* Alternative einschließlich des kaputten Ist-Zustands. Für den Bescheid-Korpus ist ein Write-back aus dem nackten Markdown damit nachweislich schlechter als das, was heute schon auf den Records liegt.
 
----
+**(2) Die Ziffern eines Aktenzeichens überleben auch dort, wo sein eigenes Wort zerfällt — und zwar mehrfach pro Dokument.** In der Stichprobe steht dasselbe Aktenzeichen dreimal (Kopf, Seite 2, Seite 3), die Ziffernfolge jedes Mal vollständig korrekt, während das Wort davor vier verschiedene Verstümmelungen zeigt. Das ist die empirische Grundlage der Regel „exakte Kennungen sind der robusteste Fang" — und zugleich der Grund, warum man nach der **Ziffernfolge** suchen muss und nie nach dem Wort.
 
-## 5. Die MinerU-Kalibrierung: 15/15 Beispiele durch die echte Pipeline
+**(3) Der PDF-Renderer ist ein eigener Ausfallpunkt, unabhängig von der OCR-Qualität.** Ein Dokument des Sets (ein Darlehensvertrag) liefert bei Textebene, tesseract, paddle-ocr und candle-glm-ocr jeweils **null Bytes** — Ursache ist ein unrenderbares Bild-Objekt im PDF, an dem die gemeinsame Rendering-Bibliothek aussteigt. **easyocr, das über einen anderen Renderer lief, verarbeitete dasselbe Dokument vollständig** (37 KB Text, alle Kontonummern, Flurstücke und Beträge lesbar) — und MinerU ebenfalls, weil es ebenfalls selbst rendert. Konsequenz für die Erkennung: Ein leeres Ergebnis beweist **nicht**, dass ein Dokument kein Text hergibt; es kann auch heißen, dass dieser eine Renderer an dieser einen Datei scheitert. Ein zweiter Renderer ist deshalb ein wirksamer Rettungspfad, kein Luxus.
 
-**Bestand:** `ocr_comparison/_mineru_runpod_vllm/out_all/<Dokument>/vlm/<Dokument>.md` — alle 15 vorhanden, alle nicht-leer (665 Bytes bis 41.457 Bytes; Gesamttext ~225 KB), dazu je Dokument `content_list`/`middle`/`model`-JSONs, `layout.pdf`, `origin.pdf` und extrahierte Bild-Crops. Laut Jurgens Korrektur vom 31.07.2026 lief diese Kalibrierung am 29.06.2026 (LB-Ära) mit dem Qualitätsurteil „excellent" auf echten Bescheiden; das Datum selbst wurde in dieser Session nicht aus Dateimetadaten nachgeprüft. Alle 15 Markdowns wurden am 31.07./01.08.2026 vollständig gelesen; die folgenden Abschnitte sind der Ertrag.
+**(4) Punkt-Insertion ist ein Textebenen-Erbe, kein OCR-Schicksal.** Bei dem Rechnungsdokument mit dem Punkt-Insertions-Profil zeigen Textebene und MinerU die Punkte (`Am Wie.sen 12`), **easyocr liest dieselbe Stelle sauber** (`Strassenangabe`, `PLZ Ort`). Wer das Bild neu erkennt, erbt die Serifen-Fehldeutung nicht. Umgekehrt scheitern tesseract und paddle-ocr an diesem Dokument aus einem ganz anderen Grund: Sie liefern nur ein 381-Byte-Fragment — **nicht falscher Text, sondern fast gar keiner**. Die 1-von-5-Recovery dieser beiden Engines misst also einen Extraktions-, keinen Erkennungsfehler.
 
-### 5.1 Wo MinerU glänzt: die Bescheide
+**(5) Wo eine Engine Kennungen rettet, tut sie es an manchen Stellen und an anderen nicht.** Die im Schadenskatalog als „unbrauchbar" geführte IBAN steht im selben Dokument zweimal — auf der ersten Rechnung verstümmelt, auf der zweiten **auch in der Textebene korrekt**. Das relativiert die frühere Formulierung, MinerU habe diese Kennung „gerettet": MinerU liefert sie zweimal korrekt, die Textebene einmal von zwei, easyocr zweimal korrekt. Die generelle Lehre bleibt und wird präziser: **Mehrfachvorkommen derselben Kennung ist der eigentliche Rettungsmechanismus** — wer eine Kennung sucht, sollte jedes Vorkommen im Dokument auswerten und nicht das erste nehmen.
 
-Auf genau den Dokumenten, deren Textebene total zerstört ist (n→h-Klasse), liefert MinerU nahezu fehlerfreien Fließtext: „Finanzamt Beispielberg" statt `F'ihahzamt Beispielbepg`, „Grundsteueräquivalenzbeträge Hauptfeststellung" statt `Ilauptfeststelluhg`, „BayGrStG" statt `Bay6rstc`; komplette Berechnungsketten als Tabellen (Einheitswert-Herleitungen bis in DM/€-Umrechnung, Äquivalenzbetrag-Rechnungen 96,50/72,80/140,35 €, Messbetrags-Formeln `16923 € x 3,5 v.T. = 59,23 €`), Flurstücks- und Miteigentumsanteils-Listen im Darlehensvertrag über Seiten hinweg konsistent, Rechtsbehelfsbelehrungen als sauberer Fließtext. Barcodes/Siegel landen als Bild-Referenzen bzw. `<details>`-Blöcke (`seal: BAYERN FINANZAMT`) statt als Textsalat. Kleinere Restfehler existieren („Steuetberatungs GmbH", „Verwaltungsa- akt"-Trennfehler, `*807*` statt `*B07*` in einer Barcode-Zeile), ändern das Bild nicht.
-
-### 5.2 NEUER BEFUND (01.08.2026): Die Rand-Aktenzeichen fehlen im Markdown-Output
-
-**Per `grep` über alle 15 Markdowns verifiziert:** Kein einziges Grundsteuer-/Einheitswert-Markdown enthält das Wort „Aktenzeichen" oder eines der Aktenzeichen-Ziffernmuster `123/456`, `234/567`, `345/678`, `456/789` — null Treffer in allen 15 Dateien. Die einzige Fundstelle von „ktenzeich" überhaupt: zweimal „EW-Aktenzeichen 12345678901234567" in `2016_Privat_Bescheid_Einkommensteuer.md` — das ist das Musterstadter EW-AZ **im Fließtext der Besteuerungsgrundlagen-Tabelle**, nicht der Randblock. Auch die Steuernummern-Muster (`567/890`, `123/456`, `678/901`) kommen in keinem der 15 Outputs vor.
-
-**Deutung (als Deutung markiert):** Der rotierte Rand-/Kopfblock der bayerischen Bescheide (Aktenzeichen, Steuernummer, Bearbeitungsdaten) landet offenbar in den extrahierten Bild-Crops statt im Markdown-Text. **Ungeprüft:** ob die `content_list`-JSONs oder Bild-Dateien die Aktenzeichen tragen.
-
-**Warum das tragend ist:** Die Pass-1-Suchrahmen (Bead `jurgen-oeu`, Block A2) stützen sich gerade auf exakte Aktenzeichen als robusteste, OCR-schadensfeste Deploy-Terme — und die **kaputte** Textebene enthielt sie (`Aktehzeicherl 234/567/8901/234/567/8`, Ziffern sauber). Ein Write-back, der nur das MinerU-Markdown auf den Record legt, würde für genau diese Dokumentklasse die stärksten Suchterme **verlieren, die vorher da waren**. Das spricht direkt in die offene Write-back-Entscheidung (gbrain `projects/devonthink-klassifikation/ocr-integration-spec`) und in die `formats: ["markdown"]`-Festlegung hinein. Dies ist der erste konkrete Ertrag des nie durchgeführten formalen Diffs (Abschnitt 6).
-
-### 5.3 NEUER BEFUND (01.08.2026): Halluzinations-Artefakte in den schweren Klassen
-
-Per `grep` auf CJK-Zeichen bestätigt — genau zwei der 15 Outputs betroffen:
-- `HVB_April2024.md`: mitten im deutschen Bankformular ein komplett erfundener chinesischer Satz („2023年1月1日，公司发布《关于使用部分闲置募集资金进行现金管理的公告》（公告编号：2023-046）。" — Börsenmitteilungs-Boilerplate über Kapitalanlage-Bekanntmachungen). Dazu zerhackte Legendenzeilen (mehrfach wiederholt „P = Kredalejike Investitionen P = Krédite von Phaat R = Konsumenkredit"), Namensfehler („Raffjesbank Bcispielst EG" statt Raiffeisenbank Beispielstadt eG, „Erika Muster") und Zahlenkolonnen, die in Tabellenzellen zusammenlaufen (`12.345.67890.1234.567.89…`). Die Formularstruktur und die tragenden Zahlen (Kreditlinien, Vermögenswerte, 1.000.000, 100.000/200.000) sind dagegen weitgehend sauber.
-- `Notizen1.md` (kursive Handschrift): teils erstaunlich nah dran („Mail an Mustertur", „Haushaltsplan", ganze Themenlisten lesbar — deutlich mehr Substanz als tesseract/paddle/easyocr, die hier 0/4 lieferten), aber durchsetzt mit Erfindungen inkl. CJK-Einsprengsel („Die来看") und Zeichenersatz (⑥①②-Nummerierungen). Für Suchzwecke brauchbarer als alles Lokale, als Wiedergabe NICHT vertrauenswürdig.
-- Verwandt, ohne CJK: `20161031144820006.md` (Allianz-Formular) — Formularfelder groß korrekt, aber Handschriftfelder verstümmelt („MUSTER INMOBILIENGMBH", „Am Wiesen l2", „12345 Beispie", „Erika Mustcr, Geschäftspühnerin") und eine absurde Tabellenzeile („Anzulegender Betrag insgesamt: 1.000.000 EUR" — ob 1.000.000 auf dem Original steht, ist unverifiziert; gegen das PDF prüfen, bevor man es zitiert). `492064 Musterplan`: „Bauglanung", „Am Mühlbach 9" (mutmaßlich Mühlbachweg — unverifiziert), Handschrift-Reste als `<details>`-Bild-Text. `img20250722` (SANEF): fast vollständig sauber inkl. aller Beträge/SIRET; eine kopfstehende französische Hinweiszeile wird spiegelverkehrt wiedergegeben (`AVT el é fionb yuog yilqmen é noitsmojni`), und eine der vier Quittungen trägt „Date : 19/05/2017 13:48", wo die übrigen 19/05/2025 tragen — Original nicht geprüft, kann Vorlage- oder OCR-Fehler sein.
-
-**Konsequenz, deckungsgleich mit der HARD RULE des Skills:** Auf dichten Formularen und Handschrift kann das VLM plausiblen Text ERFINDEN. Der billige Gegencheck bleibt: eine Formel/Summe im Output nachrechnen — eine halluzinierte Zahl erfüllt ihre eigene Gleichung nicht; für den 30k-Lauf ist der geplante „Halluzinations-Verifikations-Pass auf den schlechtesten Scans" (Bead `jurgen-09v`, Akzeptanzkriterien) damit empirisch begründet, nicht paranoid.
-
-### 5.4 Benannter Widerspruch (nicht still aufgelöst): „Vertragspartner-Gesellschaft"
-
-`OCR-Befunde.md` führt für `Grunderwerbsteuer Muster 1.pdf` den Eintrag: `Vertragspartner-Gesellschaft` → *(soll heißen)* *Erwerber-Gesellschaft*. Das MinerU-Markdown liest den Adressaten/Käufer korrekt als „Erwerber-Gesellschaft" — und führt **separat unter „Vertragspartner"** (Verkäuferseite des beurkundeten Kaufvertrags vom 01.01.2016, Notar Max Muster, URNr./AZ 999, Gemarkung Musterfeld, Flurstück aus 1234 u. a.): „Name: Vertragspartner-Gesellschaft". Entweder machen beide Engines denselben Lesefehler, oder der Verkäufer heißt wirklich „Vertragspartner-Gesellschaft" und die Korrektur-Glosse in OCR-Befunde.md verwechselt Käufer- und Verkäuferfeld. **Ohne Blick ins Original-PDF nicht entscheidbar; bis dahin darf keine der beiden Lesarten als Fakt zitiert werden.**
-
-### 5.5 Leere Seite = leeres Markdown
-
-Aus dem 593-Seiten-Lauf (nicht aus den 15 Beispielen): genau eine Seite kam ohne Text zurück — eine echt leere graue Seite mit Kolumnentitel. Leerer Output ist ein korrektes Ergebnis, kein Fehler; erst das Bild ansehen, dann ggf. retryn. [Quelle: Skill; gbrain-Incident-Seite]
+**Ungelesen bleiben** die Roh-Ausgaben der großen Bescheide (2017er und 2021er Einheitswert, zwei der drei 2022er), der Einkommensteuer-, HVB- und Depot-Dokumente in den lokalen Engines sowie `candle-glm-ocr` insgesamt — zusammen etwa 450 KB. Für diese Dokumente stützen sich die Aussagen weiter auf die Kennzahlen, die Recovery-Tabelle und den Kennungs-Abgleich, der über **alle** Dateien lief. Der Grund für den Abbruch ist Aufwand gegen Ertrag, nicht Vollständigkeitsverzicht: Die genannten Dokumente sind quantitativ ausgewertet und ihre Klasse ist durch die gelesenen Stichproben belegt.
 
 ---
 
-## 6. Was noch aussteht
+## 6. Ground Truth und die PII-Grenze
 
-1. **Der formale Per-Dokument-Diff MinerU-Output vs. OCR-Befunde.md** — nie durchgeführt. Methode, die sich aus dem Vorliegenden ergibt: je Dokument (a) jeden Müll-Snippet-Eintrag aus Abschnitt 2 im MinerU-Markdown nachschlagen (korrekt / fehlend / anders falsch), (b) die exakten Kennungen (Aktenzeichen, Steuernummern, IBANs) gesondert prüfen — auch in `content_list`/Bild-Crops, nicht nur im Markdown (Befund 5.2), (c) Zahlen nachrechnen, wo Rechenketten existieren (Befund 5.3), (d) Ergebnis je Klasse verdichten (Bescheide / Formulare / Handschrift / Fremdsprache / Bank-Notar). Die Befunde 5.2–5.4 sind die ersten drei Zeilen dieses Diffs.
-2. **Ground Truth:** existiert für kein Dokument (Textebene ist als Referenz wertlos, Abschnitt 3.2; `gemini_truth.sh` lief nie, Abschnitt 4 — Start ist Jurgens Entscheidung wegen PII-Upload).
-3. **MinerU in die Recovery-Tabelle aufnehmen** (Abschnitt 3.4 endet vor MinerU) — fällt als Nebenprodukt des formalen Diffs ab.
-4. **Die `content_list`/`images`-Frage** aus Befund 5.2 klären, bevor die Write-back-Entscheidung fällt.
-5. **Erkennungs-/Ziellisten-Kalibrierung** (welche der ~30k Records brauchen OCR) — Design in den gbrain-Idea-Seiten vom 24./25.06.2026, nie end-to-end gefahren; dieses Dokument liefert die Klassen- und Signal-Grundlage dafür.
+**Für keines der 15 Dokumente existiert eine Ground Truth.** Die Textebene scheidet als Referenz aus (Abschnitt 4, Falle 1). Ein Skript zur Erzeugung per externem Vision-Modell existiert (`ocr_comparison/gemini_truth.sh`) und trägt in seinem eigenen Kopf die Regel, die für die ganze Strecke gilt: *„Run by YOU (the user), not the agent — the agent is hard-blocked from uploading the tax PII to OpenRouter/Gemini."* Das Zielverzeichnis existiert nicht ⇒ **das Skript ist nie gelaufen.** Dasselbe Prinzip hielt die kreuzberg-`vlm`-Option aus dem Bake-off heraus. **Generelle Regel: PII verlässt die Maschine Richtung Dritt-Dienste nur durch Jurgens eigene Hand und Entscheidung** — für jeden künftigen externen Dienst neu zu entscheiden (die RunPod-Nutzung ist durch die EU-Platzierungs-Entscheidung abgedeckt).
+
+**Fehlgeschlagene Zwischenanläufe (Beweissicherung, kein Qualitätsbefund):**
+- Zwei Failure-Logs zeigen die zwei Infrastruktur-Symptome, die man wiedererkennen muss: 15/15 Dokumente mit HTTP 402 `Insufficient Balance` (leeres Konto) und 15/15 mit HTTP 401 `invalid api key` gegen eine URL, die in Wahrheit auf einen **gelöschten** Endpoint zeigte — „401" hieß dort „Ziel existiert nicht mehr".
+- Zwei Läufe gegen einen fremdgehosteten VLM-Endpoint (`vlm-http-client` gegen Friendli) erzeugten **keinen einzigen brauchbaren Output, aus drei verschiedenen Ursachen** (Logs am 01.08.2026 gelesen): (a) je Lauf genau ein Task mit leerer Modellantwort; (b) die Masse mit HTTP 503 „Endpoint is unavailable" (dahinter sichtbar: connection refused zum Serving-Prozess); (c) **der interessante Fall** — vier Batches liefen komplett durch, der Endpoint antwortete mit echtem OCR-Text (inklusive bemerkenswert guter Handschrift-Lesungen), aber **jede Seite warf einen Layout-Format-Fehler**: Auf MinerUs Layout-Detection-Prompt lieferte das dort servierte Modell Tabellen-Zellen statt Layout-Boxen, MinerUs Client verwarf alles, und genau diese Dokumente liegen als 0-Byte-Markdown auf Platte. **Das ist ein echter Kompatibilitätsbefund** (naheliegende, aber unbewiesene Deutung: das servierte Modell/die Quantisierung beherrschte den Layout-Schritt des Zwei-Stufen-Protokolls nicht) — **generelle Lehre: wer je wieder ein fremdgehostetes VLM erwägt, muss die Layout-Detection-Kompatibilität testen, nicht nur die Erreichbarkeit pingen.** Über MinerU auf dem eigenen Worker sagt all das nichts; der Pfad wurde nicht weiterverfolgt.
+- Ein Einzeltest gegen ein anderes Image ist byte-identisch mit dem RunPod-Output (`diff`, diese Session) — Beleg, dass das Ergebnis vom Modell kommt, nicht von der Umgebung.
+
+---
+
+## 7. Was offen ist
+
+1. **Der formale Per-Dokument-Diff MinerU-Output gegen die `OCR-Befunde.md`-Paare** — nie durchgeführt. Methode: je Dokument (a) jeden Müll-Schnipsel im Output nachschlagen (korrekt / fehlend / anders falsch), (b) exakte Kennungen gesondert prüfen — **auch in `content_list`/Bild-Crops, nicht nur im Markdown** (Befund 5.1-2), (c) Rechenketten nachrechnen (Befund 5.1-3), (d) je Klasse verdichten. Die Befunde in 5.1 sind die ersten Zeilen dieses Diffs; er würde zugleich MinerU in die Engine-Matrix eintragen (dort heute „nicht gescort").
+2. **Der Halluzinations-Verifikationspass auf dem Steuer-Korpus** — der Nachrechen-Test ist auf born-digital-Material exerziert, auf den Bescheiden nie; dort wiegt er schwerer (Akzeptanzkriterium des 30k-Laufs).
+3. **Ground Truth** — existiert nicht; Erzeugung ist eine PII-Entscheidung (Abschnitt 6).
+4. **Erkennungs-/Ziellisten-Kalibrierung** — Methodik und Fixture liegen bereit (Integrationsstrecke, Abschnitt 2; hier Abschnitt 3), der Lauf steht aus.
+5. **`jurgen-0cu`** (Bead „OCR-Backend-Vergleich", seit 25.06. in Arbeit) ist durch dieses Dokument inhaltlich abgeschlossen und kann geschlossen werden — Jurgens Entscheidung.
+
+**Durch den Roh-Dump-Diff GEKLÄRT (02.08.2026) — beide vorher auf der Nachprüf-Liste:**
+- **Der „Vertragspartner-Gesellschaft"-Widerspruch ist aufgelöst — durch fünf unabhängige Belege.** Vier Engines (tesseract, paddle-ocr, easyocr, MinerU) lesen übereinstimmend **denselben Aufbau**: der Adressat/Erwerber ist „Erwerber-Gesellschaft", und **separat darunter, im Feld „Vertragspartner"**, steht „Vertragspartner-Gesellschaft" — die Verkäuferseite des beurkundeten Kaufvertrags. **Der fünfte und entscheidende Beleg steht im Klassifizierungs-Handbuch selbst** (Abschnitt J.0, Absender-Pooling): Dort ist „Bautraeger" als **bekannter Bauträger** des Projekts gelistet, in einer Reihe mit weiteren Bauträgern. „Bautraeger" ist damit nachweislich ein realer Firmenname aus dem Umfeld dieses Bestands und keine Verlesung von „Erwerber". Die Korrektur-Glosse in `OCR-Befunde.md` **verwechselt Erwerber- und Vertragspartner-Feld**; der Eintrag im Schadenskatalog ist ein Fehleintrag, kein OCR-Schaden — und sollte dort korrigiert werden, damit er nicht als Kalibrier-Sollwert weiterwirkt.
+- **Die Adresse des Handwerkerbetriebs ist bestätigt.** Zwei unabhängige Engines lesen dieselbe Struktur (easyocr „Am Mulbech $ 12345 Beispielhausn", MinerU „Am Mühlbach 9, 12345 Beispielhausen") — es handelt sich um eine Straße am Mühlbach in Beispielhausen. Keine Nachprüfung mehr nötig.
+
+**Weiter offen — Original ansehen, bevor daraus zitiert wird:**
+- Eine Betragszeile („anzulegender Betrag 1.000.000 EUR") in einem Depot-Eröffnungsantrag — plausibel wirkend, aber unverifiziert gegen das Original.
+- Ein von den übrigen abweichendes Quittungsdatum im Fremdsprachen-Dokument. **Neue Evidenz:** Die vier Quittungen tragen bei allen Engines übereinstimmend 19/05/2025 — außer der einen, bei der die Textebene gar kein Datum liefert, tesseract nur Fragmente und MinerU „19/05/2017" liest. Da alle übrigen Belege desselben Tages sind, spricht mehr für einen Lesefehler als für ein abweichendes Vorlagedatum; **entschieden ist es nicht.** (Der im Katalog dokumentierte Jahresfehler `7076` ist dagegen bestätigt: Textebene und tesseract lesen ihn beide, MinerU liest an derselben Stelle korrekt 2025.)
+- **NEU: Die Urkundennummer des Handelsregister-Dokuments ist zwischen den Engines uneins** — Textebene „99:9 /2099X", tesseract „997 12099X", MinerU „999 /2099 X". Drei Lesungen, zwei Kandidaten (999 oder 997). Falls die Nummer je als Kennung benutzt werden soll, muss das Original entscheiden.
+- **NEU: Zwei Steuernummern derselben Stammnummer für die KG.** Der Grunderwerbsteuer-Bescheid trägt bei tesseract, paddle-ocr und easyocr übereinstimmend `123/456/78901`; der geerntete Kennungsbestand des Pass-1-Suchrahmens führt für dieselbe Gesellschaft `123/456/23456`. Stamm identisch, Endnummer verschieden — entweder zwei echte Nummern (verschiedene Steuerarten oder Zeiträume) oder ein Erntefehler. Da drei Engines übereinstimmen, ist die Bescheid-Lesung belastbar; welche Nummer wofür gilt, ist offen.
+- Eine Kfz-Steuernummer aus dem Kennungs-Erntebestand ist OCR-unsicher (ein Buchstabe ist ein Artefakt) — Sichtprüfung nötig, falls sie je tragend wird.
+- **NEU (Werkzeugfrage, nicht Dokumentfrage): Kennt die MinerU-Bibliothek eine Option, Kopf-/Fußzeilen im Markdown zu behalten?** Der Job-Contract des Workers hat keine; ob die Bibliothek darunter eine besitzt (und ob der Worker sie durchreichen würde), ist ungeprüft. Falls ja, wäre das der einfachere Weg als das Anhängen der `header`-Einträge aus `content_list`. Beide Wege führen zum selben Ziel — die Frage ist nur, welcher weniger Code kostet.

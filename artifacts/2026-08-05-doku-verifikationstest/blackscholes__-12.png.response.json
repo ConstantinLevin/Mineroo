@@ -1,0 +1,2180 @@
+{
+  "delayTime": 145452,
+  "executionTime": 4629,
+  "id": "dcf4c5e1-5d4b-4786-9c4f-5a00994adda0-e2",
+  "output": {
+    "debug": {
+      "backend": "vlm-auto-engine",
+      "gpu": {
+        "available": true,
+        "compute_capability": "12.0",
+        "name": "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb",
+        "total_memory_gb": 23.62
+      },
+      "input_format": "image",
+      "model_dir": "/root/.cache/huggingface/hub/models--opendatalab--MinerU2.5-Pro-2605-1.2B/snapshots/bff20d4ae2bf202df9f45284b4d43681555a97ed",
+      "phase_ms": {
+        "fetch_input": 0,
+        "mineru_parse": 4417,
+        "package": 1
+      }
+    },
+    "elapsed_seconds": 4.42,
+    "mineru_version": "unknown",
+    "ok": true,
+    "results": [
+      {
+        "basename": "doc",
+        "content_list": [
+          {
+            "bbox": [
+              80,
+              120,
+              352,
+              142
+            ],
+            "page_idx": 0,
+            "text": "European put option",
+            "text_level": 1,
+            "type": "text"
+          },
+          {
+            "bbox": [
+              78,
+              148,
+              748,
+              180
+            ],
+            "page_idx": 0,
+            "text": "The value of a European put option with the same characteristics as the call can be calculated with the help of the put-call parity:",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              80,
+              183,
+              298,
+              196
+            ],
+            "page_idx": 0,
+            "text": "Put = Call + Bond - Share",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              118,
+              207,
+              309,
+              226
+            ],
+            "page_idx": 0,
+            "text": "$$\n\\Leftrightarrow P = C + X e ^ {- r t} - S _ {0}\n$$",
+            "text_format": "latex",
+            "type": "equation"
+          },
+          {
+            "bbox": [
+              80,
+              245,
+              139,
+              259
+            ],
+            "page_idx": 0,
+            "text": "where:",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              80,
+              264,
+              374,
+              278
+            ],
+            "page_idx": 0,
+            "text": "$P =$ price of the European put option",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              80,
+              283,
+              230,
+              297
+            ],
+            "page_idx": 0,
+            "text": "$X =$ exercise price",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              80,
+              302,
+              264,
+              316
+            ],
+            "page_idx": 0,
+            "text": "$S_{0}$ = share price today",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              80,
+              318,
+              381,
+              335
+            ],
+            "page_idx": 0,
+            "text": "$C =$ price of the European call option.",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              105,
+              361,
+              549,
+              378
+            ],
+            "page_idx": 0,
+            "text": "Activity 3.4 Calculating a European put option",
+            "text_level": 1,
+            "type": "text"
+          },
+          {
+            "bbox": [
+              105,
+              391,
+              130,
+              408
+            ],
+            "content": "",
+            "image_caption": [],
+            "image_footnote": [],
+            "img_path": "images/c3e506e11ab6213fd93108f14dd895899d014ccce5bd9e5c0147502628faa7a8.jpg",
+            "page_idx": 0,
+            "type": "image"
+          },
+          {
+            "bbox": [
+              132,
+              393,
+              457,
+              407
+            ],
+            "page_idx": 0,
+            "text": "Allow approximately 20 minutes for this activity.",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              103,
+              419,
+              737,
+              451
+            ],
+            "page_idx": 0,
+            "text": "Calculate the value of a put option that has the same characteristics as the call option from Activity 3.3 (repeated below for ease).",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              112,
+              470,
+              500,
+              621
+            ],
+            "img_path": "images/491a17cc83f3626272167f465d72cdb555b72b2a97d6a9d3cac898a5c2b47023.jpg",
+            "page_idx": 0,
+            "table_body": "<table><tr><td>Current share price (S)</td><td>473p</td></tr><tr><td>Option exercise price (X)</td><td>470p</td></tr><tr><td>Risk-free rate (Rf)</td><td>6%</td></tr><tr><td>r = ln(1 + Rf) = ln(1.06)</td><td>0.058</td></tr><tr><td>Time to expiry of call option (t)</td><td>2 year</td></tr><tr><td>Volatility (standard deviation of share price, σ)</td><td>11%</td></tr></table>",
+            "table_caption": [],
+            "table_footnote": [],
+            "type": "table"
+          },
+          {
+            "bbox": [
+              118,
+              664,
+              282,
+              678
+            ],
+            "page_idx": 0,
+            "text": "Provide your answer...",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              105,
+              709,
+              192,
+              724
+            ],
+            "page_idx": 0,
+            "text": "Feedback",
+            "text_level": 1,
+            "type": "text"
+          },
+          {
+            "bbox": [
+              105,
+              732,
+              618,
+              749
+            ],
+            "page_idx": 0,
+            "text": "The value of a European call option from the previous activity is:",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              143,
+              757,
+              443,
+              774
+            ],
+            "page_idx": 0,
+            "text": "$$\nC = S N (d _ {1}) - X e ^ {- r t} N (d _ {2}) = 6 3. 0 1 \\mathrm{p}\n$$",
+            "text_format": "latex",
+            "type": "equation"
+          },
+          {
+            "bbox": [
+              105,
+              795,
+              560,
+              811
+            ],
+            "page_idx": 0,
+            "text": "Using the values given above in the put-call parity gives:",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              143,
+              819,
+              434,
+              879
+            ],
+            "page_idx": 0,
+            "text": "$$\n\\begin{array}{l} P = X e ^ {- r t} - S _ {0} + C \\\\ = 4 7 0 e ^ {- 0. 0 5 8 \\times 2} - 4 7 3 + 6 3. 0 1 = 8. 5 3 \\\\ \\end{array}\n$$",
+            "text_format": "latex",
+            "type": "equation"
+          },
+          {
+            "bbox": [
+              105,
+              898,
+              396,
+              914
+            ],
+            "page_idx": 0,
+            "text": "The value of the put option is 8.53p.",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              791,
+              359,
+              829,
+              386
+            ],
+            "content": "",
+            "image_caption": [],
+            "image_footnote": [],
+            "img_path": "images/d501595e3e6d8c8822dab06577f7bbe209f825ddcbee6469cf488a58f0a8eb42.jpg",
+            "page_idx": 0,
+            "type": "image"
+          },
+          {
+            "bbox": [
+              80,
+              25,
+              343,
+              36
+            ],
+            "page_idx": 0,
+            "text": "Session 3 The Black-Scholes model",
+            "type": "header"
+          },
+          {
+            "bbox": [
+              80,
+              38,
+              298,
+              50
+            ],
+            "page_idx": 0,
+            "text": "3.2 The Black-Scholes model",
+            "type": "header"
+          },
+          {
+            "bbox": [
+              813,
+              38,
+              876,
+              50
+            ],
+            "page_idx": 0,
+            "text": "17/04/24",
+            "type": "header"
+          },
+          {
+            "bbox": [
+              96,
+              955,
+              365,
+              969
+            ],
+            "page_idx": 0,
+            "text": "Copyright © 2024 The Open University",
+            "type": "footer"
+          },
+          {
+            "bbox": [
+              818,
+              955,
+              876,
+              968
+            ],
+            "page_idx": 0,
+            "text": "12 of 33",
+            "type": "page_number"
+          }
+        ],
+        "images": {
+          "07bb29f2579a7e41849e2dedceb3fd90e5072324d0fce503504bb54d418a8099.jpg": "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aLvwbqGo2cWk33iCSXRkCrJCLcLNMoxhXkB6cc4UGo9QtBonjnT9VEEg01dMezHkxlhGytuAwPUE4+lIZ0miavb67o9vqNsGEUy52t1U9wabqWqTWEqJFpd5eBlyWtwpC+xyRWP8OtJudG8FWdtdq6TMzylH6rvYtg+mM11OKBHBaRr90ninxE40HU2LywEqFTKfuVHPzfjXaWF297arNJaTWrEkeVMBuH5E1R03TZ7XXtZvZNvlXkkTR4POFjVTn8Qa2KAPMbCNtX+PGpy3ZJTSbKNbWNui7xksP1/Ou81u6sLfTHj1E5t7ki2KDJL7/l2jHPc1k614Pa912LXtK1FtM1ZE8qSURCRJk/uumRn2OasWHh25+3Jf61qZ1K5iJMCiERRQk91XJOfck+2KBm1a20NnaRW1ugjhiUIiDsB2qaiimIKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKTFLRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUUZooAKKM0UAFFFFABRRmigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKxrvxd4csbqS2u9c0+CeM4eOS4VWU+4JoA2aKwP+E58Kf9DHpX/gWn+NbqSJIiujBkYZVgcgigB2abvXAORg9DmuJ+I+p3n9gajpeky+XdCykuLmYf8ALCEKf/HmIwPYMe1UbDw7P4q+FHhTTlvJbWEwW0txLE5WTYsZI2n13bevpSCx6LketGQO9eV6H4JEfjgGy8R69dWOln/SvtN8zrJMRkRgDHQEE/UD1pdHabxh4K1vxHc3V2t4JLlrB1maMWwjzsChSBjI5yCT3oHY9UozXI6B4xtm8AaVrusXCRPPEivsUkySnjCKMkknPAya09O1601yW7sYvtlpdxIrOk0J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",
+          "2f51412e8ea47b829c995256d10367ea207faf9f2a6f6157af4d475d72927871.jpg": "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",
+          "491a17cc83f3626272167f465d72cdb555b72b2a97d6a9d3cac898a5c2b47023.jpg": "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",
+          "92a2e0bef1b4e252054ac299fb4ddef271a4334bd9d5d11a8b8371c747a65e75.jpg": "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",
+          "c3e506e11ab6213fd93108f14dd895899d014ccce5bd9e5c0147502628faa7a8.jpg": "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAfACADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3akYhVJPQUtchrHii+m1Z9E8O2q3F7Hjz5pP9XDn1962hBzdkYNpGhb+NPD93dx2sGpRvNI2xFAPJ9Olb1eV2nhHWLPxDc31nqunS6sg8yW3MWAu7kewziuu8OeKZNSu5tL1O2NnqsA3PEfuuv95a2rUYpXpu66kQm9pHRzuY7eSQDJVSwA74Fcj8NoU/4Rj7cfmubqeR5nP3iQxHP5V2R6V5zY6j/wAK/wBcm0m93PpV1J5trIvJjJ6gjrU0k5wlCO+j+4cnZpsuW97DpnxU1NLxjCL6GEW7sMK5VQCM07xnGtp4l8NalBhblroW7Y6ujYH6ZP51e8QSeG9Y0tJNQkYxId8ciIwcEc8HGRWRpE0njXxRDq20x6VpuRbIxG6RzwWI7dP0FbR6VGrWVn91l95L/lP/2Q==",
+          "d501595e3e6d8c8822dab06577f7bbe209f825ddcbee6469cf488a58f0a8eb42.jpg": "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAwADADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD34nAzXC33xV0Oyvprby7iQxMULqvBI613L/cb6GvmG8tLi9168gtoXmlM8mERcn7xruwWHhWcufoc9epKFuU9e/4W/oX/AD73f/fIpy/FzRZDhLS8Y+gTNcRH4NmPw/lum0yf+1RebVG07vLwO3pyat/DC1bT/FF8upQGHy7NnYTLjA3LzzXTLD4ZQlKOtvMzVSrdJ9Trv+FraV/z4X//AH7ob4r6Qoy1lfADqTHVzW/GWj6bocGp2UEV8s8vlRLGoGT37Vk3muXWteF9dS68PPYLHZuyyuBycdOn+cVzxpQau4NL1NHOS+1+B6NJ9xvoa+af7WvdF8S3l5YTGKYTyDcBngsa+ln+430NeT+F9E0O60zXtT1ay+0fZruUkgZbaMnAFPBVI04zcldaBXi5NJEEfj7Uf+Ffy3bajH/aovNijA3bMA9PzqHwDeXHirxPqX9rTNOZ9PaFz0+UsvA/Ot9LT4ePoLayLWEWq8FSPn3f3duetZvidrHw94a0/XfC0TWMl3KE3gYZkKscEfVRW6cGnCEWm3vbbyM2pK0pO6Rm2fhO7s/iLaaMfNfTYJ/tUZYErtwDz78Yr03xl/yJmr/9esn8q8ki13x9OiTxm+dWXKuIuorP1bxR4qEMthqd1cokyEPHIuNymqnh6lWcW5LQSqRhFpJ6n0Q/3G+hrz3wLdRWOg+IrudS0UN5M7qBkkDrxXoT5KkDuK8q08+L/C9xqVna+H0vYJrl5RIx4YH8a4KC5oSj6dbHRUdpJnKyaLqF403iaLR9ukfaBJ9kyeV7nHp7+9dZ8SryDUPAWjXdrH5UElwrIhGNo2NxV4eKPHATYPCEITGNuTjH51heKD4w8UabBYzeGfs8cMvmKYfoRjk+9d6lKdSLlZJefQ52kotK+vkX9Nn1caZahPHOnxr5S4Ro8lRjp17VxPjeW6k1iP7VrMOqMIhiSEYC89MVF/wgvib/AKA9x+n+NH/CC+Jv+gPcfp/jXRTjShPm51+BnJykrWf4n//Z"
+        },
+        "markdown": "# European put option\n\nThe value of a European put option with the same characteristics as the call can be calculated with the help of the put-call parity:\n\nPut = Call + Bond - Share\n\n$$\n\\Leftrightarrow P = C + X e ^ {- r t} - S _ {0}\n$$\n\nwhere:\n\n$P =$ price of the European put option\n\n$X =$ exercise price\n\n$S_{0}$ = share price today\n\n$C =$ price of the European call option.\n\n# Activity 3.4 Calculating a European put option\n\n![](images/c3e506e11ab6213fd93108f14dd895899d014ccce5bd9e5c0147502628faa7a8.jpg)\n\nAllow approximately 20 minutes for this activity.\n\nCalculate the value of a put option that has the same characteristics as the call option from Activity 3.3 (repeated below for ease).\n\n<table><tr><td>Current share price (S)</td><td>473p</td></tr><tr><td>Option exercise price (X)</td><td>470p</td></tr><tr><td>Risk-free rate (Rf)</td><td>6%</td></tr><tr><td>r = ln(1 + Rf) = ln(1.06)</td><td>0.058</td></tr><tr><td>Time to expiry of call option (t)</td><td>2 year</td></tr><tr><td>Volatility (standard deviation of share price, σ)</td><td>11%</td></tr></table>\n\nProvide your answer...\n\n# Feedback\n\nThe value of a European call option from the previous activity is:\n\n$$\nC = S N (d _ {1}) - X e ^ {- r t} N (d _ {2}) = 6 3. 0 1 \\mathrm{p}\n$$\n\nUsing the values given above in the put-call parity gives:\n\n$$\n\\begin{array}{l} P = X e ^ {- r t} - S _ {0} + C \\\\ = 4 7 0 e ^ {- 0. 0 5 8 \\times 2} - 4 7 3 + 6 3. 0 1 = 8. 5 3 \\\\ \\end{array}\n$$\n\nThe value of the put option is 8.53p.\n\n![](images/d501595e3e6d8c8822dab06577f7bbe209f825ddcbee6469cf488a58f0a8eb42.jpg)",
+        "middle": {
+          "_backend": "vlm",
+          "_version_name": "3.4.4",
+          "pdf_info": [
+            {
+              "discarded_blocks": [
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    16,
+                    153,
+                    23
+                  ],
+                  "index": 0,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        16,
+                        153,
+                        23
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            16,
+                            153,
+                            23
+                          ],
+                          "content": "Session 3 The Black-Scholes model",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "header"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    24,
+                    133,
+                    32
+                  ],
+                  "index": 1,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        24,
+                        133,
+                        32
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            24,
+                            133,
+                            32
+                          ],
+                          "content": "3.2 The Black-Scholes model",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "header"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    363,
+                    24,
+                    391,
+                    32
+                  ],
+                  "index": 2,
+                  "lines": [
+                    {
+                      "bbox": [
+                        363,
+                        24,
+                        391,
+                        32
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            363,
+                            24,
+                            391,
+                            32
+                          ],
+                          "content": "17/04/24",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "header"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    43,
+                    603,
+                    163,
+                    612
+                  ],
+                  "index": 25,
+                  "lines": [
+                    {
+                      "bbox": [
+                        43,
+                        603,
+                        163,
+                        612
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            43,
+                            603,
+                            163,
+                            612
+                          ],
+                          "content": "Copyright © 2024 The Open University",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "footer"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    365,
+                    603,
+                    391,
+                    611
+                  ],
+                  "index": 26,
+                  "lines": [
+                    {
+                      "bbox": [
+                        365,
+                        603,
+                        391,
+                        611
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            365,
+                            603,
+                            391,
+                            611
+                          ],
+                          "content": "12 of 33",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "page_number"
+                }
+              ],
+              "page_idx": 0,
+              "page_size": [
+                446,
+                631
+              ],
+              "para_blocks": [
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    76,
+                    157,
+                    90
+                  ],
+                  "index": 3,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        76,
+                        157,
+                        90
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            76,
+                            157,
+                            90
+                          ],
+                          "content": "European put option",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    35,
+                    94,
+                    334,
+                    114
+                  ],
+                  "index": 4,
+                  "lines": [
+                    {
+                      "bbox": [
+                        35,
+                        94,
+                        334,
+                        114
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            35,
+                            94,
+                            334,
+                            114
+                          ],
+                          "content": "The value of a European put option with the same characteristics as the call can be calculated with the help of the put-call parity:",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    116,
+                    133,
+                    124
+                  ],
+                  "index": 5,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        116,
+                        133,
+                        124
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            116,
+                            133,
+                            124
+                          ],
+                          "content": "Put = Call + Bond - Share",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    53,
+                    131,
+                    138,
+                    143
+                  ],
+                  "index": 6,
+                  "lines": [
+                    {
+                      "bbox": [
+                        53,
+                        131,
+                        138,
+                        143
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            53,
+                            131,
+                            138,
+                            143
+                          ],
+                          "content": "\\Leftrightarrow P = C + X e ^ {- r t} - S _ {0}",
+                          "image_path": "2f51412e8ea47b829c995256d10367ea207faf9f2a6f6157af4d475d72927871.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    155,
+                    62,
+                    164
+                  ],
+                  "index": 7,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        155,
+                        62,
+                        164
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            155,
+                            62,
+                            164
+                          ],
+                          "content": "where:",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    167,
+                    167,
+                    176
+                  ],
+                  "index": 8,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        167,
+                        167,
+                        176
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            167,
+                            167,
+                            176
+                          ],
+                          "content": "P =",
+                          "type": "inline_equation"
+                        },
+                        {
+                          "bbox": [
+                            36,
+                            167,
+                            167,
+                            176
+                          ],
+                          "content": " price of the European put option",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    179,
+                    103,
+                    188
+                  ],
+                  "index": 9,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        179,
+                        103,
+                        188
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            179,
+                            103,
+                            188
+                          ],
+                          "content": "X =",
+                          "type": "inline_equation"
+                        },
+                        {
+                          "bbox": [
+                            36,
+                            179,
+                            103,
+                            188
+                          ],
+                          "content": " exercise price",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    191,
+                    118,
+                    200
+                  ],
+                  "index": 10,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        191,
+                        118,
+                        200
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            191,
+                            118,
+                            200
+                          ],
+                          "content": "S_{0}",
+                          "type": "inline_equation"
+                        },
+                        {
+                          "bbox": [
+                            36,
+                            191,
+                            118,
+                            200
+                          ],
+                          "content": "  = share price today",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    201,
+                    170,
+                    212
+                  ],
+                  "index": 11,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        201,
+                        170,
+                        212
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            201,
+                            170,
+                            212
+                          ],
+                          "content": "C =",
+                          "type": "inline_equation"
+                        },
+                        {
+                          "bbox": [
+                            36,
+                            201,
+                            170,
+                            212
+                          ],
+                          "content": " price of the European call option.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    228,
+                    245,
+                    239
+                  ],
+                  "index": 12,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        228,
+                        245,
+                        239
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            228,
+                            245,
+                            239
+                          ],
+                          "content": "Activity 3.4 Calculating a European put option",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "bbox": [
+                    47,
+                    247,
+                    58,
+                    258
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        47,
+                        247,
+                        58,
+                        258
+                      ],
+                      "index": 13,
+                      "lines": [
+                        {
+                          "bbox": [
+                            47,
+                            247,
+                            58,
+                            258
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                47,
+                                247,
+                                58,
+                                258
+                              ],
+                              "image_path": "c3e506e11ab6213fd93108f14dd895899d014ccce5bd9e5c0147502628faa7a8.jpg",
+                              "type": "image"
+                            }
+                          ]
+                        }
+                      ],
+                      "type": "image_body"
+                    }
+                  ],
+                  "index": 13,
+                  "type": "image"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    59,
+                    248,
+                    204,
+                    257
+                  ],
+                  "index": 14,
+                  "lines": [
+                    {
+                      "bbox": [
+                        59,
+                        248,
+                        204,
+                        257
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            59,
+                            248,
+                            204,
+                            257
+                          ],
+                          "content": "Allow approximately 20 minutes for this activity.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    46,
+                    265,
+                    329,
+                    285
+                  ],
+                  "index": 15,
+                  "lines": [
+                    {
+                      "bbox": [
+                        46,
+                        265,
+                        329,
+                        285
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            46,
+                            265,
+                            329,
+                            285
+                          ],
+                          "content": "Calculate the value of a put option that has the same characteristics as the call option from Activity 3.3 (repeated below for ease).",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "bbox": [
+                    50,
+                    297,
+                    223,
+                    392
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        50,
+                        297,
+                        223,
+                        392
+                      ],
+                      "index": 16,
+                      "lines": [
+                        {
+                          "bbox": [
+                            50,
+                            297,
+                            223,
+                            392
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                50,
+                                297,
+                                223,
+                                392
+                              ],
+                              "html": "<table><tr><td>Current share price (S)</td><td>473p</td></tr><tr><td>Option exercise price (X)</td><td>470p</td></tr><tr><td>Risk-free rate (Rf)</td><td>6%</td></tr><tr><td>r = ln(1 + Rf) = ln(1.06)</td><td>0.058</td></tr><tr><td>Time to expiry of call option (t)</td><td>2 year</td></tr><tr><td>Volatility (standard deviation of share price, σ)</td><td>11%</td></tr></table>",
+                              "image_path": "491a17cc83f3626272167f465d72cdb555b72b2a97d6a9d3cac898a5c2b47023.jpg",
+                              "type": "table"
+                            }
+                          ]
+                        }
+                      ],
+                      "type": "table_body"
+                    }
+                  ],
+                  "index": 16,
+                  "type": "table"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    53,
+                    419,
+                    126,
+                    428
+                  ],
+                  "index": 17,
+                  "lines": [
+                    {
+                      "bbox": [
+                        53,
+                        419,
+                        126,
+                        428
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            53,
+                            419,
+                            126,
+                            428
+                          ],
+                          "content": "Provide your answer...",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    448,
+                    86,
+                    457
+                  ],
+                  "index": 18,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        448,
+                        86,
+                        457
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            448,
+                            86,
+                            457
+                          ],
+                          "content": "Feedback",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    462,
+                    276,
+                    473
+                  ],
+                  "index": 19,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        462,
+                        276,
+                        473
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            462,
+                            276,
+                            473
+                          ],
+                          "content": "The value of a European call option from the previous activity is:",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    64,
+                    478,
+                    198,
+                    489
+                  ],
+                  "index": 20,
+                  "lines": [
+                    {
+                      "bbox": [
+                        64,
+                        478,
+                        198,
+                        489
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            64,
+                            478,
+                            198,
+                            489
+                          ],
+                          "content": "C = S N (d _ {1}) - X e ^ {- r t} N (d _ {2}) = 6 3. 0 1 \\mathrm{p}",
+                          "image_path": "92a2e0bef1b4e252054ac299fb4ddef271a4334bd9d5d11a8b8371c747a65e75.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    502,
+                    250,
+                    512
+                  ],
+                  "index": 21,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        502,
+                        250,
+                        512
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            502,
+                            250,
+                            512
+                          ],
+                          "content": "Using the values given above in the put-call parity gives:",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    64,
+                    517,
+                    194,
+                    555
+                  ],
+                  "index": 22,
+                  "lines": [
+                    {
+                      "bbox": [
+                        64,
+                        517,
+                        194,
+                        555
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            64,
+                            517,
+                            194,
+                            555
+                          ],
+                          "content": "\\begin{array}{l} P = X e ^ {- r t} - S _ {0} + C \\\\ = 4 7 0 e ^ {- 0. 0 5 8 \\times 2} - 4 7 3 + 6 3. 0 1 = 8. 5 3 \\\\ \\end{array}",
+                          "image_path": "07bb29f2579a7e41849e2dedceb3fd90e5072324d0fce503504bb54d418a8099.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    567,
+                    177,
+                    577
+                  ],
+                  "index": 23,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        567,
+                        177,
+                        577
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            567,
+                            177,
+                            577
+                          ],
+                          "content": "The value of the put option is 8.53p.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "bbox": [
+                    353,
+                    227,
+                    370,
+                    244
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        353,
+                        227,
+                        370,
+                        244
+                      ],
+                      "index": 24,
+                      "lines": [
+                        {
+                          "bbox": [
+                            353,
+                            227,
+                            370,
+                            244
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                353,
+                                227,
+                                370,
+                                244
+                              ],
+                              "image_path": "d501595e3e6d8c8822dab06577f7bbe209f825ddcbee6469cf488a58f0a8eb42.jpg",
+                              "type": "image"
+                            }
+                          ]
+                        }
+                      ],
+                      "type": "image_body"
+                    }
+                  ],
+                  "index": 24,
+                  "type": "image"
+                }
+              ],
+              "preproc_blocks": [
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    76,
+                    157,
+                    90
+                  ],
+                  "index": 3,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        76,
+                        157,
+                        90
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            76,
+                            157,
+                            90
+                          ],
+                          "content": "European put option",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    35,
+                    94,
+                    334,
+                    114
+                  ],
+                  "index": 4,
+                  "lines": [
+                    {
+                      "bbox": [
+                        35,
+                        94,
+                        334,
+                        114
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            35,
+                            94,
+                            334,
+                            114
+                          ],
+                          "content": "The value of a European put option with the same characteristics as the call can be calculated with the help of the put-call parity:",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    116,
+                    133,
+                    124
+                  ],
+                  "index": 5,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        116,
+                        133,
+                        124
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            116,
+                            133,
+                            124
+                          ],
+                          "content": "Put = Call + Bond - Share",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    53,
+                    131,
+                    138,
+                    143
+                  ],
+                  "index": 6,
+                  "lines": [
+                    {
+                      "bbox": [
+                        53,
+                        131,
+                        138,
+                        143
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            53,
+                            131,
+                            138,
+                            143
+                          ],
+                          "content": "\\Leftrightarrow P = C + X e ^ {- r t} - S _ {0}",
+                          "image_path": "2f51412e8ea47b829c995256d10367ea207faf9f2a6f6157af4d475d72927871.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    155,
+                    62,
+                    164
+                  ],
+                  "index": 7,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        155,
+                        62,
+                        164
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            155,
+                            62,
+                            164
+                          ],
+                          "content": "where:",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    167,
+                    167,
+                    176
+                  ],
+                  "index": 8,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        167,
+                        167,
+                        176
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            167,
+                            167,
+                            176
+                          ],
+                          "content": "P =",
+                          "type": "inline_equation"
+                        },
+                        {
+                          "bbox": [
+                            36,
+                            167,
+                            167,
+                            176
+                          ],
+                          "content": " price of the European put option",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    179,
+                    103,
+                    188
+                  ],
+                  "index": 9,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        179,
+                        103,
+                        188
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            179,
+                            103,
+                            188
+                          ],
+                          "content": "X =",
+                          "type": "inline_equation"
+                        },
+                        {
+                          "bbox": [
+                            36,
+                            179,
+                            103,
+                            188
+                          ],
+                          "content": " exercise price",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    191,
+                    118,
+                    200
+                  ],
+                  "index": 10,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        191,
+                        118,
+                        200
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            191,
+                            118,
+                            200
+                          ],
+                          "content": "S_{0}",
+                          "type": "inline_equation"
+                        },
+                        {
+                          "bbox": [
+                            36,
+                            191,
+                            118,
+                            200
+                          ],
+                          "content": "  = share price today",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    36,
+                    201,
+                    170,
+                    212
+                  ],
+                  "index": 11,
+                  "lines": [
+                    {
+                      "bbox": [
+                        36,
+                        201,
+                        170,
+                        212
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            36,
+                            201,
+                            170,
+                            212
+                          ],
+                          "content": "C =",
+                          "type": "inline_equation"
+                        },
+                        {
+                          "bbox": [
+                            36,
+                            201,
+                            170,
+                            212
+                          ],
+                          "content": " price of the European call option.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    228,
+                    245,
+                    239
+                  ],
+                  "index": 12,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        228,
+                        245,
+                        239
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            228,
+                            245,
+                            239
+                          ],
+                          "content": "Activity 3.4 Calculating a European put option",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "bbox": [
+                    47,
+                    247,
+                    58,
+                    258
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        47,
+                        247,
+                        58,
+                        258
+                      ],
+                      "index": 13,
+                      "lines": [
+                        {
+                          "bbox": [
+                            47,
+                            247,
+                            58,
+                            258
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                47,
+                                247,
+                                58,
+                                258
+                              ],
+                              "image_path": "c3e506e11ab6213fd93108f14dd895899d014ccce5bd9e5c0147502628faa7a8.jpg",
+                              "type": "image"
+                            }
+                          ]
+                        }
+                      ],
+                      "type": "image_body"
+                    }
+                  ],
+                  "index": 13,
+                  "type": "image"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    59,
+                    248,
+                    204,
+                    257
+                  ],
+                  "index": 14,
+                  "lines": [
+                    {
+                      "bbox": [
+                        59,
+                        248,
+                        204,
+                        257
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            59,
+                            248,
+                            204,
+                            257
+                          ],
+                          "content": "Allow approximately 20 minutes for this activity.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    46,
+                    265,
+                    329,
+                    285
+                  ],
+                  "index": 15,
+                  "lines": [
+                    {
+                      "bbox": [
+                        46,
+                        265,
+                        329,
+                        285
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            46,
+                            265,
+                            329,
+                            285
+                          ],
+                          "content": "Calculate the value of a put option that has the same characteristics as the call option from Activity 3.3 (repeated below for ease).",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "bbox": [
+                    50,
+                    297,
+                    223,
+                    392
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        50,
+                        297,
+                        223,
+                        392
+                      ],
+                      "index": 16,
+                      "lines": [
+                        {
+                          "bbox": [
+                            50,
+                            297,
+                            223,
+                            392
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                50,
+                                297,
+                                223,
+                                392
+                              ],
+                              "html": "<table><tr><td>Current share price (S)</td><td>473p</td></tr><tr><td>Option exercise price (X)</td><td>470p</td></tr><tr><td>Risk-free rate (Rf)</td><td>6%</td></tr><tr><td>r = ln(1 + Rf) = ln(1.06)</td><td>0.058</td></tr><tr><td>Time to expiry of call option (t)</td><td>2 year</td></tr><tr><td>Volatility (standard deviation of share price, σ)</td><td>11%</td></tr></table>",
+                              "image_path": "491a17cc83f3626272167f465d72cdb555b72b2a97d6a9d3cac898a5c2b47023.jpg",
+                              "type": "table"
+                            }
+                          ]
+                        }
+                      ],
+                      "type": "table_body"
+                    }
+                  ],
+                  "index": 16,
+                  "type": "table"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    53,
+                    419,
+                    126,
+                    428
+                  ],
+                  "index": 17,
+                  "lines": [
+                    {
+                      "bbox": [
+                        53,
+                        419,
+                        126,
+                        428
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            53,
+                            419,
+                            126,
+                            428
+                          ],
+                          "content": "Provide your answer...",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    448,
+                    86,
+                    457
+                  ],
+                  "index": 18,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        448,
+                        86,
+                        457
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            448,
+                            86,
+                            457
+                          ],
+                          "content": "Feedback",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    462,
+                    276,
+                    473
+                  ],
+                  "index": 19,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        462,
+                        276,
+                        473
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            462,
+                            276,
+                            473
+                          ],
+                          "content": "The value of a European call option from the previous activity is:",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    64,
+                    478,
+                    198,
+                    489
+                  ],
+                  "index": 20,
+                  "lines": [
+                    {
+                      "bbox": [
+                        64,
+                        478,
+                        198,
+                        489
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            64,
+                            478,
+                            198,
+                            489
+                          ],
+                          "content": "C = S N (d _ {1}) - X e ^ {- r t} N (d _ {2}) = 6 3. 0 1 \\mathrm{p}",
+                          "image_path": "92a2e0bef1b4e252054ac299fb4ddef271a4334bd9d5d11a8b8371c747a65e75.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    502,
+                    250,
+                    512
+                  ],
+                  "index": 21,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        502,
+                        250,
+                        512
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            502,
+                            250,
+                            512
+                          ],
+                          "content": "Using the values given above in the put-call parity gives:",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    64,
+                    517,
+                    194,
+                    555
+                  ],
+                  "index": 22,
+                  "lines": [
+                    {
+                      "bbox": [
+                        64,
+                        517,
+                        194,
+                        555
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            64,
+                            517,
+                            194,
+                            555
+                          ],
+                          "content": "\\begin{array}{l} P = X e ^ {- r t} - S _ {0} + C \\\\ = 4 7 0 e ^ {- 0. 0 5 8 \\times 2} - 4 7 3 + 6 3. 0 1 = 8. 5 3 \\\\ \\end{array}",
+                          "image_path": "07bb29f2579a7e41849e2dedceb3fd90e5072324d0fce503504bb54d418a8099.jpg",
+                          "type": "interline_equation"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "interline_equation"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    47,
+                    567,
+                    177,
+                    577
+                  ],
+                  "index": 23,
+                  "lines": [
+                    {
+                      "bbox": [
+                        47,
+                        567,
+                        177,
+                        577
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            47,
+                            567,
+                            177,
+                            577
+                          ],
+                          "content": "The value of the put option is 8.53p.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "bbox": [
+                    353,
+                    227,
+                    370,
+                    244
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        353,
+                        227,
+                        370,
+                        244
+                      ],
+                      "index": 24,
+                      "lines": [
+                        {
+                          "bbox": [
+                            353,
+                            227,
+                            370,
+                            244
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                353,
+                                227,
+                                370,
+                                244
+                              ],
+                              "image_path": "d501595e3e6d8c8822dab06577f7bbe209f825ddcbee6469cf488a58f0a8eb42.jpg",
+                              "type": "image"
+                            }
+                          ]
+                        }
+                      ],
+                      "type": "image_body"
+                    }
+                  ],
+                  "index": 24,
+                  "type": "image"
+                }
+              ]
+            }
+          ]
+        },
+        "pages_requested": -1,
+        "source": "b64"
+      }
+    ]
+  },
+  "status": "COMPLETED",
+  "workerId": "7vbp39c71bllhb"
+}

@@ -1,0 +1,14 @@
+{
+  "captured_at": "2026-08-05T11:41:04+0200",
+  "source": "runpodctl user",
+  "user": {
+    "clientBalance": 5.1889494134,
+    "currentSpendPerHr": 0,
+    "email": "konto@example.invalid",
+    "id": "user_REDACTED",
+    "notifyLowBalance": true,
+    "notifyPodsGeneral": true,
+    "notifyPodsStale": true,
+    "spendLimit": 80
+  }
+}

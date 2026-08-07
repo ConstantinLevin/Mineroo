@@ -1,0 +1,1607 @@
+{
+  "delayTime": 202030,
+  "executionTime": 5221,
+  "id": "955b91e1-f4e1-44c0-8684-4cae2e0cc343-e2",
+  "output": {
+    "debug": {
+      "backend": "vlm-auto-engine",
+      "gpu": {
+        "available": true,
+        "compute_capability": "12.0",
+        "name": "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb",
+        "total_memory_gb": 23.62
+      },
+      "input_format": "image",
+      "model_dir": "/root/.cache/huggingface/hub/models--opendatalab--MinerU2.5-Pro-2605-1.2B/snapshots/bff20d4ae2bf202df9f45284b4d43681555a97ed",
+      "phase_ms": {
+        "fetch_input": 1,
+        "mineru_parse": 4965,
+        "package": 0
+      }
+    },
+    "elapsed_seconds": 4.97,
+    "mineru_version": "unknown",
+    "ok": true,
+    "results": [
+      {
+        "basename": "doc",
+        "content_list": [
+          {
+            "bbox": [
+              49,
+              172,
+              807,
+              270
+            ],
+            "page_idx": 0,
+            "text": "Session 3 The Black-Scholes model",
+            "text_level": 1,
+            "type": "text"
+          },
+          {
+            "bbox": [
+              47,
+              324,
+              934,
+              369
+            ],
+            "page_idx": 0,
+            "text": "This item contains selected online content. It is for use alongside, not as a replacement for the module website, which is the primary study format and contains activities and resources that cannot be replicated in the printed versions.",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              49,
+              372,
+              363,
+              389
+            ],
+            "page_idx": 0,
+            "text": "Copyright © 2024 The Open University",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              49,
+              454,
+              811,
+              553
+            ],
+            "page_idx": 0,
+            "text": "Session 3 The Black-Scholes model",
+            "text_level": 1,
+            "type": "text"
+          },
+          {
+            "bbox": [
+              49,
+              580,
+              177,
+              600
+            ],
+            "page_idx": 0,
+            "text": "Contents",
+            "text_level": 1,
+            "type": "text"
+          },
+          {
+            "bbox": [
+              49,
+              614,
+              946,
+              630
+            ],
+            "page_idx": 0,
+            "text": "Introduction 3",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              49,
+              635,
+              943,
+              652
+            ],
+            "page_idx": 0,
+            "text": "Learning outcomes 4",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              49,
+              657,
+              943,
+              673
+            ],
+            "page_idx": 0,
+            "text": "Session 3 activities 5",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              49,
+              678,
+              943,
+              714
+            ],
+            "list_items": [
+              "3.1 Models for valuing share options 6",
+              "3.2 The Black-Scholes model 7"
+            ],
+            "page_idx": 0,
+            "sub_type": "text",
+            "type": "list"
+          },
+          {
+            "bbox": [
+              89,
+              719,
+              943,
+              733
+            ],
+            "page_idx": 0,
+            "text": "Worked example 9",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              89,
+              736,
+              943,
+              752
+            ],
+            "page_idx": 0,
+            "text": "European put option 12",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              89,
+              755,
+              943,
+              771
+            ],
+            "page_idx": 0,
+            "text": "Calculating the time value 13",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              49,
+              774,
+              943,
+              814
+            ],
+            "list_items": [
+              "3.3 Interpreting the Black–Scholes model 15",
+              "3.4 The 'Greeks' 16"
+            ],
+            "page_idx": 0,
+            "sub_type": "text",
+            "type": "list"
+          },
+          {
+            "bbox": [
+              89,
+              817,
+              943,
+              833
+            ],
+            "page_idx": 0,
+            "text": "Option delta in the Black–Scholes model 16",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              89,
+              836,
+              943,
+              852
+            ],
+            "page_idx": 0,
+            "text": "Delta hedging 17",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              49,
+              855,
+              943,
+              871
+            ],
+            "page_idx": 0,
+            "text": "3.5 The Black-Scholes-Merton formula: fortunes and debacle 19",
+            "type": "text"
+          },
+          {
+            "bbox": [
+              49,
+              30,
+              316,
+              93
+            ],
+            "page_idx": 0,
+            "text": "The Open University",
+            "type": "header"
+          },
+          {
+            "bbox": [
+              585,
+              33,
+              946,
+              50
+            ],
+            "page_idx": 0,
+            "text": "B819 Derivatives and risk management",
+            "type": "header"
+          }
+        ],
+        "images": {},
+        "markdown": "# Session 3 The Black-Scholes model\n\nThis item contains selected online content. It is for use alongside, not as a replacement for the module website, which is the primary study format and contains activities and resources that cannot be replicated in the printed versions.\n\nCopyright © 2024 The Open University\n\n# Session 3 The Black-Scholes model\n\n# Contents\n\nIntroduction 3\n\nLearning outcomes 4\n\nSession 3 activities 5\n\n3.1 Models for valuing share options 6  \n3.2 The Black-Scholes model 7\n\nWorked example 9\n\nEuropean put option 12\n\nCalculating the time value 13\n\n3.3 Interpreting the Black–Scholes model 15  \n3.4 The 'Greeks' 16\n\nOption delta in the Black–Scholes model 16\n\nDelta hedging 17\n\n3.5 The Black-Scholes-Merton formula: fortunes and debacle 19",
+        "middle": {
+          "_backend": "vlm",
+          "_version_name": "3.4.4",
+          "pdf_info": [
+            {
+              "discarded_blocks": [
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    19,
+                    141,
+                    59
+                  ],
+                  "index": 0,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        19,
+                        141,
+                        59
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            19,
+                            141,
+                            59
+                          ],
+                          "content": "The Open University",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "header"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    261,
+                    21,
+                    422,
+                    32
+                  ],
+                  "index": 1,
+                  "lines": [
+                    {
+                      "bbox": [
+                        261,
+                        21,
+                        422,
+                        32
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            261,
+                            21,
+                            422,
+                            32
+                          ],
+                          "content": "B819 Derivatives and risk management",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "header"
+                }
+              ],
+              "page_idx": 0,
+              "page_size": [
+                446,
+                631
+              ],
+              "para_blocks": [
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    109,
+                    360,
+                    171
+                  ],
+                  "index": 2,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        109,
+                        360,
+                        171
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            109,
+                            360,
+                            171
+                          ],
+                          "content": "Session 3 The Black-Scholes model",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    21,
+                    205,
+                    417,
+                    233
+                  ],
+                  "index": 3,
+                  "lines": [
+                    {
+                      "bbox": [
+                        21,
+                        205,
+                        417,
+                        233
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            21,
+                            205,
+                            417,
+                            233
+                          ],
+                          "content": "This item contains selected online content. It is for use alongside, not as a replacement for the module website, which is the primary study format and contains activities and resources that cannot be replicated in the printed versions.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    235,
+                    162,
+                    246
+                  ],
+                  "index": 4,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        235,
+                        162,
+                        246
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            235,
+                            162,
+                            246
+                          ],
+                          "content": "Copyright © 2024 The Open University",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    287,
+                    362,
+                    349
+                  ],
+                  "index": 5,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        287,
+                        362,
+                        349
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            287,
+                            362,
+                            349
+                          ],
+                          "content": "Session 3 The Black-Scholes model",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    366,
+                    79,
+                    379
+                  ],
+                  "index": 6,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        366,
+                        79,
+                        379
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            366,
+                            79,
+                            379
+                          ],
+                          "content": "Contents",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    388,
+                    422,
+                    398
+                  ],
+                  "index": 7,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        388,
+                        422,
+                        398
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            388,
+                            422,
+                            398
+                          ],
+                          "content": "Introduction 3",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    401,
+                    421,
+                    412
+                  ],
+                  "index": 8,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        401,
+                        421,
+                        412
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            401,
+                            421,
+                            412
+                          ],
+                          "content": "Learning outcomes 4",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    415,
+                    421,
+                    425
+                  ],
+                  "index": 9,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        415,
+                        421,
+                        425
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            415,
+                            421,
+                            425
+                          ],
+                          "content": "Session 3 activities 5",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    428,
+                    421,
+                    451
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        22,
+                        428,
+                        421,
+                        439
+                      ],
+                      "index": 10,
+                      "lines": [
+                        {
+                          "bbox": [
+                            22,
+                            428,
+                            421,
+                            439
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                22,
+                                428,
+                                421,
+                                439
+                              ],
+                              "content": "3.1 Models for valuing share options 6",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        22,
+                        441,
+                        421,
+                        451
+                      ],
+                      "index": 11,
+                      "lines": [
+                        {
+                          "bbox": [
+                            22,
+                            441,
+                            421,
+                            451
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                22,
+                                441,
+                                421,
+                                451
+                              ],
+                              "content": "3.2 The Black-Scholes model 7",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    }
+                  ],
+                  "index": 12,
+                  "sub_type": "text",
+                  "type": "list"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    40,
+                    454,
+                    421,
+                    463
+                  ],
+                  "index": 13,
+                  "lines": [
+                    {
+                      "bbox": [
+                        40,
+                        454,
+                        421,
+                        463
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            40,
+                            454,
+                            421,
+                            463
+                          ],
+                          "content": "Worked example 9",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    40,
+                    465,
+                    421,
+                    475
+                  ],
+                  "index": 14,
+                  "lines": [
+                    {
+                      "bbox": [
+                        40,
+                        465,
+                        421,
+                        475
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            40,
+                            465,
+                            421,
+                            475
+                          ],
+                          "content": "European put option 12",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    40,
+                    477,
+                    421,
+                    487
+                  ],
+                  "index": 15,
+                  "lines": [
+                    {
+                      "bbox": [
+                        40,
+                        477,
+                        421,
+                        487
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            40,
+                            477,
+                            421,
+                            487
+                          ],
+                          "content": "Calculating the time value 13",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    489,
+                    421,
+                    514
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        22,
+                        489,
+                        421,
+                        501
+                      ],
+                      "index": 16,
+                      "lines": [
+                        {
+                          "bbox": [
+                            22,
+                            489,
+                            421,
+                            501
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                22,
+                                489,
+                                421,
+                                501
+                              ],
+                              "content": "3.3 Interpreting the Black–Scholes model 15",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        22,
+                        504,
+                        421,
+                        514
+                      ],
+                      "index": 17,
+                      "lines": [
+                        {
+                          "bbox": [
+                            22,
+                            504,
+                            421,
+                            514
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                22,
+                                504,
+                                421,
+                                514
+                              ],
+                              "content": "3.4 The 'Greeks' 16",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    }
+                  ],
+                  "index": 18,
+                  "sub_type": "text",
+                  "type": "list"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    40,
+                    516,
+                    421,
+                    526
+                  ],
+                  "index": 19,
+                  "lines": [
+                    {
+                      "bbox": [
+                        40,
+                        516,
+                        421,
+                        526
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            40,
+                            516,
+                            421,
+                            526
+                          ],
+                          "content": "Option delta in the Black–Scholes model 16",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    40,
+                    528,
+                    421,
+                    538
+                  ],
+                  "index": 20,
+                  "lines": [
+                    {
+                      "bbox": [
+                        40,
+                        528,
+                        421,
+                        538
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            40,
+                            528,
+                            421,
+                            538
+                          ],
+                          "content": "Delta hedging 17",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    540,
+                    421,
+                    550
+                  ],
+                  "index": 21,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        540,
+                        421,
+                        550
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            540,
+                            421,
+                            550
+                          ],
+                          "content": "3.5 The Black-Scholes-Merton formula: fortunes and debacle 19",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                }
+              ],
+              "preproc_blocks": [
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    109,
+                    360,
+                    171
+                  ],
+                  "index": 2,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        109,
+                        360,
+                        171
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            109,
+                            360,
+                            171
+                          ],
+                          "content": "Session 3 The Black-Scholes model",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    21,
+                    205,
+                    417,
+                    233
+                  ],
+                  "index": 3,
+                  "lines": [
+                    {
+                      "bbox": [
+                        21,
+                        205,
+                        417,
+                        233
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            21,
+                            205,
+                            417,
+                            233
+                          ],
+                          "content": "This item contains selected online content. It is for use alongside, not as a replacement for the module website, which is the primary study format and contains activities and resources that cannot be replicated in the printed versions.",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    235,
+                    162,
+                    246
+                  ],
+                  "index": 4,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        235,
+                        162,
+                        246
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            235,
+                            162,
+                            246
+                          ],
+                          "content": "Copyright © 2024 The Open University",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    287,
+                    362,
+                    349
+                  ],
+                  "index": 5,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        287,
+                        362,
+                        349
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            287,
+                            362,
+                            349
+                          ],
+                          "content": "Session 3 The Black-Scholes model",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    366,
+                    79,
+                    379
+                  ],
+                  "index": 6,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        366,
+                        79,
+                        379
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            366,
+                            79,
+                            379
+                          ],
+                          "content": "Contents",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "type": "title"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    388,
+                    422,
+                    398
+                  ],
+                  "index": 7,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        388,
+                        422,
+                        398
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            388,
+                            422,
+                            398
+                          ],
+                          "content": "Introduction 3",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    401,
+                    421,
+                    412
+                  ],
+                  "index": 8,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        401,
+                        421,
+                        412
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            401,
+                            421,
+                            412
+                          ],
+                          "content": "Learning outcomes 4",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    415,
+                    421,
+                    425
+                  ],
+                  "index": 9,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        415,
+                        421,
+                        425
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            415,
+                            421,
+                            425
+                          ],
+                          "content": "Session 3 activities 5",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    428,
+                    421,
+                    451
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        22,
+                        428,
+                        421,
+                        439
+                      ],
+                      "index": 10,
+                      "lines": [
+                        {
+                          "bbox": [
+                            22,
+                            428,
+                            421,
+                            439
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                22,
+                                428,
+                                421,
+                                439
+                              ],
+                              "content": "3.1 Models for valuing share options 6",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        22,
+                        441,
+                        421,
+                        451
+                      ],
+                      "index": 11,
+                      "lines": [
+                        {
+                          "bbox": [
+                            22,
+                            441,
+                            421,
+                            451
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                22,
+                                441,
+                                421,
+                                451
+                              ],
+                              "content": "3.2 The Black-Scholes model 7",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    }
+                  ],
+                  "index": 12,
+                  "sub_type": "text",
+                  "type": "list"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    40,
+                    454,
+                    421,
+                    463
+                  ],
+                  "index": 13,
+                  "lines": [
+                    {
+                      "bbox": [
+                        40,
+                        454,
+                        421,
+                        463
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            40,
+                            454,
+                            421,
+                            463
+                          ],
+                          "content": "Worked example 9",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    40,
+                    465,
+                    421,
+                    475
+                  ],
+                  "index": 14,
+                  "lines": [
+                    {
+                      "bbox": [
+                        40,
+                        465,
+                        421,
+                        475
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            40,
+                            465,
+                            421,
+                            475
+                          ],
+                          "content": "European put option 12",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    40,
+                    477,
+                    421,
+                    487
+                  ],
+                  "index": 15,
+                  "lines": [
+                    {
+                      "bbox": [
+                        40,
+                        477,
+                        421,
+                        487
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            40,
+                            477,
+                            421,
+                            487
+                          ],
+                          "content": "Calculating the time value 13",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    489,
+                    421,
+                    514
+                  ],
+                  "blocks": [
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        22,
+                        489,
+                        421,
+                        501
+                      ],
+                      "index": 16,
+                      "lines": [
+                        {
+                          "bbox": [
+                            22,
+                            489,
+                            421,
+                            501
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                22,
+                                489,
+                                421,
+                                501
+                              ],
+                              "content": "3.3 Interpreting the Black–Scholes model 15",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    },
+                    {
+                      "angle": 0,
+                      "bbox": [
+                        22,
+                        504,
+                        421,
+                        514
+                      ],
+                      "index": 17,
+                      "lines": [
+                        {
+                          "bbox": [
+                            22,
+                            504,
+                            421,
+                            514
+                          ],
+                          "spans": [
+                            {
+                              "bbox": [
+                                22,
+                                504,
+                                421,
+                                514
+                              ],
+                              "content": "3.4 The 'Greeks' 16",
+                              "type": "text"
+                            }
+                          ]
+                        }
+                      ],
+                      "merge_prev": false,
+                      "type": "text"
+                    }
+                  ],
+                  "index": 18,
+                  "sub_type": "text",
+                  "type": "list"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    40,
+                    516,
+                    421,
+                    526
+                  ],
+                  "index": 19,
+                  "lines": [
+                    {
+                      "bbox": [
+                        40,
+                        516,
+                        421,
+                        526
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            40,
+                            516,
+                            421,
+                            526
+                          ],
+                          "content": "Option delta in the Black–Scholes model 16",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    40,
+                    528,
+                    421,
+                    538
+                  ],
+                  "index": 20,
+                  "lines": [
+                    {
+                      "bbox": [
+                        40,
+                        528,
+                        421,
+                        538
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            40,
+                            528,
+                            421,
+                            538
+                          ],
+                          "content": "Delta hedging 17",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                },
+                {
+                  "angle": 0,
+                  "bbox": [
+                    22,
+                    540,
+                    421,
+                    550
+                  ],
+                  "index": 21,
+                  "lines": [
+                    {
+                      "bbox": [
+                        22,
+                        540,
+                        421,
+                        550
+                      ],
+                      "spans": [
+                        {
+                          "bbox": [
+                            22,
+                            540,
+                            421,
+                            550
+                          ],
+                          "content": "3.5 The Black-Scholes-Merton formula: fortunes and debacle 19",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "merge_prev": false,
+                  "type": "text"
+                }
+              ]
+            }
+          ]
+        },
+        "pages_requested": -1,
+        "source": "b64"
+      }
+    ]
+  },
+  "status": "COMPLETED",
+  "workerId": "sb3qtophbwxc1g"
+}
