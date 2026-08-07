@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mineru-ocr"
+version = "0.1.0"
+description = "Lokale Seite der MinerU-OCR-Strecke: Dokumente rein, Text und Struktur raus — ueber Postgres und Procrastinate."
+requires-python = ">=3.12"
+
+# Die Fassungen sind die am 07.08.2026 in der Miniconda-Base vorhandenen und
+# damit die einzigen, gegen die je etwas gelaufen ist. Untergrenzen statt
+# Pins, weil die Base geteilt ist und ein Pin dort andere Projekte brechen
+# wuerde; Obergrenzen bewusst keine, aber siehe den Kommentar an procrastinate.
+dependencies = [
+    # 3.9.0 ist die Fassung, gegen die die 19 Feature-Belege in
+    # plans/2026-08-06-procrastinate-feature-verifikation.md geprueft sind —
+    # zwei davon am Objekt (SQL-Schema und Quellcode). Bei einem Upgrade
+    # gehoert diese Datei erneut durchgegangen, besonders Punkt 12
+    # (undokumentierte Heartbeat-Tabelle) und Punkt 19 (retry_job_by_id).
+    "procrastinate>=3.9.0",
+    "psycopg[binary,pool]>=3.3.3",
+    "httpx>=0.28.1",
+    # pypdfium2 schneidet PDFs ohne Aufblaehen (gemessen 1,00x am 17-MB-
+    # Fixture-Bescheid). pypdf ist im ganzen Projekt VERBOTEN (Betriebshandbuch:
+    # 360 MB Quelle wurden zu 4,1 GB Einzelseiten) und taucht deshalb hier nicht
+    # als Abhaengigkeit auf, auch nicht mittelbar gewollt.
+    "pypdfium2>=4.30.0",
+    # typer bringt rich als eigene Abhaengigkeit mit. Eine zusaetzliche eigene
+    # Zeile dafuer stand hier und war eine Behauptung, die nicht stimmte: Das
+    # Paket benutzt rich nirgends. Sie ist weg — wer spaeter rich benutzt, traegt
+    # es wieder ein, und dann stimmt es auch.
+    "typer>=0.19.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "mypy>=1.19.1",
+]
+
+[project.scripts]
+# Der zweite Zugangsweg. Der erste ist `import mineru_ocr`; beide fuehren auf
+# dieselbe oeffentliche Flaeche, das Kommando enthaelt keine eigene Logik.
+mineru-ocr = "mineru_ocr.cli:main"
+
+[tool.setuptools]
+packages = ["mineru_ocr"]
+
+[tool.mypy]
+python_version = "3.12"
+# Die Contracts sind die Schnittstelle; sie muessen vollstaendig annotiert sein,
+# sonst ist der Vertrag nur halb aufgeschrieben. Deshalb streng, und zwar ab
+# Phase A — nicht erst, wenn Koerper drinstehen.
+strict = true
+warn_unreachable = true
+# procrastinate liefert eigene Typen mit; sollte ein Paket keine haben, wird die
+# Ausnahme hier einzeln und mit Begruendung eingetragen, nie global abgeschaltet.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Phase A legt die Testnamen an (ein Test je Zusicherung, uebersprungen);
+# Phase B fuellt die Koerper. Ein uebersprungener Test mit sprechendem Namen
+# ist die ausfuehrbare Fassung des Vertrags.
+markers = [
+    "live: spricht mit dem echten RunPod-Endpoint und KOSTET GELD (Phase D, nur mit ausdruecklicher Zustimmung)",
+    "db: braucht die laufende Postgres-Instanz auf Port 5437 (Phase C)",
+]
