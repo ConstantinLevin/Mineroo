@@ -401,3 +401,106 @@ def test_status_sagt_wenn_kein_daemon_laeuft(
     assert ergebnis.exit_code == 0
     assert "LAEUFT NICHT" in ergebnis.output
     assert "mineru-ocr daemon" in ergebnis.output
+
+
+# --- Das Kommando, das Geld ausgibt --------------------------------------
+
+
+async def test_retry_fragt_vor_dem_geldausgeben(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    """`retry` sagt, um wie viele Dokumente es geht, und fragt nach.
+
+    Jedes wieder vorgelegte Dokument wird VOLLSTAENDIG neu verarbeitet und neu
+    bezahlt. Ein Kommando, das das ohne Rueckfrage tut, gibt fremdes Geld aus.
+
+    Und die Gegenprobe im selben Test: Wird die Frage verneint, passiert NICHTS
+    — kein halber Lauf, keine Teilmenge.
+    """
+    huelle = _anlegen(db_conn, tmp_path, "teuer.png", _test_datenbank)
+    cli.invoke(app, ["ocr", str(huelle.source_path)])
+    db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
+    await write_terminal_async(
+        async_conn, sha256=huelle.sha256, status=DocumentStatus.FAILED, raw={}
+    )
+
+    verneint = cli.invoke(app, ["retry", huelle.sha256], input="n\n")
+    assert verneint.exit_code == 0
+    assert "KOSTET" in verneint.output or "kostet Geld" in verneint.output
+    # Nichts passiert: Der Job steht unveraendert auf `failed`.
+    zustand = db_conn.execute(
+        "SELECT status FROM procrastinate_jobs WHERE queueing_lock = %s",
+        (huelle.sha256,),
+    ).fetchone()
+    assert zustand is not None and zustand[0] == "failed"
+
+    bejaht = cli.invoke(app, ["retry", huelle.sha256], input="j\ny\n")
+    assert bejaht.exit_code == 0
+    zustand = db_conn.execute(
+        "SELECT status FROM procrastinate_jobs WHERE queueing_lock = %s",
+        (huelle.sha256,),
+    ).fetchone()
+    assert zustand is not None and zustand[0] == "todo"
+
+
+async def test_retry_mit_yes_fragt_nicht(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    """`--yes` ist der ausdrueckliche Verzicht auf die Rueckfrage — fuer Skripte.
+
+    Ausdruecklich und nicht als Voreinstellung: Wer ihn setzt, hat die Frage
+    schon beantwortet.
+    """
+    huelle = _anlegen(db_conn, tmp_path, "skript.png", _test_datenbank)
+    cli.invoke(app, ["ocr", str(huelle.source_path)])
+    db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
+    await write_terminal_async(
+        async_conn, sha256=huelle.sha256, status=DocumentStatus.FAILED, raw={}
+    )
+
+    ergebnis = cli.invoke(app, ["retry", huelle.sha256, "--yes"])
+    assert ergebnis.exit_code == 0
+    assert "1 von 1" in ergebnis.output
+
+
+def test_retry_ohne_gescheiterte_tut_nichts(cli: CliRunner) -> None:
+    """Nichts zu wiederholen ist kein Fehler — und kostet nichts."""
+    ergebnis = cli.invoke(app, ["retry", "--failed", "--yes"])
+    assert ergebnis.exit_code == 0
+    assert "Nichts zu wiederholen" in ergebnis.output
+
+
+async def test_markdown_schreibt_in_eine_datei(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    """Mit `--out` geht der Text in die Datei und die Meldung auf die
+    FEHLERausgabe.
+
+    Der Unterschied ist keine Feinheit: Wer `mineru-ocr markdown … > datei.md`
+    schreibt, will den Text in der Datei haben und die Meldung nicht.
+    """
+    huelle = _anlegen(db_conn, tmp_path, "raus.png", _test_datenbank)
+    await write_terminal_async(
+        async_conn,
+        sha256=huelle.sha256,
+        status=DocumentStatus.DONE,
+        raw={"markdown": "Der ganze Text", "content_list": [], "images": {}},
+    )
+
+    ziel = tmp_path / "ergebnis.md"
+    ergebnis = cli.invoke(app, ["markdown", huelle.sha256, "--out", str(ziel)])
+    assert ergebnis.exit_code == 0
+    assert ziel.read_text(encoding="utf-8") == "Der ganze Text"
+    assert "Der ganze Text" not in ergebnis.stdout

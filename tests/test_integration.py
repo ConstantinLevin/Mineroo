@@ -636,3 +636,145 @@ async def test_ohne_daemon_passiert_nichts_und_das_wird_gesagt(
     # Danach: wartet — und niemand arbeitet.
     assert derive_status(zeile, _jobs_zu(db_conn, sha)).phase is Phase.WAITING
     assert db.worker_heartbeats(db_conn) == []
+
+
+# --------------------------------------------------------------------------
+# Herunterfahren — der Pfad, auf dem Jobs `aborted` enden
+# --------------------------------------------------------------------------
+
+
+async def test_daemon_faengt_die_signale_selbst_und_gibt_sie_wieder_frei(
+    db_conn: psycopg.Connection[Any], int_settings: Settings
+) -> None:
+    """Waehrend der Daemon laeuft, haengen SIGTERM und SIGINT an SEINER Schleife
+    — danach nicht mehr.
+
+    Warum das eigens geprueft wird: Beide Worker laufen mit
+    `install_signal_handlers=False`, weil zwei Worker nicht beide Handler
+    einrichten duerfen — der zweite ueberschriebe den ersten, und beim Beenden
+    wuerde einer nie benachrichtigt. Der Prozess faengt die Signale deshalb
+    selbst. Faellt diese Einrichtung aus, merkt man es NICHT im Betrieb: Der
+    Daemon laeuft, arbeitet, und reagiert nur auf Strg-C nicht mehr — bis jemand
+    ihn hart abschiesst und die laufenden Dokumente mitnimmt.
+
+    Geprueft ohne ein echtes Signal zu senden: `add_signal_handler` setzt am
+    Prozess einen eigenen Handler, `signal.getsignal` gibt ihn zurueck, und nach
+    `remove_signal_handler` steht dort wieder die Voreinstellung. Ein echtes
+    SIGTERM waere hier gefaehrlich — kaeme es einen Wimpernschlag nach dem
+    Aufraeumen an, beendete es den Testlauf.
+    """
+    import signal as signal_modul
+
+    voreinstellung = signal_modul.getsignal(signal_modul.SIGTERM)
+    gesehen: list[Any] = []
+
+    async def haengt_am_signal() -> bool:
+        gesehen.append(signal_modul.getsignal(signal_modul.SIGTERM))
+        return gesehen[-1] is not voreinstellung
+
+    await _daemon_laufen_lassen(
+        int_settings, ProtokollRunPod(), bis=haengt_am_signal
+    )
+
+    assert gesehen[-1] is not voreinstellung, (
+        "Der Daemon hat SIGTERM nicht an sich gezogen — Strg-C wuerde ihn dann "
+        "hart beenden statt sauber herunterzufahren."
+    )
+    # Und danach ist der Prozess wieder so, wie er war. Ein Daemon, der seine
+    # Handler stehen laesst, veraendert einen Prozess, dem er nicht gehoert.
+    assert signal_modul.getsignal(signal_modul.SIGTERM) is voreinstellung
+
+
+async def test_gestorbener_worker_beendet_den_daemon_mit_fehler(
+    db_conn: psycopg.Connection[Any], int_settings: Settings
+) -> None:
+    """Stirbt EIN Worker an einem Fehler, endet `run` mit diesem Fehler.
+
+    Der Fall, gegen den das steht, ist der unangenehmste im Betrieb: Ein Prozess,
+    der sich beendet hat und Exit-Code 0 meldet. Man bemerkt ihn erst am leeren
+    Bestand — Stunden spaeter, wenn nichts fertig geworden ist.
+
+    Geprueft, indem `run_worker_async` beim zweiten Aufruf wirft; der erste
+    Worker laeuft dann noch, der zweite nicht.
+    """
+    from procrastinate import App
+
+    echt = App.run_worker_async
+    zaehler = {"n": 0}
+
+    async def manchmal_kaputt(self: Any, **optionen: Any) -> None:
+        zaehler["n"] += 1
+        if zaehler["n"] == 2:
+            raise RuntimeError("dieser Worker ist gestorben")
+        await echt(self, **optionen)
+
+    App.run_worker_async = manchmal_kaputt  # type: ignore[method-assign]
+    try:
+        with pytest.raises(RuntimeError, match="gestorben"):
+            await daemon.run(int_settings)
+    finally:
+        App.run_worker_async = echt  # type: ignore[method-assign]
+
+
+def test_main_uebersetzt_in_exit_codes(int_settings: Settings) -> None:
+    """`main` gibt 0 bei ordentlichem Ende und 1 bei einem Fehler.
+
+    Der synchrone Einstieg der Kommandozeile. Ein Abbruch von Hand ist dabei
+    ausdruecklich ein ORDENTLICHES Ende und kein Fehler: Wer Strg-C drueckt,
+    wollte das.
+    """
+    import mineru_ocr.daemon as daemon_modul
+
+    echt = daemon_modul.run
+
+    async def sofort_fertig(settings: Settings, *, queues: Any = None) -> None:
+        return None
+
+    async def abgebrochen(settings: Settings, *, queues: Any = None) -> None:
+        raise KeyboardInterrupt()
+
+    async def kaputt(settings: Settings, *, queues: Any = None) -> None:
+        raise RuntimeError("Datenbank weg")
+
+    try:
+        daemon_modul.run = sofort_fertig
+        assert daemon_modul.main(int_settings) == 0
+
+        daemon_modul.run = abgebrochen
+        assert daemon_modul.main(int_settings) == 0
+
+        daemon_modul.run = kaputt
+        assert daemon_modul.main(int_settings) == 1
+    finally:
+        daemon_modul.run = echt
+
+
+def test_zwei_prozess_rueckfall_ist_wirklich_vorbereitet(
+    int_settings: Settings,
+) -> None:
+    """Mit ausdruecklichen Queues startet GENAU EIN Worker fuer genau diese.
+
+    Das ist der dokumentierte Rueckfall fuer den Fall, dass die
+    Zwei-Koroutinen-Konstruktion nicht traegt (Feature-Verifikation Punkt 1).
+    Sie traegt — aber ein Rueckfall, der nie geprueft wurde, ist keiner, sondern
+    eine Absichtserklaerung. Genau dann braucht man ihn: wenn das Uebliche
+    gerade nicht geht.
+    """
+    from mineru_ocr.daemon import _worker_optionen
+
+    beide = _worker_optionen(int_settings, None, {"settings": int_settings})
+    assert len(beide) == 2
+    assert [o["queues"] for o in beide] == [[config.QUEUE_OCR], [config.QUEUE_MAINTENANCE]]
+    # Der Waechter bekommt genau EINEN Platz; die OCR-Queue die eingestellte Zahl.
+    assert beide[0]["concurrency"] == int_settings.ocr_concurrency
+    assert beide[1]["concurrency"] == 1
+    # KEINER der beiden richtet Signal-Handler ein — das tut der Prozess selbst.
+    assert all(o["install_signal_handlers"] is False for o in beide)
+    # Und Job-Zeilen bleiben stehen: Der abgeleitete Zustand LIEST aus ihnen.
+    assert all(o["delete_jobs"] == "never" for o in beide)
+
+    einzeln = _worker_optionen(
+        int_settings, [config.QUEUE_MAINTENANCE], {"settings": int_settings}
+    )
+    assert len(einzeln) == 1
+    assert einzeln[0]["queues"] == [config.QUEUE_MAINTENANCE]
