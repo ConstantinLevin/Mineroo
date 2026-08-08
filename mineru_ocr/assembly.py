@@ -140,6 +140,34 @@ class ChunkArtifacts:
     ausgewertet, aber auch nicht weggeworfen — es ist die Herkunft eines bezahlten
     Ergebnisses."""
 
+    extras: dict[str, Any]
+    """ALLES, was die Antwort sonst noch trug und wir nicht benannt haben.
+
+    DIES IST DIE ABRUF-REGEL ALS BAUTEIL, und es gibt dieses Feld, weil sie ohne
+    es verletzt war. Die Regel lautet: alles holen, alles persistieren, nie
+    filtern. Ohne dieses Feld tat das Auspacken genau das Gegenteil — es griff
+    die vier Felder heraus, die es kannte, und liess den Rest fallen. Und der
+    Rest war nicht leer:
+
+        Beim INLINE-Transport gingen an jeder der sechs konservierten echten
+        Antworten drei Felder verloren — `basename`, `source` und
+        `pages_requested`. Gemessen am 08.08.2026, nicht vermutet.
+
+        Beim TARBALL-Transport ging jede Datei verloren, deren Name auf keines
+        der erwarteten Muster passte. Die Zuordnung geschieht ueber Muster, weil
+        von den Dateinamen nur EINER belegt ist — genau deshalb ist die Chance,
+        dass etwas Unbekanntes dabei ist, nicht klein, sondern die
+        wahrscheinlichste aller Lagen.
+
+    Was hier landet, wird nie ausgewertet und nie gelesen. Es wird aufgehoben.
+    Das ist der ganze Zweck: Eine Antwort ist dreissig Minuten nach ihrer
+    Entstehung nirgends mehr abrufbar, und was wir in diesem Moment nicht
+    aufheben, ist fuer immer weg — bezahlt und weg.
+
+    Beim Tarball sind die Werte Base64-Zeichenketten unter dem vollen Pfad im
+    Archiv; beim Inline-Transport sind es die Werte, wie sie in der Antwort
+    standen. Beides ist JSON-faehig und geht damit unveraendert in `raw`."""
+
 
 def unpack_response(response: dict[str, Any], chunk: Chunk) -> ChunkArtifacts:
     """Packt eine volle `/status`-Antwort in ihre Bestandteile aus.
@@ -229,6 +257,7 @@ def _aus_inline(
     nur Tarball und S3 packen dieses Verzeichnis ein (Betriebshandbuch 14a).
     „Tarball traegt also strikt mehr als Inline."
     """
+    benannt = {"markdown", "content_list", "images", "middle"}
     return ChunkArtifacts(
         chunk=chunk,
         markdown=ergebnis.get("markdown", ""),
@@ -238,6 +267,15 @@ def _aus_inline(
         layout_pdf=None,
         span_pdf=None,
         envelope=umschlag,
+        # Alles Uebrige aufheben — die Abruf-Regel. An den sechs echten
+        # Antworten sind das `basename`, `source` und `pages_requested`; bei
+        # einer kuenftigen Fassung der Engine womoeglich mehr, und genau darum
+        # wird hier nicht aufgezaehlt, sondern der Rest genommen.
+        extras={
+            schluessel: wert
+            for schluessel, wert in ergebnis.items()
+            if schluessel not in benannt
+        },
     )
 
 
@@ -323,6 +361,7 @@ def _aus_tarball(
     layout_pdf: bytes | None = None
     span_pdf: bytes | None = None
     gesehen: list[str] = []
+    uebrig: dict[str, Any] = {}
 
     try:
         with tarfile.open(fileobj=io.BytesIO(archivbytes), mode="r:*") as archiv:
@@ -349,6 +388,14 @@ def _aus_tarball(
                     span_pdf = inhalt
                 elif "/images/" in name or name.startswith("images/"):
                     images[kurz] = inhalt
+                else:
+                    # KEIN Muster hat gepasst — und genau deshalb wird die Datei
+                    # aufgehoben statt fallengelassen. Von den Dateinamen im
+                    # Archiv ist nur EINER belegt; dass etwas Unbekanntes dabei
+                    # ist, ist damit nicht der Sonderfall, sondern die
+                    # wahrscheinlichste Lage. Base64, weil `raw` eine
+                    # jsonb-Spalte ist und Bytes dort keine Entsprechung haben.
+                    uebrig[name] = base64.b64encode(inhalt).decode("ascii")
     except tarfile.TarError as fehler:
         raise TerminalRunPodError(
             f"`tarball_b64` liess sich nicht als Archiv lesen: {fehler}"
@@ -362,6 +409,14 @@ def _aus_tarball(
             f"geaendert und die Muster oben gehoeren nachgezogen."
         )
 
+    # Auch die Felder NEBEN `tarball_b64` gehoeren aufgehoben — beim Inline-
+    # Transport tragen dieselben Stellen `basename`, `source` und
+    # `pages_requested`, und es gibt keinen Grund anzunehmen, dass der Tarball
+    # sie nicht ebenso traegt.
+    for schluessel, wert in ergebnis.items():
+        if schluessel != "tarball_b64":
+            uebrig[schluessel] = wert
+
     return ChunkArtifacts(
         chunk=chunk,
         markdown=markdown,
@@ -371,6 +426,7 @@ def _aus_tarball(
         layout_pdf=layout_pdf,
         span_pdf=span_pdf,
         envelope=umschlag,
+        extras=uebrig,
     )
 
 
@@ -503,6 +559,12 @@ def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
         "layout_pdfs": [_b64_oder_none(teil.layout_pdf) for teil in parts],
         "span_pdfs": [_b64_oder_none(teil.span_pdf) for teil in parts],
         "envelopes": [teil.envelope for teil in parts],
+        # Je Teilstueck eine eigene Abbildung und NICHT vereinigt: Die
+        # Schluessel koennen sich zwischen Teilstuecken wiederholen (jedes
+        # Teilstueck hat sein eigenes `basename`, seine eigene
+        # `pages_requested`), und eine Vereinigung liesse alle bis auf die
+        # letzte fallen. Genau der stille Verlust, gegen den `extras` steht.
+        "extras": [teil.extras for teil in parts],
     }
 
 

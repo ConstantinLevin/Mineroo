@@ -86,6 +86,7 @@ def _teil(
         layout_pdf=None,
         span_pdf=None,
         envelope={"id": f"job-{chunk.first_page}"},
+        extras={},
     )
 
 
@@ -751,6 +752,150 @@ def test_ohne_randbloecke_sind_beide_wege_gleich(
             layout_pdf=None,
             span_pdf=None,
             envelope=teil.envelope,
+            extras=teil.extras,
         )
         ergebnis = assemble([ohne_rand])
         assert rendered_text(ergebnis) == rendered_text(ergebnis, furniture=False)
+
+
+# --- Die Abruf-Regel als Maschinenpruefung -------------------------------
+
+
+def test_kein_feld_der_echten_antwort_geht_verloren(
+    real_responses: list[dict[str, Any]],
+) -> None:
+    """JEDES Feld jeder echten Antwort ist im gespeicherten Ergebnis wiederzufinden.
+
+    DAS IST DIE ABRUF-REGEL ALS MASCHINENPRUEFUNG, und sie steht hier, weil die
+    Regel ohne sie verletzt war: `unpack_response` griff die vier Felder heraus,
+    die es kannte, und liess `basename`, `source` und `pages_requested` fallen —
+    an jeder der sechs Antworten, still. Aufgefallen ist das nicht beim Lesen des
+    Codes, sondern erst bei der Frage „speichern wir wirklich alles?".
+
+    Ein Test, der die drei Feldnamen aufzaehlt, haette den naechsten Verlust
+    nicht gefangen: Er prueft dann genau die Felder, die man schon kennt. Dieser
+    hier zaehlt nicht auf — er nimmt die Antwort, wie sie ist, und verlangt, dass
+    jedes ihrer Felder ANKOMMT. Fuegt die Engine morgen ein Feld hinzu, faellt es
+    hier auf, ohne dass jemand den Test anfassen muesste.
+    """
+    for antwort in real_responses:
+        ergebnis_roh = antwort["output"]["results"][0]
+        teil = unpack_response(antwort, Chunk(first_page=0, last_page=0))
+        gespeichert = assemble([teil])
+
+        gesucht = set(ergebnis_roh)
+        gefunden = {"markdown", "content_list", "images", "middle"}
+        gefunden |= set(gespeichert["extras"][0])
+
+        fehlend = gesucht - gefunden
+        assert not fehlend, (
+            f"Diese Felder der Antwort landen NIRGENDS: {sorted(fehlend)}. "
+            f"Das ist ein Verstoss gegen die Abruf-Regel — was hier nicht "
+            f"aufgehoben wird, ist dreissig Minuten spaeter fuer immer weg."
+        )
+
+
+def test_werte_der_uebrigen_felder_kommen_unveraendert_an(
+    real_responses: list[dict[str, Any]],
+) -> None:
+    """Nicht nur die NAMEN kommen an, sondern die Werte — unveraendert.
+
+    Der Unterschied ist nicht theoretisch: Ein Feld unter seinem Namen mit einem
+    leeren Wert zu speichern saehe im vorigen Test genauso aus wie eines mit
+    seinem Inhalt.
+    """
+    for antwort in real_responses:
+        ergebnis_roh = antwort["output"]["results"][0]
+        teil = unpack_response(antwort, Chunk(first_page=0, last_page=0))
+        for schluessel, wert in ergebnis_roh.items():
+            if schluessel in {"markdown", "content_list", "images", "middle"}:
+                continue
+            assert teil.extras[schluessel] == wert, schluessel
+
+
+def test_unbekannte_dateien_im_archiv_gehen_nicht_verloren() -> None:
+    """Eine Datei im Tarball, die auf KEIN Muster passt, wird aufgehoben.
+
+    Der zweite Teil derselben Regel, und der wahrscheinlichere Fall: Von den
+    Dateinamen im Archiv ist genau EINER belegt (`{basename}_content_list.json`
+    mit einem Versions-Rueckfall). Dass etwas Unbekanntes dabei ist, ist damit
+    nicht der Sonderfall, sondern die wahrscheinlichste Lage.
+
+    Vor der Behebung wurde eine solche Datei STILL verworfen — kein Fehler,
+    keine Meldung, nur weg. Und zwar bezahlt weg.
+    """
+    puffer = io.BytesIO()
+    dateien = {
+        "doc/doc.md": b"# Text",
+        "doc/doc_content_list.json": b'[{"type":"text","page_idx":0}]',
+        "doc/doc_model.json": b'{"das":"kannten wir nicht"}',
+        "doc/voellig_unbekannt.dat": b"\x00\x01 binaer",
+    }
+    with tarfile.open(fileobj=puffer, mode="w:gz") as archiv:
+        for name, inhalt in dateien.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(inhalt)
+            archiv.addfile(info, io.BytesIO(inhalt))
+
+    antwort = _antwort()
+    antwort["output"]["results"][0] = {
+        "basename": "doc",
+        "pages_requested": -1,
+        "tarball_b64": base64.b64encode(puffer.getvalue()).decode("ascii"),
+    }
+
+    teil = unpack_response(antwort, Chunk(first_page=0, last_page=0))
+
+    # Die beiden unbekannten Dateien sind da — unter ihrem vollen Pfad im
+    # Archiv und mit unveraendertem Inhalt.
+    assert (
+        base64.b64decode(teil.extras["doc/doc_model.json"])
+        == b'{"das":"kannten wir nicht"}'
+    )
+    assert (
+        base64.b64decode(teil.extras["doc/voellig_unbekannt.dat"])
+        == b"\x00\x01 binaer"
+    )
+    # Und die Felder NEBEN dem Tarball ebenso.
+    assert teil.extras["basename"] == "doc"
+    assert teil.extras["pages_requested"] == -1
+
+
+def test_extras_werden_je_teilstueck_gehalten() -> None:
+    """Je Teilstueck eine eigene Abbildung, NICHT vereinigt.
+
+    Die Schluessel wiederholen sich zwischen Teilstuecken — jedes hat sein
+    eigenes `basename` und seine eigene `pages_requested`. Eine Vereinigung
+    liesse alle bis auf die letzte fallen: derselbe stille Verlust eine Ebene
+    hoeher.
+    """
+    ergebnis = assemble(
+        [
+            ChunkArtifacts(
+                chunk=Chunk(first_page=0, last_page=0),
+                markdown="a",
+                content_list=[],
+                images={},
+                middle={},
+                layout_pdf=None,
+                span_pdf=None,
+                envelope={},
+                extras={"basename": "erstes", "pages_requested": -1},
+            ),
+            ChunkArtifacts(
+                chunk=Chunk(first_page=1, last_page=1),
+                markdown="b",
+                content_list=[],
+                images={},
+                middle={},
+                layout_pdf=None,
+                span_pdf=None,
+                envelope={},
+                extras={"basename": "zweites", "pages_requested": -1},
+            ),
+        ]
+    )
+    assert ergebnis["extras"] == [
+        {"basename": "erstes", "pages_requested": -1},
+        {"basename": "zweites", "pages_requested": -1},
+    ]
