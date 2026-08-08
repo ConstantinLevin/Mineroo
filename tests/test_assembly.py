@@ -861,6 +861,102 @@ def test_unbekannte_dateien_im_archiv_gehen_nicht_verloren() -> None:
     assert teil.extras["pages_requested"] == -1
 
 
+def test_echte_tarball_antwort_wird_vollstaendig_ausgepackt(
+    echte_tarball_antwort: dict[str, Any],
+) -> None:
+    """Der Produktionspfad gegen eine ECHTE Antwort — nicht gegen eine gebaute.
+
+    Bis zum 08.08.2026 gab es fuer `tarball_b64` kein Testmaterial, obwohl der
+    Betrieb ausschliesslich diesen Transport faehrt. Der Auspacker war damit
+    gegen eine VORSTELLUNG der Antwort geprueft und gegen nichts sonst. Alle
+    Zusicherungen hier sind an dieser einen echten Antwort GEMESSEN, nicht
+    hergeleitet.
+
+    Was die Messung umgeworfen hat, steht ausfuehrlich an `TARBALL_FIXTURE` in
+    `conftest.py`.
+    """
+    from mineru_ocr.assembly import unpack_response
+
+    teil = unpack_response(echte_tarball_antwort, Chunk(first_page=0, last_page=0))
+
+    # Die vier benannten Inhalte, mit den gemessenen Groessen.
+    assert len(teil.markdown) == 666
+    assert len(teil.content_list) == 13
+    assert sorted(teil.middle) == ["_backend", "_version_name", "pdf_info"]
+    assert len(teil.images) == 1
+    bildname, bildbytes = next(iter(teil.images.items()))
+    assert bildname.endswith(".jpg")
+    # Wirklich ein JPEG, nicht bloss ein Feld mit Inhalt.
+    assert bildbytes.startswith(b"\xff\xd8\xff")
+
+    # GEMESSEN, und gegen den Vertrag: Das Archiv traegt ein layout-PDF, aber
+    # KEIN span-PDF. Der Docstring von `ChunkArtifacts.span_pdf` sagt, die
+    # Span-Visualisierung komme mit dem Tarball — in dieser Antwort tut sie es
+    # nicht. Der Test haelt den gemessenen Zustand fest, damit ein spaeterer
+    # Wechsel auffaellt, statt unbemerkt zu bleiben.
+    assert teil.layout_pdf is not None
+    assert teil.layout_pdf.startswith(b"%PDF")
+    assert teil.span_pdf is None
+
+    # Der Umschlag traegt alles ausser `output`, plus die Metadaten aus `output`.
+    assert sorted(teil.envelope) == [
+        "delayTime",
+        "executionTime",
+        "id",
+        "output_meta",
+        "status",
+        "workerId",
+    ]
+
+
+def test_echte_tarball_antwort_traegt_zwei_content_list_generationen(
+    echte_tarball_antwort: dict[str, Any],
+) -> None:
+    """DER DOPPELTREFFER IST ECHT — und er kam beim allerersten Lauf.
+
+    Das Archiv enthaelt `doc_content_list.json` UND `doc_content_list_v2.json`,
+    und beide treffen dasselbe Zuordnungsmuster (`_content_list` + `.json`). Vor
+    der Behebung haette die zuletzt gelesene die zuerst gelesene ersetzt, und die
+    Verliererin waere ERSATZLOS weg gewesen — nicht im Feld, nicht in `extras`,
+    einfach fort, bezahlt und ohne Fehlersignal.
+
+    Der Fall galt bis dahin als hypothetisch: Das Modul raeumte ein, von den
+    Dateinamen sei nur einer belegt, und behandelte einen Doppeltreffer deshalb
+    als denkbar. Er ist nicht denkbar, er ist der Normalfall.
+
+    Und die beiden sind NICHT zwei Generationen desselben Formats, wie die
+    Dokumentation annahm („`package.py` sucht `{basename}_content_list.json` und
+    faellt auf `{basename}_content_list_v2.json` zurueck"). Sie sind zwei
+    verschiedene Formate: Die genommene ist flach mit `page_idx` je Block, die
+    andere nach Seiten geschachtelt mit `title`/`paragraph`/`table` und
+    zusaetzlicher Strukturinformation.
+    """
+    from mineru_ocr.assembly import unpack_response
+
+    teil = unpack_response(echte_tarball_antwort, Chunk(first_page=0, last_page=0))
+
+    # Die Verliererin des Doppeltreffers ist da, unter ihrem Archivnamen.
+    assert "doc_content_list_v2.json" in teil.extras
+    v2 = json.loads(base64.b64decode(teil.extras["doc_content_list_v2.json"]))
+
+    # Und sie ist wirklich etwas anderes: geschachtelt statt flach.
+    assert isinstance(v2, list) and len(v2) == 1
+    innen = v2[0]
+    assert isinstance(innen, list) and len(innen) == 13
+    typen = {b["type"] for b in innen}
+    assert typen == {"title", "paragraph", "table"}
+    # Die genommene Fassung kennt diese Typen NICHT — sie nennt alles `text`.
+    assert {b["type"] for b in teil.content_list} == {"text", "table"}
+
+    # Auch die Felder neben dem Tarball sind aufgehoben. Die Werte sind
+    # ABGELESEN und nicht erschlossen: `source` traegt `"b64"` (die Transportart)
+    # und nicht etwa denselben Wert wie `basename` — genau diese Verwechslung
+    # hat der Test beim ersten Lauf gefangen.
+    assert teil.extras["basename"] == "doc"
+    assert teil.extras["source"] == "b64"
+    assert teil.extras["pages_requested"] == -1
+
+
 def test_zwei_dateien_auf_demselben_muster_gehen_nicht_verloren() -> None:
     """Zwei `.md` im Archiv: eine fuellt das Feld, die andere steht in `extras`.
 

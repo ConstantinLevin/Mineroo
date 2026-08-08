@@ -27,22 +27,58 @@ from mineru_ocr.config import Settings
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "artifacts" / "2026-08-05-doku-verifikationstest"
 """Die sechs konservierten ECHTEN Antworten vom Doku-Verifikationstest.
 
-Sie sind das einzige echte Antwortmaterial, das es ohne einen bezahlten Lauf
-gibt. Eine Einschraenkung, die man kennen muss: Sie stammen aus Laeufen mit
-`transport: "inline"`, waehrend wir `tarball_b64` versenden. Sie tragen also den
+Sie stammen aus Laeufen mit `transport: "inline"` und tragen deshalb den
 Antwort-Umschlag, `markdown`, `content_list` mit `page_idx` und `middle` — aber
-KEIN `tarball_b64` und keine Bilder. Fuer den Tarball-Pfad gibt es bis zum ersten
-Live-Lauf kein Offline-Material; diese Luecke ist benannt und nicht ueberdeckt.
+KEIN `tarball_b64`. Fuer den Tarball-Pfad, den der Betrieb faehrt, siehe
+`TARBALL_FIXTURE`.
 
-Eine zweite Einschraenkung, die genauso wichtig ist: ALLE SECHS SIND EINSEITIGE
-BILDER (`blackscholes__-01.png` bis `-12.png`), ihre `page_idx` sind durchweg 0.
-Damit gibt es auch fuer die Mehr-Teilstueck-Lage kein echtes Material — weder
-fuer den Seitenversatz beim Zusammensetzen noch fuer die Bild-Vereinigung ueber
-Teilstuecke hinweg. Beides laeuft gegen erfundene Antworten, bis der Live-Smoke
-eine echte mehrteilige Antwort erzeugt hat. Ohne diesen Hinweis schliesst man aus
-„die einzigen echten Antworten", die uebrigen Tests seien gegen echtes Material
-abgesichert.
+Eine Einschraenkung, die man kennen muss: ALLE SECHS SIND EINSEITIGE BILDER
+(`blackscholes__-01.png` bis `-12.png`), ihre `page_idx` sind durchweg 0. Fuer
+die Mehr-Teilstueck-Lage — Seitenversatz beim Zusammensetzen, Bild-Vereinigung
+ueber Teilstuecke hinweg — gibt es hier also kein Material; jene Tests laufen
+gegen erfundene Antworten. Der Seitenversatz ist inzwischen am 08.08.2026 in
+einem echten Lauf ueber drei Teilstuecke geprueft worden (12 Seiten, `page_idx`
+lueckenlos 0 bis 11), aber jener Lauf ist nicht als Fixture konserviert: `raw`
+haelt das ZUSAMMENGESETZTE Ergebnis, nicht die einzelnen Antworten.
 """
+
+TARBALL_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "artifacts"
+    / "2026-08-08-erster-tarball-lauf"
+    / "gute_nacht.tarball.response.json"
+)
+"""Die erste ECHTE `tarball_b64`-Antwort — aufgenommen am 08.08.2026.
+
+WOZU SIE DA IST: Der Betrieb versendet `tarball_b64`, und bis zu diesem Tag gab
+es dafuer KEIN Testmaterial. Der Auspacker fuer den Produktionspfad war damit
+gegen eine Vorstellung gebaut und gegen nichts geprueft — der teuerste Zustand,
+den ein Modul haben kann, weil er sich nicht von einem geprueften unterscheiden
+laesst.
+
+WAS SIE UMGEWORFEN HAT, gleich beim ersten Blick hinein:
+
+    Das Archiv enthaelt `doc_content_list.json` UND `doc_content_list_v2.json`.
+    BEIDE treffen dasselbe Zuordnungsmuster. Die Dokumentation beschrieb die
+    zwei Namen als zwei Generationen DESSELBEN Formats mit Rueckfall; gemessen
+    sind es zwei VERSCHIEDENE Formate, die nebeneinander liegen. Die flache
+    Fassung fuehrt 13 Bloecke mit `text`/`text_level` und `page_idx`; die v2
+    ist nach Seiten geschachtelt, unterscheidet `title`/`paragraph`/`table`
+    ausdruecklich und traegt `table_type`, `table_nest_level` und
+    `title_content.level` — Strukturinformation, die die flache nicht hat.
+
+    Es gibt KEIN `span`-PDF. Der Vertrag von `ChunkArtifacts.span_pdf` sagt,
+    die Span-Visualisierung komme mit dem Tarball. In dieser Antwort ist sie
+    nicht enthalten.
+
+    Es gibt KEIN `model.json`.
+
+Der vollstaendige Archiv-Inhalt, wie er wirklich heisst: `doc.md`,
+`doc_content_list.json`, `doc_content_list_v2.json`, `doc_layout.pdf`,
+`doc_middle.json`, `images/<inhaltshash>.jpg`.
+
+Die Antwort ist die eines EINSEITIGEN PDF. Fuer die Mehr-Teilstueck-Lage im
+Tarball-Format gibt es weiterhin kein Fixture."""
 
 TEST_DSN = "host=localhost port=5437 dbname=mineru_ocr_test user=jurgen"
 """Eigene Datenbank auf der laufenden Instanz. NICHT `mineru_ocr` und schon gar
@@ -57,6 +93,17 @@ def real_responses() -> list[dict[str, Any]]:
         json.loads(p.read_text())
         for p in sorted(FIXTURE_DIR.glob("*.response.json"))
     ]
+
+
+@pytest.fixture
+def echte_tarball_antwort() -> dict[str, Any]:
+    """Die echte `tarball_b64`-Antwort vom 08.08.2026, vollstaendig geladen.
+
+    Siehe `TARBALL_FIXTURE` fuer das, was sie ueber den Produktionspfad gezeigt
+    hat — insbesondere den Doppeltreffer auf dem `_content_list`-Muster.
+    """
+    geladen: dict[str, Any] = json.loads(TARBALL_FIXTURE.read_text())
+    return geladen
 
 
 @pytest.fixture
