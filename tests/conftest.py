@@ -16,6 +16,7 @@ laufen nur, wenn man sie ausdruecklich anfordert.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -85,14 +86,73 @@ def settings(tmp_path: Path) -> Settings:
     )
 
 
-@pytest.fixture
-def db_conn() -> Any:
-    """Eine Verbindung zur Test-Datenbank, mit frischem Schema je Test.
+@pytest.fixture(scope="session")
+def _test_datenbank() -> str:
+    """Legt die Test-Datenbank EINMAL je Sitzung an und gibt ihre DSN zurueck.
 
-    Wird in Phase B gefuellt. Legt die Datenbank an, wendet das Schema an, gibt
-    die Verbindung heraus und raeumt danach auf.
+    Einmal je Sitzung und nicht je Test, weil `setup` die Verbindung mehrfach
+    oeffnet und Procrastinates Schema anlegt — das je Test zu wiederholen kostet
+    Sekunden und bringt nichts: Die Isolation zwischen den Tests stellt `db_conn`
+    her, indem es die Zeilen leert, nicht indem es das Schema neu baut.
+
+    Ist die Instanz auf Port 5437 nicht da, werden die Tests uebersprungen und
+    nicht als Fehlschlag gezaehlt. Ein fehlender Datenbankserver ist keine
+    Aussage ueber den Code.
     """
-    pytest.skip("Vorrichtung folgt in Phase B; braucht die Instanz auf Port 5437")
+    from mineru_ocr.db import setup
+    from mineru_ocr.errors import ConfigurationError, DatabaseError
+
+    try:
+        setup(TEST_DSN)
+    except (ConfigurationError, DatabaseError) as fehler:
+        pytest.skip(f"Postgres auf Port 5437 nicht verfuegbar: {fehler}")
+    return TEST_DSN
+
+
+@pytest.fixture
+def db_conn(_test_datenbank: str) -> Iterator[Any]:
+    """Eine Verbindung zur Test-Datenbank, mit LEEREN Tabellen je Test.
+
+    Geleert werden `documents` und Procrastinates Job-Tabellen, damit kein Test
+    die Zeilen eines anderen sieht. `TRUNCATE` und nicht `DELETE`, weil es die
+    Zaehler zuruecksetzt und schneller ist.
+
+    Die Datenbank heisst `mineru_ocr_test` (siehe TEST_DSN) — ausdruecklich nicht
+    `mineru_ocr` und schon gar nicht `gbrain`. Ein Test, der die Arbeitsdatenbank
+    leert, tut das genau einmal, und danach laesst niemand mehr Tests laufen.
+    """
+    from mineru_ocr.db import connect
+
+    with connect(_test_datenbank) as conn:
+        conn.execute(
+            "TRUNCATE documents, procrastinate_events, procrastinate_jobs, "
+            "procrastinate_periodic_defers, procrastinate_workers "
+            "RESTART IDENTITY CASCADE"
+        )
+        yield conn
+
+
+@pytest.fixture
+async def async_conn(_test_datenbank: str) -> AsyncIterator[Any]:
+    """Die asynchrone Verbindung — die Seite, auf der der Daemon schreibt.
+
+    Eine EIGENE Verbindung neben `db_conn`, nicht dieselbe: Das Terminal-
+    Schreiben und das Warten darauf muessen sich in den Tests genauso verhalten
+    wie im Betrieb, und dort sind es zwei Prozesse. Auf einer geteilten
+    Verbindung waere das Wecksignal ein Selbstgespraech, und ein Test, der
+    dieselbe Verbindung benutzt, koennte einen fehlenden `NOTIFY` gar nicht
+    bemerken.
+
+    Das Leeren macht `db_conn`; diese Vorrichtung raeumt nicht selbst auf, sonst
+    leerten zwei Vorrichtungen dieselbe Tabelle in unbestimmter Reihenfolge.
+    """
+    from mineru_ocr.db import connect_async
+
+    conn = await connect_async(_test_datenbank)
+    try:
+        yield conn
+    finally:
+        await conn.close()
 
 
 @pytest.fixture

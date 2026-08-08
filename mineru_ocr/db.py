@@ -27,13 +27,43 @@ NIEMAND sie an.
 from __future__ import annotations
 
 import enum
+import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime
 from typing import Any, Final
 
 import psycopg
 from procrastinate.jobs import Job
+from psycopg.rows import class_row
+from psycopg.types.json import Jsonb
+
+from .errors import (
+    ConfigurationError,
+    DatabaseError,
+    DocumentNotFound,
+    TerminalOverwriteError,
+)
+
+DONE_CHANNEL: Final = "doc_done"
+"""Der Kanal, auf dem das Terminal-Schreiben seine Warter weckt.
+
+Eigenbau, und das ist kein Versaeumnis: Procrastinate hat kein eingebautes
+„Job fertig"-Signal an externe Warter — die einzigen dokumentierten
+NOTIFY-Verwendungen sind neue Jobs und Abbruch-Anforderungen, und die einzige
+Lausch-Schnittstelle (`listen_for_jobs`) hoert ausdruecklich auf
+Einreih-Vorgaenge (Feature-Verifikation Punkt 10). Wer auf ein DOKUMENT wartet,
+braucht deshalb einen eigenen Kanal."""
+
+_TERMINALE_JOB_ZUSTAENDE: Final = frozenset(
+    {"succeeded", "failed", "cancelled", "aborted"}
+)
+"""Procrastinates Job-Endzustaende, in seinen eigenen Worten.
+
+Die Aufzaehlung stammt aus dem Zustandsmodell der Doku (todo, doing, succeeded,
+failed, cancelled, aborted). Sie steht hier als Menge und nicht als Bedingung
+verstreut, weil `derive_status` die einzige Stelle ist, die sie braucht — und
+weil ein vergessener Zustand dort still zu „laeuft noch" wuerde."""
 
 # --------------------------------------------------------------------------
 # Der Datenvertrag
@@ -173,7 +203,7 @@ class DocumentStatus(enum.StrEnum):
     @property
     def is_terminal(self) -> bool:
         """Alles ausser `NEW`."""
-        raise NotImplementedError
+        return self is not DocumentStatus.NEW
 
 
 class Phase(enum.Enum):
@@ -236,6 +266,32 @@ class DocumentRow:
     leer" nicht zu trennen, und eine Huelle aus einer gelisteten Zeile lieferte
     fuer ein fertiges Dokument stillschweigend nichts."""
 
+    def __post_init__(self) -> None:
+        """Macht aus der gelesenen Zeichenkette einen `DocumentStatus`.
+
+        Warum das noetig ist: Die Spalte ist `text` mit einer CHECK-Bedingung und
+        kein Postgres-Aufzaehlungstyp, also reicht `class_row` die rohe
+        Zeichenkette durch. `DocumentStatus` ist zwar ein `StrEnum` und
+        vergliche sich mit ihr richtig — aber nur beim Vergleich. `row.status.
+        is_terminal` gaebe es an einer Zeichenkette nicht, und der Fehler kaeme
+        erst dort, wo jemand die Eigenschaft benutzt, nicht dort, wo die falsche
+        Zeile entstand.
+
+        `object.__setattr__`, weil die Klasse eingefroren ist. Das ist der
+        vorgesehene Weg fuer genau diesen Fall und keine Umgehung: Eingefroren
+        heisst „nach der Erzeugung unveraenderlich", und `__post_init__` gehoert
+        noch zur Erzeugung.
+
+        Ohne Fallunterscheidung, und das ist Absicht: `DocumentStatus(x)` gibt
+        fuer ein bereits richtiges Mitglied dasselbe Mitglied zurueck. Eine
+        vorgeschaltete `isinstance`-Pruefung waere fuer die Typpruefung toter
+        Code — sie sieht das Feld als `DocumentStatus` deklariert und den
+        Gegenzweig damit als unerreichbar. Genau das ist die Lage: Nach der
+        Erzeugung IST es einer, waehrend der Erzeugung kann es eine Zeichenkette
+        aus der Datenbank sein.
+        """
+        object.__setattr__(self, "status", DocumentStatus(self.status))
+
 
 @dataclass(frozen=True)
 class DerivedStatus:
@@ -278,11 +334,16 @@ def setup(dsn: str) -> None:
     """Richtet Datenbank und Schema ein. Mehrfach aufrufbar. KEINE Migrationen.
 
     Vier Schritte: Datenbank anlegen, falls sie fehlt; Procrastinates eigenes
-    Schema ueber `app.schema_manager.apply_schema()` anwenden (die eingebaute
-    Schnittstelle — NICHT das Kommando `procrastinate schema --apply`, das waere
-    ein Unterprozess, der die Verbindungsangaben ein zweites Mal braeuchte);
-    `SCHEMA_SQL` anwenden; nachsehen, ob die Tabelle auf der Platte zu
-    `DocumentRow` passt.
+    Schema anwenden, falls es fehlt (ueber `app.schema_manager.apply_schema()`,
+    die eingebaute Schnittstelle — NICHT das Kommando `procrastinate schema
+    --apply`, das waere ein Unterprozess, der die Verbindungsangaben ein zweites
+    Mal braeuchte); `SCHEMA_SQL` anwenden; nachsehen, ob die Tabelle auf der
+    Platte zu `DocumentRow` passt.
+
+    Das „falls es fehlt" im zweiten Schritt ist keine Sparsamkeit, sondern
+    Bedingung fuer die Zusicherung unten: `apply_schema()` selbst ist NICHT
+    mehrfach aufrufbar und bricht beim zweiten Mal ab. Begruendung und Beleg
+    stehen bei `_procrastinate_schema_anwenden_falls_noetig`.
 
     Der vierte Schritt ist die Antwort auf die einzige Doppelung dieses Moduls:
     `SCHEMA_SQL` und `DocumentRow` beschreiben dieselbe Tabelle. Ein
@@ -314,7 +375,149 @@ def setup(dsn: str) -> None:
 
     Kosten: keine.
     """
-    raise NotImplementedError
+    _datenbank_anlegen_falls_noetig(dsn)
+    _procrastinate_schema_anwenden_falls_noetig(dsn)
+
+    with connect(dsn) as conn:
+        conn.execute(SCHEMA_SQL)
+        _schema_abgleichen(conn)
+
+
+def _procrastinate_schema_anwenden_falls_noetig(dsn: str) -> None:
+    """Wendet Procrastinates Schema an — aber nur, wenn es noch nicht da ist.
+
+    WARUM DIE VORPRUEFUNG, gemessen am Objekt (08.08.2026, Fassung 3.9.0):
+    `schema_manager.apply_schema()` ist NICHT mehrfach aufrufbar. Beim zweiten
+    Aufruf gegen dieselbe Datenbank bricht es ab mit
+    `DuplicateObject: type "procrastinate_job_status" already exists`, verpackt in
+    einen `ConnectorException`. Der Grund liegt in Postgres: `CREATE TYPE` kennt
+    kein `IF NOT EXISTS`, und Procrastinates `schema.sql` legt den Aufzaehlungstyp
+    fuer den Job-Zustand unbedingt an. Ein `SchemaManager` bietet dagegen nichts
+    an — er hat genau vier Methoden (`apply_schema`, `apply_schema_async`,
+    `get_schema`, `get_migrations_path`), keine davon beantwortet „ist es schon
+    da?".
+
+    Ohne diese Vorpruefung waere die Zusicherung von `setup` — mehrfach
+    aufrufbar — schlicht falsch, und ein zweites `mineru-ocr setup` endete mit
+    einem Absturz, dessen Meldung von einem Aufzaehlungstyp handelt, mit dem der
+    Benutzer nie zu tun hatte.
+
+    Geprueft wird auf die Tabelle `procrastinate_jobs`, und das ist verlaesslich:
+    Der Konnektor fuehrt die ganze `schema.sql` in EINEM `conn.execute` innerhalb
+    von `pool.connection()` aus — also in einer einzigen Transaktion, die bei
+    einem Fehler vollstaendig zurueckgerollt wird (am Quelltext geprueft). Ein
+    halb angewandtes Schema kann es damit nicht geben; entweder ist alles da oder
+    nichts.
+    """
+    import procrastinate
+
+    with connect(dsn) as conn:
+        vorhanden = conn.execute(
+            "SELECT to_regclass('public.procrastinate_jobs')"
+        ).fetchone()
+        if vorhanden is not None and vorhanden[0] is not None:
+            return
+
+    app = procrastinate.App(connector=procrastinate.SyncPsycopgConnector(conninfo=dsn))
+    with app.open():
+        app.schema_manager.apply_schema()
+
+
+def _datenbank_anlegen_falls_noetig(dsn: str) -> None:
+    """Legt die Ziel-Datenbank an, wenn sie fehlt.
+
+    `CREATE DATABASE` laesst sich nicht aus der Datenbank heraus ausfuehren, die
+    angelegt werden soll — deshalb der Umweg ueber die Wartungsdatenbank
+    derselben Instanz.
+    """
+    angaben = psycopg.conninfo.conninfo_to_dict(dsn)
+    zielname = angaben.get("dbname")
+    if not isinstance(zielname, str) or not zielname:
+        raise ConfigurationError(
+            f"Die Verbindungszeichenkette nennt keine Datenbank (`dbname`): {dsn!r}"
+        )
+
+    try:
+        # `dbname` als Schluesselwort UEBERSCHREIBT die Angabe aus der
+        # Verbindungszeichenkette — psycopg fuehrt beides zusammen. Der Umweg
+        # ueber `conninfo_to_dict` und `make_conninfo` waere derselbe Vorgang von
+        # Hand, mit dem Zusatzrisiko, dass beim Zerlegen und Wiederzusammenbauen
+        # eine Angabe verlorengeht.
+        with psycopg.connect(dsn, dbname="postgres", autocommit=True) as conn:
+            vorhanden = conn.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s", (zielname,)
+            ).fetchone()
+            if vorhanden is None:
+                # Der Name kommt aus der Verbindungszeichenkette des Benutzers und
+                # laesst sich nicht als Parameter binden — CREATE DATABASE nimmt
+                # keine. `psycopg.sql.Identifier` maskiert ihn richtig; eine
+                # Zeichenketten-Verkettung waere hier die klassische Luecke.
+                conn.execute(
+                    psycopg.sql.SQL("CREATE DATABASE {}").format(
+                        psycopg.sql.Identifier(zielname)
+                    )
+                )
+    except psycopg.Error as fehler:
+        raise _verbindungsfehler_uebersetzen(
+            fehler, f"Datenbank {zielname!r} anlegen"
+        ) from fehler
+
+
+def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
+    """Prueft die Tabelle auf der Platte gegen die Felder von `DocumentRow`.
+
+    Die Antwort auf die einzige Doppelung dieses Moduls. Ein Migrationswerkzeug
+    loeste sie auf, waere hier aber Ballast — dies ist ein Werkzeug fuer einen
+    Menschen auf einer Maschine. Stattdessen wird die Doppelung LAUT.
+    """
+    spalten = {
+        zeile[0]
+        for zeile in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'documents'"
+        ).fetchall()
+    }
+    # `raw_loaded` ist ein Merkmal des gelesenen Objekts, keine Spalte — es sagt,
+    # ob `raw` mitgelesen wurde, und das kann die Tabelle nicht wissen.
+    erwartet = {feld.name for feld in fields(DocumentRow)} - {"raw_loaded"}
+
+    fehlend = erwartet - spalten
+    ueberzaehlig = spalten - erwartet
+    if not fehlend and not ueberzaehlig:
+        return
+    raise DatabaseError(
+        f"Die Tabelle `documents` passt nicht zu DocumentRow. "
+        f"In der Zeilenklasse, aber nicht in der Tabelle: {sorted(fehlend)}. "
+        f"In der Tabelle, aber nicht in der Zeilenklasse: {sorted(ueberzaehlig)}. "
+        f"Es gibt in diesem Werkzeug bewusst keine Migrationen — der Weg ist: "
+        f"Datenbank wegwerfen und neu anlegen (DROP DATABASE, dann `mineru-ocr "
+        f"setup`). Wenn darin bezahlte Ergebnisse stehen, vorher sichern."
+    )
+
+
+def _verbindungsfehler_uebersetzen(
+    fehler: psycopg.Error, was: str
+) -> ConfigurationError | DatabaseError:
+    """Entscheidet, ob ein Postgres-Fehler wiederholbar ist oder nicht.
+
+    DIESE UNTERSCHEIDUNG ENTSCHEIDET UEBER GELD, und deshalb steht sie an einer
+    Stelle statt verstreut: Eine Verbindungsstoerung ist wiederholbar, ein
+    falscher Zugang ist es nicht. Fiele bei einem einsekuendigen Postgres-
+    Aussetzer im Terminal-Schreiben ein `ConfigurationError`, machte er aus einem
+    bezahlten Dokument ein endgueltig gescheitertes.
+
+    Unterschieden wird am SQLSTATE, nicht am Text der Meldung: Klasse 28
+    (`invalid_authorization_specification`, also auch das falsche Passwort) und
+    `3D000` (`invalid_catalog_name`, es gibt die Datenbank nicht) sind Zugangs-
+    und Konfigurationsfehler. Alles Uebrige — insbesondere ein Fehler ohne
+    SQLSTATE, wie ihn eine abgelehnte Verbindung erzeugt — gilt als wiederholbar.
+    Im Zweifel also wiederholbar, denn ein faelschlich wiederholter Versuch
+    kostet einen Anlauf, ein faelschlich endgueltiger ein Dokument.
+    """
+    zustand = getattr(fehler, "sqlstate", None)
+    if isinstance(zustand, str) and (zustand.startswith("28") or zustand == "3D000"):
+        return ConfigurationError(f"{was}: Zugang taugt nicht ({zustand}): {fehler}")
+    return DatabaseError(f"{was}: Datenbank antwortet nicht ({zustand}): {fehler}")
 
 
 def connect(dsn: str) -> psycopg.Connection[Any]:
@@ -339,7 +542,10 @@ def connect(dsn: str) -> psycopg.Connection[Any]:
         ConfigurationError: Der Zugang taugt nicht — falsche
             Verbindungszeichenkette, fehlende Rechte, keine solche Datenbank.
     """
-    raise NotImplementedError
+    try:
+        return psycopg.connect(dsn, autocommit=True)
+    except psycopg.Error as fehler:
+        raise _verbindungsfehler_uebersetzen(fehler, "Verbindung oeffnen") from fehler
 
 
 async def connect_async(dsn: str) -> psycopg.AsyncConnection[Any]:
@@ -347,12 +553,48 @@ async def connect_async(dsn: str) -> psycopg.AsyncConnection[Any]:
 
     Sonst wie `connect`, einschliesslich `autocommit`.
     """
-    raise NotImplementedError
+    try:
+        return await psycopg.AsyncConnection.connect(dsn, autocommit=True)
+    except psycopg.Error as fehler:
+        raise _verbindungsfehler_uebersetzen(fehler, "Verbindung oeffnen") from fehler
 
 
 # --------------------------------------------------------------------------
 # Zeilen anlegen und lesen — synchron, fuer die Fassade
 # --------------------------------------------------------------------------
+
+_SPALTEN_VOLL: Final = (
+    "sha256, source_path, source_name, size_bytes, mime, page_count, status, "
+    "raw, error, endpoint_id, image_tag_at_submit, notes, created_at, updated_at, "
+    "true AS raw_loaded"
+)
+"""Die Spaltenliste fuer ein VOLLSTAENDIGES Lesen, inklusive `raw`.
+
+Ausgeschrieben statt `SELECT *`, aus einem Grund, der genau hier greift:
+`class_row(DocumentRow)` ordnet ueber die Spaltennamen zu, und ein `*` liefert
+die Spalten in der Reihenfolge der Tabelle samt allem, was jemand spaeter
+hinzufuegt. Eine unbekannte Spalte waere dann ein unerwartetes Schluesselwort
+beim Erzeugen der Zeilenklasse — ein Fehler zur Laufzeit, an einer Stelle, die
+mit der eigentlichen Aenderung nichts zu tun hat. Die ausgeschriebene Liste
+bricht stattdessen dort, wo sie gepflegt gehoert, und `_schema_abgleichen` sagt
+es beim `setup` ohnehin vorher.
+
+`true AS raw_loaded` faellt auf, ist aber der Kern: Es fuellt das gleichnamige
+Feld direkt aus der Abfrage, statt es nachtraeglich zu setzen. Damit gibt es
+EINE Zeilenklasse fuer beide Lesearten — die schmale Fassung unten sagt an
+derselben Stelle `false`, und keine Aufrufstelle muss den Unterschied kennen."""
+
+_SPALTEN_OHNE_RAW: Final = (
+    "sha256, source_path, source_name, size_bytes, mime, page_count, status, "
+    "NULL::jsonb AS raw, error, endpoint_id, image_tag_at_submit, notes, "
+    "created_at, updated_at, false AS raw_loaded"
+)
+"""Dieselbe Liste ohne den teuren Teil — `raw` bleibt ungelesen und leer.
+
+`NULL::jsonb AS raw` mit der Typangabe, damit die Spalte auch dann `jsonb`
+heisst, wenn Postgres sonst `unknown` daraus machte; `false AS raw_loaded` ist
+das Unterscheidungsmerkmal, ohne das „nicht geladen" und „ist leer" dasselbe
+waeren."""
 
 
 def insert_document(
@@ -398,7 +640,22 @@ def insert_document(
 
     Kosten: keine.
     """
-    raise NotImplementedError
+    ergebnis = conn.execute(
+        """
+        INSERT INTO documents (
+            sha256, source_path, source_name, size_bytes, mime, page_count,
+            endpoint_id
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (sha256) DO NOTHING
+        RETURNING sha256
+        """,
+        (sha256, source_path, source_name, size_bytes, mime, page_count, endpoint_id),
+    ).fetchone()
+    # `RETURNING` liefert nur dann eine Zeile, wenn wirklich eingefuegt wurde —
+    # bei `DO NOTHING` kommt nichts. Das ist die verlaessliche Unterscheidung;
+    # `rowcount` haette sie auch, aber `RETURNING` sagt es an der Abfrage selbst.
+    return ergebnis is not None
 
 
 def get_document(conn: psycopg.Connection[Any], sha256: str) -> DocumentRow | None:
@@ -417,7 +674,10 @@ def get_document(conn: psycopg.Connection[Any], sha256: str) -> DocumentRow | No
     Zeichenkette durch, und `DocumentStatus` entsteht daraus in
     `DocumentRow.__post_init__`.
     """
-    raise NotImplementedError
+    with conn.cursor(row_factory=class_row(DocumentRow)) as cur:
+        return cur.execute(
+            f"SELECT {_SPALTEN_VOLL} FROM documents WHERE sha256 = %s", (sha256,)
+        ).fetchone()
 
 
 def get_document_by_path(
@@ -431,7 +691,12 @@ def get_document_by_path(
         Funktion gibt dann die zuletzt angelegte zurueck — der Fall entsteht,
         wenn eine Datei am selben Pfad durch eine andere ersetzt wurde.
     """
-    raise NotImplementedError
+    with conn.cursor(row_factory=class_row(DocumentRow)) as cur:
+        return cur.execute(
+            f"SELECT {_SPALTEN_VOLL} FROM documents WHERE source_path = %s "
+            f"ORDER BY created_at DESC LIMIT 1",
+            (source_path,),
+        ).fetchone()
 
 
 def list_documents(
@@ -454,10 +719,29 @@ def list_documents(
         Huelle laden bei `raw_loaded is False` die Zeile einzeln nach, statt zu
         raten.
 
-        Gelesen wird dafuer mit einer eigenen, schmalen Zeilenklasse statt mit
-        `class_row(DocumentRow)` — dem fehlte sonst das Schluesselwort `raw`.
+        Gelesen wird dafuer mit derselben Zeilenklasse, aber einer schmalen
+        Spaltenliste: `NULL::jsonb AS raw, false AS raw_loaded` fuellt die beiden
+        Felder direkt aus der Abfrage. Der Vertrag sah hier urspruenglich eine
+        eigene zweite Zeilenklasse vor — die waere eine zweite Lesart derselben
+        Tabelle gewesen, genau das, wogegen der Modul-Vorspann steht, und sie
+        muesste bei jeder Spaltenaenderung mitgepflegt werden.
     """
-    raise NotImplementedError
+    bedingungen: list[str] = []
+    werte: list[Any] = []
+    if status is not None:
+        bedingungen.append("status = %s")
+        werte.append(status.value)
+
+    sql = f"SELECT {_SPALTEN_OHNE_RAW} FROM documents"
+    if bedingungen:
+        sql += " WHERE " + " AND ".join(bedingungen)
+    sql += " ORDER BY created_at"
+    if limit is not None:
+        sql += " LIMIT %s"
+        werte.append(limit)
+
+    with conn.cursor(row_factory=class_row(DocumentRow)) as cur:
+        return cur.execute(sql, tuple(werte)).fetchall()
 
 
 def counts_by_status(conn: psycopg.Connection[Any]) -> dict[DocumentStatus, int]:
@@ -469,7 +753,12 @@ def counts_by_status(conn: psycopg.Connection[Any]) -> dict[DocumentStatus, int]
         aber nicht — und ein `KeyError` in einer Statusausgabe ist besonders
         aergerlich, weil er genau dann kommt, wenn alles gut lief.
     """
-    raise NotImplementedError
+    zaehlung = {zustand: 0 for zustand in DocumentStatus}
+    for name, anzahl in conn.execute(
+        "SELECT status, count(*) FROM documents GROUP BY status"
+    ).fetchall():
+        zaehlung[DocumentStatus(name)] = anzahl
+    return zaehlung
 
 
 # --------------------------------------------------------------------------
@@ -567,7 +856,65 @@ async def write_terminal_async(
 
     Kosten: keine.
     """
-    raise NotImplementedError
+    if not status.is_terminal:
+        raise ValueError(
+            f"write_terminal_async wurde mit dem Zustand {status.value!r} gerufen. "
+            f"Diese Funktion schreibt ENDzustaende; `new` ist keiner."
+        )
+
+    async with conn.transaction():
+        zeile = await (
+            await conn.execute(
+                "SELECT status FROM documents WHERE sha256 = %s FOR UPDATE",
+                (sha256,),
+            )
+        ).fetchone()
+        if zeile is None:
+            raise DocumentNotFound(
+                f"Kein Eintrag zu {sha256}. Ein Endergebnis ohne Zeile gibt es "
+                f"nicht — die Zeile entsteht beim Einreihen, nicht hier."
+            )
+
+        vorher = DocumentStatus(zeile[0])
+        if vorher.is_terminal and vorher is not DocumentStatus.FAILED:
+            if vorher is status:
+                # Derselbe Endzustand ein zweites Mal: Der erste Schreibvorgang
+                # gewinnt, `raw` wird NICHT ersetzt. Das ist der harmlose
+                # Wiederlauf nach einem Absturz im Schreibfenster.
+                return
+            raise TerminalOverwriteError(
+                f"{sha256} steht bereits endgueltig auf {vorher.value!r} und "
+                f"soll auf {status.value!r} geaendert werden. Ein fertiges "
+                f"Dokument wird nie ueberschrieben. Der einzige Zustand, der "
+                f"neu verarbeitet werden darf, ist `failed` — dafuer gibt es "
+                f"retry_job_by_id."
+            )
+
+        await conn.execute(
+            """
+            UPDATE documents
+               SET status = %s,
+                   raw = %s,
+                   error = %s,
+                   image_tag_at_submit = COALESCE(%s, image_tag_at_submit),
+                   notes = notes || %s::jsonb,
+                   updated_at = now()
+             WHERE sha256 = %s
+            """,
+            (
+                status.value,
+                Jsonb(raw),
+                error,
+                image_tag_at_submit,
+                Jsonb(list(notes) if notes else []),
+                sha256,
+            ),
+        )
+        # Das Wecksignal gehoert in DIESELBE Transaktion: Wuerde es davor
+        # abgesetzt, koennte ein Warter aufwachen und die Zeile noch alt
+        # vorfinden; danach abgesetzt, faellt es bei einem Abbruch zwischen
+        # beidem ganz aus. Postgres stellt NOTIFY ohnehin erst beim Commit zu.
+        await conn.execute("SELECT pg_notify(%s, %s)", (DONE_CHANNEL, sha256))
 
 
 async def append_note_async(
@@ -584,8 +931,21 @@ async def append_note_async(
             noch lesbar ist. Die Form wird nicht erzwungen — eine erzwungene Form
             waere ein zweites Datenmodell, und `notes` ist gerade der Ort fuer
             das, was noch keines hat.
+
+    Raises:
+        DocumentNotFound: Kein Eintrag zu diesem Hash. Still nichts zu tun waere
+            hier schlechter als zu werfen: Eine Beobachtung, die ins Leere
+            geschrieben wird, faellt sonst nie auf.
     """
-    raise NotImplementedError
+    ergebnis = await (
+        await conn.execute(
+            "UPDATE documents SET notes = notes || %s::jsonb "
+            "WHERE sha256 = %s RETURNING sha256",
+            (Jsonb([note]), sha256),
+        )
+    ).fetchone()
+    if ergebnis is None:
+        raise DocumentNotFound(f"Kein Eintrag zu {sha256}, Notiz nicht angehaengt.")
 
 
 # --------------------------------------------------------------------------
@@ -655,7 +1015,53 @@ def wait_for_terminal(
 
     Kosten: keine.
     """
-    raise NotImplementedError
+    # Schritt 1: lauschen, BEVOR zum ersten Mal gelesen wird. Andersherum gaebe
+    # es ein Fenster zwischen Lesen und Lauschen, in dem ein Signal verloren
+    # ginge — und dann wartet der Aufrufer auf etwas, das schon vorbei ist.
+    conn.execute(
+        psycopg.sql.SQL("LISTEN {}").format(psycopg.sql.Identifier(DONE_CHANNEL))
+    )
+
+    # Schritt 2: die Erstabfrage. Sie beantwortet zugleich die Frage, ob es die
+    # Zeile ueberhaupt gibt — und die wird SOFORT beantwortet, nicht nach dem
+    # Zeitablauf.
+    zeile = get_document(conn, sha256)
+    if zeile is None:
+        raise DocumentNotFound(
+            f"Kein Eintrag zu {sha256}. Auf ein Dokument zu warten, das nie "
+            f"eingereiht wurde, ist immer ein Irrtum des Aufrufers — deshalb "
+            f"kommt die Antwort jetzt und nicht nach Ablauf der Wartezeit."
+        )
+    if zeile.status.is_terminal:
+        return zeile
+
+    ende = None if timeout is None else time.monotonic() + timeout
+    while True:
+        rest = None if ende is None else ende - time.monotonic()
+        if rest is not None and rest <= 0:
+            raise TimeoutError(
+                f"{sha256} wurde innerhalb von {timeout} Sekunden nicht "
+                f"endgueltig. Das Dokument kann trotzdem noch fertig werden — "
+                f"der Zeitablauf sagt etwas ueber die Geduld des Wartenden, "
+                f"nichts ueber das Dokument."
+            )
+
+        # Schritt 3: auf ein Signal warten, hoechstens aber bis zur naechsten
+        # Rueckfallabfrage. `stop_after=1` heisst „ein Signal genuegt"; die
+        # Zeitschranke zerlegt psycopg intern in kurze Abschnitte, damit Strg-C
+        # sofort ankommt statt erst nach Ablauf.
+        wartezeit = poll_seconds if rest is None else min(poll_seconds, rest)
+        for _ in conn.notifies(timeout=wartezeit, stop_after=1):
+            break
+
+        # Nachgesehen wird IMMER, ob ein Signal kam oder nicht. Das ist die
+        # Rueckfallabfrage: gegen abgerissene Verbindungen, verpasste Signale
+        # und Schreibvorgaenge von aussen. Und es ist zugleich die Pruefung, ob
+        # das Signal ueberhaupt zu UNSEREM Dokument gehoerte — auf dem Kanal
+        # liegen die Signale aller Dokumente.
+        zeile = get_document(conn, sha256)
+        if zeile is not None and zeile.status.is_terminal:
+            return zeile
 
 
 # --------------------------------------------------------------------------
@@ -692,7 +1098,44 @@ def derive_status(row: DocumentRow, jobs: Sequence[Job]) -> DerivedStatus:
 
     Kosten: keine.
     """
-    raise NotImplementedError
+    anzahl = len(jobs)
+
+    # Regel 1: Ist die Zeile endgueltig, IST das der Zustand. Auf die Jobs wird
+    # dann gar nicht mehr gesehen — mit EINER Ausnahme, die keine Regel bricht:
+    # Die Job-Angaben werden trotzdem mitgeliefert, weil sie beim Nachsehen
+    # helfen („welcher Job hat das geschrieben, im wievielten Versuch?"). Sie
+    # ENTSCHEIDEN nur nichts mehr.
+    juengster = max(jobs, key=lambda job: job.id or 0) if jobs else None
+
+    if row.status.is_terminal:
+        phase = Phase.TERMINAL
+    elif juengster is None:
+        phase = Phase.REGISTERED
+    elif juengster.status == "todo":
+        phase = Phase.WAITING
+    elif juengster.status == "doing":
+        phase = Phase.RUNNING
+    elif juengster.status in _TERMINALE_JOB_ZUSTAENDE:
+        # Der Job ist fertig, die Zeile steht aber noch auf `new`: harter
+        # Abschuss im Schreibfenster oder Abbruch beim Herunterfahren. Kein
+        # Datenfehler — der Zustand, den das Ein-Buch-Modell erwartet.
+        phase = Phase.ENDED_WITHOUT_RESULT
+    else:
+        # Ein Job-Zustand, den Procrastinate erst spaeter eingefuehrt hat. Ihn
+        # als „laeuft noch" zu verbuchen waere die bequeme Luege; `WAITING` ist
+        # die vorsichtige Wahl, weil sie das Dokument im Blick behaelt, statt es
+        # faelschlich als abgeschlossen auszuweisen.
+        phase = Phase.WAITING
+
+    return DerivedStatus(
+        sha256=row.sha256,
+        row_status=row.status,
+        phase=phase,
+        job_id=juengster.id if juengster else None,
+        job_status=juengster.status if juengster else None,
+        attempts=juengster.attempts if juengster else None,
+        job_count=anzahl,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -700,7 +1143,7 @@ def derive_status(row: DocumentRow, jobs: Sequence[Job]) -> DerivedStatus:
 # --------------------------------------------------------------------------
 
 
-def worker_heartbeats(conn: psycopg.Connection[Any]) -> list[tuple[str, datetime]]:
+def worker_heartbeats(conn: psycopg.Connection[Any]) -> list[tuple[int, datetime]]:
     """Liest Procrastinates Worker-Lebenszeichen. UNDOKUMENTIERT — mit Vorsicht.
 
     Diese Funktion greift auf eine Tabelle zu, die Procrastinate in der
@@ -709,6 +1152,30 @@ def worker_heartbeats(conn: psycopg.Connection[Any]) -> list[tuple[str, datetime
     `ProcrastinateWorker` mit den Feldern `id` und `last_heartbeat` sie
     ausliefert; ein SQL-Tabellenname wird nirgends genannt, und eine Lese-
     Schnittstelle im `JobManager` gibt es nicht (Feature-Verifikation Punkt 12).
+
+    AM OBJEKT FESTGESTELLT (08.08.2026, `procrastinate/sql/schema.sql` der
+    installierten Fassung 3.9.0). Die Feature-Verifikation hatte an dieser Stelle
+    eine VORHERSAGE stehen — „mit hoher Sicherheit … eine Tabelle namens
+    `procrastinate_workers` mit mindestens `id` und `last_heartbeat`; das ist
+    eine Vorhersage, kein Befund". Sie ist eingetroffen, und zwar genau:
+
+        CREATE TABLE procrastinate_workers(
+            id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+            last_heartbeat timestamp with time zone NOT NULL DEFAULT NOW()
+        );
+
+    Eine Abweichung von der Vorhersage gibt es doch, und sie stand im Vertrag
+    falsch: `id` ist `bigint`, nicht Text. Der Rueckgabetyp dieser Funktion war
+    entsprechend `list[tuple[str, datetime]]` und ist auf `int` berichtigt.
+    Das ist der Grund, warum eine Vorhersage als Vorhersage gekennzeichnet
+    gehoert — man prueft sie sonst nie nach und baut auf ihrem ungeprueften Teil
+    weiter.
+
+    Die Tabelle traegt uebrigens KEINE Worker-Namen und keine Queue-Angabe. Wer
+    wissen will, WELCHER Worker lebt, bekommt es hier nicht; er bekommt nur, wie
+    viele leben und wie frisch ihr letztes Lebenszeichen ist. Fuer die Frage,
+    fuer die der Preflight sie stellt („arbeitet ueberhaupt jemand?"), genuegt
+    das.
 
     Deshalb ist der Zugriff hier eingesperrt: EINE Funktion, ein Aufrufer (der
     Preflight), eine Warnung. Bei jedem Procrastinate-Upgrade gehoert sie erneut
@@ -732,4 +1199,23 @@ def worker_heartbeats(conn: psycopg.Connection[Any]) -> list[tuple[str, datetime
 
     Kosten: keine.
     """
-    raise NotImplementedError
+    try:
+        return [
+            (kennung, gesehen)
+            for kennung, gesehen in conn.execute(
+                "SELECT id, last_heartbeat FROM procrastinate_workers "
+                "ORDER BY last_heartbeat DESC"
+            ).fetchall()
+        ]
+    except psycopg.Error as fehler:
+        raise DatabaseError(
+            f"Die Worker-Lebenszeichen liessen sich nicht lesen: {fehler}\n"
+            f"ACHTUNG, UNDOKUMENTIERTE FLAECHE: `procrastinate_workers` wird in "
+            f"Procrastinates stabiler Dokumentation nicht als Schnittstelle "
+            f"gefuehrt; Name und Spalten sind am Objekt der installierten "
+            f"Fassung festgestellt (Feature-Verifikation Punkt 12). Wahrscheinlich"
+            f" hat ein Procrastinate-Upgrade sie geaendert. Nachzusehen in "
+            f"`procrastinate/sql/schema.sql` der installierten Fassung; die "
+            f"Abfrage steht ausschliesslich in dieser Funktion. Der Fehler liegt "
+            f"NICHT beim Aufrufer."
+        ) from fehler
