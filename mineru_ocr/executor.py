@@ -29,10 +29,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
+import logging
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -49,6 +52,21 @@ from .errors import (
 from .mime import DocumentType
 from .pdf import PdfReader
 from .runpod import RunPodAccess
+
+T = TypeVar("T")
+"""Der Rueckgabetyp des Schritts, den `_mit_kontopause` wiederholt. Er ist
+generisch, weil dieselbe Pausenlogik ueber dem Absenden (liefert die Job-Kennung)
+und ueber dem Abholen (liefert die Antwort) steht."""
+
+log = logging.getLogger("mineru_ocr.executor")
+"""Der Logger dieses Moduls.
+
+Er steht hier, weil die Warteschleife bei leerem Konto sonst die einzige Stelle
+im Paket waere, die MINUTENLANG bis STUNDENLANG nichts tut und dabei nichts
+sagt. Ein Docstring behauptete frueher, ein Fehlschlag der Kontostandsabfrage
+werde „vermerkt" — das Modul kannte `logging` gar nicht, und nichts wurde
+irgendwo vermerkt. Genau diese Kombination — warten, schweigen, keinen Fehler
+werfen — ist im Betrieb von „laeuft" nicht zu unterscheiden."""
 
 
 def _jetzt() -> str:
@@ -391,7 +409,13 @@ async def process_document(
 
         # Endgueltig: ZUERST schreiben, DANN werfen. Diese Reihenfolge ist der
         # Grund, warum Job-Endzustand und Zeile immer dieselbe Wahrheit tragen.
-        ergebnis = assembly.assemble(teile)
+        #
+        # Ueber `_ergebnis_fuer_endzustand` und NICHT unmittelbar ueber
+        # `assembly.assemble`: Dieser Aufruf ist genau der, der oben geworfen
+        # haben kann, und dann wuerde er hier ein zweites Mal werfen, den Handler
+        # verlassen und das Schreiben ganz ausfallen lassen. Die Begruendung samt
+        # dem, was das gekostet haette, steht an der Funktion.
+        ergebnis = _ergebnis_fuer_endzustand(teile, vermerke)
         ergebnis["failure"] = _fehler_umschlag(fehler)
         vermerke.append(
             {
@@ -435,6 +459,159 @@ und ein gescheitertes Dokument koennte nie wieder laufen (Feature-Verifikation
 Punkt 19, Konsequenz a)."""
 
 
+def _ergebnis_fuer_endzustand(
+    teile: list[assembly.ChunkArtifacts], vermerke: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Baut das `raw` des FEHLERPFADS — und kann dabei selbst nicht scheitern.
+
+    Warum es diese Funktion gibt: Der Fehlerpfad rief frueher unmittelbar
+    `assembly.assemble(teile)`. Das ist genau der Aufruf, der im Erfolgspfad
+    geworfen haben kann — ein `content_list`-Eintrag mit nicht ganzzahligem
+    `page_idx`, ein Eintrag, der kein Dict ist, ein `markdown`, das als JSON-null
+    ankam. War der urspruengliche Fehler dieser Wurf, warf derselbe Aufruf im
+    Fehlerpfad sofort wieder, die Ausnahme verliess den Handler, und
+    `write_terminal_async` lief NIE.
+
+    Was das kostete: Saemtliche bezahlten Teilstuecke des Laufs waren weg — sie
+    lagen nur im Arbeitsspeicher. Der Job endete `failed`, die Zeile blieb `new`.
+    Damit zaehlte das Dokument fuer immer als `pending` und nie als `failed`, und
+    weil `OCRMegaWrapper.pending` genau die Menge ist, die ein Ordner-Durchlauf
+    anfasst, bezahlte JEDER erneute Durchlauf das ganze Dokument neu und
+    scheiterte deterministisch wieder an derselben Stelle. Eine Endlosschleife
+    aus vollen Neubezahlungen, ohne dass irgendwo ein Fehler sichtbar wurde.
+
+    Die Zusicherung „Endgueltige Fehler schreiben ZUERST und werfen DANN" haengt
+    also daran, dass dieser Schritt nicht werfen kann. Deshalb steht er hier und
+    nicht als Aufruf im Handler.
+
+    Args:
+        teile: Die bis zum Fehler abgeholten Teilstuecke. Alle bezahlt.
+        vermerke: Die Vermerkliste des Laufs. Scheitert das Zusammensetzen, wird
+            hier ein Eintrag ANGEHAENGT — der Leser soll sehen, dass er die
+            Notfassung vor sich hat und nicht das uebliche Ergebnis.
+
+    Returns:
+        Im Normalfall das Ergebnis von `assembly.assemble`, also dieselbe Form
+        wie im Erfolgspfad. Scheitert das Zusammensetzen, die Notfassung aus
+        `_rohfassung_der_teile` — erkennbar an `assembly_failed`.
+
+    Zusicherung:
+        Wirft nicht. Weder bei kaputtem Inhalt noch bei kaputten Typen. Das ist
+        die ganze Aufgabe dieser Funktion.
+
+    Kosten: keine.
+    """
+    try:
+        return assembly.assemble(teile)
+    except Exception as zweiter:  # noqa: BLE001 — siehe Zusicherung: wirft nicht
+        log.warning(
+            "Zusammensetzen im Fehlerpfad gescheitert (%s: %s). Es wird die "
+            "Rohfassung der %d bezahlten Teilstuecke geschrieben.",
+            type(zweiter).__name__,
+            zweiter,
+            len(teile),
+        )
+        vermerke.append(
+            {
+                "kind": "zusammensetzen_gescheitert",
+                "at": _jetzt(),
+                "detail": f"{type(zweiter).__name__}: {zweiter}",
+                "folge": (
+                    "raw traegt die Rohfassung der Teilstuecke statt des "
+                    "zusammengesetzten Dokuments. Die Seitenzahlen sind darin "
+                    "teilstueck-lokal und NICHT auf das Original umgerechnet."
+                ),
+            }
+        )
+        return _rohfassung_der_teile(teile, zweiter)
+
+
+def _rohfassung_der_teile(
+    teile: list[assembly.ChunkArtifacts], grund: BaseException
+) -> dict[str, Any]:
+    """Alle bezahlten Teilstuecke als JSON, ohne jedes Zusammensetzen.
+
+    Die Abruf-Regel lautet: alles holen, alles persistieren, nie filtern. Wenn
+    das Zusammensetzen scheitert, ist die Antwort darauf nicht, das Bezahlte
+    fallenzulassen, sondern es unbearbeitet aufzuheben — dreissig Minuten spaeter
+    ist es auf der Gegenseite nicht mehr abrufbar.
+
+    Diese Fassung setzt ausdruecklich NICHTS zusammen und rechnet insbesondere
+    KEINEN Seitenversatz: Genau diese Rechnung kann die gescheiterte gewesen
+    sein. `page_idx` bleibt deshalb teilstueck-lokal, und der Vermerk aus
+    `_ergebnis_fuer_endzustand` sagt es dem Leser.
+
+    Die Form ist bewusst eine ANDERE als die des Erfolgspfads — `chunks` statt
+    `markdown`/`content_list` auf oberster Ebene. Wer diese Zeile spaeter liest,
+    soll nicht auf den ersten Blick ein gewoehnliches Ergebnis sehen, das nur
+    seltsam aussieht.
+
+    Zusicherung:
+        Wirft nicht, und das Ergebnis ist JSON-faehig. Was sich nicht nach JSON
+        wandeln laesst, steht als seine Textdarstellung da — verlustbehaftet,
+        aber vorhanden, und als solches gekennzeichnet.
+    """
+    chunks: list[dict[str, Any]] = []
+    for nummer, teil in enumerate(teile):
+        chunks.append(
+            {
+                "chunk": {
+                    "first_page": _json_faehig(getattr(teil.chunk, "first_page", None)),
+                    "last_page": _json_faehig(getattr(teil.chunk, "last_page", None)),
+                },
+                "markdown": _json_faehig(getattr(teil, "markdown", None)),
+                "content_list": _json_faehig(getattr(teil, "content_list", None)),
+                "images": _json_faehig(getattr(teil, "images", None)),
+                "middle": _json_faehig(getattr(teil, "middle", None)),
+                "layout_pdf": _json_faehig(getattr(teil, "layout_pdf", None)),
+                "span_pdf": _json_faehig(getattr(teil, "span_pdf", None)),
+                "envelope": _json_faehig(getattr(teil, "envelope", None)),
+                "extras": _json_faehig(getattr(teil, "extras", None)),
+                "nummer": nummer,
+            }
+        )
+    return {
+        "assembly_failed": {
+            "detail": f"{type(grund).__name__}: {grund}",
+            "hinweis": (
+                "Das Zusammensetzen ist gescheitert. Hier stehen die bezahlten "
+                "Teilstuecke unbearbeitet. page_idx ist teilstueck-lokal und "
+                "beginnt in jedem Teilstueck wieder bei 0."
+            ),
+        },
+        "chunks": chunks,
+    }
+
+
+def _json_faehig(wert: Any) -> Any:
+    """Macht einen Wert JSON-faehig, ohne je zu werfen.
+
+    Drei Faelle, in dieser Reihenfolge: Bytes werden nach Base64 gewandelt (so
+    haelt es auch `assemble`, und es ist verlustfrei umkehrbar). Ein Wert, der
+    sich serialisieren laesst, geht unveraendert durch. Alles andere wird zu
+    seiner Textdarstellung — verlustbehaftet, aber vorhanden. Ein Dict wird
+    Eintrag fuer Eintrag behandelt, damit ein einziger unbrauchbarer Wert nicht
+    die ganze Abbildung in eine Textdarstellung verwandelt; dasselbe fuer Listen.
+
+    Der Rueckfall auf die Textdarstellung ist bewusst kein Weglassen: Ein Feld,
+    das hier verschwaende, waere bezahlt und weg, und niemand wuesste, dass es je
+    da war.
+    """
+    if isinstance(wert, bytes):
+        return base64.b64encode(wert).decode("ascii")
+    try:
+        json.dumps(wert)
+    except (TypeError, ValueError):
+        pass
+    else:
+        return wert
+    if isinstance(wert, dict):
+        return {str(schluessel): _json_faehig(inhalt) for schluessel, inhalt in wert.items()}
+    if isinstance(wert, (list, tuple)):
+        return [_json_faehig(inhalt) for inhalt in wert]
+    return {"nicht_json_faehig": repr(wert), "typ": type(wert).__name__}
+
+
 def _typ_aus_mime(mime: str) -> str:
     """Findet den Typ zur gespeicherten MIME-Zeichenkette.
 
@@ -472,17 +649,123 @@ async def _stuecke_verarbeiten(
     ist der Fehlerfall: Fliegt mitten in der Schleife eine Ausnahme, muss der
     Aufrufer die BIS DAHIN abgeholten Teilstuecke noch haben — sie sind bezahlt
     und gehoeren in `raw`. Ein Rueckgabewert waere in diesem Moment verloren.
+
+    HTTP 402 MITTEN IM LAUF wird hier abgefangen und in eine Warteschleife
+    uebersetzt, statt geworfen zu werden. Das ist Regel 8 des Entwurfs („leeres
+    Konto pausiert statt scheitert"), und sie war lange nicht gebaut: Der
+    Docstring von `wait_for_balance` behauptete zwei Aufrufstellen, es gab genau
+    eine — die vorsorgliche vor dem ersten Teilstueck. Ein 402 beim Absenden von
+    Teilstueck 2 lief ungefangen nach oben, `should_run_again` stufte ihn als
+    wiederholbar ein, und die Warteschlange legte den Job neu vor. Das kostete
+    zweierlei: Die bereits bezahlten Teilstuecke in `teile` waren verworfen und
+    wurden beim Wiederlauf neu bezahlt, und die Wiedervorlage erhoehte `attempts`
+    — womit ein leerlaufendes Konto das Budget aus `max_attempts` aufzehrte,
+    genau das, was die Drei-Antworten-Einteilung in `errors.py` ausschliessen
+    soll.
+
+    Absenden und Abholen pausieren GETRENNT, und das ist kein Zufall: Ein 402
+    beim Abholen darf NICHT zu einem neuen Absenden fuehren. Der Job laeuft dann
+    schon und ist bezahlt; ihn ein zweites Mal abzuschicken zahlte ihn ein
+    zweites Mal und liesse das erste Ergebnis in seinem Dreissig-Minuten-Fenster
+    verfallen.
     """
     for chunk, daten in stuecke:
         kodiert = base64.b64encode(daten).decode("ascii")
-        job = await runpod.submit(
-            file_b64=kodiert,
-            backend=settings.backend,
-            transport=settings.transport,
+
+        async def absenden(kodiert: str = kodiert) -> str:
+            return await runpod.submit(
+                file_b64=kodiert,
+                backend=settings.backend,
+                transport=settings.transport,
+            )
+
+        job = await _mit_kontopause(
+            absenden, runpod=runpod, settings=settings, schritt="Absenden"
         )
-        antwort = await runpod.await_result(job)
+
+        async def abholen(job: str = job) -> dict[str, Any]:
+            # DERSELBE Job. Ein erneuter Aufruf setzt das Abfragen fort und
+            # kostet nichts; ein neues Absenden kostete das Teilstueck erneut.
+            return await runpod.await_result(job)
+
+        antwort = await _mit_kontopause(
+            abholen, runpod=runpod, settings=settings, schritt="Abholen"
+        )
         _endzustand_uebersetzen(antwort, job)
         teile.append(assembly.unpack_response(antwort, chunk))
+
+
+_KONTOPAUSEN_JE_SCHRITT = 3
+"""Wie oft ein einzelner Schritt wegen leeren Kontos pausieren darf.
+
+Die Zahl begrenzt NICHT das Warten — `wait_for_balance` wartet, so lange das
+Konto leer ist, und genau so ist es gewollt. Sie begrenzt den WIDERSPRUCH: Kehrt
+`wait_for_balance` zurueck, sagt die Kontostandsabfrage, es sei wieder Geld da.
+Antwortet der Endpoint daraufhin ERNEUT mit 402, widersprechen sich zwei Quellen.
+Dann weiter zu warten hiesse, endlos auf eine Bedingung zu warten, die nach der
+einen Quelle laengst erfuellt ist — der stille Stillstand, gegen den auch die
+Behandlung der Konfigurationsfehler in `wait_for_balance` steht. Nach drei
+solchen Runden wird der Widerspruch benannt und geworfen, statt ihn auszusitzen.
+"""
+
+
+async def _mit_kontopause(
+    aufruf: Callable[[], Awaitable[T]],
+    *,
+    runpod: RunPodAccess,
+    settings: Settings,
+    schritt: str,
+) -> T:
+    """Fuehrt `aufruf` aus und pausiert bei HTTP 402, statt zu werfen.
+
+    Args:
+        aufruf: Der zu wiederholende Schritt, ohne Argumente. Er MUSS
+            wiederholbar sein, ohne zusaetzlich Geld zu kosten — deshalb steht
+            hier das Absenden EINES Teilstuecks oder das Fortsetzen des Abfragens
+            EINES Jobs, nie beides zusammen.
+        runpod: Fuer die Kontostandsabfrage waehrend der Pause.
+        settings: Fuer Schwelle und Abfragetakt der Pause.
+        schritt: Nur fuer die Meldung — „Absenden" oder „Abholen".
+
+    Returns:
+        Was `aufruf` zurueckgibt, sobald er ohne 402 durchlief.
+
+    Zusicherung:
+        Der Procrastinate-Versuchszaehler bleibt unberuehrt: Es wird gewartet,
+        nicht geworfen. Jede andere Ausnahme geht unveraendert nach oben.
+
+    Raises:
+        TerminalRunPodError: Der Endpoint antwortet auch dann noch mit 402, wenn
+            die Kontostandsabfrage ausreichendes Guthaben meldet — und zwar
+            `_KONTOPAUSEN_JE_SCHRITT` Mal hintereinander. Das ist ein Widerspruch
+            zwischen zwei Quellen und keine Geldfrage mehr.
+
+    Kosten: die des uebergebenen Schritts, einmal je Runde.
+    """
+    pausen = 0
+    while True:
+        try:
+            return await aufruf()
+        except InsufficientBalanceError as leer:
+            pausen += 1
+            if pausen > _KONTOPAUSEN_JE_SCHRITT:
+                raise TerminalRunPodError(
+                    f"{schritt}: Der Endpoint antwortet mit HTTP 402 (leeres "
+                    f"Konto), obwohl die Kontostandsabfrage nach jeder der "
+                    f"{_KONTOPAUSEN_JE_SCHRITT} Pausen ausreichendes Guthaben "
+                    f"gemeldet hat. Die beiden Quellen widersprechen einander; "
+                    f"weiteres Warten wuerde auf eine Bedingung warten, die "
+                    f"laut Kontostand schon erfuellt ist. Urspruengliche "
+                    f"Meldung: {leer}"
+                ) from leer
+            log.warning(
+                "%s wegen leeren Kontos pausiert (Runde %d von %d): %s",
+                schritt,
+                pausen,
+                _KONTOPAUSEN_JE_SCHRITT,
+                leer,
+            )
+            await wait_for_balance(runpod, settings)
 
 
 def _endzustand_uebersetzen(antwort: dict[str, Any], job_id: str) -> None:
@@ -515,7 +798,10 @@ async def wait_for_balance(runpod: RunPodAccess, settings: Settings) -> None:
     """Haelt an, bis das Konto wieder ueber der Pausenschwelle steht.
 
     Wird an zwei Stellen gebraucht: einmal vorsorglich vor dem ersten Chunk eines
-    Dokuments, und einmal als Antwort auf HTTP 402 mitten im Lauf.
+    Dokuments (`process_document`), und einmal als Antwort auf HTTP 402 mitten im
+    Lauf — die zweite Stelle ist `_mit_kontopause`, das Absenden und Abholen
+    jedes Teilstuecks umschliesst. Dieser Satz stand hier lange, ohne dass es die
+    zweite Stelle gab; wer ihn liest, soll beide nachschlagen koennen.
 
     Warum warten und nicht scheitern: Ein leeres Konto ist kein Fehler des
     Dokuments. Wuerde man werfen, verbrauchte die Wartezeit die drei echten
@@ -543,14 +829,35 @@ async def wait_for_balance(runpod: RunPodAccess, settings: Settings) -> None:
 
     Zusicherung:
         Kehrt NUR zurueck, wenn der Kontostand tatsaechlich gelesen wurde und
-        ueber der Schwelle liegt. Eine FEHLGESCHLAGENE Abfrage gilt nicht als
-        „Konto in Ordnung" und beendet das Warten nicht — sie wird vermerkt und
-        beim naechsten Durchgang wiederholt. Der umgekehrte Weg waere schlimmer:
-        wegen eines Netzwackelns weiterzumachen und in eine Wand aus
-        402-Antworten zu laufen, jede davon ein bezahlter Fehlversuch.
+        ueber der Schwelle liegt. Eine VORUEBERGEHEND fehlgeschlagene Abfrage
+        gilt nicht als „Konto in Ordnung" und beendet das Warten nicht — sie wird
+        protokolliert und beim naechsten Durchgang wiederholt. Der umgekehrte Weg
+        waere schlimmer: wegen eines Netzwackelns weiterzumachen und in eine Wand
+        aus 402-Antworten zu laufen, jede davon ein bezahlter Fehlversuch.
+
+        Ein ENDGUELTIGER Fehler der Abfrage beendet das Warten dagegen sofort,
+        indem er nach oben geht. Frueher fing diese Schleife jede Ausnahme und
+        wartete weiter, und das hatte eine Folge, die im Betrieb nicht von
+        „laeuft" zu unterscheiden war: Ein widerrufener Schluessel oder ein
+        geloeschter Endpoint (HTTP 401/403 — `ConfigurationError`, laut
+        `errors.py` „immer endgueltig, nie ein Grund fuer einen Retry") liess
+        JEDES Dokument vor seinem ersten Teilstueck in dieser Schleife haengen,
+        endlos, ohne Log, ohne Fehler, ohne Terminal-Schreiben. Der ganze Lauf
+        stand still und sah dabei aus wie Arbeit.
+
+        Endgueltig oder nicht entscheidet `errors.should_run_again` und nicht
+        eine eigene Fallunterscheidung an dieser Stelle. Das ist dieselbe Regel
+        wie im Fehlerpfad von `process_document`: Wer hier eine zweite
+        Einteilung einfuehrt, stellt genau den Fehler wieder her, wegen dessen
+        `should_run_again` ueberhaupt entstanden ist.
 
     Raises:
         asyncio.CancelledError: Beim Herunterfahren. Nicht gefangen.
+        ConfigurationError: Der Schluessel oder der Endpoint taugt nicht mehr.
+            Weiterwarten hiesse hier, auf etwas zu warten, das von selbst nie
+            eintritt.
+        TerminalRunPodError: Ebenso, fuer die uebrigen endgueltigen Faelle der
+            Kontostandsabfrage.
 
     Kosten: keine. Den Kontostand zu lesen ist frei.
     """
@@ -561,14 +868,37 @@ async def wait_for_balance(runpod: RunPodAccess, settings: Settings) -> None:
             # Der Kontostand liess sich nicht lesen, WEIL das Konto leer ist —
             # dann ist die Antwort dieselbe wie unten: warten.
             stand = 0.0
-        except Exception:  # noqa: BLE001
-            # Eine FEHLGESCHLAGENE Abfrage gilt NICHT als „Konto in Ordnung".
-            # Der umgekehrte Weg waere schlimmer: wegen eines Netzwackelns
-            # weiterzumachen und in eine Wand aus 402-Antworten zu laufen, jede
-            # davon ein bezahlter Fehlversuch. Also: erneut versuchen.
+        except Exception as fehler:  # noqa: BLE001 — Einteilung folgt sofort
+            if not should_run_again(fehler):
+                # Endgueltig. NICHT aussitzen — siehe Zusicherung.
+                log.error(
+                    "Kontostandsabfrage endgueltig gescheitert (%s: %s). Das "
+                    "Warten wird abgebrochen; ein widerrufener Schluessel oder "
+                    "ein geloeschter Endpoint heilt nicht von selbst.",
+                    type(fehler).__name__,
+                    fehler,
+                )
+                raise
+            # Voruebergehend: erneut versuchen — aber sichtbar. Ohne diese Zeile
+            # ist eine Schleife, die minuten- bis stundenlang nichts tut, von
+            # einem laufenden Dokument nicht zu unterscheiden.
+            log.warning(
+                "Kontostandsabfrage fehlgeschlagen (%s: %s). Erneuter Versuch "
+                "in %.0f s.",
+                type(fehler).__name__,
+                fehler,
+                settings.balance_recheck_seconds,
+            )
             await asyncio.sleep(settings.balance_recheck_seconds)
             continue
 
         if stand >= settings.min_balance_pause_usd:
             return
+        log.info(
+            "Konto bei %.2f USD, Pausenschwelle %.2f USD. Warten, erneute "
+            "Pruefung in %.0f s.",
+            stand,
+            settings.min_balance_pause_usd,
+            settings.balance_recheck_seconds,
+        )
         await asyncio.sleep(settings.balance_recheck_seconds)

@@ -22,7 +22,12 @@ from psycopg_pool import AsyncConnectionPool
 
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, get_document, insert_document
-from mineru_ocr.errors import TerminalRunPodError, TransientRunPodError
+from mineru_ocr.errors import (
+    ConfigurationError,
+    InsufficientBalanceError,
+    TerminalRunPodError,
+    TransientRunPodError,
+)
 from mineru_ocr.executor import process_document, wait_for_balance
 from mineru_ocr.mime import DocumentType
 
@@ -669,6 +674,224 @@ async def test_gescheiterte_kontoabfrage_beendet_das_warten_nicht(
     runpod = Wackelnd()
     await wait_for_balance(runpod, exec_settings)
     assert runpod.abfragen == 3
+
+
+async def test_endgueltiger_fehler_der_kontoabfrage_beendet_das_warten(
+    exec_settings: Settings,
+) -> None:
+    """Ein widerrufener Schluessel laesst das Warten NICHT endlos weiterlaufen.
+
+    Der Gegenfall zum Test darueber, und der teurere von beiden: Frueher fing die
+    Schleife jede Ausnahme. Ein `ConfigurationError` (HTTP 401/403 — laut
+    `errors.py` „immer endgueltig, nie ein Grund fuer einen Retry") liess damit
+    JEDES Dokument vor seinem ersten Teilstueck haengen, endlos und ohne jede
+    Meldung. Der Lauf stand still und war dabei von „laeuft" nicht zu
+    unterscheiden.
+    """
+
+    class TotesKonto(FalscherRunPod):
+        def __init__(self) -> None:
+            super().__init__()
+            self.abfragen = 0
+
+        async def balance(self) -> float:
+            self.abfragen += 1
+            raise ConfigurationError("HTTP 401: Schluessel widerrufen")
+
+    runpod = TotesKonto()
+    with pytest.raises(ConfigurationError):
+        await wait_for_balance(runpod, exec_settings)
+    # EINMAL gefragt, nicht endlos: Der Fehler wird weitergereicht, nicht
+    # ausgesessen.
+    assert runpod.abfragen == 1
+
+
+async def test_402_beim_absenden_pausiert_statt_zu_werfen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Regel 8 am ganzen Ablauf: Ein leeres Konto MITTEN im Lauf pausiert.
+
+    Das Szenario, fuer das die Regel geschrieben wurde: Ein mehrteiliges Dokument
+    laeuft, das Konto leert sich zwischen zwei Teilstuecken. Vorher lief der 402
+    ungefangen nach oben, wurde als wiederholbar eingestuft und die Warteschlange
+    legte den Job neu vor — was zweierlei kostete: Das bereits bezahlte erste
+    Teilstueck war verworfen und wurde neu bezahlt, und die Wiedervorlage zehrte
+    am Budget aus `max_attempts`.
+
+    Geprueft wird deshalb beides: dass die Ausnahme NICHT nach oben geht, und
+    dass das erste Teilstueck erhalten bleibt.
+    """
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(2), seiten=2)
+
+    class KontoLeertSich(FalscherRunPod):
+        def __init__(self) -> None:
+            super().__init__(
+                [
+                    _fertige_antwort("Erstes Stueck"),
+                    _fertige_antwort("Zweites Stueck"),
+                ]
+            )
+            self.leer = True
+
+        async def submit(
+            self, *, file_b64: str, backend: str, transport: str, **_: Any
+        ) -> str:
+            if len(self.abgesendet) == 1 and self.leer:
+                # Beim ZWEITEN Absenden ist das Konto leer. Danach ist es
+                # aufgeladen — genau so, wie eine Nachzahlung wirkt.
+                self.leer = False
+                raise InsufficientBalanceError("HTTP 402: Konto leer")
+            return await super().submit(
+                file_b64=file_b64, backend=backend, transport=transport
+            )
+
+    runpod = KontoLeertSich()
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    assert zeile.raw is not None
+    # Beide Teilstuecke sind da — das erste wurde durch die Pause nicht verworfen.
+    assert "Erstes Stueck" in zeile.raw["markdown"]
+    assert "Zweites Stueck" in zeile.raw["markdown"]
+    # Und es wurde genau zweimal wirklich abgesendet, nicht dreimal: Die Pause
+    # wiederholt das gescheiterte Absenden, sie sendet nichts zusaetzlich.
+    assert len(runpod.abgesendet) == 2
+
+
+async def test_402_beim_abholen_sendet_den_job_nicht_neu_ab(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ein 402 beim Abholen fuehrt NICHT zu einem zweiten Absenden.
+
+    Der Grund, warum Absenden und Abholen getrennt pausieren: Ist der Job schon
+    abgesendet, ist er bezahlt. Ihn nach einer Pause erneut abzuschicken zahlte
+    ihn ein zweites Mal UND liesse das erste Ergebnis in seinem
+    Dreissig-Minuten-Fenster verfallen — der teuerste denkbare Ausgang einer
+    Massnahme, die Geld sparen soll.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"ein bild", name="b.png", typ=DocumentType.PNG
+    )
+
+    class LeerBeimAbholen(FalscherRunPod):
+        def __init__(self) -> None:
+            super().__init__([_fertige_antwort("Fertig geworden")])
+            self.versuche = 0
+
+        async def await_result(self, job_id: str) -> dict[str, Any]:
+            self.versuche += 1
+            if self.versuche == 1:
+                raise InsufficientBalanceError("HTTP 402 beim Abfragen")
+            return await super().await_result(job_id)
+
+    runpod = LeerBeimAbholen()
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    # DAS ist die Zusicherung: einmal abgesendet, zweimal abgeholt.
+    assert len(runpod.abgesendet) == 1
+    assert runpod.versuche == 2
+
+
+async def test_402_trotz_gedecktem_konto_wird_als_widerspruch_benannt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Sagt der Kontostand „gedeckt" und der Endpoint trotzdem 402, wird der
+    Widerspruch benannt statt ausgesessen.
+
+    Die Pause wartet, so lange das Konto leer ist — das ist gewollt und
+    unbegrenzt. Aber `wait_for_balance` kehrt nur zurueck, wenn der Stand ueber
+    der Schwelle liegt; kommt DANN erneut ein 402, widersprechen sich zwei
+    Quellen. Endlos darauf zu warten hiesse, auf eine Bedingung zu warten, die
+    nach der einen Quelle schon erfuellt ist — genau der stille Stillstand, gegen
+    den auch die Behandlung endgueltiger Fehler in `wait_for_balance` steht.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"noch ein bild", name="c.png", typ=DocumentType.PNG
+    )
+
+    class ImmerLeer(FalscherRunPod):
+        """Konto meldet 5,00 USD, der Endpoint lehnt trotzdem jedes Mal ab."""
+
+        async def submit(
+            self, *, file_b64: str, backend: str, transport: str, **_: Any
+        ) -> str:
+            raise InsufficientBalanceError("HTTP 402: Konto leer")
+
+    runpod = ImmerLeer()
+    with pytest.raises(TerminalRunPodError) as gefangen:
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert "widersprechen einander" in str(gefangen.value)
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+
+
+async def test_fehlerpfad_schreibt_auch_wenn_das_zusammensetzen_scheitert(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Der Endzustand wird auch dann geschrieben, wenn `assemble` SELBST wirft.
+
+    Der teuerste Fehler, den dieses Modul hatte: Der Fehlerpfad baute das zu
+    schreibende `raw` mit demselben `assembly.assemble`, das im Erfolgspfad
+    geworfen haben kann. War der urspruengliche Fehler genau dieser Wurf, warf
+    der Aufruf im Fehlerpfad sofort wieder, die Ausnahme verliess den Handler,
+    und geschrieben wurde NIE.
+
+    Die Folge war nicht nur der Verlust der bezahlten Teilstuecke: Der Job endete
+    `failed`, die Zeile blieb `new`, das Dokument zaehlte fuer immer als
+    `pending` — und weil ein Ordner-Durchlauf genau die `pending` anfasst,
+    bezahlte JEDER weitere Durchlauf das ganze Dokument neu und scheiterte
+    deterministisch wieder an derselben Stelle.
+
+    Ausgeloest wird der Wurf hier ueber ein `page_idx`, das keine ganze Zahl ist
+    — `assemble` kann den Seitenversatz dann nicht berechnen und wirft, wie es
+    soll.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"kaputte antwort", name="d.png", typ=DocumentType.PNG
+    )
+
+    runpod = FalscherRunPod(
+        [
+            _fertige_antwort(
+                "Bezahlt und angekommen",
+                content_list=[{"type": "text", "text": "x", "page_idx": 1.5}],
+            )
+        ]
+    )
+    with pytest.raises(TerminalRunPodError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    # ZUERST geschrieben, DANN geworfen — auch hier.
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.raw is not None
+    # Das Bezahlte ist in der Notfassung erhalten, unbearbeitet.
+    assert "assembly_failed" in zeile.raw
+    assert zeile.raw["chunks"][0]["markdown"] == "Bezahlt und angekommen"
+    assert zeile.raw["chunks"][0]["content_list"][0]["page_idx"] == 1.5
+    # Und der Leser sieht, dass er die Notfassung vor sich hat.
+    assert any(v["kind"] == "zusammensetzen_gescheitert" for v in zeile.notes)
 
 
 # --- Verbindungen und Abbruch ---------------------------------------------

@@ -415,7 +415,26 @@ async def test_wartungs_queue_verhungert_nicht(
     haengend = ProtokollRunPod()
     haengend.freigabe = asyncio.Event()  # wird nie gesetzt: die Plaetze bleiben belegt
 
+    # Die Belegung wird WAEHREND des Laufs mitgeschrieben, nicht danach abgefragt.
+    # Danach ginge nicht mehr: Ein sauberes Herunterfahren beendet die haengenden
+    # Jobs, sie stehen anschliessend auf `aborted` und nicht mehr auf `doing`.
+    # Frueher stand die Pruefung hinter dem Lauf und bestand auch — aber nur,
+    # weil der Daemon seine Worker gar nicht herunterfuhr und die Jobs als
+    # Karteileichen auf `doing` stehenblieben. Der Test mass damit das Symptom
+    # eines Fehlers statt der Zusicherung, um die es ihm geht: dass die
+    # OCR-Plaetze belegt waren, WAEHREND der Waechter lief.
+    hoechststand = 0
+
     async def waechter_lief() -> bool:
+        nonlocal hoechststand
+        belegt = db_conn.execute(
+            "SELECT count(*) FROM procrastinate_jobs "
+            "WHERE queue_name = %s AND status = 'doing'",
+            (config.QUEUE_OCR,),
+        ).fetchone()
+        if belegt is not None:
+            hoechststand = max(hoechststand, belegt[0])
+
         # Der Waechter ist der Task auf der Wartungs-Queue. Sobald er einen Job
         # bekommen und abgeschlossen hat, ist die Frage beantwortet.
         zeile = db_conn.execute(
@@ -429,15 +448,10 @@ async def test_wartungs_queue_verhungert_nicht(
         int_settings, haengend, bis=waechter_lief, zeit=90.0
     )
 
-    # Und die Gegenprobe: Die OCR-Plaetze WAREN wirklich belegt.
+    # Und die Gegenprobe: Die OCR-Plaetze WAREN wirklich belegt, waehrend der
+    # Waechter durchlief.
     assert haengend.gestartet.is_set()
-    laufende = db_conn.execute(
-        "SELECT count(*) FROM procrastinate_jobs "
-        "WHERE queue_name = %s AND status = 'doing'",
-        (config.QUEUE_OCR,),
-    ).fetchone()
-    assert laufende is not None
-    assert laufende[0] == int_settings.ocr_concurrency
+    assert hoechststand == int_settings.ocr_concurrency
 
 
 async def test_abbruch_beim_herunterfahren_heilt_durch_neu_einreihen(
@@ -582,8 +596,20 @@ async def test_daemon_faehrt_sauber_herunter(
     Andersherum zoege man einem noch laufenden Task den Boden weg — und dessen
     letzter Schreibvorgang ist der mit dem bezahlten Ergebnis.
 
-    Geprueft daran, dass `daemon.run` nach einem Abbruch wirklich zurueckkehrt
-    und dabei den Pool geschlossen hinterlaesst.
+    WAS DIESER TEST FRUEHER NICHT GEPRUEFT HAT, obwohl sein Name es sagte: Er sah
+    nur nach, ob der Pool am Ende geschlossen ist. Das bestand er auch, als der
+    Daemon die Worker gar nicht herunterfuhr — `run` kehrte damals zurueck,
+    WAEHREND Pool und HTTP-Zugang noch schlossen und die Worker weiterliefen
+    (`asyncio.shield` laesst den Wartenden sofort zurueckkehren). Gemessen wurden
+    dabei 21 verwaiste, noch laufende Tasks bei bereits geschlossenem Pool, ein
+    an `PoolClosed` gestorbener Dokument-Job — und Worker, die sich nie
+    abmeldeten und als Karteileichen in `procrastinate_workers` stehenblieben,
+    was die uebrigen Integrationstests reihenfolgeabhaengig scheitern liess.
+
+    Deshalb pruefen die Zusicherungen jetzt die REIHENFOLGE und nicht nur den
+    Endzustand: Nach der Rueckkehr von `run` darf kein Worker-Task mehr laufen,
+    und die Worker-Tabelle muss leer sein — beides ist nur erreichbar, wenn das
+    Herunterfahren VOR dem Schliessen fertig war.
     """
     gebaut: dict[str, Any] = {}
     echte_mittel = tasks.worker_context_resources
@@ -611,6 +637,31 @@ async def test_daemon_faehrt_sauber_herunter(
     # Der Abbruch mitten im `async with` laesst Procrastinate aufraeumen; der
     # Pool gehoert dem Daemon und wird von ihm geschlossen.
     assert gebaut["pool"].closed
+
+    # Und jetzt das, was der Test frueher nicht sah. Erstens: KEIN Task des
+    # Daemons laeuft noch. Verwaiste Worker-Tasks bei geschlossenem Pool sind
+    # genau die Lage, in der ein bezahltes Ergebnis nicht mehr geschrieben
+    # werden kann.
+    uebrig = [
+        aufgabe
+        for aufgabe in asyncio.all_tasks()
+        if not aufgabe.done()
+        and aufgabe is not asyncio.current_task()
+        and (aufgabe.get_name().startswith("mineru-ocr-") or aufgabe.get_name() == "beenden")
+    ]
+    assert uebrig == [], f"Noch laufende Daemon-Tasks nach der Rueckkehr: {uebrig}"
+
+    # Zweitens: Die Worker haben sich ABGEMELDET. Das geht nur, solange der Pool
+    # noch offen ist — die leere Tabelle ist damit der Beleg, dass das Beenden
+    # vor dem Schliessen fertig war, und nicht bloss angestossen.
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM procrastinate_workers")
+        zeile = cur.fetchone()
+    assert zeile is not None
+    assert zeile[0] == 0, (
+        f"{zeile[0]} Worker-Registrierung(en) blieben stehen. Der Daemon hat "
+        f"seine Worker nicht heruntergefahren, bevor er zurueckkehrte."
+    )
 
 
 async def test_ohne_daemon_passiert_nichts_und_das_wird_gesagt(
