@@ -762,8 +762,53 @@ def counts_by_status(conn: psycopg.Connection[Any]) -> dict[DocumentStatus, int]
 
 
 # --------------------------------------------------------------------------
-# Endergebnis schreiben — asynchron, ausschliesslich der Task
+# Lesen und schreiben — asynchron, ausschliesslich der Task
 # --------------------------------------------------------------------------
+
+
+async def get_document_async(
+    conn: psycopg.AsyncConnection[Any], sha256: str
+) -> DocumentRow:
+    """Liest eine Zeile fuer den Executor — OHNE `raw`.
+
+    Warum ohne: Der Executor braucht Pfad, Typ und Zustand. `raw` ist bei einem
+    bereits verarbeiteten Dokument zweistellige Megabyte gross, und der einzige
+    Grund, es zu lesen, waere der Terminal-Guard — der aber nur den Zustand
+    braucht. Es mitzuladen hiesse, bei jedem Wiederlauf eines fertigen Dokuments
+    das ganze Ergebnis durch die Leitung zu ziehen, um es sofort wegzuwerfen.
+
+    Warum es diese Funktion ueberhaupt gibt und der Executor nicht selbst fragt:
+    Dieses Modul ist der einzige Ort im Paket, an dem SQL auf `documents` steht
+    (siehe Modul-Vorspann). Eine zweite Stelle waere eine zweite Lesart derselben
+    Tabelle — und die faellt erst auf, wenn die Daten schon falsch sind.
+
+    Args:
+        conn: Offene asynchrone Verbindung, gehoert dem Aufrufer.
+        sha256: Primaerschluessel.
+
+    Returns:
+        Die Zeile mit `raw_loaded = False`.
+
+    Raises:
+        DocumentNotFound: Kein Eintrag. Anders als `get_document` gibt diese
+            Funktion NICHT None zurueck: Ein Job, der auf ein Dokument verweist,
+            das es nicht gibt, ist keine leere Auskunft, sondern ein Widerspruch
+            — die Zeile entsteht beim Einreihen, also vor dem Job.
+
+    Kosten: keine.
+    """
+    async with conn.cursor(row_factory=class_row(DocumentRow)) as cur:
+        await cur.execute(
+            f"SELECT {_SPALTEN_OHNE_RAW} FROM documents WHERE sha256 = %s",
+            (sha256,),
+        )
+        zeile = await cur.fetchone()
+    if zeile is None:
+        raise DocumentNotFound(
+            f"Kein Eintrag zu {sha256}. Der Job verweist auf ein Dokument, das "
+            f"es nicht gibt — die Zeile entsteht beim Einreihen, vor dem Job."
+        )
+    return zeile
 
 
 async def write_terminal_async(

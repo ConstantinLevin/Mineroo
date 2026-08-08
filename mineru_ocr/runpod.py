@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import time
 from types import TracebackType
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 import httpx
 
@@ -96,6 +96,43 @@ RUNNING_STATUSES: Final = frozenset({"IN_QUEUE", "IN_PROGRESS", "RUNNING"})
 im Betrieb beobachtet wurde, auch wenn die Dokumentation nur `IN_PROGRESS`
 nennt — ein unbekannter Zustand wuerde sonst als Fehler behandelt und ein
 laufender Job abgebrochen."""
+
+
+class RunPodAccess(Protocol):
+    """Was der Executor von RunPod braucht — und mehr nicht.
+
+    Vier Methoden, nicht neun. Der Executor sendet ab, wartet ab, liest den
+    Kontostand und die Herkunft; die Endpoint-Konfiguration und die Worker-Liste
+    braucht er nie, die sind Sache des Preflight.
+
+    Warum das als Protokoll ausgeschrieben steht und nicht einfach `RunPodClient`
+    ueberall als Typ verwendet wird: Der Executor soll ohne Netz durchspielbar
+    sein — das ist sein Existenzgrund und der Grund, warum er nichts von
+    Procrastinate weiss. Ein Test-Doppel, das genau diese vier Methoden bietet,
+    ist dann kein Notbehelf, der die Typpruefung an neunzehn Stellen abschalten
+    muss, sondern ein vollwertiger Zugang. Und die Liste sagt zugleich, was der
+    Executor NICHT tut: Er hat keinen Weg, eine bezahlte Ressource zu veraendern,
+    weil er die Methoden dafuer gar nicht sieht.
+
+    `RunPodClient` erfuellt dieses Protokoll strukturell, ohne davon zu erben —
+    es gibt also keine Vererbungsbeziehung, die man pflegen muesste.
+    """
+
+    async def submit(
+        self,
+        *,
+        file_b64: str,
+        backend: str,
+        transport: str,
+        start_page: int | None = None,
+        end_page: int | None = None,
+    ) -> str: ...
+
+    async def await_result(self, job_id: str) -> dict[str, Any]: ...
+
+    async def balance(self) -> float: ...
+
+    async def image_tag(self) -> str | None: ...
 
 
 class RunPodClient:

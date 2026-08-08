@@ -7,139 +7,745 @@ Warteschlange möglich sind. Fehlten sie, wäre die Trennung umsonst gewesen.
 
 from __future__ import annotations
 
-import pytest
+import asyncio
+import base64
+import dataclasses
+import hashlib
+import io
+from pathlib import Path
+from typing import Any
 
-pytestmark = pytest.mark.skip(reason="Vertrag steht, Koerper folgt in Phase B")
+import psycopg
+import pypdfium2
+import pytest
+from psycopg_pool import AsyncConnectionPool
+
+from mineru_ocr.config import Settings
+from mineru_ocr.db import DocumentStatus, get_document, insert_document
+from mineru_ocr.errors import TerminalRunPodError, TransientRunPodError
+from mineru_ocr.executor import process_document, wait_for_balance
+from mineru_ocr.mime import DocumentType
+
+pytestmark = pytest.mark.db
+
+
+class FalscherRunPod:
+    """Ein RunPod-Zugang ohne Netz, der mitschreibt, was er tat.
+
+    Er bildet die drei Methoden nach, die der Executor benutzt, und zaehlt
+    dabei mit, WANN abgesendet und WANN abgeholt wurde. Genau daran haengt die
+    wichtigste Zusicherung des Executors: dass je Dokument nie zwei Ergebnisse
+    gleichzeitig unabgeholt sind.
+    """
+
+    def __init__(
+        self,
+        antworten: list[dict[str, Any]] | None = None,
+        *,
+        marke: str | None = ":17d4955b2",
+        kontostand: float = 5.0,
+    ) -> None:
+        self.antworten = antworten or []
+        self.marke = marke
+        self.kontostand = kontostand
+        self.abgesendet: list[str] = []
+        self.abgeholt: list[str] = []
+        self.verlauf: list[str] = []
+        self._nummer = 0
+
+    async def submit(
+        self, *, file_b64: str, backend: str, transport: str, **_: Any
+    ) -> str:
+        job = f"job-{len(self.abgesendet)}"
+        self.abgesendet.append(file_b64)
+        self.verlauf.append(f"submit:{job}")
+        return job
+
+    async def await_result(self, job_id: str) -> dict[str, Any]:
+        self.abgeholt.append(job_id)
+        self.verlauf.append(f"holen:{job_id}")
+        nummer = min(self._nummer, len(self.antworten) - 1)
+        self._nummer += 1
+        return self.antworten[nummer]
+
+    async def image_tag(self) -> str | None:
+        return self.marke
+
+    async def balance(self) -> float:
+        return self.kontostand
+
+
+def _fertige_antwort(
+    markdown: str = "Text", content_list: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Eine COMPLETED-Antwort in der Form der echten Antworten."""
+    return {
+        "id": "erfunden",
+        "status": "COMPLETED",
+        "workerId": "wrk",
+        "delayTime": 1,
+        "executionTime": 2,
+        "output": {
+            "ok": True,
+            "results": [
+                {
+                    "basename": "doc",
+                    "markdown": markdown,
+                    "content_list": content_list
+                    if content_list is not None
+                    else [{"type": "text", "text": markdown, "page_idx": 0}],
+                    "images": {},
+                    "middle": {"_backend": "vlm"},
+                }
+            ],
+        },
+    }
+
+
+def _pdf(seiten: int) -> bytes:
+    doc = pypdfium2.PdfDocument.new()
+    try:
+        for _ in range(seiten):
+            doc.new_page(200.0, 300.0)
+        puffer = io.BytesIO()
+        doc.save(puffer)
+        return puffer.getvalue()
+    finally:
+        doc.close()
+
+
+def _anlegen(
+    conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    inhalt: bytes,
+    *,
+    name: str = "x.pdf",
+    typ: DocumentType = DocumentType.PDF,
+    seiten: int | None = None,
+) -> tuple[str, Path]:
+    """Legt Datei und Zeile an und gibt Hash und Pfad zurueck."""
+    pfad = tmp_path / name
+    pfad.write_bytes(inhalt)
+    sha = hashlib.sha256(inhalt).hexdigest()
+    insert_document(
+        conn,
+        sha256=sha,
+        source_path=str(pfad),
+        source_name=name,
+        size_bytes=len(inhalt),
+        mime=typ.mime,
+        page_count=seiten,
+        endpoint_id="l79lebhinxaqjz",
+    )
+    return sha, pfad
+
+
+@pytest.fixture
+async def pool(_test_datenbank: str) -> Any:
+    """Ein echter Verbindungspool auf die Test-Datenbank.
+
+    Ein echter und kein nachgebauter: Der Executor gibt seine Verbindung
+    ausdruecklich zwischen Lesen und Schreiben ZURUECK, und ob er das wirklich
+    tut, laesst sich nur an einem Pool mit begrenzter Groesse pruefen.
+    """
+    p = AsyncConnectionPool(_test_datenbank, min_size=1, max_size=2, open=False)
+    await p.open(wait=True)
+    try:
+        yield p
+    finally:
+        await p.close()
+
+
+@pytest.fixture
+def exec_settings(settings: Settings) -> Settings:
+    return dataclasses.replace(
+        settings,
+        endpoint_id="l79lebhinxaqjz",
+        poll_interval_seconds=0.01,
+        balance_recheck_seconds=0.01,
+    )
 
 
 # --- Der Guard ------------------------------------------------------------
 
 
-def test_guard_haelt_fertige_dokumente_an() -> None:
+async def test_guard_haelt_fertige_dokumente_an(
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
     """Bei `done`, `empty` und `input_error` kehrt der Ablauf sofort zurueck und
     schickt NICHTS ab — sonst waere ein Wiederlauf nach dem finalen Schreiben ein
     vollstaendig neu bezahltes Dokument."""
+    from mineru_ocr.db import write_terminal_async
+
+    for nr, status in enumerate(
+        [DocumentStatus.DONE, DocumentStatus.EMPTY, DocumentStatus.INPUT_ERROR]
+    ):
+        sha, _ = _anlegen(
+            db_conn, tmp_path, f"inhalt-{nr}".encode(), name=f"{nr}.png",
+            typ=DocumentType.PNG,
+        )
+        await write_terminal_async(
+            async_conn, sha256=sha, status=status, raw={"erste": nr}
+        )
+
+        runpod = FalscherRunPod([_fertige_antwort()])
+        await process_document(
+            sha, settings=exec_settings, runpod=runpod, pool=pool
+        )
+
+        assert runpod.abgesendet == [], status
+        zeile = get_document(db_conn, sha)
+        assert zeile is not None
+        assert zeile.raw == {"erste": nr}, status
 
 
-def test_guard_laesst_failed_durch() -> None:
+async def test_guard_laesst_failed_durch(
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
     """Bei `failed` wird wirklich neu verarbeitet.
 
     Der Gegentest zum vorigen, und der wichtigere: Stuende `failed` im Guard,
     waere jeder Retry von Hand ein Nichts-Tun, das als Erfolg verbucht wird — und
     ein gescheitertes Dokument koennte nie wieder laufen.
     """
+    from mineru_ocr.db import write_terminal_async
+
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"bild", name="a.png", typ=DocumentType.PNG
+    )
+    await write_terminal_async(
+        async_conn,
+        sha256=sha,
+        status=DocumentStatus.FAILED,
+        raw={"versuch": 1},
+        error="damals gescheitert",
+    )
+
+    runpod = FalscherRunPod([_fertige_antwort("Jetzt geklappt")])
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert len(runpod.abgesendet) == 1
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    assert zeile.raw is not None
+    assert zeile.raw["markdown"] == "Jetzt geklappt"
 
 
 # --- Eingang --------------------------------------------------------------
 
 
-def test_veraenderte_datei_wird_erkannt() -> None:
+async def test_veraenderte_datei_wird_erkannt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
     """Weicht der Hash beim Verarbeiten ab, endet das Dokument `input_error` mit
     Vermerk — und es wird nichts abgeschickt."""
+    sha, pfad = _anlegen(
+        db_conn, tmp_path, b"urspruenglich", name="a.png", typ=DocumentType.PNG
+    )
+    pfad.write_bytes(b"inzwischen etwas ganz anderes")
+
+    runpod = FalscherRunPod([_fertige_antwort()])
+    with pytest.raises(Exception):
+        await process_document(
+            sha, settings=exec_settings, runpod=runpod, pool=pool
+        )
+
+    assert runpod.abgesendet == []
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.error is not None
+    assert any(v["kind"] == "gescheitert" for v in zeile.notes)
 
 
-def test_nicht_pdf_laeuft_als_ein_teilstueck() -> None:
+async def test_nicht_pdf_laeuft_als_ein_teilstueck(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
     """Ein Bild ergibt genau einen Chunk `(0, 0)`; es gibt keinen Sonderfall
     „war nicht geschnitten"."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"bilddaten", name="a.png", typ=DocumentType.PNG
+    )
+    runpod = FalscherRunPod([_fertige_antwort("Bildtext")])
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert len(runpod.abgesendet) == 1
+    assert base64.b64decode(runpod.abgesendet[0]) == b"bilddaten"
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+
+
+async def test_kleines_pdf_geht_ungeschnitten_hinaus(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ein PDF unter beiden Schwellen wird NICHT neu geschrieben.
+
+    Es gehen die ORIGINAL-Bytes hinaus. Ein Ausschnitt waere byte-gleich im
+    Inhalt, aber ein neu geschriebenes Dokument — unnoetige Arbeit an genau der
+    Stelle, an der jede Umformung ein Risiko ist.
+    """
+    inhalt = _pdf(3)
+    sha, _ = _anlegen(db_conn, tmp_path, inhalt, seiten=3)
+    runpod = FalscherRunPod([_fertige_antwort()])
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert len(runpod.abgesendet) == 1
+    assert base64.b64decode(runpod.abgesendet[0]) == inhalt
+
+
+async def test_grosses_pdf_wird_geschnitten(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ueber der Seiten-Schwelle wird zerlegt, und die Teilstuecke decken das
+    Dokument vollstaendig ab."""
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=2)
+    inhalt = _pdf(5)
+    sha, _ = _anlegen(db_conn, tmp_path, inhalt, seiten=5)
+    runpod = FalscherRunPod([_fertige_antwort("Stueck")])
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    # 5 Seiten bei Schwelle 2 → 2 + 2 + 1.
+    assert len(runpod.abgesendet) == 3
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
 
 
 # --- Absenden und Abholen -------------------------------------------------
 
 
-def test_hoechstens_ein_ergebnis_offen() -> None:
+async def test_hoechstens_ein_ergebnis_offen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
     """Zu keinem Zeitpunkt sind je Dokument zwei Ergebnisse unabgeholt.
 
     Die Zusicherung gegen das verpasste Abholfenster: nie absenden-und-spaeter-
     einsammeln. Genau das machten die alten Ad-hoc-Skripte anders.
+
+    Geprueft am VERLAUF: Auf jedes `submit` muss unmittelbar sein `holen` folgen,
+    bevor das naechste `submit` kommt. Ein Verlauf wie submit/submit/holen/holen
+    waere die alte Bauart und wuerde hier auffallen.
     """
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(4), seiten=4)
+    runpod = FalscherRunPod([_fertige_antwort()])
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    assert runpod.verlauf == [
+        "submit:job-0",
+        "holen:job-0",
+        "submit:job-1",
+        "holen:job-1",
+        "submit:job-2",
+        "holen:job-2",
+        "submit:job-3",
+        "holen:job-3",
+    ]
 
 
-def test_ergebnis_wird_sofort_abgeholt() -> None:
-    """Zwischen terminalem Zustand und Abholung liegt hoechstens ein
-    Abfragetakt."""
+@pytest.mark.parametrize(
+    "zustand, erwartet",
+    [
+        ("FAILED", TerminalRunPodError),
+        ("CANCELLED", TerminalRunPodError),
+        ("TIMED_OUT", TransientRunPodError),
+    ],
+)
+async def test_endzustaende_werden_uebersetzt(
+    zustand: str,
+    erwartet: type[Exception],
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Nicht-COMPLETED-Endzustaende werden in die richtige Ausnahme uebersetzt.
+
+    `FAILED` und `CANCELLED` sind endgueltig; `TIMED_OUT` ist wiederholbar, denn
+    es kann an der Warteschlange gelegen haben. Der Unterschied entscheidet, ob
+    das Dokument aufgegeben oder noch zweimal bezahlt wird.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, zustand.encode(), name=f"{zustand}.png",
+        typ=DocumentType.PNG,
+    )
+    runpod = FalscherRunPod([{"id": "j", "status": zustand, "error": "grund"}])
+    with pytest.raises(erwartet):
+        await process_document(
+            sha, settings=exec_settings, runpod=runpod, pool=pool
+        )
 
 
-def test_failed_wird_in_terminalen_fehler_uebersetzt() -> None:
-    """Ein Chunk-Endzustand `FAILED` ergibt `TerminalRunPodError`."""
-
-
-def test_cancelled_wird_in_terminalen_fehler_uebersetzt() -> None:
-    """`CANCELLED` ebenso — endgueltig, nicht wiederholbar."""
-
-
-def test_timed_out_ist_wiederholbar() -> None:
-    """`TIMED_OUT` ergibt `TransientRunPodError`: Es kann an der Warteschlange
-    gelegen haben."""
-
-
-def test_ausgepackt_wird_nur_erfolgreiches() -> None:
+async def test_ausgepackt_wird_nur_erfolgreiches(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
     """`unpack_response` sieht ausschliesslich `COMPLETED`-Antworten — die
-    Uebersetzung liegt davor."""
+    Uebersetzung liegt davor.
+
+    Geprueft daran, dass eine FAILED-Antwort OHNE `output` nicht am Auspacken
+    scheitert (was ein anderer Fehlertyp waere), sondern an der Uebersetzung.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+    runpod = FalscherRunPod([{"id": "j", "status": "FAILED"}])
+    with pytest.raises(TerminalRunPodError) as fehler:
+        await process_document(
+            sha, settings=exec_settings, runpod=runpod, pool=pool
+        )
+    assert "FAILED" in str(fehler.value)
+    assert "output" not in str(fehler.value).split("Volle Antwort")[0]
 
 
 # --- Schreiben ------------------------------------------------------------
 
 
-def test_seitenabdeckung_wird_nachgerechnet() -> None:
-    """Vor dem Schreiben laeuft `verify_page_coverage` ueber die TATSAECHLICH
-    gelieferten Teilstuecke; bei Abweichung `input_error`.
+async def test_genau_ein_schreibvorgang(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Zwischen Anlage und Endzustand wird die Zeile genau einmal beschrieben.
 
-    Nicht ueber den Plan: `iter_chunks` darf unterwegs halbieren, geliefert wird
-    also moeglicherweise etwas anderes als geplant.
+    Geprueft an `updated_at`: Vor dem Lauf steht sie auf dem Anlage-Zeitpunkt,
+    danach genau einmal weiter. Ein Zwischen-Update haette sie ein zweites Mal
+    bewegt — und ein Zwischenzustand ist genau das, was es nicht geben darf.
     """
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(3), seiten=3)
+    vorher = get_document(db_conn, sha)
+    assert vorher is not None
+    assert vorher.updated_at == vorher.created_at
+
+    runpod = FalscherRunPod([_fertige_antwort()])
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    nachher = get_document(db_conn, sha)
+    assert nachher is not None
+    assert nachher.updated_at > vorher.updated_at
+    assert nachher.status is DocumentStatus.DONE
 
 
-def test_genau_ein_schreibvorgang() -> None:
-    """Zwischen Anlage und Endzustand wird die Zeile genau einmal beschrieben."""
-
-
-def test_ergebnis_ist_zusammengesetzt() -> None:
+async def test_ergebnis_ist_zusammengesetzt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
     """Was geschrieben wird, ist EIN Dokument: Text in Reihenfolge, Seitenzahlen
     des Originals, Bilder vereinigt. Am Ergebnis ist nicht ablesbar, ob
     geschnitten wurde."""
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(3), seiten=3)
+
+    # Drei Teilstuecke, jedes mit teilstueck-lokalem page_idx 0.
+    runpod = FalscherRunPod(
+        [
+            _fertige_antwort("Seite A", [{"type": "text", "text": "A", "page_idx": 0}]),
+            _fertige_antwort("Seite B", [{"type": "text", "text": "B", "page_idx": 0}]),
+            _fertige_antwort("Seite C", [{"type": "text", "text": "C", "page_idx": 0}]),
+        ]
+    )
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.raw is not None
+    assert zeile.raw["markdown"] == "Seite A\n\nSeite B\n\nSeite C"
+    # DIE Korrektur, um die es geht: aus dreimal „Seite 0" werden 0, 1, 2.
+    assert [e["page_idx"] for e in zeile.raw["content_list"]] == [0, 1, 2]
+    # Und es gibt kein Feld, das die Teilung noch verriete.
+    assert "chunks" not in zeile.raw
+    assert "chunk_plan" not in zeile.raw
 
 
-def test_image_tag_wird_mitgeschrieben() -> None:
+async def test_leeres_ergebnis_wird_empty(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ein Dokument ohne jeden Inhalt endet `empty`, nicht `done` und nicht
+    `failed`.
+
+    Beide Verwechslungen sind in den Ad-hoc-Skripten je einmal wirklich
+    passiert: als Erfolg getarnt ist es unsichtbarer Verlust, als Fehler getarnt
+    endlose Wiedervorlage mit Doppelkosten.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"leerbild", name="a.png", typ=DocumentType.PNG
+    )
+    runpod = FalscherRunPod([_fertige_antwort("", [])])
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.EMPTY
+
+
+async def test_image_tag_wird_mitgeschrieben(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
     """`image_tag_at_submit` ist nach dem Lauf gesetzt.
 
     Ohne diesen Weg bliebe die Spalte fuer immer leer — und die Frage, fuer die
     sie da ist, waere nach Wochen nicht mehr entscheidbar.
     """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+    runpod = FalscherRunPod([_fertige_antwort()], marke=":abc12345")
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.image_tag_at_submit == ":abc12345"
 
 
-def test_wiederholbarer_fehler_laesst_die_zeile_unberuehrt() -> None:
+async def test_unlesbarer_image_tag_kostet_kein_dokument(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Scheitert das Lesen der Herkunft, laeuft das Dokument trotzdem durch.
+
+    Die Angabe ist wertvoll, aber sie ist nicht das Ergebnis. Ein Netzwackeln
+    beim Lesen einer Nebenangabe darf keinen bezahlten Parse kosten — der
+    Vermerk sagt dann, warum sie fehlt.
+    """
+
+    class OhneMarke(FalscherRunPod):
+        async def image_tag(self) -> str | None:
+            raise TransientRunPodError("GraphQL antwortet nicht")
+
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+    runpod = OhneMarke([_fertige_antwort()])
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    assert zeile.image_tag_at_submit is None
+    assert any(v["kind"] == "image_tag_nicht_lesbar" for v in zeile.notes)
+
+
+async def test_wiederholbarer_fehler_laesst_die_zeile_unberuehrt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
     """Geworfen, nichts geschrieben — die Warteschlange legt neu vor."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+    vorher = get_document(db_conn, sha)
+    assert vorher is not None
+
+    runpod = FalscherRunPod([{"id": "j", "status": "TIMED_OUT"}])
+    with pytest.raises(TransientRunPodError):
+        await process_document(
+            sha, settings=exec_settings, runpod=runpod, pool=pool
+        )
+
+    nachher = get_document(db_conn, sha)
+    assert nachher == vorher
 
 
-def test_endgueltiger_fehler_schreibt_vor_dem_werfen() -> None:
+async def test_endgueltiger_fehler_schreibt_vor_dem_werfen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
     """Zeile `failed` samt dem, was bis dahin ankam, DANN die Ausnahme. So tragen
-    Job-Endzustand und Zeile dieselbe Wahrheit."""
+    Job-Endzustand und Zeile dieselbe Wahrheit.
+
+    Und das Bezahlte geht NICHT verloren: Das erste Teilstueck kam durch, das
+    zweite scheiterte — im `raw` steht trotzdem, was das erste lieferte.
+    """
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(2), seiten=2)
+
+    runpod = FalscherRunPod(
+        [
+            _fertige_antwort("Erstes Stueck kam an"),
+            {"id": "j", "status": "FAILED", "error": "Modellfehler"},
+        ]
+    )
+    with pytest.raises(TerminalRunPodError):
+        await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.raw is not None
+    # Das Bezahlte ist da.
+    assert "Erstes Stueck kam an" in zeile.raw["markdown"]
+    # Und daneben steht, WORAN es scheiterte — sonst saehe die Zeile aus wie ein
+    # unvollstaendiges Ergebnis ohne Grund.
+    assert zeile.raw["failure"]["type"] == "TerminalRunPodError"
+    assert any(v["kind"] == "gescheitert" for v in zeile.notes)
+    assert zeile.notes[-1]["teilstuecke_bezahlt"] == 1
 
 
 # --- Geld -----------------------------------------------------------------
 
 
-def test_leeres_konto_wartet_ohne_zu_zaehlen() -> None:
-    """Der Versuchszaehler bleibt unberuehrt; nach dem Aufladen laeuft es
-    weiter."""
+async def test_leeres_konto_wartet(exec_settings: Settings) -> None:
+    """`wait_for_balance` kehrt erst zurueck, wenn der Stand wieder reicht.
+
+    Und es WIRFT nicht: Wuerde es werfen, verbrauchte die Wartezeit die drei
+    echten Versuche, und ein Bestand liefe bei kurzzeitig leerem Konto
+    reihenweise in `failed`.
+    """
+
+    class Aufladend(FalscherRunPod):
+        def __init__(self) -> None:
+            super().__init__()
+            self.abfragen = 0
+
+        async def balance(self) -> float:
+            self.abfragen += 1
+            return 0.0 if self.abfragen < 3 else 5.0
+
+    runpod = Aufladend()
+    await wait_for_balance(runpod, exec_settings)
+    assert runpod.abfragen == 3
 
 
-def test_gescheiterte_kontoabfrage_beendet_das_warten_nicht() -> None:
+async def test_gescheiterte_kontoabfrage_beendet_das_warten_nicht(
+    exec_settings: Settings,
+) -> None:
     """Ein Netzwackeln ist kein „Konto in Ordnung" — sonst liefe man in eine Wand
     aus Ablehnungen, jede ein bezahlter Fehlversuch."""
 
+    class Wackelnd(FalscherRunPod):
+        def __init__(self) -> None:
+            super().__init__()
+            self.abfragen = 0
 
-# --- Verbindungen ---------------------------------------------------------
+        async def balance(self) -> float:
+            self.abfragen += 1
+            if self.abfragen < 3:
+                raise TransientRunPodError("GraphQL antwortet nicht")
+            return 5.0
+
+    runpod = Wackelnd()
+    await wait_for_balance(runpod, exec_settings)
+    assert runpod.abfragen == 3
 
 
-def test_keine_verbindung_waehrend_des_wartens() -> None:
+# --- Verbindungen und Abbruch ---------------------------------------------
+
+
+async def test_keine_verbindung_waehrend_des_wartens(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
     """Waehrend der Abfrageschleife haelt der Ablauf keine Datenbankverbindung.
 
     Sonst blockierten vierundzwanzig gleichzeitig betreute Dokumente den Pool bis
     zu fuenfundzwanzig Minuten, waehrend keines von ihnen ihn benutzt.
+
+    Geprueft mit einem Pool der Groesse EINS: Waehrend das Dokument auf RunPod
+    wartet, muss eine ZWEITE Abfrage durch denselben Pool gehen koennen. Haelt
+    der Executor seine Verbindung, laeuft dieser Test in den Zeitablauf.
     """
+    kleiner = AsyncConnectionPool(
+        exec_settings.db_dsn, min_size=1, max_size=1, open=False
+    )
+    await kleiner.open(wait=True)
+    try:
+        sha, _ = _anlegen(
+            db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+        )
+
+        durchgekommen = asyncio.Event()
+
+        class Wartend(FalscherRunPod):
+            async def await_result(self, job_id: str) -> dict[str, Any]:
+                # Genau HIER — mitten im Warten auf RunPod — muss der Pool frei
+                # sein.
+                async with kleiner.connection() as zweite:
+                    await zweite.execute("SELECT 1")
+                durchgekommen.set()
+                return await super().await_result(job_id)
+
+        runpod = Wartend([_fertige_antwort()])
+        await process_document(
+            sha, settings=exec_settings, runpod=runpod, pool=kleiner
+        )
+        assert durchgekommen.is_set()
+    finally:
+        await kleiner.close()
 
 
-def test_abbruch_wird_durchgereicht() -> None:
+async def test_abbruch_wird_durchgereicht(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
     """`CancelledError` wird nicht gefangen: Der Job endet `aborted`, die Zeile
-    bleibt `new`, das Dokument laeuft beim naechsten Einreihen von vorn."""
+    bleibt `new`, das Dokument laeuft beim naechsten Einreihen von vorn.
+
+    Der Test faengt einen echten Fehler ab, den man leicht macht: Waere hier
+    `except BaseException` statt `except Exception`, wuerde der Abbruch als
+    endgueltiger Fehler verbucht — und jedes Strg-C machte reihenweise `failed`.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+
+    class Abbrechend(FalscherRunPod):
+        async def await_result(self, job_id: str) -> dict[str, Any]:
+            raise asyncio.CancelledError()
+
+    runpod = Abbrechend([_fertige_antwort()])
+    with pytest.raises(asyncio.CancelledError):
+        await process_document(
+            sha, settings=exec_settings, runpod=runpod, pool=pool
+        )
+
+    # Die Zeile ist unberuehrt — kein `failed`.
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.NEW
