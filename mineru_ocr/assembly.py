@@ -414,6 +414,24 @@ def _aus_tarball(
     gesehen: list[str] = []
     uebrig: dict[str, Any] = {}
 
+    # WELCHE PLAETZE SCHON BELEGT SIND — als eigene Menge und ausdruecklich NICHT
+    # am Wahrheitswert der Felder abgelesen. Der Unterschied ist am 08.08.2026 an
+    # einer echten Antwort aufgefallen und war ein Fehler: Die erste Fassung
+    # dieser Pruefung fragte `not content_list`, also den Wahrheitswert. Eine
+    # GUELTIGE LEERE Liste ist aber falsy, und genau die liefert die Engine fuer
+    # eine leere Seite — `doc_content_list.json` enthielt `[]`. Der Platz galt
+    # damit weiter als frei, und die naechste Datei auf demselben Muster
+    # (`doc_content_list_v2.json`, Inhalt `[[]]`) ueberschrieb ihn. Heraus kam
+    # `[[]]` statt `[]`: das falsche Format, still eingesetzt.
+    #
+    # Bei einer nicht leeren v2-Fassung waere der Schaden groesser gewesen —
+    # `assemble` macht `dict(eintrag)` ueber die Eintraege, und eine Liste von
+    # Bloecken statt eines Blocks ergibt dort keinen Fehler, sondern Unsinn.
+    #
+    # „Leer" und „nicht da" sind zwei verschiedene Dinge, und nur das zweite ist
+    # ein freier Platz.
+    belegt: set[str] = set()
+
     try:
         with tarfile.open(fileobj=io.BytesIO(archivbytes), mode="r:*") as archiv:
             for eintrag in archiv:
@@ -442,20 +460,37 @@ def _aus_tarball(
                 # weil der Verlierer vollstaendig in `uebrig` steht. Der erste
                 # Live-Lauf zeigt dann an einer echten Antwort, ob es
                 # Doppeltreffer ueberhaupt gibt und welcher der richtige ist.
-                if kurz.endswith(".md") and not markdown:
+                if kurz.endswith(".md") and "markdown" not in belegt:
                     markdown = inhalt.decode("utf-8")
+                    belegt.add("markdown")
                 elif (
                     "_content_list" in kurz
                     and kurz.endswith(".json")
-                    and not content_list
+                    and "content_list" not in belegt
                 ):
                     content_list = _json_laden(inhalt, name, erwartet=list)
-                elif "_middle" in kurz and kurz.endswith(".json") and not middle:
+                    belegt.add("content_list")
+                elif (
+                    "_middle" in kurz
+                    and kurz.endswith(".json")
+                    and "middle" not in belegt
+                ):
                     middle = _json_laden(inhalt, name, erwartet=dict)
-                elif "layout" in kurz and kurz.endswith(".pdf") and layout_pdf is None:
+                    belegt.add("middle")
+                elif (
+                    "layout" in kurz
+                    and kurz.endswith(".pdf")
+                    and "layout_pdf" not in belegt
+                ):
                     layout_pdf = inhalt
-                elif "span" in kurz and kurz.endswith(".pdf") and span_pdf is None:
+                    belegt.add("layout_pdf")
+                elif (
+                    "span" in kurz
+                    and kurz.endswith(".pdf")
+                    and "span_pdf" not in belegt
+                ):
                     span_pdf = inhalt
+                    belegt.add("span_pdf")
                 elif ("/images/" in name or name.startswith("images/")) and (
                     kurz not in images
                 ):
@@ -480,13 +515,25 @@ def _aus_tarball(
             f"`tarball_b64` liess sich nicht als Archiv lesen: {fehler}"
         ) from fehler
 
-    if not markdown and not content_list:
+    if "markdown" not in belegt and "content_list" not in belegt:
         raise TerminalRunPodError(
             f"Im Archiv war weder ein Markdown noch eine content_list zu finden. "
             f"Enthaltene Dateien: {gesehen}. Die Zuordnung geschieht ueber "
             f"Namensmuster; passt keines, hat die Gegenseite ihre Dateinamen "
             f"geaendert und die Muster oben gehoeren nachgezogen."
         )
+    # ES WIRD AUF ABWESENHEIT GEPRUEFT, NICHT AUF LEERE. Die frueherer Fassung
+    # fragte `if not markdown and not content_list` — also den Wahrheitswert —
+    # und haette damit eine ECHT LEERE SEITE fuer ein kaputtes Archiv gehalten.
+    #
+    # Am 08.08.2026 gemessen: Eine leere A4-Seite liefert `COMPLETED`, `ok: true`
+    # und ein Archiv mit `doc.md` (0 Bytes), `doc_content_list.json` (`[]`),
+    # `doc_middle.json` mit leeren `preproc_blocks`, `discarded_blocks` und
+    # `para_blocks` — und trotzdem einem `doc_layout.pdf` (462 Bytes). Der
+    # Unterschied ist keine Spitzfindigkeit: Ein Wurf an dieser Stelle machte aus
+    # dem gueltigen Zustand `empty` ein `failed`, und `failed` bedeutet
+    # Wiedervorlage und erneutes Bezahlen — genau der Fehler, wegen dessen
+    # `empty` ueberhaupt ein eigener Endzustand ist.
 
     # Auch die Felder NEBEN `tarball_b64` gehoeren aufgehoben — beim Inline-
     # Transport tragen dieselben Stellen `basename`, `source` und
@@ -796,20 +843,38 @@ def is_empty(result: dict[str, Any]) -> bool:
     Ad-hoc-Skripten je einmal wirklich passiert — deshalb ist `empty` ein eigener
     Endzustand.
 
-    OFFENER PUNKT, ausdruecklich: Das genaue Kriterium wird am echten Verhalten
-    der Schnittstelle festgestellt, nicht vorab erfunden — „das weiß ich ja nicht
-    das muss ja rausgefudnen werden dann vorm bauen. es wird ja nicht ohne
-    interaktion gebaut es ist ja consigment gegen die api" (Plan 2.4). Die sechs
-    konservierten Antworten helfen nur halb: Sie zeigen, wie eine NICHT leere
-    Antwort aussieht (Markdown zwischen 201 und 2069 Zeichen), aber keine von
-    ihnen ist leer.
+    DAS KRITERIUM IST AM ECHTEN VERHALTEN FESTGESTELLT, wie es die Vorgabe
+    verlangte — „das weiß ich ja nicht das muss ja rausgefudnen werden dann vorm
+    bauen. es wird ja nicht ohne interaktion gebaut es ist ja consigment gegen
+    die api" (Plan 2.4). Die Feststellung ist am 08.08.2026 nachgeholt worden,
+    indem eine leere A4-Seite durch den echten Endpoint geschickt wurde
+    (`artifacts/2026-08-08-erster-tarball-lauf/leere_seite.tarball.response.json`).
 
-    Bis zur Feststellung gilt als Arbeitsfassung, bewusst streng: leer ist ein
-    Dokument genau dann, wenn sein `markdown` nach dem Entfernen von Leerraum leer
-    ist UND seine `content_list` keinen einzigen inhaltstragenden Eintrag hat. Im
-    Zweifel gilt ein Dokument als NICHT leer — ein faelschlich als fertig
-    verbuchtes leeres Dokument faellt beim Ansehen auf, ein faelschlich als leer
-    verbuchtes volles nie.
+    WAS DIE SCHNITTSTELLE AUF EINE LEERE SEITE ANTWORTET, gemessen:
+
+        `status: "COMPLETED"` und `output.ok: true` — eine leere Seite ist fuer
+        die Engine ein ERFOLG, kein Fehler. Sie meldet nichts Besonderes.
+
+        Das Archiv enthaelt `doc.md` mit 0 Bytes, `doc_content_list.json` mit
+        `[]`, `doc_content_list_v2.json` mit `[[]]` und ein `doc_middle.json`,
+        dessen `pdf_info[0]` leere `preproc_blocks`, `discarded_blocks` und
+        `para_blocks` traegt. Keine Bilder.
+
+        Und trotzdem ein `doc_layout.pdf` (462 Bytes). Die Anwesenheit eines
+        Layout-PDF ist also KEIN Hinweis auf Inhalt.
+
+    Die vorher als Arbeitsfassung gewaehlte Regel trifft damit zu und ist jetzt
+    belegt: leer ist ein Dokument genau dann, wenn sein `markdown` nach dem
+    Entfernen von Leerraum leer ist UND seine `content_list` keinen einzigen
+    inhaltstragenden Eintrag hat. Im Zweifel gilt ein Dokument als NICHT leer —
+    ein faelschlich als fertig verbuchtes leeres Dokument faellt beim Ansehen
+    auf, ein faelschlich als leer verbuchtes volles nie.
+
+    Was die Messung ZUSAETZLICH zutage foerderte, steht an `_aus_tarball`: Die
+    leere Antwort brachte zwei Fehler ans Licht, die einander verdeckt hatten —
+    eine Belegt-Pruefung am Wahrheitswert (eine gueltige leere Liste galt als
+    „Platz frei") und eine Vollstaendigkeitspruefung, die eine echt leere Seite
+    fuer ein kaputtes Archiv gehalten haette.
 
     Was dabei als „inhaltstragend" zaehlt, ist ausdruecklich WEIT gefasst:
     JEDER Eintrag mit lesbarem Text zaehlt, auch ein Randblock. Das folgt aus dem

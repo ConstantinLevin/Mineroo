@@ -1,0 +1,36 @@
+{
+  "delayTime": 131433,
+  "executionTime": 782,
+  "id": "a6a7cc17-92e7-4187-be68-fc81e73ca4f6-e1",
+  "output": {
+    "debug": {
+      "backend": "vlm-auto-engine",
+      "gpu": {
+        "available": true,
+        "compute_capability": "12.0",
+        "name": "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb",
+        "total_memory_gb": 23.62
+      },
+      "input_format": "pdf",
+      "model_dir": "/root/.cache/huggingface/hub/models--opendatalab--MinerU2.5-Pro-2605-1.2B/snapshots/bff20d4ae2bf202df9f45284b4d43681555a97ed",
+      "phase_ms": {
+        "fetch_input": 0,
+        "mineru_parse": 626,
+        "package": 1
+      }
+    },
+    "elapsed_seconds": 0.63,
+    "mineru_version": "unknown",
+    "ok": true,
+    "results": [
+      {
+        "basename": "doc",
+        "pages_requested": -1,
+        "source": "b64",
+        "tarball_b64": "H4sIACE2d2oC/+2a3WrbMBiGc6yrEIHCBp1tWZKdjq6MdSsbYyxkOyshqLFS3CZWkJ2SrvQad7A72G5kckKatO7PNhazNe+Tg5hPn35MrO+xTTzf81+21fStVom2jbUQzLnrOwg4Xx6XcRaEjDXotFEDk7xQ1k3f2EzCmI6KdKRfsLgVsZ1Y8tgTIhBckgZ4/CSm742S9c5RbupIiLv3vztmMuQy4jwQrNz/UcwbNKhz/1tjivvyHmr/T/FQ/1H/Uf83uf73+iYrdFb0hmleeCe5yWqv/+GN+i/KkoD6XwOHXeyBTQb+h//hf/h/4f/eWfjXbwEe9D+r+F8I+L8e/xPqOOwS3AfA//A//A//b5z/h+rcTApvnAzWt//v83/Mohv+D4WM4f862Gq/PnjGvJhsff/x9RthNKDm6ITs7hK/bU0y6WtLn4zP3bXxlOztEZ0lZXO4kvb5fKyp31bHOif+vplkBWXEf58mOT2kwiV2aHelK6903VeFGppjMh+DlmN3VjqIlQ4fdJKqV2bqRg7cR+5I2hKhG9/v6NxMbN/1d3mus98xhSo0DVYX6NZnzfjW/m1l3S1wZfKp1QPiEslSTzSSkks6oFcxJum8JVvGpKjEGOPVWBQuY4VV6VDb2Zl+Sr9oN607DVNQPluV/y4bGMoWKyyv22K2vrDlfr6tNx8P/qBk/xv+F1X/h/B/Lf5v3eZ/JrjYwQ3Ahvh/lCbJUK/jzf+v+V9EFf9HQQj/18HF7Pm/6fzeS51ems/p/I1AycXV0TzH6rF1l8vR0PRP8zKzu309I0nzvrKJTu7JGTsP93Jnt2tTLXBG3q4EnaKvxW4dMk2mbsSg0mTV6mKuWi/JykjN3pHqnzrlu5zm2XDUXITPtM1Tk/UyNSrX2+Se8ESTXOL5H/5/rP6PvBaXgkcR/L8BpKPyoctf6xyzZ3wpf+P/XyyIeINK+B8AAAAAAAAAAAAAAAAAAAAAAAAAAAAA7uQnoBALAwBQAAA="
+      }
+    ]
+  },
+  "status": "COMPLETED",
+  "workerId": "k071smafaf99a8"
+}

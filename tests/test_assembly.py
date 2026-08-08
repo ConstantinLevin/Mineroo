@@ -909,6 +909,50 @@ def test_echte_tarball_antwort_wird_vollstaendig_ausgepackt(
     ]
 
 
+def test_echte_leere_seite_ist_empty_und_nicht_kaputt(
+    echte_leere_antwort: dict[str, Any],
+) -> None:
+    """Die ECHTE Antwort auf eine leere Seite — der Punkt, der „vorm bauen"
+    haette geklaert werden sollen und am 08.08.2026 nachgeholt wurde.
+
+    Gemessen: Die Engine meldet `COMPLETED` und `ok: true`. Das Archiv traegt
+    `doc.md` mit 0 Bytes, `doc_content_list.json` mit `[]` und ein
+    `doc_middle.json` mit leeren Blocklisten — und trotzdem ein `doc_layout.pdf`.
+    Ein Layout-PDF ist also KEIN Hinweis auf Inhalt.
+
+    Diese eine Antwort hat zwei Fehler ans Licht gebracht, die einander
+    verdeckten und die dieser Test beide festhaelt:
+
+    ERSTENS wurde die flache `content_list` (`[]`) von der v2-Fassung (`[[]]`)
+    ueberschrieben, weil die Belegt-Pruefung den WAHRHEITSWERT statt der
+    ANWESENHEIT fragte. Heraus kam `[[]]` — das falsche Format, still
+    eingesetzt. Bei einer nicht leeren v2-Fassung waere daraus in `assemble`
+    ueber `dict(eintrag)` Unsinn geworden.
+
+    ZWEITENS haette die Vollstaendigkeitspruefung am Ende von `_aus_tarball`
+    (`if not markdown and not content_list: raise`) eine echt leere Seite fuer
+    ein kaputtes Archiv gehalten — und `failed` statt `empty` bedeutet
+    Wiedervorlage und erneutes Bezahlen. Genau der Fehler, wegen dessen `empty`
+    ueberhaupt ein eigener Endzustand ist.
+    """
+    from mineru_ocr.assembly import unpack_response
+
+    teil = unpack_response(echte_leere_antwort, Chunk(first_page=0, last_page=0))
+
+    # Kein Wurf — eine leere Seite ist ein gueltiges Ergebnis, kein Formfehler.
+    assert teil.markdown == ""
+    # Das FLACHE Format, leer — nicht `[[]]` aus der v2-Fassung.
+    assert teil.content_list == []
+    assert teil.images == {}
+    # Die v2-Fassung ist trotzdem aufgehoben.
+    assert "doc_content_list_v2.json" in teil.extras
+    # Und das Layout-PDF ist da, obwohl die Seite leer ist.
+    assert teil.layout_pdf is not None
+
+    ergebnis = assemble([teil])
+    assert is_empty(ergebnis) is True
+
+
 def test_echte_tarball_antwort_traegt_zwei_content_list_generationen(
     echte_tarball_antwort: dict[str, Any],
 ) -> None:

@@ -95,6 +95,37 @@ def real_responses() -> list[dict[str, Any]]:
     ]
 
 
+LEERE_SEITE_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "artifacts"
+    / "2026-08-08-erster-tarball-lauf"
+    / "leere_seite.tarball.response.json"
+)
+"""Die echte Antwort auf eine LEERE A4-Seite — aufgenommen am 08.08.2026.
+
+Sie beantwortet den Punkt, der im Plan ausdruecklich offenblieb und „vorm bauen"
+haette geklaert werden sollen: wie die Schnittstelle auf eine leere Seite
+antwortet. Die Antwort lautet: mit `COMPLETED` und `ok: true` — eine leere Seite
+ist fuer die Engine ein Erfolg. Das Archiv traegt `doc.md` mit 0 Bytes,
+`doc_content_list.json` mit `[]`, `doc_content_list_v2.json` mit `[[]]`, ein
+`doc_middle.json` mit leeren Blocklisten und — bemerkenswert — trotzdem ein
+`doc_layout.pdf` von 462 Bytes. Ein Layout-PDF ist also kein Hinweis auf Inhalt.
+
+Diese eine Antwort hat zwei Fehler ans Licht gebracht, die einander verdeckten:
+eine Belegt-Pruefung, die den Wahrheitswert statt der Anwesenheit fragte (eine
+gueltige leere Liste galt als „Platz frei", und die v2-Fassung ueberschrieb die
+flache), und eine Vollstaendigkeitspruefung, die eine echt leere Seite fuer ein
+kaputtes Archiv gehalten haette — was aus dem gueltigen `empty` ein `failed`
+gemacht haette, mit Wiedervorlage und erneutem Bezahlen."""
+
+
+@pytest.fixture
+def echte_leere_antwort() -> dict[str, Any]:
+    """Die echte Antwort auf eine leere Seite, vollstaendig geladen."""
+    geladen: dict[str, Any] = json.loads(LEERE_SEITE_FIXTURE.read_text())
+    return geladen
+
+
 @pytest.fixture
 def echte_tarball_antwort() -> dict[str, Any]:
     """Die echte `tarball_b64`-Antwort vom 08.08.2026, vollstaendig geladen.
