@@ -32,8 +32,13 @@ Normalweg ist der lokale.
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from types import TracebackType
+
+import pypdfium2
+
+from .errors import CorruptDocumentError
 
 
 class PdfReader:
@@ -93,10 +98,21 @@ class PdfReader:
                 endgueltig, ohne RunPod-Kontakt.
             OSError: Nicht lesbar. Nicht eingepackt, siehe `mime.sniff_path`.
         """
-        raise NotImplementedError
+        self._path = path
+        try:
+            self._doc = pypdfium2.PdfDocument(path)
+        except pypdfium2.PdfiumError as fehler:
+            # Beschaedigt, verschluesselt und passwortgeschuetzt sind fuer uns
+            # dasselbe: nicht verarbeitbar. Sie liessen sich in dieser Fassung
+            # auch gar nicht auseinanderhalten — `PdfiumError` traegt keinen
+            # Fehlercode, der Grund steckt nur in der Meldung. Deshalb wandert
+            # die Meldung mit, statt dass wir sie deuten.
+            raise CorruptDocumentError(
+                f"{path.name} laesst sich nicht als PDF oeffnen: {fehler}"
+            ) from fehler
 
     def __enter__(self) -> PdfReader:
-        raise NotImplementedError
+        return self
 
     def __exit__(
         self,
@@ -104,13 +120,13 @@ class PdfReader:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        raise NotImplementedError
+        self._doc.close()
 
     @property
     def page_count(self) -> int:
         """Anzahl der Seiten. Mindestens 1 — ein PDF mit null Seiten laesst sich
         nicht oeffnen und ist bereits im Konstruktor gescheitert."""
-        raise NotImplementedError
+        return len(self._doc)
 
     def extract(self, first_page: int, last_page: int) -> bytes:
         """Schneidet einen Seitenbereich als eigenstaendiges PDF heraus.
@@ -175,4 +191,50 @@ class PdfReader:
 
         Kosten: keine. Reine lokale Rechenarbeit.
         """
-        raise NotImplementedError
+        if not 0 <= first_page <= last_page < self.page_count:
+            raise ValueError(
+                f"Ungueltiger Seitenbereich ({first_page}, {last_page}) fuer ein "
+                f"Dokument mit {self.page_count} Seiten. Erwartet wird "
+                f"0 <= first_page <= last_page < {self.page_count}; die Zaehlung "
+                f"ist null-basiert und beidseitig einschliessend."
+            )
+
+        erwartet = last_page - first_page + 1
+        # AUSSCHLIESSLICH die Listenform: null-basierte Indizes. Die
+        # Zeichenketten-Form derselben Funktion zaehlt EINS-basiert, und die
+        # Verwechslung verschoebe jedes Dokument um genau eine Seite — am
+        # Einzelergebnis unsichtbar.
+        seiten = list(range(first_page, last_page + 1))
+
+        neu = pypdfium2.PdfDocument.new()
+        try:
+            try:
+                neu.import_pages(self._doc, pages=seiten)
+            except pypdfium2.PdfiumError as fehler:
+                raise CorruptDocumentError(
+                    f"{self._path.name}: Seiten {first_page} bis {last_page} "
+                    f"liessen sich nicht herausschneiden: {fehler}"
+                ) from fehler
+
+            # Die Nachzaehlung, BEVOR gespeichert wird. Sie steht hier, weil das
+            # gezaehlte Dokument ohnehin schon in der Hand liegt, und sie ist die
+            # Antwort auf die geerbte Falle: Ein Schnitt, der Seiten verliert,
+            # wird laut statt spaeter still.
+            if len(neu) != erwartet:
+                raise CorruptDocumentError(
+                    f"{self._path.name}: Der Ausschnitt der Seiten {first_page} "
+                    f"bis {last_page} hat {len(neu)} statt {erwartet} Seiten. "
+                    f"Wahrscheinlichste Ursache: eine beschaedigte Seite wurde "
+                    f"beim Schneiden uebersprungen."
+                )
+
+            puffer = io.BytesIO()
+            # Keine `flags`-Angabe: Die Voreinstellung ist FPDF_NO_INCREMENTAL,
+            # also vollstaendiges Neuschreiben. Mit `flags=0` bekaeme man das
+            # inkrementelle Anhaengen — und damit genau die Aufblaehung zurueck,
+            # wegen der pypdf im ganzen Projekt verboten ist. Die gemessenen
+            # 1,00 haengen an dieser Voreinstellung.
+            neu.save(puffer)
+            return puffer.getvalue()
+        finally:
+            neu.close()

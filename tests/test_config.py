@@ -2,9 +2,29 @@
 
 from __future__ import annotations
 
+import dataclasses
+from pathlib import Path
+
 import pytest
 
-pytestmark = pytest.mark.skip(reason="Vertrag steht, Koerper folgt in Phase B")
+from mineru_ocr.config import (
+    DEFAULT_DB_DSN,
+    DEFAULT_ENDPOINT_ID,
+    DEFAULT_SPOOL_DIR,
+    MASKE,
+    Settings,
+)
+from mineru_ocr.errors import ConfigurationError
+
+GEHEIM = "rpa_ERFUNDENER_SCHLUESSEL_NUR_FUER_TESTS_0123456789"
+
+
+def _einstellung(**abweichend: object) -> Settings:
+    """Eine gueltige Einstellung mit erfundenem Schluessel, ohne Dateizugriff."""
+    return Settings.load(api_key=GEHEIM, **abweichend)  # type: ignore[arg-type]
+
+
+# --- Die Sicherheitszusage ------------------------------------------------
 
 
 def test_repr_zeigt_den_schluessel_nicht() -> None:
@@ -13,10 +33,22 @@ def test_repr_zeigt_den_schluessel_nicht() -> None:
     Von allen Zusagen des Pakets ist das die eine, deren Bruch nicht rueckholbar
     ist: Ein Schluessel, der einmal in einem Log steht, steht dort.
     """
+    text = repr(_einstellung())
+    assert GEHEIM not in text
+    assert MASKE in text
 
 
 def test_str_zeigt_den_schluessel_nicht() -> None:
     """Auch ueber den Rueckfall `str()` kommt er nicht heraus."""
+    assert GEHEIM not in str(_einstellung())
+
+
+def test_repr_zeigt_die_uebrigen_felder_weiterhin() -> None:
+    """Maskiert wird genau ein Feld, nicht die halbe Einstellung — sonst waere
+    die Ausgabe zum Nachsehen unbrauchbar."""
+    text = repr(_einstellung())
+    assert DEFAULT_ENDPOINT_ID in text
+    assert "ocr_concurrency=24" in text
 
 
 def test_asdict_zeigt_ihn_sehr_wohl() -> None:
@@ -26,29 +58,119 @@ def test_asdict_zeigt_ihn_sehr_wohl() -> None:
     Er prueft damit ausdruecklich kein Wunschverhalten, sondern das tatsaechliche:
     Wer serialisiert, muss das Feld selbst entfernen.
     """
+    assert dataclasses.asdict(_einstellung())["api_key"] == GEHEIM
 
 
 def test_dataclass_ueberschreibt_repr_nicht() -> None:
     """Die Maskierung ueberlebt den Dataclass-Dekorator."""
+    assert Settings.__repr__ is not object.__repr__
+    assert "***" in repr(_einstellung())
 
 
-def test_ohne_schluessel_wirft_load() -> None:
-    """Kein Schluessel uebergeben und keiner in `~/.runpod/config.toml`:
-    `ConfigurationError`, nicht eine Einstellung mit leerem Feld."""
-
-
-def test_load_legt_nichts_an() -> None:
-    """`load` erzeugt das Spool-Verzeichnis nicht und beruehrt die Platte nur
-    lesend — eine Einstellung zu bilden muss auch offline gehen."""
-
-
-def test_load_fragt_weder_datenbank_noch_endpoint() -> None:
-    """Keine Verbindung, kein HTTP. Pruefen ist Sache des Preflights."""
+# --- Quellen --------------------------------------------------------------
 
 
 def test_uebergabe_schlaegt_voreinstellung() -> None:
     """Was uebergeben wurde, gilt; sonst die Voreinstellung. Zwei Quellen, keine
     dritte — insbesondere keine Umgebungsvariablen."""
+    voreingestellt = _einstellung()
+    assert voreingestellt.db_dsn == DEFAULT_DB_DSN
+    assert voreingestellt.endpoint_id == DEFAULT_ENDPOINT_ID
+    assert voreingestellt.spool_dir == DEFAULT_SPOOL_DIR
+
+    eigen = _einstellung(db_dsn="host=anders", endpoint_id="xyz")
+    assert eigen.db_dsn == "host=anders"
+    assert eigen.endpoint_id == "xyz"
+
+
+def test_keine_umgebungsvariablen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gesetzte Umgebungsvariablen aendern nichts.
+
+    Der Test gegen eine dritte Stelle, an der ein Wert stehen kann: Die
+    Fehlersuche „warum nimmt er den falschen Endpoint?" soll im Code beginnen
+    und nicht in der Shell.
+    """
+    monkeypatch.setenv("MINERU_OCR_ENDPOINT", "aus-der-umgebung")
+    monkeypatch.setenv("MINERU_OCR_DSN", "host=aus-der-umgebung")
+    monkeypatch.setenv("RUNPOD_API_KEY", "aus-der-umgebung")
+    einstellung = _einstellung()
+    assert einstellung.endpoint_id == DEFAULT_ENDPOINT_ID
+    assert einstellung.db_dsn == DEFAULT_DB_DSN
+    assert einstellung.api_key == GEHEIM
+
+
+def test_ohne_schluessel_wirft_load(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Kein Schluessel uebergeben und keiner in `~/.runpod/config.toml`:
+    `ConfigurationError`, nicht eine Einstellung mit leerem Feld."""
+    monkeypatch.setattr("mineru_ocr.config.RUNPOD_CONFIG_PATH", tmp_path / "fehlt.toml")
+    with pytest.raises(ConfigurationError, match="Kein API-Schluessel"):
+        Settings.load()
+
+
+def test_schluessel_kommt_aus_der_datei(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Ohne ausdrueckliche Angabe wird `apikey` aus der TOML-Datei gelesen."""
+    datei = tmp_path / "config.toml"
+    datei.write_text(f'apikey = "{GEHEIM}"\n', encoding="utf-8")
+    monkeypatch.setattr("mineru_ocr.config.RUNPOD_CONFIG_PATH", datei)
+    assert Settings.load().api_key == GEHEIM
+
+
+def test_kaputte_datei_wirft_mit_pfad(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Ungueltiges TOML ergibt `ConfigurationError`, und der Pfad steht in der
+    Meldung — er ist die erste Stelle, an der man nachsieht."""
+    datei = tmp_path / "config.toml"
+    datei.write_text("das ist [[kein gueltiges toml\n", encoding="utf-8")
+    monkeypatch.setattr("mineru_ocr.config.RUNPOD_CONFIG_PATH", datei)
+    with pytest.raises(ConfigurationError, match=str(datei)):
+        Settings.load()
+
+
+def test_datei_ohne_apikey_wirft(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Gueltiges TOML ohne das Feld ist ebenso ein Konfigurationsfehler."""
+    datei = tmp_path / "config.toml"
+    datei.write_text('etwasanderes = "x"\n', encoding="utf-8")
+    monkeypatch.setattr("mineru_ocr.config.RUNPOD_CONFIG_PATH", datei)
+    with pytest.raises(ConfigurationError, match="apikey"):
+        Settings.load()
+
+
+def test_leerer_apikey_wirft(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Ein leeres Feld ist kein Schluessel — sonst schluege erst der erste
+    HTTP-Aufruf fehl, und zwar mit einer nichtssagenden Meldung."""
+    datei = tmp_path / "config.toml"
+    datei.write_text('apikey = "   "\n', encoding="utf-8")
+    monkeypatch.setattr("mineru_ocr.config.RUNPOD_CONFIG_PATH", datei)
+    with pytest.raises(ConfigurationError):
+        Settings.load()
+
+
+# --- Keine Seiteneffekte --------------------------------------------------
+
+
+def test_load_legt_nichts_an(tmp_path: Path) -> None:
+    """`load` erzeugt das Spool-Verzeichnis nicht — eine Einstellung zu bilden
+    muss auch offline und ohne Schreibrechte gehen."""
+    ziel = tmp_path / "gibtesnicht" / "spool"
+    einstellung = _einstellung(spool_dir=ziel)
+    assert einstellung.spool_dir == ziel
+    assert not ziel.exists()
+
+
+def test_load_fragt_weder_datenbank_noch_endpoint() -> None:
+    """Keine Verbindung, kein HTTP. Pruefen ist Sache des Preflights.
+
+    Geprueft ueber eine offensichtlich unerreichbare Verbindungszeichenkette und
+    eine erfundene Endpoint-Kennung: Wuerde `load` etwas davon anfassen, muesste
+    es hier scheitern.
+    """
+    einstellung = _einstellung(
+        db_dsn="host=192.0.2.1 port=1 dbname=gibtesnicht connect_timeout=1",
+        endpoint_id="gibtesnicht",
+    )
+    assert einstellung.endpoint_id == "gibtesnicht"
+
+
+# --- Die drei nachgetragenen Parameter ------------------------------------
 
 
 def test_backend_und_grenzen_kommen_an() -> None:
@@ -58,8 +180,63 @@ def test_backend_und_grenzen_kommen_an() -> None:
     Der Test gegen den stillen Nichts-Tuer: Ein oeffentlicher Parameter ohne Weg
     in die Einstellung meldet keinen Fehler und wirkt trotzdem nicht.
     """
+    einstellung = _einstellung(
+        backend="pipeline", min_balance_start_usd=2.5, ocr_concurrency=8
+    )
+    assert einstellung.backend == "pipeline"
+    assert einstellung.min_balance_start_usd == 2.5
+    assert einstellung.ocr_concurrency == 8
+
+
+def test_nicht_angegeben_heisst_voreinstellung() -> None:
+    """Ohne Angabe gelten die Feld-Voreinstellungen."""
+    einstellung = _einstellung()
+    assert einstellung.backend == "vlm-auto-engine"
+    assert einstellung.transport == "tarball_b64"
+    assert einstellung.min_balance_start_usd == 1.0
+    assert einstellung.ocr_concurrency == 24
+
+
+def test_null_ist_eine_angabe() -> None:
+    """`0` und `0.0` sind gueltige Werte und werden NICHT als „nicht gesetzt"
+    gelesen.
+
+    Der Unterschied zwischen `is not None` und einer Wahrheitswert-Pruefung —
+    genau die Art stiller Fehler, gegen die dieses Modul steht.
+    """
+    einstellung = _einstellung(min_balance_start_usd=0.0, ocr_concurrency=0)
+    assert einstellung.min_balance_start_usd == 0.0
+    assert einstellung.ocr_concurrency == 0
+
+
+# --- Unveraenderlichkeit --------------------------------------------------
 
 
 def test_einstellung_ist_unveraenderlich() -> None:
     """Ein Schreibversuch an einem Feld wirft — sie darf waehrend eines Laufs
     nicht unter der Hand kippen."""
+    einstellung = _einstellung()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        einstellung.ocr_concurrency = 99  # type: ignore[misc]
+
+
+def test_http_zeitschranken_sind_gesetzt() -> None:
+    """Alle vier HTTP-Zeitschranken haben einen Wert, und die Schreibgrenze ist
+    deutlich groesser als httpx' Voreinstellung von fuenf Sekunden.
+
+    Der Test gegen den Befund, an dem Geld haengt: Ein Upload von 9,3 MB gegen
+    fuenf Sekunden reisst, der Chunk geht erneut raus, und der erste Job ist
+    womoeglich schon abgerechnet.
+    """
+    einstellung = _einstellung()
+    assert einstellung.http_connect_timeout > 0
+    assert einstellung.http_read_timeout > 0
+    assert einstellung.http_pool_timeout > 0
+    assert einstellung.http_write_timeout >= 60.0
+
+
+def test_keepalive_deckt_die_gleichzeitigkeit() -> None:
+    """`http_max_keepalive` ist mindestens so gross wie `ocr_concurrency` —
+    sonst baut ein Teil der Dokumente bei jeder Abfrage die Verbindung neu auf."""
+    einstellung = _einstellung()
+    assert einstellung.http_max_keepalive >= einstellung.ocr_concurrency

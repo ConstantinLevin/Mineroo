@@ -35,6 +35,45 @@ RUNPOD_CONFIG_PATH: Final = Path.home() / ".runpod" / "config.toml"
 """Der im Projekt bewaehrte Ort des API-Schluessels, Feld `apikey`. Wird
 gelesen, nie geschrieben."""
 
+MASKE: Final = "***"
+"""Was anstelle des Schluessels in jeder Ausgabe steht."""
+
+
+def _schluessel_aus_datei() -> str:
+    """Liest den API-Schluessel aus `~/.runpod/config.toml`, Feld `apikey`.
+
+    Raises:
+        ConfigurationError: Datei fehlt, ist unlesbar, ist kein gueltiges TOML,
+            hat kein Feld `apikey`, oder das Feld ist leer. Jeder dieser Faelle
+            bekommt eine eigene Meldung — „Konfigurationsfehler" allein hilft
+            beim Suchen niemandem, und der Pfad gehoert in die Meldung, weil er
+            die erste Stelle ist, an der man nachsieht.
+    """
+    if not RUNPOD_CONFIG_PATH.exists():
+        raise ConfigurationError(
+            f"Kein API-Schluessel: weder uebergeben noch in {RUNPOD_CONFIG_PATH} "
+            f"(Datei existiert nicht)."
+        )
+    try:
+        inhalt = RUNPOD_CONFIG_PATH.read_bytes()
+    except OSError as fehler:
+        raise ConfigurationError(
+            f"{RUNPOD_CONFIG_PATH} ist nicht lesbar: {fehler}"
+        ) from fehler
+    try:
+        daten = tomllib.loads(inhalt.decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as fehler:
+        raise ConfigurationError(
+            f"{RUNPOD_CONFIG_PATH} ist kein gueltiges TOML: {fehler}"
+        ) from fehler
+
+    schluessel = daten.get("apikey")
+    if not isinstance(schluessel, str) or not schluessel.strip():
+        raise ConfigurationError(
+            f"{RUNPOD_CONFIG_PATH} hat kein nutzbares Feld 'apikey'."
+        )
+    return schluessel
+
 # --------------------------------------------------------------------------
 # Namen, die zwischen Prozessen verabredet sind
 # --------------------------------------------------------------------------
@@ -312,7 +351,11 @@ class Settings:
         (Dass eine Dataclass diese Methode nicht ueberschreibt, ist geprueft:
         `dataclasses` setzt `__repr__` nur, wenn im Klassenkoerper keines steht.)
         """
-        raise NotImplementedError
+        teile = []
+        for feld in dataclasses.fields(self):
+            wert = MASKE if feld.name == "api_key" else getattr(self, feld.name)
+            teile.append(f"{feld.name}={wert!r}")
+        return f"{type(self).__name__}({', '.join(teile)})"
 
     @classmethod
     def load(
@@ -374,4 +417,32 @@ class Settings:
         Schluessel gueltig ist. Das ist Sache des Preflights, und die Trennung ist
         Absicht: Eine Einstellung zu bilden muss auch offline gehen.
         """
-        raise NotImplementedError
+        einstellung = cls(
+            db_dsn=db_dsn if db_dsn is not None else DEFAULT_DB_DSN,
+            endpoint_id=endpoint_id if endpoint_id is not None else DEFAULT_ENDPOINT_ID,
+            api_key=api_key if api_key is not None else _schluessel_aus_datei(),
+            spool_dir=spool_dir if spool_dir is not None else DEFAULT_SPOOL_DIR,
+            strict=strict,
+        )
+
+        # Die drei uebrigen ueberschreiben ihre Feld-Voreinstellung nur, wenn sie
+        # ausdruecklich angegeben wurden. Nacheinander mit `replace` statt in
+        # einem Bruehwerk aus Schluesselwort-Argumenten: So bleibt jeder Schritt
+        # getippt, und es braucht kein `type: ignore` — das eine, was in einer
+        # Sammlung geprueft er Schnittstellen niemals stehen sollte, weil es
+        # spaeter einen echten Fehler verdeckt.
+        #
+        # `is not None` und nicht Wahrheitswert-Pruefung: `0` und `0.0` sind
+        # gueltige Angaben, und eine Null als „nicht gesetzt" zu lesen waere
+        # genau die Art stiller Fehler, gegen die dieses Modul steht.
+        if backend is not None:
+            einstellung = dataclasses.replace(einstellung, backend=backend)
+        if min_balance_start_usd is not None:
+            einstellung = dataclasses.replace(
+                einstellung, min_balance_start_usd=min_balance_start_usd
+            )
+        if ocr_concurrency is not None:
+            einstellung = dataclasses.replace(
+                einstellung, ocr_concurrency=ocr_concurrency
+            )
+        return einstellung

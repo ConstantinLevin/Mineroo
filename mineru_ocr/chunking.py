@@ -22,11 +22,25 @@ wieder.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 
 from .config import Settings
+from .errors import CorruptDocumentError, TooLargeError
 from .mime import DocumentType
+
+
+def _passt(size_bytes: int, settings: Settings) -> bool:
+    """Ob eine Bytefolge unter der Upload-Grenze bleibt.
+
+    Die EINE Stelle im Modul, an der gegen `max_payload_bytes` verglichen wird.
+    `check_fits_unsplit` und `iter_chunks` fragen beide hier, damit nicht zwei
+    Vergleiche entstehen, die spaeter auseinanderlaufen koennen — der eine mit
+    `<`, der andere mit `<=`, und der Unterschied faellt genau bei der Datei auf,
+    die exakt auf der Grenze liegt.
+    """
+    return size_bytes <= settings.max_payload_bytes
 
 
 @dataclass(frozen=True)
@@ -50,10 +64,37 @@ class Chunk:
     last_page: int
     """Letzte Seite, null-basiert, EINSCHLIESSEND."""
 
+    def __post_init__(self) -> None:
+        """Weist einen unmoeglichen Bereich schon beim Anlegen ab.
+
+        Warum hier und nicht in den Pruefungen weiter unten: Ein Chunk mit
+        `last_page < first_page` hat eine NEGATIVE `page_count`, und negative
+        Seitenzahlen rechnen sich in jeder Summe still weg — genau die Art
+        Fehler, gegen die `verify_page_coverage` ueberhaupt steht. Die
+        Bedingung an dieser Stelle zu erzwingen macht sie fuer jede Stelle
+        wahr, die einen Chunk in die Hand bekommt, statt nur fuer die, die
+        nachrechnet.
+
+        Es ist ein Programmierfehler und kein Eingabefehler: Kein Dokument der
+        Welt bringt jemanden dazu, `Chunk(5, 3)` zu bauen — das tut nur eine
+        falsche Rechnung im Zuschnitt.
+        """
+        if self.first_page < 0:
+            raise ValueError(
+                f"first_page ist null-basiert und kann nicht negativ sein: "
+                f"{self.first_page}."
+            )
+        if self.last_page < self.first_page:
+            raise ValueError(
+                f"last_page ({self.last_page}) liegt vor first_page "
+                f"({self.first_page}). Die Angabe ist null-basiert und "
+                f"beidseitig einschliessend; ein leerer Bereich ist kein Chunk."
+            )
+
     @property
     def page_count(self) -> int:
         """`last_page - first_page + 1`. Immer mindestens 1."""
-        raise NotImplementedError
+        return self.last_page - self.first_page + 1
 
 
 def needs_chunking(
@@ -89,9 +130,29 @@ def needs_chunking(
         zwei verschiedene Fragen, und sie zusammenzuwerfen war der Weg, auf dem
         uebergrosse DOCX frueher stillschweigend durchgereicht wurden.
 
+    Raises:
+        ValueError: `doc_type` ist PDF, aber `page_count` ist None. Die Seitenzahl
+            eines PDF ist an dieser Stelle bekannt — der Aufrufer hat die Datei
+            gerade geoeffnet. Fehlt sie, waere die Seiten-Schwelle nicht pruefbar,
+            und die Antwort fiele allein nach der Bytegroesse aus: Ein 2-MB-PDF
+            mit 200 Seiten ginge ungeteilt hinaus und brechte das Antwort-Cap.
+            Lieber laut als still falsch — deshalb ein Programmierfehler und kein
+            stillschweigendes Weiterrechnen.
+
     Kosten: keine.
     """
-    raise NotImplementedError
+    if not doc_type.is_pdf:
+        return False
+    if page_count is None:
+        raise ValueError(
+            f"needs_chunking wurde fuer {doc_type.value} ohne page_count gerufen. "
+            f"Bei PDF ist die Seitenzahl Pflicht, sonst bleibt die Seiten-Schwelle "
+            f"({settings.max_pages_per_chunk}) ungeprueft."
+        )
+    return (
+        size_bytes > settings.max_payload_bytes
+        or page_count > settings.max_pages_per_chunk
+    )
 
 
 def check_fits_unsplit(
@@ -127,7 +188,18 @@ def check_fits_unsplit(
 
     Kosten: keine.
     """
-    raise NotImplementedError
+    if _passt(size_bytes, settings):
+        return
+    raise TooLargeError(
+        f"{size_bytes} Byte ueberschreiten die Upload-Grenze von "
+        f"{settings.max_payload_bytes} Byte, und {doc_type.value} laesst sich "
+        f"nicht seitenweise zerlegen. "
+        f"AUFRUESTBAR: Der Weg dafuer waere, die Seite bzw. das Bild zu rastern "
+        f"und verkleinert zu versenden. Bewusst nicht gebaut, weil der Fall im "
+        f"gesamten geprueften Bestand nicht vorkam (groesste Einzelseite: "
+        f"1,27 MB). Wer ihn braucht, legt dafuer eine Aufgabe an — dieser "
+        f"Hinweis ist der Ausloeser."
+    )
 
 
 def plan_chunks(page_count: int, settings: Settings) -> list[Chunk]:
@@ -159,7 +231,17 @@ def plan_chunks(page_count: int, settings: Settings) -> list[Chunk]:
 
     Kosten: keine.
     """
-    raise NotImplementedError
+    if page_count < 1:
+        raise ValueError(
+            f"plan_chunks braucht mindestens eine Seite, bekam {page_count}. "
+            f"Ein Dokument ohne Seiten ist kein Zuschnitt-Problem, sondern ein "
+            f"Lesefehler weiter oben."
+        )
+    schritt = settings.max_pages_per_chunk
+    return [
+        Chunk(first_page=start, last_page=min(start + schritt, page_count) - 1)
+        for start in range(0, page_count, schritt)
+    ]
 
 
 def split_in_half(chunk: Chunk) -> tuple[Chunk, Chunk]:
@@ -183,7 +265,22 @@ def split_in_half(chunk: Chunk) -> tuple[Chunk, Chunk]:
 
     Kosten: keine.
     """
-    raise NotImplementedError
+    if chunk.page_count < 2:
+        raise ValueError(
+            f"Chunk ({chunk.first_page}, {chunk.last_page}) hat nur eine Seite "
+            f"und laesst sich nicht halbieren. Der Aufrufer muss den Abbruchfall "
+            f"vorher behandeln — bei einer zu grossen Einzelseite ist das "
+            f"check_fits_unsplit."
+        )
+    # Bei ungerader Seitenzahl bekommt die erste Haelfte die zusaetzliche Seite:
+    # aufrunden statt abrunden. Die Wahl ist beliebig, aber sie muss FEST sein,
+    # sonst haengt der Zuschnitt von der Rundungsrichtung ab.
+    erste_haelfte = (chunk.page_count + 1) // 2
+    mitte = chunk.first_page + erste_haelfte - 1
+    return (
+        Chunk(first_page=chunk.first_page, last_page=mitte),
+        Chunk(first_page=mitte + 1, last_page=chunk.last_page),
+    )
 
 
 def verify_page_coverage(chunks: Sequence[Chunk], page_count: int) -> None:
@@ -191,14 +288,35 @@ def verify_page_coverage(chunks: Sequence[Chunk], page_count: int) -> None:
 
     Das ist die laute Gegenrechnung gegen die geerbte Falle aus `pdf.py`: Wo
     MinerUs eigener Schnitt kaputte Seiten still ueberspringt, rechnen wir nach.
-    Geprueft wird dreierlei — die Summe der Seitenzahlen stimmt, es gibt keine
-    Luecke zwischen zwei aufeinanderfolgenden Chunks, und es gibt keine
-    Ueberlappung.
+    Geprueft wird die STRUKTUR der nach `first_page` sortierten Chunks, in drei
+    Schritten: Die Abdeckung beginnt bei Seite 0; je zwei benachbarte Chunks
+    schliessen luecken- und ueberlappungsfrei aneinander an; die Abdeckung endet
+    bei Seite `page_count - 1`.
 
-    Warum alle drei und nicht nur die Summe: Eine Luecke und eine Ueberlappung
-    gleicher Groesse heben sich in der Summe auf. Das Ergebnis waere ein Dokument,
-    dem eine Seite fehlt und das eine andere doppelt traegt — bei richtiger
-    Gesamtzahl.
+    Warum nicht die Summe der Seitenzahlen: Eine Luecke und eine Ueberlappung
+    gleicher Groesse heben sich in der Summe auf. Das Ergebnis waere ein
+    Dokument, dem eine Seite fehlt und das eine andere doppelt traegt — bei
+    richtiger Gesamtzahl. Die Summe ist umgekehrt eine FOLGE der drei Pruefungen:
+    Wer bei 0 beginnt, lueckenlos anschliesst und bei `page_count - 1` endet, hat
+    zwangslaeufig genau `page_count` Seiten. Sie eigens nachzurechnen brachte
+    deshalb keine zusaetzliche Sicherheit — waere aber, an erster Stelle geprueft,
+    aktiv schaedlich: Eine schlichte fehlende Seite kaeme dann als „falsche
+    Summe" heraus statt als „die Seiten 4 bis 6 fehlen", und damit ohne die
+    Angabe, die man zum Suchen braucht.
+
+    Die Verankerung an Anfang und Ende steht hier, weil Luecken- und
+    Ueberlappungsfreiheit allein LUECKENHAFT waeren, und zwar so, dass es
+    niemandem auffiele: Fuer ein zehnseitiges Dokument sind die Chunks (5, 9)
+    und (10, 14) lueckenlos, ueberschneidungsfrei und summieren sich auf genau
+    zehn Seiten — und decken trotzdem die falschen Seiten ab.
+
+    Der Vertrag aus Phase A nannte an dieser Stelle Summe, Luecke und
+    Ueberlappung. Beim Ausformulieren des Koerpers stellte sich heraus, dass
+    diese drei zusammen unvollstaendig sind (siehe das Beispiel eben) und dass
+    die Summe unter ihnen die einzige entbehrliche ist. Die Zusicherung ist
+    dadurch staerker geworden, nicht schwaecher: Jeder Zuschnitt, den die alte
+    Fassung beanstandet haette, wird auch hier beanstandet — nur mit einer
+    genaueren Meldung.
 
     Args:
         chunks: Die zu pruefenden Chunks, in beliebiger Reihenfolge.
@@ -209,13 +327,55 @@ def verify_page_coverage(chunks: Sequence[Chunk], page_count: int) -> None:
 
     Raises:
         CorruptDocumentError: Irgendetwas stimmt nicht. Die Meldung nennt, WAS —
-            Luecke, Ueberlappung oder falsche Summe — samt der betroffenen
-            Seitenzahlen, weil „Seitenzahlen stimmen nicht" allein niemandem beim
-            Suchen hilft.
+            Luecke, Ueberlappung oder falsche Lage — samt der betroffenen
+            Seitenzahlen UND des vollstaendigen Zuschnitts, weil „Seitenzahlen
+            stimmen nicht" allein niemandem beim Suchen hilft.
+        ValueError: `page_count` kleiner als 1 — wie bei `plan_chunks` ein
+            Programmierfehler und kein Befund ueber das Dokument.
 
     Kosten: keine.
     """
-    raise NotImplementedError
+    if page_count < 1:
+        raise ValueError(
+            f"verify_page_coverage braucht mindestens eine Seite, bekam "
+            f"{page_count}."
+        )
+    if not chunks:
+        raise CorruptDocumentError(
+            f"Der Zuschnitt ist leer, das Dokument hat aber {page_count} Seiten."
+        )
+
+    sortiert = sorted(chunks, key=lambda stueck: stueck.first_page)
+    alle = [(stueck.first_page, stueck.last_page) for stueck in sortiert]
+
+    if sortiert[0].first_page != 0:
+        raise CorruptDocumentError(
+            f"Falsche Lage: Der Zuschnitt beginnt bei Seite "
+            f"{sortiert[0].first_page} statt bei Seite 0. Chunks: {alle}"
+        )
+
+    for links, rechts in itertools.pairwise(sortiert):
+        if rechts.first_page > links.last_page + 1:
+            raise CorruptDocumentError(
+                f"Luecke: Nach Chunk ({links.first_page}, {links.last_page}) "
+                f"folgt ({rechts.first_page}, {rechts.last_page}) — die Seiten "
+                f"{links.last_page + 1} bis {rechts.first_page - 1} fehlen. "
+                f"Chunks: {alle}"
+            )
+        if rechts.first_page <= links.last_page:
+            raise CorruptDocumentError(
+                f"Ueberlappung: Chunk ({links.first_page}, {links.last_page}) und "
+                f"({rechts.first_page}, {rechts.last_page}) teilen sich die Seiten "
+                f"{rechts.first_page} bis {min(links.last_page, rechts.last_page)}. "
+                f"Chunks: {alle}"
+            )
+
+    if sortiert[-1].last_page != page_count - 1:
+        raise CorruptDocumentError(
+            f"Falsche Lage: Der Zuschnitt endet bei Seite "
+            f"{sortiert[-1].last_page}, das Dokument hat {page_count} Seiten "
+            f"(letzte Seite {page_count - 1}). Chunks: {alle}"
+        )
 
 
 def iter_chunks(
@@ -276,4 +436,43 @@ def iter_chunks(
 
     Kosten: keine — die HTTP-Aufrufe macht der Aufrufer, nicht dieses Modul.
     """
-    raise NotImplementedError
+    for geplant in plan:
+        # Die offene Arbeit EINES geplanten Chunks. Neu entstandene Haelften
+        # kommen VORNE hinein, damit die Reihenfolge aufsteigend bleibt: Wer die
+        # erste Haelfte hinten anhaengt, liefert sie nach allen spaeteren Seiten
+        # aus, und beim Zusammensetzen faellt das nicht auf, weil dort nach
+        # `first_page` sortiert wird. Der Fehler waere also unsichtbar — deshalb
+        # steht die Reihenfolge hier fest und wird eigens geprueft.
+        offen = [geplant]
+        while offen:
+            aktuell = offen.pop(0)
+            daten = cut(aktuell.first_page, aktuell.last_page)
+
+            if _passt(len(daten), settings):
+                yield aktuell, daten
+                continue
+
+            if aktuell.page_count == 1:
+                # Eine einzelne Seite laesst sich nicht weiter teilen. Der Wurf
+                # geht ueber `check_fits_unsplit`, damit Schwelle, Meldung und
+                # Aufruest-Hinweis nur an EINER Stelle formuliert sind; die
+                # Seitenzahl kommt hier dazu, weil nur diese Stelle sie kennt.
+                try:
+                    check_fits_unsplit(
+                        size_bytes=len(daten),
+                        doc_type=DocumentType.PDF,
+                        settings=settings,
+                    )
+                except TooLargeError as fehler:
+                    raise TooLargeError(
+                        f"Seite {aktuell.first_page} (null-basiert) allein: {fehler}"
+                    ) from fehler
+                raise AssertionError(
+                    "unerreichbar: check_fits_unsplit haette werfen muessen, denn "
+                    "_passt ist gerade falsch. Wer das hier sieht, hat die "
+                    "Kopplung der beiden zerschnitten."
+                )
+
+            erste, zweite = split_in_half(aktuell)
+            offen.insert(0, zweite)
+            offen.insert(0, erste)

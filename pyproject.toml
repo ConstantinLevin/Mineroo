@@ -55,8 +55,38 @@ python_version = "3.12"
 # Phase A — nicht erst, wenn Koerper drinstehen.
 strict = true
 warn_unreachable = true
-# procrastinate liefert eigene Typen mit; sollte ein Paket keine haben, wird die
-# Ausnahme hier einzeln und mit Begruendung eingetragen, nie global abgeschaltet.
+# procrastinate, psycopg, httpx und typer liefern eigene Typangaben mit. Fehlen
+# sie einem Paket, wird die Ausnahme hier einzeln und mit Begruendung
+# eingetragen, nie global abgeschaltet — siehe direkt darunter.
+
+[[tool.mypy.overrides]]
+module = ["pypdfium2", "pypdfium2.*"]
+# pypdfium2 4.30.0 bringt weder Typ-Stubs noch eine py.typed-Markierung mit
+# (am installierten Paket festgestellt). Die Ausnahme gilt AUSSCHLIESSLICH fuer
+# dieses eine Paket, und der Zugriff darauf ist ohnehin eingesperrt: mineru_ocr/
+# pdf.py ist das einzige Modul, das pypdfium2 importiert. Bricht die Bibliothek
+# eine Annahme, bricht genau eine Datei.
+#
+# `follow_untyped_imports` und nicht `ignore_missing_imports`: Das Paket IST
+# installiert, es hat nur keine Typangaben — mypy meldet das als
+# `import-untyped`, und dafuer ist diese Einstellung zustaendig. Mypy folgt dem
+# Modul dann und behandelt seine Namen als unbestimmt, statt den Import ganz zu
+# uebergehen; das ist das Genauere von beidem.
+follow_untyped_imports = true
+
+[[tool.mypy.overrides]]
+module = ["mineru_ocr.pdf", "test_pdf"]
+# Und die Gegenseite: Aufrufe IN ein untypisiertes Modul hinein verbietet der
+# strenge Modus ebenfalls. Die Ausnahme gilt genau fuer die zwei Dateien, die
+# pypdfium2 benutzen — nicht fuer das Paket. Alles andere in mineru_ocr und in
+# tests bleibt streng geprueft, und wenn jemand pypdfium2 spaeter woanders
+# importiert, meldet mypy es dort sofort.
+#
+# `test_pdf` ohne Praefix, weil tests/ kein `__init__.py` hat und mypy die Datei
+# deshalb als Modul der obersten Ebene fuehrt. `tests.test_pdf` traefe ins Leere
+# und die Ausnahme waere still wirkungslos — der Lauf ueber `mypy mineru_ocr
+# tests` deckt genau das auf, ein Lauf nur ueber das Paket nicht.
+disallow_untyped_calls = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

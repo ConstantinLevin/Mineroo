@@ -21,6 +21,8 @@ from typing import Any
 
 import pytest
 
+from mineru_ocr.config import Settings
+
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "artifacts" / "2026-08-05-doku-verifikationstest"
 """Die sechs konservierten ECHTEN Antworten vom Doku-Verifikationstest.
 
@@ -57,13 +59,30 @@ def real_responses() -> list[dict[str, Any]]:
 
 
 @pytest.fixture
-def settings() -> Any:
+def settings(tmp_path: Path) -> Settings:
     """Eine Einstellung mit Testwerten und ohne echten Schluessel.
 
-    Wird in Phase B gefuellt: `Settings` mit `TEST_DSN`, einem erfundenen
-    Schluessel und einem Spool-Verzeichnis unterhalb des Test-Temporaerpfads.
+    Der Schluessel ist ausdruecklich erfunden und als solcher lesbar. Das ist
+    keine Kosmetik: Faende ein Test doch den Weg ins Netz, soll die Ablehnung
+    von der Gegenseite kommen und nicht ein bezahlter Lauf.
+
+    Das Spool-Verzeichnis liegt unter dem Temporaerpfad des jeweiligen Tests und
+    ist damit je Test ein anderes — die echte Voreinstellung ist
+    `~/.mineru_ocr/spool/`, und ein Test, der dort hineinschreibt, hinterlaesst
+    Dateien im Arbeitsverzeichnis des Benutzers.
+
+    Die uebrigen Werte bleiben die Voreinstellungen aus `Settings`, damit die
+    Tests gegen das laufen, was im Betrieb wirklich gilt. Wo ein Test eine
+    andere Schwelle braucht — kleinere Chunks, kleinere Payload —, baut er sie
+    sich mit `dataclasses.replace` aus dieser Vorrichtung, statt hier einen
+    zweiten Satz Werte einzufuehren, der mit dem Betrieb auseinanderlaeuft.
     """
-    pytest.skip("Vorrichtung folgt in Phase B")
+    return Settings(
+        db_dsn=TEST_DSN,
+        endpoint_id="testendpoint",
+        api_key="erfundener-schluessel-nicht-echt",
+        spool_dir=tmp_path / "spool",
+    )
 
 
 @pytest.fixture
