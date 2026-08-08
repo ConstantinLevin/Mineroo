@@ -29,9 +29,16 @@ vergisst (Plan 5.3).
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import signal
 from collections.abc import Sequence
+from typing import Any
 
+from . import config, tasks
 from .config import Settings
+
+log = logging.getLogger("mineru_ocr.daemon")
 
 
 async def run(
@@ -101,7 +108,179 @@ async def run(
 
     Kosten: JA, mittelbar — er arbeitet die Warteschlange ab.
     """
-    raise NotImplementedError
+    app = tasks.configure(settings, for_worker=True)
+    mittel = tasks.worker_context_resources(settings)
+    pool = mittel["pool"]
+    runpod = mittel["runpod"]
+
+    # Der Pool wird HIER geoeffnet und nicht im Konstruktor: Letzteres ist in
+    # psycopg_pool 3.3.0 abgekuendigt und schriebe eine Warnung in genau die
+    # Konsole, in der der erste Bestandslauf beobachtet werden soll.
+    await pool.open(wait=True)
+
+    beenden = asyncio.Event()
+    zweites_signal = False
+
+    def _signal_empfangen(nummer: int) -> None:
+        nonlocal zweites_signal
+        if beenden.is_set():
+            # Wer zweimal Strg-C drueckt, meint es so. Kein zweites Warten auf
+            # die Nachfrist — sofort raus.
+            zweites_signal = True
+            for aufgabe in laufende:
+                aufgabe.cancel()
+            return
+        log.info(
+            "Signal %s empfangen — Worker werden beendet, laufende Dokumente "
+            "bekommen bis zu %.0f Sekunden.",
+            signal.Signals(nummer).name,
+            settings.shutdown_graceful_timeout,
+        )
+        beenden.set()
+
+    schleife = asyncio.get_running_loop()
+    laufende: list[asyncio.Task[None]] = []
+    ergebnisse: list[Any] = []
+
+    try:
+        # `App.open_async(pool=…)` reicht UNSEREN Pool durch, statt Procrastinate
+        # einen zweiten aufmachen zu lassen. Sonst laufen im selben Prozess zwei
+        # unabhaengige Obergrenzen fuer Verbindungen zu derselben Datenbank, von
+        # denen keine in `Settings` steht — man bemerkt das erst, wenn Postgres
+        # „too many connections" sagt, und dann mitten im Bestandslauf.
+        async with app.open_async(pool=pool):
+            for nummer in (signal.SIGTERM, signal.SIGINT):
+                schleife.add_signal_handler(nummer, _signal_empfangen, nummer)
+            try:
+                for optionen in _worker_optionen(settings, queues, mittel):
+                    laufende.append(
+                        asyncio.create_task(
+                            app.run_worker_async(**optionen), name=optionen["name"]
+                        )
+                    )
+
+                # Auf das Signal warten — oder darauf, dass ein Worker von sich
+                # aus endet. Der zweite Fall ist der wichtige: Stirbt EIN Worker
+                # an einem Fehler, soll der Prozess nicht halb weiterlaufen und
+                # so tun, als arbeite er noch.
+                warten = asyncio.create_task(beenden.wait(), name="beenden")
+                await asyncio.wait(
+                    [*laufende, warten], return_when=asyncio.FIRST_COMPLETED
+                )
+                warten.cancel()
+
+                for aufgabe in laufende:
+                    aufgabe.cancel()
+                ergebnisse = list(
+                    await asyncio.gather(*laufende, return_exceptions=True)
+                )
+            finally:
+                for nummer in (signal.SIGTERM, signal.SIGINT):
+                    schleife.remove_signal_handler(nummer)
+    finally:
+        # Betriebsmittel ZULETZT schliessen, nach den Workern. Andersherum zoege
+        # man einem noch laufenden Task den Boden weg, und dessen letzter
+        # Schreibvorgang — der mit dem bezahlten Ergebnis — waere der, der
+        # fehlschlaegt.
+        #
+        # Im `finally` und nicht dahinter, und das ist beim Bauen aufgefallen:
+        # Wird `run` SELBST abgebrochen — was beim Prozess-Abbau der Normalfall
+        # ist —, springt die Ausfuehrung aus dem `async with` heraus, und alles,
+        # was danach steht, laeuft nie. Ein Verbindungspool und ein HTTP-Client
+        # blieben dann offen, obwohl der Vertrag oben ihr Schliessen zusichert.
+        #
+        # `asyncio.shield`, weil ein bereits abgebrochener Task bei jedem
+        # weiteren `await` sofort wieder `CancelledError` bekaeme — das Schliessen
+        # kaeme dann nicht einmal bis zum ersten Schritt.
+        await asyncio.shield(_betriebsmittel_schliessen(runpod, pool))
+
+    if zweites_signal:
+        log.warning("Zweites Signal — sofort beendet, ohne Nachfrist.")
+
+    # Ein Worker, der mit einem Fehler geendet ist, wird WEITERGEREICHT. Ihn zu
+    # schlucken hiesse, einen Prozess zu haben, der sich beendet hat und einen
+    # Exit-Code 0 meldet — die Art Fehlschlag, die man erst am leeren Bestand
+    # bemerkt.
+    for ergebnis in ergebnisse:
+        if isinstance(ergebnis, BaseException) and not isinstance(
+            ergebnis, asyncio.CancelledError
+        ):
+            raise ergebnis
+
+
+async def _betriebsmittel_schliessen(runpod: Any, pool: Any) -> None:
+    """Schliesst HTTP-Zugang und Verbindungspool — beide, auch wenn einer bricht.
+
+    Einzeln gefangen und nicht in einem Rutsch: Scheitert das Schliessen des
+    einen, soll das andere trotzdem geschlossen werden. Ein offen gebliebener
+    Verbindungspool ist im Bestandslauf teurer als eine Meldung.
+    """
+    for name, schliessen in (("RunPod-Zugang", runpod.aclose), ("Pool", pool.close)):
+        try:
+            await schliessen()
+        except Exception as fehler:  # noqa: BLE001
+            log.warning("%s liess sich nicht schliessen: %s", name, fehler)
+
+
+def _worker_optionen(
+    settings: Settings,
+    queues: Sequence[str] | None,
+    mittel: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Stellt die Optionen je Worker zusammen.
+
+    Ohne ausdrueckliche Auswahl sind es ZWEI: einer fuer die OCR-Queue mit
+    `settings.ocr_concurrency` Plaetzen, einer fuer die Wartungs-Queue mit genau
+    einem. Die Trennung ist der ganze Zweck — periodische Tasks sind gewoehnliche
+    Jobs und teilen den Slot-Vorrat ihres Workers; haengen alle OCR-Plaetze in
+    Warteschleifen, kaeme ein Waechter auf derselben Queue nie an die Reihe.
+
+    Mit ausdruecklicher Auswahl ist es EINER fuer genau diese Queues. Das ist der
+    Rueckfallweg auf zwei Prozesse, falls die Zwei-Koroutinen-Konstruktion nicht
+    traegt (Feature-Verifikation Punkt 1, NICHT BELEGT) — und er ist damit
+    vorbereitet und nicht bloss gedacht.
+
+    `install_signal_handlers=False` bei ALLEN: Zwei Worker duerfen nicht beide
+    Signal-Handler einrichten, der zweite ueberschriebe den ersten, und beim
+    Beenden wuerde einer nie benachrichtigt. Der Prozess faengt die Signale
+    selbst.
+    """
+    gemeinsam: dict[str, Any] = {
+        "wait": True,
+        "install_signal_handlers": False,
+        "shutdown_graceful_timeout": settings.shutdown_graceful_timeout,
+        "delete_jobs": settings.delete_jobs,
+        "additional_context": mittel,
+    }
+
+    if queues is not None:
+        return [
+            {
+                **gemeinsam,
+                "name": "mineru-ocr-" + "-".join(queues),
+                "queues": list(queues),
+                "concurrency": settings.ocr_concurrency,
+            }
+        ]
+
+    return [
+        {
+            **gemeinsam,
+            "name": "mineru-ocr-ocr",
+            "queues": [config.QUEUE_OCR],
+            "concurrency": settings.ocr_concurrency,
+        },
+        {
+            **gemeinsam,
+            "name": "mineru-ocr-maintenance",
+            "queues": [config.QUEUE_MAINTENANCE],
+            # Genau EIN Platz: Der Waechter ist ein Vier-Zeilen-Task, der alle
+            # zehn Minuten laeuft. Mehr Plaetze koennten nur dazu fuehren, dass
+            # er sich selbst ueberholt — wogegen ohnehin sein `queueing_lock`
+            # steht.
+            "concurrency": 1,
+        },
+    ]
 
 
 def main(settings: Settings, *, queues: Sequence[str] | None = None) -> int:
@@ -117,4 +296,17 @@ def main(settings: Settings, *, queues: Sequence[str] | None = None) -> int:
 
     Kosten: JA, mittelbar.
     """
-    raise NotImplementedError
+    try:
+        asyncio.run(run(settings, queues=queues))
+    except KeyboardInterrupt:
+        # Kann trotz der eigenen Signal-Behandlung ankommen — etwa wenn das
+        # Signal faellt, bevor die Handler eingerichtet sind. Das ist ein
+        # ordentliches Ende und kein Fehler.
+        log.info("Abgebrochen.")
+        return 0
+    except Exception as fehler:
+        # Ausgeschrieben und nicht nur der Typ: Wer den Daemon startet, sieht
+        # eine Konsole und keinen Debugger.
+        log.error("Der Daemon ist beendet worden: %s: %s", type(fehler).__name__, fehler)
+        return 1
+    return 0

@@ -417,8 +417,50 @@ def defer_document(sha256: str) -> bool:
         )
 
     aufgabe = app.tasks[config.TASK_OCR_DOCUMENT]
-    try:
+
+    def _einreihen() -> None:
         aufgabe.configure(lock=sha256, queueing_lock=sha256).defer(sha256=sha256)
+
+    try:
+        _einreihen()
+    except procrastinate.exceptions.AppNotOpen:
+        # Die App war noch nicht geoeffnet. Das ist eine Luecke zwischen zwei
+        # Zusicherungen, die beim Bauen aufgefallen ist: `configure` sichert
+        # ausdruecklich zu, KEINE Verbindung aufzubauen — damit es auch laufen
+        # kann, wenn Postgres gerade weg ist —, und `defer_document` ist die
+        # erste Stelle, die wirklich eine braucht.
+        #
+        # Nachgeholt wird es hier und nicht beim Aufrufer, und erst NACH dem
+        # ersten Versuch: So kostet der Normalfall (App laengst offen) keinen
+        # zusaetzlichen Aufruf, und der Sonderfall heilt sich selbst.
+        #
+        # Das Oeffnen ist mehrfach ausfuehrbar — der Konnektor legt den
+        # Verbindungspool nur an, wenn es noch keinen gibt (`if self._pool:
+        # return`, am Quelltext gelesen). Ihn stattdessen JE EINREIHUNG zu
+        # oeffnen und zu schliessen waeren dreissigtausend Pool-Aufbauten im
+        # Bestandslauf. Der Pool des Produzenten lebt danach fuer die Dauer des
+        # Prozesses; das ist das dokumentierte Grundmuster fuer den synchronen
+        # Produzenten und kein Leck.
+        try:
+            app.open()
+        except NotImplementedError as fehler:
+            # Der eingehaengte Zugang ist ein ASYNCHRONER, und der kennt kein
+            # synchrones Oeffnen. Das passiert, wenn im selben Prozess ein
+            # Daemon konfiguriert wurde — dort gehoert die App ihm, und er
+            # oeffnet sie mit `open_async`. Von aussen dazwischenzugreifen waere
+            # falsch, deshalb wird hier gesagt, was zu tun ist, statt zu raten.
+            raise ConfigurationError(
+                "Die App traegt einen asynchronen Zugang und ist nicht "
+                "geoeffnet. Aus synchronem Code laesst sie sich so nicht "
+                "oeffnen. Entweder `tasks.configure(settings, "
+                "for_worker=False)` fuer den Produzenten benutzen, oder die "
+                "App vom Besitzer oeffnen lassen "
+                "(`async with app.open_async(): …`)."
+            ) from fehler
+        try:
+            _einreihen()
+        except procrastinate.exceptions.AlreadyEnqueued:
+            return False
     except procrastinate.exceptions.AlreadyEnqueued:
         # „Laeuft schon" — der Normalfall beim erneuten Durchlaufen eines
         # Ordners und ausdruecklich kein Fehler. Genau darauf beruht Jurgens
