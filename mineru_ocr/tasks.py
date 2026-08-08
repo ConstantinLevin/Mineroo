@@ -15,12 +15,17 @@ Warteschlangen weiss; was hier hinzukommt, ist ausschliesslich die Anbindung.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import procrastinate
 from procrastinate import RetryDecision, testing
+from psycopg_pool import AsyncConnectionPool
 
+from . import config, executor
 from .config import Settings
+from .errors import ConfigurationError, should_run_again
+from .runpod import RunPodClient
 
 app = procrastinate.App(connector=testing.InMemoryConnector())
 """Die App auf Modulebene — die von Procrastinate dokumentierte Form.
@@ -39,8 +44,19 @@ Jobs in den Arbeitsspeicher und wundert sich, dass nichts passiert — deshalb
 prueft `defer_document` es und wirft.
 """
 
+_ZUGANG_BEIM_IMPORT = app.connector
+"""Der speicherinterne Zugang, mit dem die App entsteht — als IDENTITAET gemerkt.
 
-def register_tasks() -> None:
+Wozu: `defer_document` soll den Fall abfangen, dass niemand `configure` gerufen
+hat. Zu pruefen, ob der Zugang ein `InMemoryConnector` IST, waere dafuer das
+falsche Merkmal — Procrastinates eigenes Testmuster haengt absichtlich einen
+solchen ein, und dieser Test wuerde dann jeden Test unmoeglich machen. Geprueft
+wird deshalb auf DIESES EINE Objekt: Ist es noch da, hat niemand konfiguriert.
+Ein eigens eingehaengter Zugang, auch ein speicherinterner, ist eine bewusste
+Entscheidung und geht durch."""
+
+
+def register_tasks(settings: Settings) -> None:
     """Meldet die beiden Tasks an. Wird von `configure` gerufen, nicht von Hand.
 
     Die Anmeldung steht als Funktion und nicht als Dekorator ueber den
@@ -48,6 +64,11 @@ def register_tasks() -> None:
     Import noch nicht gibt — die Wiederholungs-Strategie ihre Wartezeiten und ihr
     Versuchsbudget, der Waechter seinen Zeitplan. Ein Dekorator liefe beim Import,
     also vor `Settings.load`.
+
+    (Die Signatur stand in Phase A ohne Argument. Das konnte nicht stimmen: Der
+    Absatz darueber sagt, dass die Anmeldung Werte aus `Settings` braucht, und
+    ohne Argument haette sie sie sich nur aus einer globalen Einstellung holen
+    koennen — die es ausdruecklich nicht gibt.)
 
     Angemeldet wird:
 
@@ -69,7 +90,54 @@ def register_tasks() -> None:
 
     Kosten: keine.
     """
-    raise NotImplementedError
+    if config.TASK_OCR_DOCUMENT in app.tasks:
+        return
+
+    # In Dekorator-Form aufgerufen und nicht mit der Funktion als erstem
+    # Argument: `app.task` nimmt beides, aber das erste Argument NUR allein —
+    # `task(func)` ohne weitere Angaben, oder `task(name=…, …)(func)`. Beides
+    # zugleich gibt es nicht, und die Typpruefung sagt das auch.
+    # Die Unterdrueckung an der naechsten Zeile verdeckt KEINEN Fehler von uns,
+    # sondern haelt einen Widerspruch in Procrastinate selbst fest. Er ist am
+    # Objekt der installierten 3.9.0 geprueft, in beide Richtungen:
+    #
+    #   Die Doku sagt: „class procrastinate.BaseRetryStrategy — If you want to
+    #   implement your own retry strategy, you can inherit from this class.
+    #   Child classes only need to implement get_retry_decision."
+    #
+    #   Die Typangabe sagt etwas Engeres: `RetryValue: TypeAlias = bool | int |
+    #   RetryStrategy` (procrastinate/retry.py) — `BaseRetryStrategy` steht dort
+    #   NICHT, obwohl `RetryStrategy` von ihr erbt.
+    #
+    #   Zur Laufzeit gilt die Doku: `get_retry_strategy` gibt alles, was nicht
+    #   falsch, `True` oder eine ganze Zahl ist, unveraendert zurueck (am
+    #   Quelltext gelesen). Eine eigene Strategie funktioniert also.
+    #
+    # Der Ausweg „von `RetryStrategy` erben statt von `BaseRetryStrategy`" waere
+    # schlechter: Diese Klasse bringt eigene Felder und eine eigene
+    # Entscheidungslogik mit, die wir vollstaendig ersetzen — wir erbten Ballast,
+    # um eine Typangabe zufriedenzustellen.
+    #
+    # Bei einem Procrastinate-Upgrade gehoert diese Zeile geprueft: Faellt die
+    # Unterdrueckung als „unbenutzt" auf, ist der Widerspruch behoben und sie
+    # kann weg. Genau diese Meldung gibt mypy von sich aus aus.
+    app.task(  # type: ignore[call-overload]
+        name=config.TASK_OCR_DOCUMENT,
+        queue=config.QUEUE_OCR,
+        retry=OCRRetryStrategy(settings),
+        pass_context=True,
+    )(ocr_document)
+
+    waechter = app.task(
+        name=config.TASK_RETRY_STALLED,
+        queue=config.QUEUE_MAINTENANCE,
+        queueing_lock="retry_stalled",
+        pass_context=True,
+    )(retry_stalled)
+    # Der periodische Zeitplan haengt UEBER dem Task, nicht statt seiner:
+    # `@app.periodic` wird in der Doku ueber `@app.task` gestapelt, und ohne den
+    # Task darunter gaebe es nichts zu wiederholen.
+    app.periodic(cron=settings.stalled_check_cron)(waechter)
 
 
 def configure(settings: Settings, *, for_worker: bool) -> procrastinate.App:
@@ -93,7 +161,30 @@ def configure(settings: Settings, *, for_worker: bool) -> procrastinate.App:
 
     Kosten: keine.
     """
-    raise NotImplementedError
+    zugang: procrastinate.BaseConnector
+    if for_worker:
+        zugang = procrastinate.PsycopgConnector(conninfo=settings.db_dsn)
+    else:
+        zugang = procrastinate.SyncPsycopgConnector(conninfo=settings.db_dsn)
+
+    # BEIDE Felder, und das ist kein Abschreiben aus Vorsicht: Procrastinates
+    # eigenes `replace_connector` setzt genau diese zwei, und `job_manager` haelt
+    # eine EIGENE Referenz. Wer nur `app.connector` setzt, bekommt einen
+    # Zustand, den man nicht vermutet und schwer findet — das Einreihen liefe
+    # gegen die Datenbank, jede Abfrage ueber den `job_manager` aber weiter gegen
+    # den speicherinternen Zugang. Also: leere Job-Listen, obwohl Jobs da sind.
+    #
+    # Warum nicht `with_connector`: Das ist seit 2.14.0 abgekuendigt, und die
+    # Abkuendigung nennt selbst den Grund — es baut eine ZWEITE App, die
+    # dieselben Tasks referenziert, und die Tasks zeigen auf die erste zurueck.
+    # Warum nicht `replace_connector`: Das ist ein Kontext-Manager, der am Ende
+    # zuruecktauscht; er ist fuer den voruebergehenden Tausch im Test gedacht,
+    # nicht fuer die dauerhafte Einrichtung.
+    app.connector = zugang
+    app.job_manager.connector = zugang
+
+    register_tasks(settings)
+    return app
 
 
 class OCRRetryStrategy(procrastinate.BaseRetryStrategy):
@@ -120,7 +211,7 @@ class OCRRetryStrategy(procrastinate.BaseRetryStrategy):
         Einstellung, und das ist eine ausdrueckliche Regel (`config.py`). Gebaut
         wird sie in `register_tasks`, das die Einstellung ohnehin hat.
         """
-        raise NotImplementedError
+        self._settings = settings
 
     def get_retry_decision(
         self, *, exception: BaseException, job: procrastinate.jobs.Job
@@ -161,7 +252,40 @@ class OCRRetryStrategy(procrastinate.BaseRetryStrategy):
 
         Kosten: keine.
         """
-        raise NotImplementedError
+        # `should_run_again` und nicht `classify_failure` unmittelbar: Die
+        # Einstufung hat DREI Werte, und aus dreien muessen diese Stelle und der
+        # Ausnahme-Pfad des Executors dieselben zwei Gruppen bilden. Genau daran
+        # ist es beim Bauen schon einmal auseinandergelaufen — Begruendung in
+        # voller Laenge an `errors.should_run_again`.
+        if not should_run_again(exception):
+            return None
+
+        # `attempts` ist die Zahl der BISHERIGEN Versuche und beginnt bei 0
+        # (Referenz: „The first time a job is run, attempts will be 0"). Die Zahl
+        # der bisherigen Laeufe ist also `attempts + 1`, und `max_attempts` sagt,
+        # wie oft ein Dokument INSGESAMT versucht wird — nicht, wie oft
+        # wiederholt wird.
+        #
+        # ANMERKUNG ZU EINER UNSCHAERFE IM PLAN, damit sie niemand fuer einen
+        # Fehler haelt: Plan 5.1 nennt „bis 3 Versuche" UND die Folge
+        # „~30 s/2 min/8 min" — drei Wartezeiten. Beides zusammen geht nicht auf:
+        # Bei drei Laeufen insgesamt gibt es zwei Wartezeiten (30 s und 2 min),
+        # die dritte waere erst bei einem vierten Lauf faellig. Massgeblich ist
+        # hier die genauere der beiden Angaben, naemlich die an
+        # `Settings.max_attempts`: „wie oft ein Dokument insgesamt versucht
+        # wird". Wer drei Wartezeiten will, setzt `max_attempts=4` — der Wert ist
+        # ein Parameter, die Rechnung bleibt dieselbe.
+        if job.attempts + 1 >= self._settings.max_attempts:
+            return None
+
+        # `retry_in` nimmt ganze Sekunden — `TimeDeltaParams` ist eine
+        # TypedDict mit `int`-Feldern. Aufgerundet und nicht abgerundet: Bei
+        # einem Rueckzug ist zu frueh schlechter als zu spaet, und mindestens
+        # eine Sekunde muss es sein, sonst kaeme der Wiederlauf sofort.
+        wartezeit = self._settings.retry_base_seconds * (
+            self._settings.retry_factor**job.attempts
+        )
+        return RetryDecision(retry_in={"seconds": max(1, math.ceil(wartezeit))})
 
 
 async def ocr_document(context: procrastinate.JobContext, sha256: str) -> None:
@@ -187,7 +311,13 @@ async def ocr_document(context: procrastinate.JobContext, sha256: str) -> None:
 
     Kosten: JA.
     """
-    raise NotImplementedError
+    mittel = context.additional_context
+    await executor.process_document(
+        sha256,
+        settings=mittel["settings"],
+        runpod=mittel["runpod"],
+        pool=mittel["pool"],
+    )
 
 
 async def retry_stalled(context: procrastinate.JobContext, timestamp: int) -> None:
@@ -229,7 +359,9 @@ async def retry_stalled(context: procrastinate.JobContext, timestamp: int) -> No
     Kosten: keine unmittelbar — mittelbar loest jede Wiedervorlage einen neuen
     Verarbeitungslauf aus, und der kostet.
     """
-    raise NotImplementedError
+    verwalter = context.app.job_manager
+    for job in await verwalter.get_stalled_jobs():
+        await verwalter.retry_job(job)
 
 
 def defer_document(sha256: str) -> bool:
@@ -276,7 +408,25 @@ def defer_document(sha256: str) -> bool:
 
     Kosten: keine unmittelbar — mittelbar loest der Job Verarbeitung aus.
     """
-    raise NotImplementedError
+    if app.connector is _ZUGANG_BEIM_IMPORT:
+        raise ConfigurationError(
+            "Es wurde eingereiht, ohne dass `configure` gelaufen ist. Der Job "
+            "waere in den Arbeitsspeicher dieses Prozesses gegangen und mit ihm "
+            "verschwunden — kein Fehler, keine Meldung, nur nichts. Erst "
+            "`tasks.configure(settings, for_worker=False)` rufen."
+        )
+
+    aufgabe = app.tasks[config.TASK_OCR_DOCUMENT]
+    try:
+        aufgabe.configure(lock=sha256, queueing_lock=sha256).defer(sha256=sha256)
+    except procrastinate.exceptions.AlreadyEnqueued:
+        # „Laeuft schon" — der Normalfall beim erneuten Durchlaufen eines
+        # Ordners und ausdruecklich kein Fehler. Genau darauf beruht Jurgens
+        # Ordner-Szenario: „dann später kommt zum ordner noch ein pfad hinzu den
+        # tut man einfach dazu und lässt nochmal durchlaufen weil eh nur läuft
+        # was noch fehlt".
+        return False
+    return True
 
 
 def worker_context_resources(settings: Settings) -> dict[str, Any]:
@@ -318,6 +468,27 @@ def worker_context_resources(settings: Settings) -> dict[str, Any]:
     Besitz und Lebensdauer: Der Daemon besitzt beides und schliesst beides beim
     Herunterfahren, NACH den Workern. Die Tasks benutzen nur.
 
+    Der Pool kommt UNGEOEFFNET zurueck. Das ist kein Versehen: Er wird mit
+    `await pool.open()` geoeffnet, und diese Funktion ist synchron. Im
+    Konstruktor zu oeffnen ist in psycopg_pool 3.3.0 abgekuendigt und schreibt
+    eine Warnung in genau die Konsole, in der der erste Bestandslauf beobachtet
+    werden soll. Der Daemon oeffnet ihn, weil er ihn ohnehin auch schliesst —
+    Oeffnen und Schliessen gehoeren demselben.
+
     Kosten: keine.
     """
-    raise NotImplementedError
+    return {
+        # Die Einstellung wandert mit. Der Vertrag nannte in Phase A nur
+        # `runpod` und `pool` — der Task braucht aber auch die Schwellen, und
+        # sie sich aus einer globalen Einstellung zu holen ist ausdruecklich
+        # verboten (es gibt keine). Sie hier mitzugeben ist der einzige Weg, der
+        # ohne globalen Zustand auskommt.
+        "settings": settings,
+        "runpod": RunPodClient(settings),
+        "pool": AsyncConnectionPool(
+            settings.db_dsn,
+            min_size=1,
+            max_size=settings.ocr_concurrency,
+            open=False,
+        ),
+    }

@@ -194,3 +194,55 @@ def test_klassifikation_hat_keine_seiteneffekte() -> None:
 def test_die_heiklen_faelle_einzeln(fehler: BaseException, erwartet: FailureKind) -> None:
     """Die fuenf Faelle, bei denen eine Verwechslung unmittelbar Geld kostet."""
     assert classify_failure(fehler) is erwartet
+
+
+def test_zwei_gruppen_aus_drei_einstufungen() -> None:
+    """`should_run_again` bildet die EINE Gruppierung fuer beide Aufrufer.
+
+    Der Fall, gegen den das steht, ist waehrend des Bauens wirklich passiert:
+    Der Ausnahme-Pfad des Executors behandelte `BALANCE_PAUSE` als „werfen,
+    nichts schreiben"; die Wiederholungs-Strategie prueft anfangs nur auf
+    `RETRYABLE` und haette denselben Fehler als endgueltig verbucht. Ergebnis
+    waere ein Dokument gewesen, das wegen eines LEEREN KONTOS aufgegeben wird,
+    obwohl mit ihm nichts ist — und dessen Zeile dabei auf `new` stehen bleibt,
+    weil der Executor nichts geschrieben hatte.
+
+    Die Einstufung war an beiden Stellen dieselbe. Die Gruppierung war es nicht.
+    Deshalb gibt es fuer die Gruppierung eine eigene Funktion und diesen Test.
+    """
+    from mineru_ocr.errors import should_run_again
+
+    noch_einmal: list[Exception] = [
+        TransientRunPodError("Gegenseite hustet"),
+        ResultLostError("30 Minuten vorbei"),
+        InsufficientBalanceError("402"),
+        DatabaseError("Postgres kurz weg"),
+    ]
+    for fehler in noch_einmal:
+        assert should_run_again(fehler), type(fehler).__name__
+
+    aufgeben: list[Exception] = [
+        TerminalRunPodError("Modell abgestuerzt"),
+        CorruptDocumentError("PDF kaputt"),
+        TooLargeError("Seite zu gross"),
+        ConfigurationError("Schluessel taugt nicht"),
+        DocumentNotFound("keine Zeile"),
+        IncompleteResultError("Teile fehlen"),
+    ]
+    for fehler in aufgeben:
+        assert not should_run_again(fehler), type(fehler).__name__
+
+
+def test_gruppierung_deckt_jede_einstufung_ab() -> None:
+    """Jede der drei Einstufungen faellt in genau eine Gruppe.
+
+    Kaeme eine vierte Einstufung dazu, faellt sie hier auf — statt still in die
+    Gruppe „noch einmal" zu rutschen, weil sie eben nicht `TERMINAL` ist. Ein
+    neuer Fehlerfall, der dreimal an jedem Dokument des Bestands bezahlt wird,
+    ist die teuerste Art, das zu bemerken.
+    """
+    assert set(FailureKind) == {
+        FailureKind.RETRYABLE,
+        FailureKind.TERMINAL,
+        FailureKind.BALANCE_PAUSE,
+    }

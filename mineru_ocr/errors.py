@@ -381,3 +381,33 @@ def classify_failure(exc: BaseException) -> FailureKind:
     # Den dreimal an jedem Dokument des Bestands zu bezahlen waere die teuerste
     # denkbare Voreinstellung — siehe die Begruendung im Docstring.
     return FailureKind.TERMINAL
+
+
+def should_run_again(exc: BaseException) -> bool:
+    """Sagt, ob der Job nach diesem Fehler noch einmal laufen soll.
+
+    Die eine Antwort fuer BEIDE Stellen, an denen sie gebraucht wird: die
+    Wiederholungs-Strategie in `tasks.py` entscheidet damit, ob sie den Job
+    erneut vorlegt, und der Ausnahme-Pfad in `executor.py` entscheidet damit, ob
+    er die Zeile unberuehrt laesst.
+
+    WARUM ES DIESE FUNKTION GIBT, und nicht nur `classify_failure`: Die
+    Einstufung allein genuegt nicht — sie hat DREI Werte, und aus dreien muessen
+    beide Stellen dieselben zwei Gruppen bilden. Genau daran ist es beim Bauen
+    schon einmal auseinandergelaufen: Der Executor behandelte
+    `BALANCE_PAUSE` als „werfen, nichts schreiben", die Strategie aber als „nicht
+    wiederholen", weil sie nur auf `RETRYABLE` prüfte. Das Ergebnis waere ein
+    Dokument gewesen, das wegen eines LEEREN KONTOS endgueltig aufgegeben wird,
+    obwohl mit ihm nichts ist — und dessen Zeile dabei auf `new` stehen bleibt,
+    weil der Executor ja nichts geschrieben hat. Die Einstufung war an beiden
+    Stellen dieselbe; die Gruppierung war es nicht. Also steht auch sie hier.
+
+    Die Gruppierung: Nur `TERMINAL` heisst aufgeben. `RETRYABLE` und
+    `BALANCE_PAUSE` heissen beide „noch einmal" — beim Konto allerdings mit der
+    Einschraenkung, dass es dazu im Normalfall gar nicht kommt: Der Executor
+    haelt bei leerem Konto selbst an (`wait_for_balance`), damit das Warten
+    keinen der drei echten Versuche verbraucht. Erreicht ein 402 trotzdem diese
+    Stelle — etwa weil das Konto MITTEN im Lauf leer wurde —, ist „noch einmal"
+    die richtige Antwort: Das Dokument ist in Ordnung, nur das Konto nicht.
+    """
+    return classify_failure(exc) is not FailureKind.TERMINAL

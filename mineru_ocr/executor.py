@@ -39,13 +39,12 @@ from psycopg_pool import AsyncConnectionPool
 from . import assembly, chunking, db
 from .config import Settings
 from .errors import (
-    FailureKind,
     InputError,
     InsufficientBalanceError,
     SourceChangedError,
     TerminalRunPodError,
     TransientRunPodError,
-    classify_failure,
+    should_run_again,
 )
 from .mime import DocumentType
 from .pdf import PdfReader
@@ -378,18 +377,16 @@ async def process_document(
         # ausdruecklich NICHT gefangen: Beim Herunterfahren soll der Job
         # `aborted` enden und die Zeile `new` bleiben. Sie hier als endgueltigen
         # Fehler zu schreiben, machte aus jedem Strg-C reihenweise `failed`.
-        art = classify_failure(fehler)
-
-        if art in (FailureKind.RETRYABLE, FailureKind.BALANCE_PAUSE):
+        if should_run_again(fehler):
             # Wiederholbar: WERFEN, ohne die Zeile anzufassen. Die Warteschlange
             # legt den Job erneut vor, das Dokument laeuft von vorn.
             #
-            # BALANCE_PAUSE gehoert hier zu den wiederholbaren und nicht zu den
-            # endgueltigen: Ein leeres Konto ist kein Fehler des Dokuments.
-            # Normalerweise faengt `wait_for_balance` es ab, bevor es hier
-            # ankommt; kommt es doch an (etwa weil das Konto MITTEN im Lauf leer
-            # wurde), waere `failed` die falsche Antwort — das Dokument ist in
-            # Ordnung, nur das Konto nicht.
+            # `should_run_again` und nicht die Einstufung unmittelbar: Diese
+            # Stelle und die Wiederholungs-Strategie in `tasks.py` MUESSEN
+            # dieselbe Gruppierung benutzen, sonst laeuft ein Job noch einmal,
+            # waehrend die Zeile schon `failed` sagt — oder umgekehrt. Die
+            # Begruendung samt des Falls, an dem es schon einmal auseinanderlief,
+            # steht an `errors.should_run_again`.
             raise
 
         # Endgueltig: ZUERST schreiben, DANN werfen. Diese Reihenfolge ist der
