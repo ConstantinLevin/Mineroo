@@ -41,10 +41,14 @@ import json
 import tarfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 
 from .chunking import Chunk
 from .errors import TerminalRunPodError
+
+W = TypeVar("W")
+"""Der erwartete Typ eines benannten Antwortfeldes in `_geprueft` — `str` fuer
+`markdown`, `list` fuer `content_list`, `dict` fuer `images` und `middle`."""
 
 FURNITURE_TYPES: Final = frozenset(
     {"header", "footer", "aside_text", "page_number", "page_footnote"}
@@ -258,25 +262,72 @@ def _aus_inline(
     „Tarball traegt also strikt mehr als Inline."
     """
     benannt = {"markdown", "content_list", "images", "middle"}
+
+    # Alles Uebrige aufheben — die Abruf-Regel. An den sechs echten Antworten
+    # sind das `basename`, `source` und `pages_requested`; bei einer kuenftigen
+    # Fassung der Engine womoeglich mehr, und genau darum wird hier nicht
+    # aufgezaehlt, sondern der Rest genommen.
+    uebrig: dict[str, Any] = {
+        schluessel: wert
+        for schluessel, wert in ergebnis.items()
+        if schluessel not in benannt
+    }
+
+    # Die vier benannten Felder werden auf ihren Typ GEPRUEFT und nicht bloss mit
+    # einem Vorgabewert geholt. Der Unterschied ist der Fall, den JSON kennt und
+    # ein Python-Vorgabewert nicht: ein VORHANDENER Schluessel mit dem Wert
+    # `null`. `ergebnis.get("markdown", "")` liefert dann `None`, weil der
+    # Schluessel ja da ist — und `None` ist keine Zeichenkette, obwohl
+    # `ChunkArtifacts.markdown: str` es zusichert.
+    #
+    # Teuer war daran, dass der Schaden nicht dort auftrat, wo er entstand:
+    # `assemble` warf spaeter beim `"\n\n".join(...)` einen `TypeError`, das
+    # Dokument endete `failed` statt `empty`, und die bezahlte Antwort war
+    # unbrauchbar — beim Wiederlauf genauso. Ein Feld mit unerwartetem Typ geht
+    # dabei NICHT verloren: Es wandert unter seinem eigenen Namen in `extras`.
+    # Die Abruf-Regel gilt auch fuer Formfehler.
+    markdown = _geprueft(ergebnis, "markdown", str, "", uebrig)
+    content_list = _geprueft(ergebnis, "content_list", list, [], uebrig)
+    rohbilder = _geprueft(ergebnis, "images", dict, {}, uebrig)
+    middle = _geprueft(ergebnis, "middle", dict, {}, uebrig)
+
     return ChunkArtifacts(
         chunk=chunk,
-        markdown=ergebnis.get("markdown", ""),
-        content_list=ergebnis.get("content_list", []),
-        images=_bilder_dekodieren(ergebnis.get("images", {})),
-        middle=ergebnis.get("middle", {}),
+        markdown=markdown,
+        content_list=content_list,
+        images=_bilder_dekodieren(rohbilder),
+        middle=middle,
         layout_pdf=None,
         span_pdf=None,
         envelope=umschlag,
-        # Alles Uebrige aufheben — die Abruf-Regel. An den sechs echten
-        # Antworten sind das `basename`, `source` und `pages_requested`; bei
-        # einer kuenftigen Fassung der Engine womoeglich mehr, und genau darum
-        # wird hier nicht aufgezaehlt, sondern der Rest genommen.
-        extras={
-            schluessel: wert
-            for schluessel, wert in ergebnis.items()
-            if schluessel not in benannt
-        },
+        extras=uebrig,
     )
+
+
+def _geprueft(
+    quelle: dict[str, Any],
+    schluessel: str,
+    typ: type[W],
+    ersatz: W,
+    uebrig: dict[str, Any],
+) -> W:
+    """Holt ein benanntes Feld, aber nur mit dem erwarteten Typ.
+
+    Hat das Feld einen anderen Typ — der haeufigste Fall ist JSON-`null` —, wird
+    der Ersatzwert zurueckgegeben UND der tatsaechliche Wert in `uebrig`
+    abgelegt, unter seinem eigenen Namen. Damit ist er in `extras` und geht nicht
+    verloren; still zu einem leeren Wert zu werden waere genau der Verlust ohne
+    Fehlersignal, gegen den die Abruf-Regel steht.
+
+    `quelle` wird NICHT veraendert — `unpack_response` sichert zu, dass die
+    uebergebene Antwort unberuehrt bleibt. Geschrieben wird ausschliesslich in
+    `uebrig`, das dieser Funktion gehoert und ohnehin nach `extras` wandert.
+    """
+    wert = quelle.get(schluessel, ersatz)
+    if isinstance(wert, typ):
+        return wert
+    uebrig[schluessel] = wert
+    return ersatz
 
 
 def _bilder_dekodieren(roh: Any) -> dict[str, bytes]:
@@ -376,25 +427,53 @@ def _aus_tarball(
                 name = eintrag.name
                 kurz = name.rsplit("/", 1)[-1]
 
-                if kurz.endswith(".md"):
+                # JEDER Zweig prueft erst, ob sein Platz noch frei ist. Ohne
+                # diese Pruefung gewann bei zwei Dateien auf demselben Muster
+                # schlicht die zuletzt gelesene, und die frueher gelesene war
+                # ERSATZLOS weg — sie landete weder in ihrem Feld noch in
+                # `uebrig`. Das ist die unsichtbarste Verlustform, die dieses
+                # Modul kennt, und sie steht ausgerechnet an der Stelle, an der
+                # das Modul selbst einraeumt, von den Dateinamen im Archiv sei
+                # nur EINER belegt: Unter erklaerter Unkenntnis ueber die Namen
+                # ist ein Doppeltreffer nicht der Sonderfall.
+                #
+                # Wer gewinnt, ist ausdruecklich die willkuerliche Entscheidung
+                # — der zuerst gelesene —, und sie ist es nur deshalb gefahrlos,
+                # weil der Verlierer vollstaendig in `uebrig` steht. Der erste
+                # Live-Lauf zeigt dann an einer echten Antwort, ob es
+                # Doppeltreffer ueberhaupt gibt und welcher der richtige ist.
+                if kurz.endswith(".md") and not markdown:
                     markdown = inhalt.decode("utf-8")
-                elif "_content_list" in kurz and kurz.endswith(".json"):
+                elif (
+                    "_content_list" in kurz
+                    and kurz.endswith(".json")
+                    and not content_list
+                ):
                     content_list = _json_laden(inhalt, name, erwartet=list)
-                elif "_middle" in kurz and kurz.endswith(".json"):
+                elif "_middle" in kurz and kurz.endswith(".json") and not middle:
                     middle = _json_laden(inhalt, name, erwartet=dict)
-                elif "layout" in kurz and kurz.endswith(".pdf"):
+                elif "layout" in kurz and kurz.endswith(".pdf") and layout_pdf is None:
                     layout_pdf = inhalt
-                elif "span" in kurz and kurz.endswith(".pdf"):
+                elif "span" in kurz and kurz.endswith(".pdf") and span_pdf is None:
                     span_pdf = inhalt
-                elif "/images/" in name or name.startswith("images/"):
+                elif ("/images/" in name or name.startswith("images/")) and (
+                    kurz not in images
+                ):
                     images[kurz] = inhalt
                 else:
-                    # KEIN Muster hat gepasst — und genau deshalb wird die Datei
-                    # aufgehoben statt fallengelassen. Von den Dateinamen im
-                    # Archiv ist nur EINER belegt; dass etwas Unbekanntes dabei
-                    # ist, ist damit nicht der Sonderfall, sondern die
-                    # wahrscheinlichste Lage. Base64, weil `raw` eine
+                    # Entweder hat KEIN Muster gepasst, oder eines hat gepasst,
+                    # aber sein Platz war schon belegt. In beiden Faellen wird
+                    # die Datei aufgehoben statt fallengelassen. Von den
+                    # Dateinamen im Archiv ist nur EINER belegt; dass etwas
+                    # Unbekanntes dabei ist, ist damit nicht der Sonderfall,
+                    # sondern die wahrscheinlichste Lage. Base64, weil `raw` eine
                     # jsonb-Spalte ist und Bytes dort keine Entsprechung haben.
+                    #
+                    # Der Schluessel ist der VOLLE Archivpfad und nicht der kurze
+                    # Name: Der volle Pfad ist im Archiv eindeutig, der kurze
+                    # nicht — und ein Doppeltreffer, der hier landet, darf nicht
+                    # ausgerechnet beim Aufheben ein zweites Mal ueberschrieben
+                    # werden.
                     uebrig[name] = base64.b64encode(inhalt).decode("ascii")
     except tarfile.TarError as fehler:
         raise TerminalRunPodError(
@@ -540,15 +619,44 @@ def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
             zusammen.append(kopie)
 
     bilder: dict[str, bytes] = {}
-    for teil in parts:
-        # Vereinigung ohne Kollisionspruefung: Die Namen sind Inhalts-Hashes,
-        # gleiche Namen sind also gleiche Inhalte (am 05.08.2026 empirisch
-        # geprueft). Waeren sie es nicht, wuerde hier still ueberschrieben — die
-        # Annahme steht deshalb hier, wo sie benutzt wird, und nicht nur im
-        # Vertrag.
-        bilder.update(teil.images)
+    kollisionen: list[dict[str, Any]] = []
+    for nummer, teil in enumerate(parts):
+        # Die Vereinigung beruht auf der Annahme, die Namen seien Inhalts-Hashes
+        # — gleiche Namen also gleiche Inhalte. Sie ist am 05.08.2026 empirisch
+        # geprueft, aber NUR fuer den Inline-Transport: Dort liefert die Engine
+        # die Namen selbst. Der Tarball-Pfad nimmt den nackten Dateinamen aus dem
+        # Archiv, und dafuer gibt es bis zum ersten Live-Lauf kein Material —
+        # ausgerechnet der Pfad also, den der Betrieb faehrt.
+        #
+        # Ein blosses `bilder.update(...)` haette bei verletzter Annahme still
+        # ueberschrieben: bezahltes Bild weg, kein Fehler, keine Meldung. Deshalb
+        # wird die Annahme hier GEPRUEFT statt geglaubt. Trifft sie zu, aendert
+        # sich nichts; trifft sie nicht zu, bleibt das erste Bild stehen, das
+        # zweite wird unter einem eigenen Namen aufgehoben, und die Kollision
+        # steht als eigener Eintrag im Ergebnis — sichtbar fuer den ersten
+        # Live-Lauf, der die Frage beantworten kann.
+        for name, daten in teil.images.items():
+            vorhanden = bilder.get(name)
+            if vorhanden is None:
+                bilder[name] = daten
+            elif vorhanden != daten:
+                ersatzname = f"{name}#kollision-teilstueck-{nummer}"
+                bilder[ersatzname] = daten
+                kollisionen.append(
+                    {
+                        "name": name,
+                        "teilstueck": nummer,
+                        "aufgehoben_als": ersatzname,
+                        "hinweis": (
+                            "Zwei Teilstuecke lieferten dasselbe Bild unter "
+                            "demselben Namen mit VERSCHIEDENEM Inhalt. Die "
+                            "Annahme, die Bildnamen seien Inhalts-Hashes, gilt "
+                            "hier nicht. Beide Bilder sind erhalten."
+                        ),
+                    }
+                )
 
-    return {
+    ergebnis: dict[str, Any] = {
         "markdown": "\n\n".join(teil.markdown for teil in parts),
         "content_list": zusammen,
         "images": {
@@ -566,6 +674,12 @@ def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
         # letzte fallen. Genau der stille Verlust, gegen den `extras` steht.
         "extras": [teil.extras for teil in parts],
     }
+    if kollisionen:
+        # NUR wenn es sie gibt. Ein Schluessel, der immer da ist und fast immer
+        # leer, wird ueberlesen; einer, der nur im Ausnahmefall auftaucht, faellt
+        # beim Ansehen einer Zeile sofort auf.
+        ergebnis["bild_namenskollisionen"] = kollisionen
+    return ergebnis
 
 
 def _b64_oder_none(daten: bytes | None) -> str | None:
@@ -575,25 +689,101 @@ def _b64_oder_none(daten: bytes | None) -> str | None:
     return base64.b64encode(daten).decode("ascii")
 
 
-def _blocktext(eintrag: dict[str, Any]) -> str:
-    """Holt den lesbaren Text aus einem `content_list`-Eintrag.
+TEXTFELDER: Final = (
+    "text",
+    "content",
+    "table_body",
+    "list_items",
+    "table_caption",
+    "table_footnote",
+    "image_caption",
+    "image_footnote",
+    "chart_caption",
+    "chart_footnote",
+)
+"""Die Felder eines `content_list`-Eintrags, die lesbaren Text tragen koennen.
 
-    Die Felder sind je nach Blocktyp verschieden, und zwar am echten Material
-    abgelesen: `text` bei Text-, Ueberschriften- und Randbloecken; `list_items`
-    (eine Liste von Zeichenketten) bei Listen; `content` bei Bild- und
-    Tabellenbloecken, wo es die Bildunterschrift bzw. den Tabelleninhalt traegt.
-    Ein Eintrag ohne eines dieser Felder liefert die leere Zeichenkette.
+AM ECHTEN MATERIAL AUSGEZAEHLT (08.08.2026, alle sechs konservierten Antworten,
+insgesamt 100 Bloecke). Welcher Blocktyp welche Felder wirklich traegt:
+
+    `text` (50), `header` (16), `footer` (5), `page_number` (5): `text`
+    `equation` (11): `text`, dazu `text_format`
+    `list` (4): `list_items` — eine Liste von Zeichenketten
+    `image` (5): `content`, `image_caption`, `image_footnote`, `img_path`
+    `chart` (1): `content`, `chart_caption`, `chart_footnote`, `img_path`
+    `table` (3): `table_body`, `table_caption`, `table_footnote`, `img_path`
+
+DIE REIHENFOLGE IST DIE LESEREIHENFOLGE, nicht eine Rangfolge: Es wird ALLES
+genommen, was da ist, und nicht das erste Passende.
+
+Warum diese Liste eine eigene Konstante mit voller Begruendung ist: Die fruehere
+Fassung las genau drei Felder — `text`, `list_items`, `content` — und ihr
+Docstring behauptete dabei, `content` trage „die Bildunterschrift bzw. den
+Tabelleninhalt", und das sei am echten Material abgelesen. Beides stimmt nicht:
+
+    Ein `table`-Block hat ueberhaupt kein `content`. Der GESAMTE Tabelleninhalt
+    steht in `table_body`, als HTML. Gemessen etwa:
+    `<table><tr><td>Current share price (S)</td><td>473p</td></tr>…</table>` —
+    also genau die Zahlen, um derentwillen ein Steuerdokument gelesen wird. Die
+    frueherer Fassung lieferte fuer diesen Block die LEERE Zeichenkette.
+
+    Ein `image`-Block traegt zwar `content`, aber es war in allen fuenf
+    Vorkommen leer; die Unterschrift steht in `image_caption`, einer Liste.
+
+    Ein `chart`-Block traegt `content` (dort stand eine Markdown-Tabelle) UND
+    `chart_caption` mit echtem Text („Figure 3.1 Cumulative standard normal
+    distribution and density"), der ebenfalls nie gelesen wurde.
+
+WIE WEIT DER SCHADEN REICHTE — und wie weit ausdruecklich NICHT. Es liegt nahe,
+hier denselben Fall wie beim Aktenzeichen zu vermuten: bezahlter Text, der es nie
+in die Ausgabe schafft. Nachgemessen (08.08.2026) stimmt das NICHT: Fuer alle
+drei Faelle traegt MinerUs eigenes `markdown` den Inhalt bereits — die drei
+`table_body`, die `chart_caption` und der `content` des Diagramms sind darin
+zeichengleich enthalten. `rendered_text` verliert sie also nicht, und es haengt
+sie auch nicht an, weil `table`, `chart` und `image` keine Randbloecke sind.
+
+Der Schaden lag ausschliesslich bei `is_empty`: Ein Dokument, dessen `markdown`
+leer ist und dessen einziger Inhalt eine Tabelle ist, lieferte `_blocktext` fuer
+diese Tabelle die leere Zeichenkette — es galt als `empty` und waere laut Vertrag
+nie wieder angesehen worden. Dass der Fall bisher nicht eintrat, lag am
+`img_path`-Zweig in `is_empty`, den alle drei echten Tabellen zufaellig
+mitbringen; das ist eine Eigenschaft dieser Engine-Fassung, keine Zusicherung.
+
+Die Liste bleibt unvollstaendig, und das ist gesagt statt verschwiegen: Sie deckt
+die neun Blocktypen ab, die in den sechs konservierten Antworten vorkommen. Ein
+Blocktyp, den dieses Material nicht enthaelt, kann Felder tragen, die hier
+fehlen. Deshalb steht in `raw` immer die vollstaendige `content_list` — wer
+etwas vermisst, findet es dort und traegt es hier nach."""
+
+
+def _blocktext(eintrag: dict[str, Any]) -> str:
+    """Sammelt ALLEN lesbaren Text eines `content_list`-Eintrags.
+
+    Sammelt und waehlt nicht aus: Ein Tabellenblock traegt Inhalt UND
+    Unterschrift, ein Diagrammblock Inhalt UND Bildunterschrift. Die frueherer
+    Fassung gab das erste passende Feld zurueck und liess den Rest liegen — bei
+    `table` gab sie mangels `content` sogar gar nichts zurueck. Welche Felder es
+    gibt und was daran gemessen ist, steht an `TEXTFELDER`.
+
+    Die Teile werden durch einen Zeilenumbruch verbunden, in der Reihenfolge von
+    `TEXTFELDER`. Ein Eintrag ganz ohne diese Felder liefert die leere
+    Zeichenkette.
     """
-    text = eintrag.get("text")
-    if isinstance(text, str) and text:
-        return text
-    posten = eintrag.get("list_items")
-    if isinstance(posten, list) and posten:
-        return "\n".join(str(einzeln) for einzeln in posten)
-    inhalt = eintrag.get("content")
-    if isinstance(inhalt, str) and inhalt:
-        return inhalt
-    return ""
+    teile: list[str] = []
+    for feld in TEXTFELDER:
+        wert = eintrag.get(feld)
+        if isinstance(wert, str) and wert.strip():
+            teile.append(wert)
+        elif isinstance(wert, list):
+            # `list_items` und die sechs `*_caption`/`*_footnote`-Felder sind
+            # Listen von Zeichenketten. `str(einzeln)` und nicht ein Typfilter:
+            # Ein Eintrag, der wider Erwarten keine Zeichenkette ist, soll
+            # sichtbar bleiben statt still zu verschwinden.
+            for einzeln in wert:
+                text = str(einzeln)
+                if text.strip():
+                    teile.append(text)
+    return "\n".join(teile)
 
 
 def is_empty(result: dict[str, Any]) -> bool:

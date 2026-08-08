@@ -894,6 +894,66 @@ async def test_fehlerpfad_schreibt_auch_wenn_das_zusammensetzen_scheitert(
     assert any(v["kind"] == "zusammensetzen_gescheitert" for v in zeile.notes)
 
 
+async def test_bezahlte_antwort_mit_formfehler_wird_aufgehoben(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Eine BEZAHLTE `COMPLETED`-Antwort, die sich nicht auspacken laesst, landet
+    trotzdem vollstaendig in `raw`.
+
+    Vorher ging sie verloren: `unpack_response` warf bei einer Formabweichung,
+    die Ausnahme trug nur die Schluesselnamen in ihrer Meldung, und die Antwort
+    selbst wanderte weder in `teile` noch in `raw`. Der Job war zu diesem
+    Zeitpunkt schon bezahlt, und dreissig Minuten spaeter ist eine Antwort auf
+    der Gegenseite nicht mehr abrufbar — bei jeder kuenftigen Fassung der Engine,
+    die ein Feld anders benennt, waere das Ergebnis also unwiederbringlich weg
+    gewesen. Genau der Verlust, gegen den die Abruf-Regel steht: alles holen,
+    alles persistieren, nie filtern.
+
+    Hier antwortet die Gegenseite mit `COMPLETED`, aber mit einer `output`-Form,
+    die es so nicht geben duerfte — zwei Ergebnisse statt einem.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"formfehler", name="e.png", typ=DocumentType.PNG
+    )
+
+    kaputte_antwort = {
+        "id": "job-formfehler",
+        "status": "COMPLETED",
+        "workerId": "wrk-7",
+        "executionTime": 4242,
+        "output": {
+            "ok": True,
+            "results": [
+                {"markdown": "Erstes Ergebnis", "content_list": []},
+                {"markdown": "Zweites Ergebnis", "content_list": []},
+            ],
+        },
+    }
+    runpod = FalscherRunPod([kaputte_antwort])
+
+    with pytest.raises(TerminalRunPodError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.raw is not None
+
+    # DIE ZUSICHERUNG: die ganze Antwort steht da, nicht nur eine Fehlermeldung
+    # ueber sie.
+    aufgehoben = zeile.raw["unverwertbare_antworten"]
+    assert len(aufgehoben) == 1
+    assert aufgehoben[0]["antwort"] == kaputte_antwort
+    assert aufgehoben[0]["job_id"] == "job-0"
+    assert aufgehoben[0]["chunk"] == {"first_page": 0, "last_page": 0}
+    # Und der Grund steht daneben, sonst saehe die Zeile aus wie ein
+    # unvollstaendiges Ergebnis ohne Anlass.
+    assert "TerminalRunPodError" in aufgehoben[0]["fehler"]
+
+
 # --- Verbindungen und Abbruch ---------------------------------------------
 
 

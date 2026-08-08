@@ -275,6 +275,10 @@ async def process_document(
         return
 
     teile: list[assembly.ChunkArtifacts] = []
+    # Bezahlte Antworten, die sich nicht auspacken liessen. Sie gehoeren in
+    # `raw`, weil sie bezahlt sind — die Begruendung steht an der Stelle, die
+    # sie fuellt (`_stuecke_verarbeiten`).
+    unverwertbar: list[dict[str, Any]] = []
     vermerke: list[dict[str, Any]] = []
     image_tag: str | None = None
     begonnen = time.monotonic()
@@ -344,6 +348,7 @@ async def process_document(
                     settings=settings,
                     runpod=runpod,
                     teile=teile,
+                    unverwertbar=unverwertbar,
                 )
         else:
             seiten = None
@@ -356,6 +361,7 @@ async def process_document(
                 settings=settings,
                 runpod=runpod,
                 teile=teile,
+                unverwertbar=unverwertbar,
             )
 
         # --- 4.: nachrechnen, zusammensetzen, EINMAL schreiben ----------
@@ -417,6 +423,11 @@ async def process_document(
         # dem, was das gekostet haette, steht an der Funktion.
         ergebnis = _ergebnis_fuer_endzustand(teile, vermerke)
         ergebnis["failure"] = _fehler_umschlag(fehler)
+        if unverwertbar:
+            # Bezahlte Antworten, die sich nicht auspacken liessen. Sie stehen
+            # hier VOLLSTAENDIG, weil sie bezahlt sind und dreissig Minuten nach
+            # ihrer Entstehung nirgends mehr abrufbar waeren.
+            ergebnis["unverwertbare_antworten"] = unverwertbar
         vermerke.append(
             {
                 "kind": "gescheitert",
@@ -635,6 +646,7 @@ async def _stuecke_verarbeiten(
     settings: Settings,
     runpod: RunPodAccess,
     teile: list[assembly.ChunkArtifacts],
+    unverwertbar: list[dict[str, Any]],
 ) -> None:
     """Schickt Teilstueck fuer Teilstueck hinaus und holt jedes SOFORT ab.
 
@@ -692,7 +704,34 @@ async def _stuecke_verarbeiten(
             abholen, runpod=runpod, settings=settings, schritt="Abholen"
         )
         _endzustand_uebersetzen(antwort, job)
-        teile.append(assembly.unpack_response(antwort, chunk))
+        try:
+            teile.append(assembly.unpack_response(antwort, chunk))
+        except Exception as fehler:
+            # DIE ANTWORT IST BEZAHLT und liegt in genau diesem Moment zum
+            # letzten Mal greifbar vor — auf der Gegenseite ist sie nach rund
+            # dreissig Minuten nicht mehr abrufbar. Vorher ging sie hier
+            # verloren: `unpack_response` warf bei einer Formabweichung, die
+            # Ausnahme trug nur die Schluesselnamen in ihrer Meldung, und die
+            # Antwort selbst wanderte weder in `teile` noch in `raw`. Bei jeder
+            # kuenftigen Fassung der Engine, die ein Feld anders benennt, waere
+            # das bezahlte Ergebnis damit unwiederbringlich weg gewesen.
+            #
+            # Sie wird deshalb aufgehoben und DANN geworfen. Aufgehoben und
+            # nicht etwa zu einem leeren Teilstueck gemacht: Ein leeres
+            # Teilstueck saehe aus wie eine leere Seite, und das Dokument endete
+            # `done` oder `empty` statt `failed`.
+            unverwertbar.append(
+                {
+                    "chunk": {
+                        "first_page": chunk.first_page,
+                        "last_page": chunk.last_page,
+                    },
+                    "job_id": job,
+                    "fehler": f"{type(fehler).__name__}: {fehler}",
+                    "antwort": antwort,
+                }
+            )
+            raise
 
 
 _KONTOPAUSEN_JE_SCHRITT = 3

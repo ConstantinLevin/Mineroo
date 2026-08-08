@@ -861,6 +861,181 @@ def test_unbekannte_dateien_im_archiv_gehen_nicht_verloren() -> None:
     assert teil.extras["pages_requested"] == -1
 
 
+def test_zwei_dateien_auf_demselben_muster_gehen_nicht_verloren() -> None:
+    """Zwei `.md` im Archiv: eine fuellt das Feld, die andere steht in `extras`.
+
+    Vorher gewann schlicht die zuletzt gelesene, und die frueher gelesene war
+    ERSATZLOS weg — weder im Feld noch in `extras`. Das ist die unsichtbarste
+    Verlustform des Moduls, und sie stand ausgerechnet an der Stelle, an der das
+    Modul selbst einraeumt, von den Dateinamen im Archiv sei nur EINER belegt:
+    Unter erklaerter Unkenntnis ueber die Namen ist ein Doppeltreffer kein
+    Sonderfall.
+
+    Geprueft wird ausdruecklich NICHT, welche der beiden gewinnt — das ist eine
+    willkuerliche Festlegung (die zuerst gelesene) und wird erst durch einen
+    echten Tarball-Lauf beantwortbar. Geprueft wird, dass BEIDE Inhalte danach
+    noch da sind.
+    """
+    puffer = io.BytesIO()
+    dateien = {
+        "doc/doc.md": b"# Erstes Markdown",
+        "doc/anhang_notizen.md": b"# Zweites Markdown mit echtem Inhalt",
+        "doc/doc_content_list.json": b'[{"type":"text","page_idx":0}]',
+        "doc/doc_content_list_v2.json": b'[{"type":"text","text":"v2","page_idx":0}]',
+    }
+    with tarfile.open(fileobj=puffer, mode="w:gz") as archiv:
+        for name, inhalt in dateien.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(inhalt)
+            archiv.addfile(info, io.BytesIO(inhalt))
+
+    antwort = _antwort()
+    antwort["output"]["results"][0] = {
+        "basename": "doc",
+        "tarball_b64": base64.b64encode(puffer.getvalue()).decode("ascii"),
+    }
+
+    teil = unpack_response(antwort, Chunk(first_page=0, last_page=0))
+
+    # Beide Markdown-Inhalte sind auffindbar: einer im Feld, einer in `extras`.
+    aufgehoben = {
+        name: base64.b64decode(wert).decode("utf-8")
+        for name, wert in teil.extras.items()
+        if isinstance(wert, str) and name.endswith((".md", ".json"))
+    }
+    vorhanden = {teil.markdown, *aufgehoben.values()}
+    assert "# Erstes Markdown" in vorhanden
+    assert "# Zweites Markdown mit echtem Inhalt" in vorhanden
+
+    # Dasselbe fuer die beiden content_list-Generationen. Welche der Doku-Fassung
+    # entspricht, ist offen (`package.py` bevorzugt die ohne `_v2` und faellt
+    # darauf zurueck) — verloren gehen darf keine.
+    roh = json.dumps(teil.content_list) + " ".join(aufgehoben.values())
+    assert '"v2"' in roh
+
+
+def test_json_null_wird_nicht_als_none_durchgereicht() -> None:
+    """Ein Feld mit dem JSON-Wert `null` verletzt die Typzusagen nicht.
+
+    `ergebnis.get("markdown", "")` greift nur bei FEHLENDEM Schluessel. Steht der
+    Schluessel mit `null` da — fuer eine leere Seite durchaus plausibel —, kam
+    `None` heraus, gegen `ChunkArtifacts.markdown: str`. Der Schaden trat nicht
+    hier auf, sondern erst beim Zusammensetzen: `"\\n\\n".join(...)` warf ueber
+    dem `None` einen `TypeError`, das Dokument endete `failed` statt `empty`, und
+    die Antwort war bezahlt und unbrauchbar — beim Wiederlauf genauso.
+
+    Und die zweite Haelfte, ohne die es nur eine Verschleierung waere: Der
+    `null`-Wert selbst geht nicht verloren, sondern steht in `extras`.
+    """
+    antwort = _antwort()
+    antwort["output"]["results"][0] = {
+        "basename": "doc",
+        "markdown": None,
+        "content_list": None,
+        "images": None,
+        "middle": None,
+    }
+
+    teil = unpack_response(antwort, Chunk(first_page=0, last_page=0))
+
+    assert teil.markdown == ""
+    assert teil.content_list == []
+    assert teil.images == {}
+    assert teil.middle == {}
+    # Aufgehoben statt still ersetzt.
+    assert teil.extras["markdown"] is None
+    assert teil.extras["content_list"] is None
+
+    # Und der eigentliche Punkt: Das Zusammensetzen laeuft jetzt durch, statt zu
+    # werfen und das bezahlte Ergebnis mitzunehmen.
+    ergebnis = assemble([teil])
+    assert ergebnis["markdown"] == ""
+    assert is_empty(ergebnis) is True
+
+
+def test_tabelleninhalt_geht_nicht_verloren() -> None:
+    """Der Inhalt eines `table`-Blocks steht in `table_body`, nicht in `content`.
+
+    AM ECHTEN MATERIAL AUSGEZAEHLT (alle sechs konservierten Antworten): Ein
+    `table`-Block traegt `bbox`, `img_path`, `page_idx`, `table_body`,
+    `table_caption`, `table_footnote` — und KEIN `content`. Die frueherer Fassung
+    von `_blocktext` las `text`, `list_items`, `content` und lieferte fuer einen
+    Tabellenblock deshalb die LEERE Zeichenkette, obwohl in `table_body` die
+    ganze Tabelle als HTML steht.
+
+    WIE WEIT DER SCHADEN REICHT, und wie weit ausdruecklich nicht: Es liegt nahe,
+    hier denselben Fall wie beim Aktenzeichen zu vermuten — bezahlter Text, der
+    es nie in die Ausgabe schafft. Nachgemessen an den sechs Antworten stimmt das
+    NICHT: MinerUs eigenes `markdown` traegt alle drei `table_body` bereits
+    zeichengleich. `rendered_text` verliert also nichts, und dieser Test prueft
+    es deshalb auch nicht.
+
+    Der Schaden lag allein bei `is_empty`: Ein Dokument, dessen `markdown` leer
+    ist und dessen einziger Inhalt eine Tabelle ist, galt als `empty` und waere
+    laut Vertrag nie wieder angesehen worden.
+
+    Der Block hier hat die Form des echten Materials — insbesondere OHNE
+    `img_path`, denn genau der rettete den Fall bisher zufaellig.
+    """
+    tabelle = {
+        "type": "table",
+        "page_idx": 0,
+        "table_body": (
+            "<table><tr><td>Current share price (S)</td><td>473p</td></tr></table>"
+        ),
+        "table_caption": ["Tabelle 1: Eingangsgroessen"],
+        "table_footnote": [],
+    }
+    ergebnis = assemble(
+        [
+            ChunkArtifacts(
+                chunk=Chunk(first_page=0, last_page=0),
+                markdown="",
+                content_list=[tabelle],
+                images={},
+                middle={},
+                layout_pdf=None,
+                span_pdf=None,
+                envelope={},
+                extras={},
+            )
+        ]
+    )
+
+    # DAS ist der Befund: Ein Dokument, das nur aus dieser Tabelle besteht, ist
+    # NICHT leer. Vorher war es `empty`.
+    assert is_empty(ergebnis) is False
+
+
+def test_blocktext_sammelt_alle_textfelder_statt_des_ersten_passenden() -> None:
+    """`_blocktext` nimmt ALLES, was ein Block an Text traegt — nicht das erste.
+
+    Am echten Material gemessen: Ein `chart`-Block traegt `content` mit einer
+    Markdown-Tabelle UND `chart_caption` mit echtem Text („Figure 3.1 Cumulative
+    standard normal distribution and density"). Die frueherer Fassung gab das
+    ERSTE passende Feld zurueck (`content`) und liess die Unterschrift liegen.
+
+    Geprueft wird `_blocktext` unmittelbar und nicht ueber `rendered_text`:
+    `chart` ist kein Randblock, wird also von `rendered_text` gar nicht
+    angehaengt — und muss es auch nicht, weil MinerUs Markdown beide Texte
+    nachweislich schon traegt. Die Auswirkung des Sammelns liegt bei `is_empty`
+    und bei jedem kuenftigen Leser dieser Funktion.
+    """
+    from mineru_ocr.assembly import _blocktext
+
+    diagramm = {
+        "type": "chart",
+        "page_idx": 0,
+        "content": "| Metric | Value |\n| --- | --- |\n| Area | 0.9374 |",
+        "chart_caption": ["Figure 3.1 Cumulative standard normal distribution"],
+        "chart_footnote": [],
+    }
+    text = _blocktext(diagramm)
+    # BEIDES, nicht nur das erste passende Feld.
+    assert "0.9374" in text
+    assert "Figure 3.1 Cumulative standard normal distribution" in text
+
+
 def test_extras_werden_je_teilstueck_gehalten() -> None:
     """Je Teilstueck eine eigene Abbildung, NICHT vereinigt.
 

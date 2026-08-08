@@ -23,11 +23,12 @@ nie in der Datenbank.
 from __future__ import annotations
 
 import base64
+import binascii
 import builtins
 import hashlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import psycopg
 
@@ -36,6 +37,10 @@ from .config import Settings
 from .db import DocumentRow, DocumentStatus
 from .errors import DocumentNotFound, IncompleteResultError, UnsupportedTypeError
 from .pdf import PdfReader
+
+F = TypeVar("F")
+"""Der erwartete Typ eines Feldes im gespeicherten Ergebnis (`OCRWrapper._feld`)
+— `str` fuer `markdown`, `list` fuer `content_list`, `dict` fuer `images`."""
 
 
 class OCRWrapper:
@@ -304,19 +309,30 @@ class OCRWrapper:
     def markdown(self) -> str:
         """Der Text des Dokuments, in Dokumentreihenfolge.
 
+        Zusicherung:
+            Ist der gespeicherte Wert keine Zeichenkette — was nur bei einer
+            beschaedigten Zeile vorkommt —, wird geworfen und NICHT still eine
+            leere Zeichenkette geliefert. Der Unterschied ist der ganze Punkt:
+            Ein leerer Rueckgabewert sieht aus wie ein leeres Dokument, und ein
+            Formfehler in `raw` waere damit von einer leeren Seite nicht mehr zu
+            unterscheiden.
+
         Raises:
             IncompleteResultError: Die Zeile hat noch kein Ergebnis (`new`) oder
                 ist gescheitert. Es gibt dann nichts auszugeben — was da ist,
-                steht in `raw`.
+                steht in `raw`. Oder: das gespeicherte Feld hat den falschen Typ.
         """
-        text = self._ergebnis().get("markdown", "")
-        return text if isinstance(text, str) else ""
+        return self._feld("markdown", str, "")
 
     @property
     def content_list(self) -> list[dict[str, Any]]:
-        """Die Strukturliste, mit den Seitenzahlen des Originals."""
-        eintraege = self._ergebnis().get("content_list", [])
-        return eintraege if isinstance(eintraege, list) else []
+        """Die Strukturliste, mit den Seitenzahlen des Originals.
+
+        Raises:
+            IncompleteResultError: Wie bei `markdown` — auch fuer ein Feld des
+                falschen Typs, statt still eine leere Liste zu liefern.
+        """
+        return self._feld("content_list", list, [])
 
     @property
     def images(self) -> dict[str, builtins.bytes]:
@@ -326,15 +342,69 @@ class OCRWrapper:
         Zeichenketten, weil `jsonb` keine Bytes kennt. Die Wandlung ist
         verlustfrei und geschieht hier, damit der Aufrufer Bytes bekommt und
         nicht eine Kodierung, die er selbst aufloesen muesste.
+
+        Zusicherung:
+            JEDES gespeicherte Bild kommt heraus. Frueher stand hier ein Filter
+            `if isinstance(wert, str)` im Dict-Comprehension — ein Bild, dessen
+            Wert keine Zeichenkette war, verschwand damit ohne Fehler und ohne
+            Meldung, und der Aufrufer bekam eine Abbildung, die vollstaendig
+            aussah. Reproduziert wurde das mit drei gespeicherten Bildern, von
+            denen der Getter eines lieferte. Das ist genau das Muster
+            „herausgreifen statt nehmen", gegen das die Abruf-Regel steht — und
+            es stand ausgerechnet in der Fassade, die dem Aufrufer das Ergebnis
+            zeigt.
+
+        Raises:
+            IncompleteResultError: Wie bei `markdown`; zusaetzlich, wenn ein
+                einzelnes Bild nicht dekodierbar ist. Die Meldung nennt seinen
+                Namen — wer ihn hat, findet das Bild in `raw` wieder.
         """
-        roh = self._ergebnis().get("images", {})
-        if not isinstance(roh, dict):
-            return {}
-        return {
-            name: base64.b64decode(wert)
-            for name, wert in roh.items()
-            if isinstance(wert, str)
-        }
+        roh = self._feld("images", dict, {})
+        bilder: dict[str, builtins.bytes] = {}
+        for name, wert in roh.items():
+            if isinstance(wert, builtins.bytes):
+                bilder[name] = wert
+                continue
+            if not isinstance(wert, str):
+                raise IncompleteResultError(
+                    f"Bild {name!r} liegt als {type(wert).__name__} vor, "
+                    f"erwartet wurde eine Base64-Zeichenkette. Das Bild ist "
+                    f"nicht verloren — es steht unveraendert in `raw`."
+                )
+            try:
+                bilder[name] = base64.b64decode(wert)
+            except (binascii.Error, ValueError) as fehler:
+                raise IncompleteResultError(
+                    f"Bild {name!r} liess sich nicht aus Base64 zurueckwandeln: "
+                    f"{fehler}. Es steht unveraendert in `raw`."
+                ) from fehler
+        return bilder
+
+    def _feld(self, name: str, typ: type[F], ersatz: F) -> F:
+        """Holt ein Feld des Ergebnisses und besteht auf seinem Typ.
+
+        Der frueherer Bau war ueberall derselbe — `wert if isinstance(wert, typ)
+        else ersatz` —, und er hatte ueberall dieselbe Schwaeche: Ein Formfehler
+        in `raw` wurde zu einem leeren Wert, und ein leerer Wert sieht aus wie
+        ein leeres Dokument. Damit war der einzige Hinweis auf eine beschaedigte
+        Zeile ausgerechnet der, den man fuer ein gueltiges Ergebnis haelt.
+
+        `ersatz` wird ausschliesslich benutzt, wenn das Feld GAR NICHT da ist —
+        etwa weil eine aeltere Fassung es nicht geschrieben hat. Das ist eine
+        Abwesenheit, keine Beschaedigung.
+        """
+        ergebnis = self._ergebnis()
+        if name not in ergebnis:
+            return ersatz
+        wert = ergebnis[name]
+        if isinstance(wert, typ):
+            return wert
+        raise IncompleteResultError(
+            f"Das Feld {name!r} des gespeicherten Ergebnisses ist "
+            f"{type(wert).__name__} statt {typ.__name__}. Die Zeile ist "
+            f"beschaedigt oder stammt aus einer anderen Fassung. Der Inhalt ist "
+            f"nicht verloren — er steht unveraendert in `raw`."
+        )
 
     @property
     def raw(self) -> dict[str, Any]:
