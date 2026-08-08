@@ -136,7 +136,36 @@ class ChunkArtifacts:
     liefert sie; beim Inline-Transport ist sie None."""
 
     span_pdf: bytes | None
-    """Die Span-Visualisierung, ebenso."""
+    """Die Span-Visualisierung — mit unserem Backend IMMER None.
+
+    AM QUELLTEXT GEKLAERT (08.08.2026, `mineru/cli/common.py` auf master, dazu
+    die offizielle Doku der Ausgabedateien). `do_parse` und `aio_do_parse`
+    tragen zwar `f_draw_span_bbox=True` als Vorgabe, aber JEDER VLM-Pfad
+    ueberschreibt sie bedingungslos, gleich in der ersten Zeile:
+
+        async def _async_process_vlm(...):
+            parse_method = "vlm"
+            f_draw_span_bbox = False
+
+    Dasselbe in `_process_vlm`, beiden Hybrid-Pfaden und `_process_office_doc`.
+    Nur `_process_pipeline` reicht den Parameter durch. Die Doku sagt es
+    ebenso: „Text Spans File (span.pdf) — Note: Only applicable to pipeline
+    backend."
+
+    Wir fahren `backend="vlm-auto-engine"`. Dieses Feld kann also nicht
+    befuellt werden, solange das so bleibt, und die `span`-Klausel in
+    `_aus_tarball` kann nicht greifen. Beide bleiben trotzdem stehen: Sie
+    kosten nichts, und ein Wechsel auf `pipeline` — der als Rueckfallweg
+    ausdruecklich offen ist — braucht sie sofort wieder.
+
+    WARUM DAS HIER SO AUSFUEHRLICH STEHT: Vorher stand an dieser Stelle „Die
+    Span-Visualisierung, ebenso" — also: kommt ebenso wie das Layout-PDF mit
+    dem Tarball. Diese Aussage stammt aus einer Quelltext-Pruefung vom
+    05.08.2026, die die SIGNATUR von `aio_do_parse` gelesen und daraus
+    geschlossen hat, der Worker ueberschreibe die Vorgabe nicht. Der zweite
+    Halbsatz stimmt; die Folgerung nicht, weil MinerU selbst ueberschreibt,
+    eine Funktionsebene tiefer. Ein Default in einer Signatur ist keine
+    Zusicherung ueber das Verhalten."""
 
     envelope: dict[str, Any]
     """Was die Antwort ausser dem Inhalt trug: `status`, `id`, `executionTime`,
@@ -257,9 +286,11 @@ def _aus_inline(
 
     Layout- und Span-PDF sind hier IMMER None, und das ist kein Versaeumnis
     dieser Funktion: Der Inline-Transport liefert nur die vier benannten Formate,
-    die beiden Visualisierungs-PDFs entstehen zwar im Ausgabeverzeichnis, aber
-    nur Tarball und S3 packen dieses Verzeichnis ein (Betriebshandbuch 14a).
-    „Tarball traegt also strikt mehr als Inline."
+    das Layout-PDF entsteht zwar im Ausgabeverzeichnis, aber nur Tarball und S3
+    packen dieses Verzeichnis ein (Betriebshandbuch 14a). „Tarball traegt also
+    strikt mehr als Inline" — das gilt weiter, aber die Begruendung ist um das
+    Span-PDF zu kuerzen: Das entsteht mit unserem Backend gar nicht erst, in
+    keinem Transport. Warum, steht am Feld `ChunkArtifacts.span_pdf`.
     """
     benannt = {"markdown", "content_list", "images", "middle"}
 

@@ -889,11 +889,16 @@ def test_echte_tarball_antwort_wird_vollstaendig_ausgepackt(
     # Wirklich ein JPEG, nicht bloss ein Feld mit Inhalt.
     assert bildbytes.startswith(b"\xff\xd8\xff")
 
-    # GEMESSEN, und gegen den Vertrag: Das Archiv traegt ein layout-PDF, aber
-    # KEIN span-PDF. Der Docstring von `ChunkArtifacts.span_pdf` sagt, die
-    # Span-Visualisierung komme mit dem Tarball — in dieser Antwort tut sie es
-    # nicht. Der Test haelt den gemessenen Zustand fest, damit ein spaeterer
-    # Wechsel auffaellt, statt unbemerkt zu bleiben.
+    # GEMESSEN und danach AM QUELLTEXT ERKLAERT: Das Archiv traegt ein
+    # layout-PDF, aber KEIN span-PDF — und das ist kein Zufall dieser Antwort.
+    # `mineru/cli/common.py` setzt in JEDEM VLM-Pfad `f_draw_span_bbox = False`,
+    # bedingungslos, ungeachtet der Vorgabe `True` in der Signatur von
+    # `aio_do_parse`; die offizielle Doku sagt zu span.pdf „Only applicable to
+    # pipeline backend". Wir fahren `vlm-auto-engine`.
+    #
+    # Der Test haelt damit fest, was fuer dieses Backend GILT, nicht bloss, was
+    # einmal beobachtet wurde. Faellt er, ist entweder das Backend gewechselt
+    # oder MinerU hat diese Ueberschreibung aufgegeben — beides gehoert bemerkt.
     assert teil.layout_pdf is not None
     assert teil.layout_pdf.startswith(b"%PDF")
     assert teil.span_pdf is None
