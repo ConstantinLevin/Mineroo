@@ -75,9 +75,9 @@ module = ["pypdfium2", "pypdfium2.*"]
 follow_untyped_imports = true
 
 [[tool.mypy.overrides]]
-module = ["mineru_ocr.pdf", "test_pdf", "test_executor"]
+module = ["mineru_ocr.pdf", "test_pdf", "test_executor", "test_wrapper"]
 # Und die Gegenseite: Aufrufe IN ein untypisiertes Modul hinein verbietet der
-# strenge Modus ebenfalls. Die Ausnahme gilt genau fuer die zwei Dateien, die
+# strenge Modus ebenfalls. Die Ausnahme gilt genau fuer die Dateien, die
 # pypdfium2 benutzen — nicht fuer das Paket. Alles andere in mineru_ocr und in
 # tests bleibt streng geprueft, und wenn jemand pypdfium2 spaeter woanders
 # importiert, meldet mypy es dort sofort.

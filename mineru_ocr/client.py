@@ -15,15 +15,101 @@ Bequemlichkeit fuer ein Einzelstueck, die beides hintereinander tut.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+import re
+from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
 from types import TracebackType
-from typing import Any
+from typing import Any, Final, TypeVar
 
 import psycopg
+from procrastinate import utils
 
+from . import db, tasks
 from .config import Settings
-from .db import DerivedStatus
+from .db import DerivedStatus, DocumentStatus
+from .errors import ConfigDriftError, ConfigurationError, DocumentNotFound
+from .runpod import RunPodClient
 from .wrapper import OCRMegaWrapper, OCRWrapper
+
+T = TypeVar("T")
+
+HASH_FORM: Final = re.compile(r"^[0-9a-f]{64}$")
+"""Woran ein Hash von einem Pfad unterschieden wird.
+
+Festgelegt und nicht geraten: vierundsechzig Zeichen aus `[0-9a-f]` sind ein
+Hash, alles andere ist ein Pfad. Ein Verzeichnisname kann diese Form zwar
+annehmen, aber dann sind Hash und Pfad ohnehin dasselbe Dokument oder es gibt
+keins. Dieselbe Regel gilt in `get`, `document` und `wait` — sie steht deshalb
+EINMAL hier und nicht dreimal verstreut."""
+
+ENDPOINT_SOLL: Final[dict[str, Any]] = {
+    "workersMin": 0,
+    "idleTimeout": 60,
+    "executionTimeoutMs": 600000,
+}
+"""Die Sollwerte des Betriebshandbuchs, gegen die der Preflight vergleicht.
+
+`workersMax` fehlt hier mit Absicht: Dafuer gilt keine feste Zahl, sondern
+„mindestens eins" — steht es auf null, kann nichts laufen. Das wird eigens
+geprueft, weil ein Vergleich auf Gleichheit dort eine Zahl erfinden muesste."""
+
+
+def _synchron_ausfuehren(arbeit: Coroutine[Any, Any, T]) -> T:
+    """Fuehrt eine Koroutine aus synchronem Code aus — auch aus einer Schleife.
+
+    Der Client ist synchron, mehrere seiner Auskuenfte kommen aber aus
+    asynchronen Quellen (RunPod, Procrastinates Job-Verwaltung). Der uebliche
+    Weg dafuer ist `asyncio.run`.
+
+    DER FALL, DER DABEI BRICHT, und der beim Bauen aufgefallen ist: `asyncio.run`
+    verweigert die Arbeit, wenn im selben Faden schon eine Ereignisschleife
+    laeuft — „asyncio.run() cannot be called from a running event loop". Das ist
+    kein Test-Artefakt, sondern der Alltag: In einem Notebook laeuft immer eine,
+    und wer den Client aus einer asynchronen Anwendung heraus benutzt, ebenso.
+    Eine synchrone Fassade, die von dort nicht benutzbar ist, waere nur halb
+    synchron.
+
+    Deshalb: Laeuft schon eine Schleife, wird die Arbeit in einen EIGENEN FADEN
+    mit eigener Schleife gegeben und dort zu Ende gefuehrt. Der Aufrufer merkt
+    nichts davon ausser der Wartezeit, die er ohnehin hat.
+
+    Warum nicht `nest_asyncio` oder Aehnliches: Das flickt an der Schleife des
+    Aufrufers herum, und es ist eine zusaetzliche Abhaengigkeit fuer ein
+    Problem, das die Standardbibliothek loest.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # Keine Schleife im Faden — der Normalfall, und der billigste Weg.
+        return asyncio.run(arbeit)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as faden:
+        return faden.submit(asyncio.run, arbeit).result()
+
+
+def _runpod_fragen(
+    settings: Settings, was: Callable[[RunPodClient], Awaitable[T]]
+) -> T:
+    """Fuehrt EINE lesende RunPod-Abfrage aus synchronem Code aus.
+
+    Der Client ist synchron, der RunPod-Zugang asynchron — dazwischen steht
+    dieser Uebergang. Er baut den Zugang, fragt und schliesst ihn wieder.
+
+    Warum je Abfrage ein eigener Zugang und kein dauerhafter: Der Client stellt
+    diese Fragen selten (Preflight, Kontostand, Worker-Liste) und nie in einer
+    Schleife. Ein dauerhafter Zugang haette dagegen eine Lebensdauer, die an den
+    Kontext-Manager gebunden werden muesste — und ein offener HTTP-Client, den
+    niemand benutzt, ist ein Betriebsmittel ohne Zweck. Der Daemon, der wirklich
+    in Schleife fragt, teilt sich sehr wohl einen.
+    """
+
+    async def lauf() -> T:
+        async with RunPodClient(settings) as zugang:
+            return await was(zugang)
+
+    return _synchron_ausfuehren(lauf())
 
 
 class OCRClient:
@@ -66,11 +152,28 @@ class OCRClient:
 
         Kosten: keine. Der Konstruktor spricht mit niemandem — erst `__enter__`.
         """
-        raise NotImplementedError
+        self._settings = Settings.load(
+            db_dsn=db_dsn,
+            endpoint_id=endpoint_id,
+            api_key=api_key,
+            strict=strict,
+            backend=backend,
+            min_balance_start_usd=min_balance,
+        )
+        self._preflight_gewuenscht = preflight
+        self._conn: psycopg.Connection[Any] | None = None
+        self._letzter_preflight: dict[str, Any] | None = None
 
     def __enter__(self) -> OCRClient:
         """Oeffnet die Verbindung und fuehrt den Preflight aus."""
-        raise NotImplementedError
+        self._conn = db.connect(self._settings.db_dsn)
+        # Der Produzenten-Zugang: synchron, und er kann NUR einreihen. Ein
+        # Produzent, der versehentlich einen Worker startet, waere ein zweiter
+        # Exekutor, von dem niemand weiss.
+        tasks.configure(self._settings, for_worker=False)
+        if self._preflight_gewuenscht:
+            self._letzter_preflight = self.preflight()
+        return self
 
     def __exit__(
         self,
@@ -78,12 +181,14 @@ class OCRClient:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        raise NotImplementedError
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
     @property
     def settings(self) -> Settings:
         """Die geltende Einstellung. Der Schluessel ist in der Ausgabe maskiert."""
-        raise NotImplementedError
+        return self._settings
 
     @property
     def conn(self) -> psycopg.Connection[Any]:
@@ -97,7 +202,12 @@ class OCRClient:
         Raises:
             ConfigurationError: Der Client ist nicht betreten worden.
         """
-        raise NotImplementedError
+        if self._conn is None:
+            raise ConfigurationError(
+                "Der Client ist nicht betreten worden. Er oeffnet seine "
+                "Verbindung erst dort: `with OCRClient() as client: …`"
+            )
+        return self._conn
 
     # ----------------------------------------------------------------------
     # Preflight
@@ -143,7 +253,121 @@ class OCRClient:
 
         Kosten: keine.
         """
-        raise NotImplementedError
+        befunde: list[dict[str, Any]] = []
+
+        def merken(punkt: str, soll: Any, ist: Any, bewertung: str) -> None:
+            befunde.append(
+                {"punkt": punkt, "soll": soll, "ist": ist, "bewertung": bewertung}
+            )
+
+        # --- Endpoint und seine Konfiguration ---------------------------
+        try:
+            konfiguration = _runpod_fragen(self._settings, lambda z: z.endpoint())
+        except Exception as fehler:  # noqa: BLE001
+            merken("endpoint", "erreichbar", f"{type(fehler).__name__}: {fehler}", "abweichung")
+            konfiguration = {}
+        else:
+            merken("endpoint", "erreichbar", konfiguration.get("id"), "in_ordnung")
+
+            for feld, soll in ENDPOINT_SOLL.items():
+                ist = konfiguration.get(feld)
+                merken(
+                    feld, soll, ist, "in_ordnung" if ist == soll else "abweichung"
+                )
+
+            hoechstzahl = konfiguration.get("workersMax")
+            merken(
+                "workersMax",
+                ">= 1",
+                hoechstzahl,
+                "in_ordnung"
+                if isinstance(hoechstzahl, int) and hoechstzahl >= 1
+                else "abweichung",
+            )
+
+            # Die Umgebungsvariablen des Workers sind NUR pruefbar, wenn gerade
+            # einer laeuft. Sonst lautet das Ergebnis „nicht pruefbar" und
+            # ausdruecklich NICHT „in Ordnung" — der Unterschied ist der ganze
+            # Wert dieser Pruefung.
+            laufende = konfiguration.get("workers") or []
+            umgebungen = [
+                w.get("env") for w in laufende if isinstance(w, dict) and w.get("env")
+            ]
+            merken(
+                "worker_env",
+                "MINERU_MAX_CONCURRENCY vorhanden",
+                umgebungen[0] if umgebungen else None,
+                "in_ordnung" if umgebungen else "nicht_pruefbar",
+            )
+
+            # Die Rechenzentren werden schlicht GEMELDET. Fuer den
+            # Steuer-Bestand gilt die EU-Pflicht; der Client richtet kein
+            # Verhalten danach, weil das eine Entscheidung des Menschen ist und
+            # kein Schalter im Programm (Plan 2.4, kein `pii`-Flag).
+            merken(
+                "datacenters",
+                "EU fuer den Steuer-Bestand (Entscheidung des Menschen)",
+                konfiguration.get("dataCenterIds") or konfiguration.get("gpuTypeIds"),
+                "gemeldet",
+            )
+
+        # --- Das Worker-Image: Warnung, kein Abbruch --------------------
+        try:
+            marke = _runpod_fragen(self._settings, lambda z: z.image_tag())
+        except Exception as fehler:  # noqa: BLE001
+            merken("image_tag", "lesbar", f"{type(fehler).__name__}", "nicht_pruefbar")
+        else:
+            # Ein alter Bezeichner ist eine WARNUNG und kein Abbruch: Auch mit
+            # altem Image kann man arbeiten, man sollte es nur wissen.
+            merken(
+                "image_tag",
+                "aktuelles Worker-Image",
+                marke,
+                "warnung" if marke and ":17d4955b2" in marke else "in_ordnung",
+            )
+
+        # --- Kontostand -------------------------------------------------
+        try:
+            stand = _runpod_fragen(self._settings, lambda z: z.balance())
+        except Exception as fehler:  # noqa: BLE001
+            merken("balance", self._settings.min_balance_start_usd,
+                   f"{type(fehler).__name__}", "nicht_pruefbar")
+        else:
+            merken(
+                "balance",
+                self._settings.min_balance_start_usd,
+                stand,
+                "in_ordnung"
+                if stand >= self._settings.min_balance_start_usd
+                else "abweichung",
+            )
+
+        # --- Lebt ein Daemon? -------------------------------------------
+        # Die haeufigste Betriebs-Ueberraschung dieser Architektur: Alles sieht
+        # normal aus, nur arbeitet niemand. Der Client SAGT es, statt es einen
+        # suchen zu lassen.
+        try:
+            lebenszeichen = db.worker_heartbeats(self.conn)
+        except Exception as fehler:  # noqa: BLE001
+            merken("daemon", "laeuft", f"{type(fehler).__name__}", "nicht_pruefbar")
+        else:
+            merken(
+                "daemon",
+                "mindestens einer",
+                len(lebenszeichen),
+                "in_ordnung" if lebenszeichen else "warnung",
+            )
+
+        abweichungen = [b for b in befunde if b["bewertung"] == "abweichung"]
+        if abweichungen and self._settings.strict:
+            raise ConfigDriftError(
+                f"Der Preflight fand {len(abweichungen)} Abweichung(en): "
+                f"{abweichungen}\nMit `strict=False` sind das Warnungen statt "
+                f"eines Abbruchs. Der Preflight VERAENDERT nichts — jede "
+                f"Anpassung am Endpoint ist eine Entscheidung des Menschen "
+                f"(Kosten-Regel)."
+            )
+        return {"checks": befunde, "drift": len(abweichungen)}
 
     # ----------------------------------------------------------------------
     # Arbeit
@@ -189,7 +413,29 @@ class OCRClient:
 
         Kosten: keine unmittelbar. Mittelbar: alles, was der Daemon danach tut.
         """
-        raise NotImplementedError
+        if not db.worker_heartbeats(self.conn):
+            meldung = (
+                "Es laeuft kein Daemon. Die Jobs werden eingereiht und bleiben "
+                "liegen, bis einer startet — das ist zulaessig, aber es soll "
+                "gesagt sein. Starten mit `mineru-ocr daemon`."
+            )
+            if self._settings.strict:
+                raise ConfigurationError(meldung)
+
+        huellen = [target] if isinstance(target, OCRWrapper) else list(target)
+        for huelle in huellen:
+            if huelle.status.is_terminal:
+                # Fertiges wird nicht angefasst. Eingereiht wird jede Zeile OHNE
+                # endgueltigen Zustand — einschliesslich derer, deren juengster
+                # Job endgueltig endete, ohne etwas zu schreiben. Auch die laufen
+                # dann schlicht noch einmal.
+                continue
+            # EINZELN, nie im Stapel: Ein Stapel mit einem einzigen Konflikt
+            # wuerde vollstaendig zurueckgerollt (Feature-Verifikation Punkt 9).
+            # Bei dreissigtausend Dokumenten waere ein einziges bereits
+            # wartendes genug, damit gar nichts passiert.
+            tasks.defer_document(huelle.sha256)
+        return target
 
     def wait(
         self,
@@ -220,7 +466,18 @@ class OCRClient:
 
         Kosten: keine.
         """
-        raise NotImplementedError
+        sha256 = target.sha256 if isinstance(target, OCRWrapper) else target
+        zeile = db.wait_for_terminal(
+            self.conn,
+            sha256,
+            timeout=timeout,
+            poll_seconds=self._settings.wait_poll_seconds,
+        )
+        if isinstance(target, OCRWrapper):
+            target.row = zeile
+            target._zwischenspeicher.clear()
+            return target
+        return OCRWrapper.from_row(zeile, self.conn)
 
     def ocr(self, data: bytes | OCRWrapper, name: str | None = None) -> OCRWrapper:
         """Ein Einzelstueck aus Bytes: einreihen und warten.
@@ -238,11 +495,30 @@ class OCRClient:
 
         Kosten: JA, mittelbar.
         """
-        raise NotImplementedError
+        if isinstance(data, OCRWrapper):
+            huelle = data
+        else:
+            if name is None:
+                raise ValueError(
+                    "Bei Bytes wird ein Anzeigename gebraucht — er landet in "
+                    "`source_name` und ist spaeter das Einzige, woran ein Mensch "
+                    "das Dokument erkennt."
+                )
+            huelle = OCRWrapper.from_bytes(data, name, self.conn, self._settings)
+
+        if huelle.status.is_terminal:
+            # „wenn ocrwrapper bereits OCR'd ist dann ist es eine noop"
+            return huelle
+        self.ocr_start(huelle)
+        return self.wait(huelle)
 
     def ocr_path(self, path: Path) -> OCRWrapper:
         """Dasselbe fuer eine Datei auf der Platte."""
-        raise NotImplementedError
+        huelle = OCRWrapper.from_path(path, self.conn, self._settings)
+        if huelle.status.is_terminal:
+            return huelle
+        self.ocr_start(huelle)
+        return self.wait(huelle)
 
     def retry_failed(self, target: OCRWrapper | OCRMegaWrapper) -> int:
         """Legt gescheiterte Dokumente erneut vor. Duenner Durchgriff, kein Eigenbau.
@@ -289,7 +565,55 @@ class OCRClient:
         Kosten: JA, mittelbar — jedes wieder vorgelegte Dokument wird erneut
         verarbeitet und erneut bezahlt.
         """
-        raise NotImplementedError
+        huellen = [target] if isinstance(target, OCRWrapper) else list(target)
+        # AUSSCHLIESSLICH `failed`, nicht `input_error`: Der Terminal-Guard des
+        # Executors deckt letzteren ab, ein so wiedervorgelegter Job taete also
+        # nichts — verbrauchte aber einen Versuch aus dem Budget und wuerde hier
+        # als erledigte Arbeit gezaehlt, die nie stattfindet.
+        betroffene = [h for h in huellen if h.status is DocumentStatus.FAILED]
+        if not betroffene:
+            return 0
+
+        app = tasks.configure(self._settings, for_worker=True)
+
+        async def vorlegen() -> int:
+            erledigt = 0
+            async with app.open_async():
+                for huelle in betroffene:
+                    jobs = sorted(
+                        await app.job_manager.list_jobs_async(
+                            queueing_lock=huelle.sha256
+                        ),
+                        key=lambda j: j.id or 0,
+                    )
+                    if not jobs:
+                        continue
+                    juengster = jobs[-1]
+                    if juengster.id is None:
+                        continue
+                    try:
+                        await app.job_manager.retry_job_by_id_async(
+                            juengster.id,
+                            utils.utcnow(),
+                            juengster.priority,
+                            juengster.queue,
+                            juengster.lock,
+                        )
+                    except Exception:  # noqa: BLE001
+                        # Ein `aborted`-Job wird vom Werkzeug ABGEWIESEN (am
+                        # Objekt belegt, Feature-Verifikation Punkt 19). Sein
+                        # Heilungsweg ist `ocr_start`, nicht diese Methode —
+                        # also uebergehen und NICHT mitzaehlen, statt mit einer
+                        # Ausnahme den ganzen Stapel aufzuhalten.
+                        continue
+                    erledigt += 1
+            return erledigt
+
+        anzahl = _synchron_ausfuehren(vorlegen())
+        # Zurueck auf den Produzenten-Zugang: Der Client ist ein Produzent, und
+        # ein synchroner Zugang kann nur einreihen — das ist die Absicht.
+        tasks.configure(self._settings, for_worker=False)
+        return anzahl
 
     # ----------------------------------------------------------------------
     # Nachsehen
@@ -326,7 +650,57 @@ class OCRClient:
 
         Kosten: keine.
         """
-        raise NotImplementedError
+        zeilen = db.counts_by_status(self.conn)
+
+        app = tasks.configure(self._settings, for_worker=True)
+
+        async def job_zahlen() -> list[dict[str, Any]]:
+            async with app.open_async():
+                return list(await app.job_manager.list_tasks_async())
+
+        aufgaben = _synchron_ausfuehren(job_zahlen())
+        tasks.configure(self._settings, for_worker=False)
+
+        # ZWEI Abfragen, unabhaengig von der Bestandsgroesse: ein `GROUP BY
+        # status` ueber `documents` und `list_tasks`, das fertige Zaehler je
+        # Zustand liefert. Die Aufloesung je Dokument gibt es nur fuer ein
+        # BENANNTES Dokument (`document`, `get`) — wer sie fuer alle wollte,
+        # braeuchte je Dokument dessen juengsten Job, und dafuer gibt es in
+        # Procrastinates Lese-Schnittstelle keinen Filter.
+        jobs: dict[str, int] = {}
+        for eintrag in aufgaben:
+            for zustand in (
+                "todo",
+                "doing",
+                "succeeded",
+                "failed",
+                "cancelled",
+                "aborted",
+            ):
+                jobs[zustand] = jobs.get(zustand, 0) + int(eintrag.get(zustand, 0) or 0)
+
+        offene_aufruest_faelle = self.conn.execute(
+            "SELECT count(*) FROM documents "
+            "WHERE status = 'input_error' AND error LIKE %s",
+            ("%AUFRUESTBAR%",),
+        ).fetchone()
+
+        try:
+            stand: float | None = self.credit()
+        except Exception:  # noqa: BLE001
+            # Ein FEHLGESCHLAGENER Kontostand ist nicht dasselbe wie ein leeres
+            # Konto. Er wird als „unbekannt" gemeldet und nicht als Null.
+            stand = None
+
+        return {
+            "documents": {
+                zustand.value: anzahl for zustand, anzahl in zeilen.items()
+            },
+            "jobs": jobs,
+            "upgrade_cases": offene_aufruest_faelle[0] if offene_aufruest_faelle else 0,
+            "balance": stand,
+            "daemon_alive": bool(db.worker_heartbeats(self.conn)),
+        }
 
     def document(self, target: str | Path) -> DerivedStatus:
         """Der abgeleitete Zustand EINES Dokuments, ueber Hash oder Pfad.
@@ -334,7 +708,19 @@ class OCRClient:
         Raises:
             DocumentNotFound: Unbekannt.
         """
-        raise NotImplementedError
+        zeile = self._zeile_finden(target)
+
+        app = tasks.configure(self._settings, for_worker=True)
+
+        async def jobs_holen() -> list[Any]:
+            async with app.open_async():
+                return list(
+                    await app.job_manager.list_jobs_async(queueing_lock=zeile.sha256)
+                )
+
+        jobs = _synchron_ausfuehren(jobs_holen())
+        tasks.configure(self._settings, for_worker=False)
+        return db.derive_status(zeile, jobs)
 
     def get(self, target: str | Path) -> OCRWrapper:
         """Holt die Huelle zu einem bereits bekannten Dokument, ohne zu warten.
@@ -359,7 +745,28 @@ class OCRClient:
 
         Kosten: keine.
         """
-        raise NotImplementedError
+        return OCRWrapper.from_row(self._zeile_finden(target), self.conn)
+
+    def _zeile_finden(self, target: str | Path) -> db.DocumentRow:
+        """Hash ODER Pfad zu einer Zeile — die eine Stelle mit dieser Regel.
+
+        Die Unterscheidung steht als Muster in `HASH_FORM` und nicht dreimal
+        verstreut: `get`, `document` und die Kommandozeile nehmen alle „Hash oder
+        Pfad", und drei Fassungen derselben Regel liefen frueher oder spaeter
+        auseinander.
+        """
+        text = str(target)
+        zeile = (
+            db.get_document(self.conn, text)
+            if HASH_FORM.match(text)
+            else db.get_document_by_path(self.conn, str(Path(text).resolve()))
+        )
+        if zeile is None:
+            raise DocumentNotFound(
+                f"Kein Dokument zu {text!r}. Angenommen werden ein sha256 "
+                f"(vierundsechzig Zeichen aus 0-9a-f) oder ein Pfad."
+            )
+        return zeile
 
     def credit(self) -> float:
         """Der Kontostand, live geholt.
@@ -369,14 +776,14 @@ class OCRClient:
         man darauf zugreift" (Plan 2.1). Ein zwischengespeicherter Kontostand ist
         genau dann falsch, wenn es darauf ankommt.
         """
-        raise NotImplementedError
+        return _runpod_fragen(self._settings, lambda z: z.balance())
 
     def account(self) -> dict[str, Any]:
         """Die Kontoangaben als Ganzes."""
-        raise NotImplementedError
+        return _runpod_fragen(self._settings, lambda z: z.account())
 
     def workers(self) -> list[dict[str, Any]]:
         """Die Worker EINZELN aufgelistet — die zusammengefassten Zaehler luegen
         (Plan 8, Regel 11). Leere Liste heisst „gerade laeuft keiner" und ist bei
         einem auf null herunterskalierenden Endpoint der Normalfall."""
-        raise NotImplementedError
+        return _runpod_fragen(self._settings, lambda z: z.workers())

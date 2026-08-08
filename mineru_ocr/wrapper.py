@@ -22,15 +22,20 @@ nie in der Datenbank.
 
 from __future__ import annotations
 
+import base64
 import builtins
+import hashlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import psycopg
 
+from . import assembly, db, mime
 from .config import Settings
 from .db import DocumentRow, DocumentStatus
+from .errors import DocumentNotFound, IncompleteResultError, UnsupportedTypeError
+from .pdf import PdfReader
 
 
 class OCRWrapper:
@@ -90,7 +95,33 @@ class OCRWrapper:
 
         Kosten: keine.
         """
-        raise NotImplementedError
+        with path.open("rb") as datei:
+            sha256 = hashlib.file_digest(datei, "sha256").hexdigest()
+
+        typ = mime.sniff_path(path)
+        seiten: int | None = None
+        if typ.is_pdf:
+            with PdfReader(path) as leser:
+                seiten = leser.page_count
+
+        db.insert_document(
+            conn,
+            sha256=sha256,
+            source_path=str(path.resolve()),
+            source_name=path.name,
+            size_bytes=path.stat().st_size,
+            mime=typ.mime,
+            page_count=seiten,
+            endpoint_id=settings.endpoint_id,
+        )
+        zeile = db.get_document(conn, sha256)
+        if zeile is None:  # pragma: no cover — direkt nach dem Anlegen unmoeglich
+            raise DocumentNotFound(
+                f"Die Zeile zu {sha256} war unmittelbar nach dem Anlegen nicht "
+                f"lesbar. Das deutet auf eine abgebrochene Transaktion beim "
+                f"Aufrufer hin."
+            )
+        return cls.from_row(zeile, conn)
 
     @classmethod
     def from_row(cls, row: DocumentRow, conn: psycopg.Connection[Any]) -> OCRWrapper:
@@ -112,7 +143,11 @@ class OCRWrapper:
 
         Kosten: keine.
         """
-        raise NotImplementedError
+        huelle = cls.__new__(cls)
+        huelle.row = row
+        huelle._conn = conn
+        huelle._zwischenspeicher = {}
+        return huelle
 
     @classmethod
     def from_bytes(
@@ -152,7 +187,39 @@ class OCRWrapper:
 
         Kosten: keine.
         """
-        raise NotImplementedError
+        # Der Typ wird VOR dem Schreiben bestimmt: Ein nicht unterstuetzter darf
+        # keine Spool-Datei hinterlassen, die dann fuer immer herumliegt — das
+        # Verzeichnis wird ausdruecklich nie automatisch geleert.
+        typ = mime.sniff_bytes(data)
+        sha256 = hashlib.sha256(data).hexdigest()
+
+        settings.spool_dir.mkdir(parents=True, exist_ok=True)
+        ziel = settings.spool_dir / f"{sha256}{typ.suffix}"
+        if not ziel.exists():
+            # Derselbe Inhalt ergibt denselben Pfad. Ist er schon da, wird NICHT
+            # erneut geschrieben — das haelt die Aenderungszeit der Datei stabil
+            # und spart bei einem zweiten Durchlauf das Schreiben ganz.
+            ziel.write_bytes(data)
+
+        seiten: int | None = None
+        if typ.is_pdf:
+            with PdfReader(ziel) as leser:
+                seiten = leser.page_count
+
+        db.insert_document(
+            conn,
+            sha256=sha256,
+            source_path=str(ziel),
+            source_name=name,
+            size_bytes=len(data),
+            mime=typ.mime,
+            page_count=seiten,
+            endpoint_id=settings.endpoint_id,
+        )
+        zeile = db.get_document(conn, sha256)
+        if zeile is None:  # pragma: no cover
+            raise DocumentNotFound(f"Zeile zu {sha256} nicht lesbar.")
+        return cls.from_row(zeile, conn)
 
     # -- Angaben aus der Zeile --------------------------------------------
 
@@ -163,35 +230,35 @@ class OCRWrapper:
 
     @property
     def sha256(self) -> str:
-        raise NotImplementedError
+        return self.row.sha256
 
     @property
     def source_path(self) -> Path:
-        raise NotImplementedError
+        return Path(self.row.source_path)
 
     @property
     def source_name(self) -> str:
-        raise NotImplementedError
+        return self.row.source_name
 
     @property
     def size_bytes(self) -> int:
-        raise NotImplementedError
+        return self.row.size_bytes
 
     @property
     def mime(self) -> str:
-        raise NotImplementedError
+        return self.row.mime
 
     @property
     def page_count(self) -> int | None:
-        raise NotImplementedError
+        return self.row.page_count
 
     @property
     def status(self) -> DocumentStatus:
-        raise NotImplementedError
+        return self.row.status
 
     @property
     def notes(self) -> list[dict[str, Any]]:
-        raise NotImplementedError
+        return self.row.notes
 
     @property
     def success(self) -> bool:
@@ -202,7 +269,7 @@ class OCRWrapper:
         leere Seite wurde erfolgreich als leer erkannt. Wer zwischen „hat Text"
         und „hat geklappt" unterscheiden muss, sieht auf `status`.
         """
-        raise NotImplementedError
+        return self.row.status in (DocumentStatus.DONE, DocumentStatus.EMPTY)
 
     @property
     def bytes(self) -> builtins.bytes:
@@ -223,7 +290,7 @@ class OCRWrapper:
                 dieses Pakets, sondern eine Auskunft ueber das Dateisystem, und
                 wird deshalb nicht eingepackt.
         """
-        raise NotImplementedError
+        return Path(self.row.source_path).read_bytes()
 
     # -- Ergebnis, jedes Mal frisch aus dem Rohbestand --------------------
 
@@ -242,17 +309,32 @@ class OCRWrapper:
                 ist gescheitert. Es gibt dann nichts auszugeben — was da ist,
                 steht in `raw`.
         """
-        raise NotImplementedError
+        text = self._ergebnis().get("markdown", "")
+        return text if isinstance(text, str) else ""
 
     @property
     def content_list(self) -> list[dict[str, Any]]:
         """Die Strukturliste, mit den Seitenzahlen des Originals."""
-        raise NotImplementedError
+        eintraege = self._ergebnis().get("content_list", [])
+        return eintraege if isinstance(eintraege, list) else []
 
     @property
     def images(self) -> dict[str, builtins.bytes]:
-        """Die Bilder des Dokuments."""
-        raise NotImplementedError
+        """Die Bilder des Dokuments.
+
+        Aus Base64 zurueckgewandelt: In der Datenbank liegen sie als
+        Zeichenketten, weil `jsonb` keine Bytes kennt. Die Wandlung ist
+        verlustfrei und geschieht hier, damit der Aufrufer Bytes bekommt und
+        nicht eine Kodierung, die er selbst aufloesen muesste.
+        """
+        roh = self._ergebnis().get("images", {})
+        if not isinstance(roh, dict):
+            return {}
+        return {
+            name: base64.b64decode(wert)
+            for name, wert in roh.items()
+            if isinstance(wert, str)
+        }
 
     @property
     def raw(self) -> dict[str, Any]:
@@ -266,7 +348,8 @@ class OCRWrapper:
         Wirft NICHT bei gescheiterten Dokumenten: Gerade dann will man sehen, was
         ueberhaupt ankam, und dort steht auch der Fehler-Umschlag.
         """
-        raise NotImplementedError
+        self._sicherstellen_dass_raw_geladen_ist()
+        return self.row.raw if self.row.raw is not None else {}
 
     def rendered_text(
         self,
@@ -276,10 +359,17 @@ class OCRWrapper:
     ) -> str:
         """Text mit Einfluss auf Randbloecke. Siehe `assembly.rendered_text`.
 
-        Mit den Voreinstellungen zeichengleich mit `markdown` — das ist dort
-        zugesichert, damit es nicht zwei Antworten auf dieselbe Frage gibt.
+        KORREKTUR EINER ZUSICHERUNG AUS PHASE A: Hier stand, das Ergebnis sei mit
+        den Voreinstellungen zeichengleich mit `markdown`. Das ist falsch, und
+        zwar messbar — MinerUs Markdown FILTERT fuenf Blockklassen heraus, und in
+        genau ihnen liegt das Aktenzeichen. Die Voreinstellung `furniture=True`
+        haengt sie deshalb an. Wer das nackte Markdown der Engine will, nimmt
+        `furniture=False`; DANN ist es zeichengleich mit `markdown`. Die volle
+        Begruendung samt Zahlen steht an `assembly.FURNITURE_TYPES`.
         """
-        raise NotImplementedError
+        return assembly.rendered_text(
+            self._ergebnis(), furniture=furniture, foreign_filter=foreign_filter
+        )
 
     # -- Umgang -----------------------------------------------------------
 
@@ -292,16 +382,93 @@ class OCRWrapper:
         Raises:
             DocumentNotFound: Die Zeile gibt es nicht mehr.
         """
-        raise NotImplementedError
+        zeile = db.get_document(self._conn, self.row.sha256)
+        if zeile is None:
+            raise DocumentNotFound(
+                f"Die Zeile zu {self.row.sha256} gibt es nicht mehr."
+            )
+        self.row = zeile
+        self._zwischenspeicher.clear()
+        return self
 
     def to_dict(self) -> dict[str, Any]:
         """Alles ueber dieses Dokument als einfache Abbildung — ohne `raw`.
 
         Fuer die Ausgabe mit `--json`. `raw` fehlt bewusst: Es waere je Dokument
         bis zu einem Megabyte je Seite, und keine Statusausgabe braucht es. Wer
-        es will, nimmt `raw_responses`.
+        es will, nimmt `raw`.
         """
-        raise NotImplementedError
+        return {
+            "sha256": self.row.sha256,
+            "source_path": self.row.source_path,
+            "source_name": self.row.source_name,
+            "size_bytes": self.row.size_bytes,
+            "mime": self.row.mime,
+            "page_count": self.row.page_count,
+            "status": self.row.status.value,
+            "success": self.success,
+            "error": self.row.error,
+            "endpoint_id": self.row.endpoint_id,
+            "image_tag_at_submit": self.row.image_tag_at_submit,
+            "notes": self.row.notes,
+            "created_at": self.row.created_at.isoformat(),
+            "updated_at": self.row.updated_at.isoformat(),
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"OCRWrapper({self.row.source_name!r}, status={self.row.status.value!r}, "
+            f"sha256={self.row.sha256!r})"
+        )
+
+    # -- Das Innere -------------------------------------------------------
+
+    _conn: psycopg.Connection[Any]
+    _zwischenspeicher: dict[str, Any]
+
+    def _sicherstellen_dass_raw_geladen_ist(self) -> None:
+        """Laedt `raw` nach, wenn die Zeile aus einer Liste stammt.
+
+        Der Fall, gegen den das steht, ist der unsichtbarste im ganzen Paket:
+        `list_documents` laedt `raw` NICHT (zweistellige Gigabyte bei
+        dreissigtausend Dokumenten) und setzt dafuer `raw_loaded = False`. Ohne
+        dieses Nachladen lieferte eine Huelle aus einer gelisteten Zeile fuer ein
+        FERTIGES Dokument einen leeren Text — und das saehe aus wie ein leeres
+        Ergebnis, nicht wie ein Fehler.
+        """
+        if self.row.raw_loaded:
+            return
+        zeile = db.get_document(self._conn, self.row.sha256)
+        if zeile is None:
+            raise DocumentNotFound(
+                f"Die Zeile zu {self.row.sha256} gibt es nicht mehr."
+            )
+        self.row = zeile
+
+    def _ergebnis(self) -> dict[str, Any]:
+        """Das zusammengesetzte Ergebnis — oder eine klare Ansage, warum keins.
+
+        Hier faellt die Entscheidung, die alle Ergebnis-Getter teilen: Ein
+        Dokument ohne Endergebnis liefert NICHTS und sagt es. Still einen leeren
+        Text zu liefern waere der Fehler, den niemand bemerkt, weil er wie ein
+        leeres Dokument aussieht.
+        """
+        if "ergebnis" in self._zwischenspeicher:
+            wert: dict[str, Any] = self._zwischenspeicher["ergebnis"]
+            return wert
+
+        if not self.success:
+            raise IncompleteResultError(
+                f"{self.row.source_name} steht auf {self.row.status.value!r} und "
+                f"hat kein vollstaendiges Ergebnis. Was bis dahin ankam — auch "
+                f"bei einem gescheiterten Dokument — steht in `.raw`; dort wirft "
+                f"nichts."
+            )
+
+        self._sicherstellen_dass_raw_geladen_ist()
+        ergebnis = self.row.raw if self.row.raw is not None else {}
+        self._zwischenspeicher["ergebnis"] = ergebnis
+        return ergebnis
 
 
 class OCRMegaWrapper:
@@ -328,7 +495,15 @@ class OCRMegaWrapper:
                 nennt, meint sie; sie stillschweigend auszulassen waere die
                 schlechtere Ueberraschung.
         """
-        raise NotImplementedError
+        sammlung = cls.__new__(cls)
+        sammlung._conn = conn
+        sammlung._settings = settings
+        sammlung._huellen = {}
+        sammlung._uebersprungen = {}
+        for pfad in paths:
+            huelle = OCRWrapper.from_path(pfad, conn, settings)
+            sammlung._huellen[huelle.sha256] = huelle
+        return sammlung
 
     @classmethod
     def from_dir(
@@ -375,7 +550,33 @@ class OCRMegaWrapper:
 
         Kosten: keine.
         """
-        raise NotImplementedError
+        sammlung = cls.__new__(cls)
+        sammlung._conn = conn
+        sammlung._settings = settings
+        sammlung._huellen = {}
+        sammlung._uebersprungen = {}
+
+        kandidaten = [pfad for pfad in sorted(directory.glob(glob)) if pfad.is_file()]
+        gesamt = len(kandidaten)
+        for nummer, pfad in enumerate(kandidaten, start=1):
+            try:
+                huelle = OCRWrapper.from_path(pfad, conn, settings)
+            except UnsupportedTypeError:
+                # GEZAEHLT, nicht verschwunden. Wer ein Verzeichnis uebergibt,
+                # meint „was hier verwertbar ist" — aber er will trotzdem
+                # wissen, was uebergangen wurde, und wie oft.
+                sammlung._uebersprungen["nicht_unterstuetzter_typ"] = (
+                    sammlung._uebersprungen.get("nicht_unterstuetzter_typ", 0) + 1
+                )
+            except OSError:
+                sammlung._uebersprungen["nicht_lesbar"] = (
+                    sammlung._uebersprungen.get("nicht_lesbar", 0) + 1
+                )
+            else:
+                sammlung._huellen[huelle.sha256] = huelle
+            if progress is not None:
+                progress(nummer, gesamt)
+        return sammlung
 
     # Aus dem Braindump woertlich uebernommener Zweitname.
     paths = from_paths
@@ -387,11 +588,26 @@ class OCRMegaWrapper:
             Die Huelle — die neue, oder die bereits vorhandene, wenn derselbe
             Inhalt schon in der Sammlung ist.
         """
-        raise NotImplementedError
+        huelle = (
+            item
+            if isinstance(item, OCRWrapper)
+            else OCRWrapper.from_path(item, self._conn, self._settings)
+        )
+        vorhanden = self._huellen.get(huelle.sha256)
+        if vorhanden is not None:
+            return vorhanden
+        self._huellen[huelle.sha256] = huelle
+        return huelle
 
     def extend(self, paths: list[Path]) -> list[OCRWrapper]:
         """Nimmt mehrere Dokumente auf. Returns: nur die tatsaechlich neuen."""
-        raise NotImplementedError
+        neue: list[OCRWrapper] = []
+        for pfad in paths:
+            vorher = set(self._huellen)
+            huelle = self.add(pfad)
+            if huelle.sha256 not in vorher:
+                neue.append(huelle)
+        return neue
 
     def refresh_dir(self, directory: Path, glob: str = "**/*") -> list[OCRWrapper]:
         """Sieht im Verzeichnis nach, was seit dem letzten Mal dazugekommen ist.
@@ -399,11 +615,34 @@ class OCRMegaWrapper:
         Das Herzstueck des Ordner-Szenarios. Returns: nur die neuen Huellen —
         Vorhandenes wird nicht angefasst, Fertiges nicht neu verarbeitet.
         """
-        raise NotImplementedError
+        neue: list[OCRWrapper] = []
+        for pfad in sorted(directory.glob(glob)):
+            if not pfad.is_file():
+                continue
+            try:
+                huelle = OCRWrapper.from_path(pfad, self._conn, self._settings)
+            except (UnsupportedTypeError, OSError):
+                continue
+            if huelle.sha256 not in self._huellen:
+                self._huellen[huelle.sha256] = huelle
+                neue.append(huelle)
+        return neue
 
     def refresh(self) -> OCRMegaWrapper:
-        """Liest alle Zeilen neu. Eine Abfrage, nicht eine je Dokument."""
-        raise NotImplementedError
+        """Liest alle Zeilen neu. EINE Abfrage, nicht eine je Dokument.
+
+        Der Unterschied ist bei dreissigtausend Dokumenten der zwischen einer
+        Abfrage und dreissigtausend. Geladen wird dabei OHNE `raw` — eine
+        Uebersicht braucht es nie, und mit ihm waeren es zweistellige Gigabyte.
+        Die Huellen merken sich das (`raw_loaded = False`) und laden einzeln
+        nach, sobald wirklich jemand das Ergebnis will.
+        """
+        for zeile in db.list_documents(self._conn):
+            huelle = self._huellen.get(zeile.sha256)
+            if huelle is not None:
+                huelle.row = zeile
+                huelle._zwischenspeicher.clear()
+        return self
 
     # -- Uebersicht -------------------------------------------------------
 
@@ -414,12 +653,29 @@ class OCRMegaWrapper:
         den status z.b. aller in ihm aggregiert (programmatisch und per text
         ausgebbar)" (Plan 2.1).
         """
-        raise NotImplementedError
+        zaehlung = {zustand: 0 for zustand in DocumentStatus}
+        for huelle in self._huellen.values():
+            zaehlung[huelle.status] += 1
+        return zaehlung
 
     def stats(self) -> dict[str, Any]:
         """Zahlen ueber die ganze Sammlung: Zustaende, Bytes, Seiten, Fehler,
         Leere und die beim Einlesen uebersprungenen Dateien nach Grund."""
-        raise NotImplementedError
+        zaehlung = self.status_counts()
+        return {
+            "documents": len(self._huellen),
+            "status": {zustand.value: anzahl for zustand, anzahl in zaehlung.items()},
+            "bytes": sum(h.size_bytes for h in self._huellen.values()),
+            "pages": sum(
+                h.page_count for h in self._huellen.values() if h.page_count is not None
+            ),
+            "failed": zaehlung[DocumentStatus.FAILED]
+            + zaehlung[DocumentStatus.INPUT_ERROR],
+            "empty": zaehlung[DocumentStatus.EMPTY],
+            "pending": zaehlung[DocumentStatus.NEW],
+            "skipped": dict(self._uebersprungen),
+            "upgrade_cases": len(self._aufruest_faelle()),
+        }
 
     def report(self, verbose: bool = False) -> str:
         """Dieselben Zahlen als lesbarer Text — der zweite Teil derselben Forderung.
@@ -435,35 +691,112 @@ class OCRMegaWrapper:
             verbose: False gibt die Zusammenfassung. True zaehlt zusaetzlich jedes
                 gescheiterte Dokument einzeln auf, mit Pfad und Fehlertext.
         """
-        raise NotImplementedError
+        zahlen = self.stats()
+        zeilen = [
+            f"{zahlen['documents']} Dokumente, {zahlen['bytes']} Byte, "
+            f"{zahlen['pages']} Seiten (soweit bekannt)",
+        ]
+        for zustand in DocumentStatus:
+            zeilen.append(f"  {zustand.value:<12} {zahlen['status'][zustand.value]}")
+
+        if zahlen["skipped"]:
+            zeilen.append("Beim Einlesen uebersprungen:")
+            for grund, anzahl in sorted(zahlen["skipped"].items()):
+                zeilen.append(f"  {grund:<28} {anzahl}")
+
+        aufruestbar = self._aufruest_faelle()
+        if aufruestbar:
+            # Der vorgesehene Weg, auf dem ein solcher Fall zu einem
+            # Aufgaben-Eintrag wird: Der Report zeigt ihn, der Mensch legt ihn
+            # an. Der Daemon legt NIE selbst einen an — ein Hintergrundprozess,
+            # der Tickets erzeugt, ist ein Seiteneffekt, den niemand erwartet.
+            zeilen.append(
+                f"OFFENE AUFRUEST-FAELLE: {len(aufruestbar)} — bitte je einen "
+                f"Aufgaben-Eintrag anlegen:"
+            )
+            for huelle in aufruestbar:
+                zeilen.append(f"  {huelle.source_path}")
+
+        if verbose:
+            gescheitert = self.failed
+            if gescheitert:
+                zeilen.append("Gescheitert im Einzelnen:")
+                for huelle in gescheitert:
+                    zeilen.append(
+                        f"  {huelle.source_path}  [{huelle.status.value}]  "
+                        f"{huelle.row.error}"
+                    )
+        return "\n".join(zeilen)
+
+    def _aufruest_faelle(self) -> list[OCRWrapper]:
+        """Dokumente mit `input_error` UND einem Aufruest-Hinweis in `notes`.
+
+        Erkannt am Wort AUFRUESTBAR, das `chunking.check_fits_unsplit` in seine
+        Meldung setzt und der Executor in den Vermerk uebernimmt. Ein eigenes
+        Feld dafuer waere ein zweites Datenmodell fuer etwas, das noch keines
+        hat — `notes` ist gerade der Ort dafuer.
+        """
+        faelle: list[OCRWrapper] = []
+        for huelle in self._huellen.values():
+            if huelle.status is not DocumentStatus.INPUT_ERROR:
+                continue
+            text = f"{huelle.row.error} {huelle.notes}"
+            if "AUFRUESTBAR" in text:
+                faelle.append(huelle)
+        return faelle
 
     # -- Sichten ----------------------------------------------------------
 
     @property
     def pending(self) -> list[OCRWrapper]:
         """Alle noch nicht endgueltigen — genau die, die ein Durchlauf anfasst."""
-        raise NotImplementedError
+        return [h for h in self._huellen.values() if not h.status.is_terminal]
 
     @property
     def done(self) -> list[OCRWrapper]:
         """Alle erfolgreichen, `done` und `empty`."""
-        raise NotImplementedError
+        return [h for h in self._huellen.values() if h.success]
 
     @property
     def failed(self) -> list[OCRWrapper]:
         """Alle gescheiterten, `failed` und `input_error`."""
-        raise NotImplementedError
+        return [
+            h
+            for h in self._huellen.values()
+            if h.status in (DocumentStatus.FAILED, DocumentStatus.INPUT_ERROR)
+        ]
 
     def by_state(self, state: DocumentStatus) -> list[OCRWrapper]:
         """Alle in genau einem Zustand."""
-        raise NotImplementedError
+        return [h for h in self._huellen.values() if h.status is state]
 
     def __iter__(self) -> Iterator[OCRWrapper]:
-        raise NotImplementedError
+        return iter(self._huellen.values())
 
     def __len__(self) -> int:
-        raise NotImplementedError
+        return len(self._huellen)
 
     def __getitem__(self, key: int | str) -> OCRWrapper:
         """Zugriff ueber Position ODER ueber den Hash."""
-        raise NotImplementedError
+        if isinstance(key, int):
+            return list(self._huellen.values())[key]
+        huelle = self._huellen.get(key)
+        if huelle is None:
+            raise KeyError(f"Kein Dokument mit dem Hash {key} in dieser Sammlung.")
+        return huelle
+
+    def __repr__(self) -> str:
+        zaehlung = self.status_counts()
+        teile = ", ".join(
+            f"{zustand.value}={anzahl}"
+            for zustand, anzahl in zaehlung.items()
+            if anzahl
+        )
+        return f"OCRMegaWrapper({len(self._huellen)} Dokumente: {teile})"
+
+    # -- Das Innere -------------------------------------------------------
+
+    _conn: psycopg.Connection[Any]
+    _settings: Settings
+    _huellen: dict[str, OCRWrapper]
+    _uebersprungen: dict[str, int]

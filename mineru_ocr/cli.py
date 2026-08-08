@@ -34,16 +34,49 @@ Sache waeren dieselbe Doppelung wie zwei Wahrheiten im Verhalten.
 
 from __future__ import annotations
 
+import json as json_modul
+import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
+
+from . import db
+from .client import OCRClient
+from .config import Settings
+from .db import DocumentStatus
+from .errors import MineruOcrError, UnsupportedTypeError
+from .wrapper import OCRMegaWrapper, OCRWrapper
 
 app = typer.Typer(
     name="mineru-ocr",
     help="OCR-Dienst fuer MinerU auf RunPod: Dokumente rein, Text und Struktur raus.",
     no_args_is_help=True,
 )
+
+
+def _ausgeben(wert: Any, json_out: bool, text: str) -> None:
+    """Eine Ausgabe, zwei Formen — und die Entscheidung faellt an EINER Stelle.
+
+    Menschenlesbar ist die Voreinstellung; `--json` ist fuer den Fall, dass ein
+    anderes Programm zuhoert. Beide zeigen DIESELBEN Daten: Der Text ist eine
+    Darstellung des Werts und keine zweite, gekuerzte Auskunft.
+    """
+    if json_out:
+        typer.echo(json_modul.dumps(wert, indent=2, ensure_ascii=False, default=str))
+    else:
+        typer.echo(text)
+
+
+def _betriebsfehler(fehler: BaseException) -> None:
+    """Meldet einen Betriebsfehler und beendet mit Code 1.
+
+    Auf die FEHLERausgabe und nicht auf die Standardausgabe: Wer `mineru-ocr
+    markdown … > datei.md` schreibt, soll die Meldung sehen und nicht in der
+    Datei haben.
+    """
+    typer.echo(f"{type(fehler).__name__}: {fehler}", err=True)
+    raise typer.Exit(code=1)
 
 
 @app.command()
@@ -56,7 +89,12 @@ def setup(
     nicht zur Zeilenklasse passt, sagt es das samt Abhilfe, statt selbst etwas
     umzubauen.
     """
-    raise NotImplementedError
+    einstellung = Settings.load(db_dsn=dsn)
+    try:
+        db.setup(einstellung.db_dsn)
+    except MineruOcrError as fehler:
+        _betriebsfehler(fehler)
+    typer.echo(f"Datenbank und Schema stehen: {einstellung.db_dsn}")
 
 
 @app.command()
@@ -82,7 +120,13 @@ def daemon(
     `--queues ocr` in einem und `--queues maintenance` in einem zweiten Prozess
     der dokumentierte Rueckfall.
     """
-    raise NotImplementedError
+    # Erst hier importiert und nicht oben: `daemon` zieht den ganzen
+    # Verarbeitungsweg nach — Procrastinate-Worker, RunPod-Zugang, pypdfium2.
+    # Wer `mineru-ocr status` aufruft, soll das nicht laden muessen.
+    from . import daemon as daemon_modul
+
+    einstellung = Settings.load(db_dsn=dsn, ocr_concurrency=concurrency)
+    raise typer.Exit(code=daemon_modul.main(einstellung, queues=queues or None))
 
 
 @app.command()
@@ -108,7 +152,53 @@ def ocr(
     Gibt aus, wie viele Dokumente neu, wie viele bereits vorhanden, wie viele
     uebersprungen und wie viele eingereiht wurden.
     """
-    raise NotImplementedError
+    try:
+        with OCRClient(preflight=False) as klient:
+            huellen: list[OCRWrapper] = []
+            uebersprungen: dict[str, int] = {}
+
+            for pfad in paths:
+                if pfad.is_dir():
+                    # Verzeichnis: ueberspringen und ZAEHLEN.
+                    sammlung = OCRMegaWrapper.from_dir(
+                        pfad, klient.conn, klient.settings, glob=glob
+                    )
+                    huellen.extend(sammlung)
+                    for grund, anzahl in sammlung.stats()["skipped"].items():
+                        uebersprungen[grund] = uebersprungen.get(grund, 0) + anzahl
+                else:
+                    # Ausdruecklich genannte Datei: WIRFT bei falschem Typ.
+                    # Wer eine Datei beim Namen nennt, meint sie.
+                    huellen.append(
+                        OCRWrapper.from_path(pfad, klient.conn, klient.settings)
+                    )
+
+            offen = [h for h in huellen if not h.status.is_terminal]
+            fertig = len(huellen) - len(offen)
+            eingereiht = 0
+            if start and offen:
+                for huelle in offen:
+                    klient.ocr_start(huelle)
+                eingereiht = len(offen)
+
+            ergebnis = {
+                "documents": len(huellen),
+                "already_terminal": fertig,
+                "queued": eingereiht,
+                "skipped": uebersprungen,
+            }
+    except UnsupportedTypeError as fehler:
+        _betriebsfehler(fehler)
+    except MineruOcrError as fehler:
+        _betriebsfehler(fehler)
+
+    _ausgeben(
+        ergebnis,
+        json_out,
+        f"{ergebnis['documents']} Dokumente, davon {fertig} bereits fertig; "
+        f"{eingereiht} eingereiht"
+        + (f"; uebersprungen: {uebersprungen}" if uebersprungen else ""),
+    )
 
 
 @app.command()
@@ -125,7 +215,36 @@ def status(
     Kommandos. Sie sind Teil der Antwort auf „wie steht es gerade?", und wer sie
     einzeln braucht, nimmt den Python-Weg (`client.credit()`, `client.workers()`).
     """
-    raise NotImplementedError
+    try:
+        with OCRClient(preflight=False) as klient:
+            uebersicht = klient.status()
+    except MineruOcrError as fehler:
+        _betriebsfehler(fehler)
+
+    zeilen = [
+        "Dokumente:  "
+        + "  ".join(
+            f"{name}={anzahl}" for name, anzahl in uebersicht["documents"].items()
+        ),
+        "Jobs:       "
+        + "  ".join(f"{name}={anzahl}" for name, anzahl in uebersicht["jobs"].items()),
+        f"Daemon:     {'laeuft' if uebersicht['daemon_alive'] else 'LAEUFT NICHT'}",
+        f"Guthaben:   {uebersicht['balance'] if uebersicht['balance'] is not None else 'unbekannt'}",
+    ]
+    if uebersicht["upgrade_cases"]:
+        # Der Weg, auf dem ein zu grosses Dokument zu einem Aufgaben-Eintrag
+        # wird: Der Bericht zeigt ihn, der Mensch legt ihn an.
+        zeilen.append(
+            f"OFFENE AUFRUEST-FAELLE: {uebersicht['upgrade_cases']} — bitte je "
+            f"einen Aufgaben-Eintrag anlegen (`mineru-ocr show <hash>` zeigt den "
+            f"Hinweis)."
+        )
+    if not uebersicht["daemon_alive"]:
+        zeilen.append(
+            "Es laeuft kein Daemon — eingereihte Jobs bleiben liegen. "
+            "Starten mit `mineru-ocr daemon`."
+        )
+    _ausgeben(uebersicht, json_out, "\n".join(zeilen))
 
 
 @app.command()
@@ -139,7 +258,36 @@ def show(
     Dokument wartet, laeuft, wie oft es schon versucht wurde, oder ob sein
     juengster Job endete, ohne etwas zu schreiben.
     """
-    raise NotImplementedError
+    try:
+        with OCRClient(preflight=False) as klient:
+            huelle = klient.get(target)
+            abgeleitet = klient.document(target)
+            angaben = huelle.to_dict()
+            angaben["phase"] = abgeleitet.phase.value
+            angaben["job"] = {
+                "id": abgeleitet.job_id,
+                "status": abgeleitet.job_status,
+                "attempts": abgeleitet.attempts,
+                "count": abgeleitet.job_count,
+            }
+    except MineruOcrError as fehler:
+        _betriebsfehler(fehler)
+
+    zeilen = [
+        f"{angaben['source_name']}  ({angaben['sha256']})",
+        f"  Pfad:      {angaben['source_path']}",
+        f"  Typ:       {angaben['mime']}  {angaben['size_bytes']} Byte"
+        + (f"  {angaben['page_count']} Seiten" if angaben["page_count"] else ""),
+        f"  Zustand:   {angaben['status']}   Phase: {angaben['phase']}",
+        f"  Job:       {angaben['job']}",
+    ]
+    if angaben["error"]:
+        zeilen.append(f"  Fehler:    {angaben['error']}")
+    if angaben["image_tag_at_submit"]:
+        zeilen.append(f"  Image:     {angaben['image_tag_at_submit']}")
+    for vermerk in angaben["notes"]:
+        zeilen.append(f"  Vermerk:   {vermerk}")
+    _ausgeben(angaben, json_out, "\n".join(zeilen))
 
 
 @app.command()
@@ -152,7 +300,22 @@ def wait(
     Exit-Code 0 bei `done` und `empty`, 3 bei `failed` und `input_error`,
     1 bei Ablauf der Wartezeit.
     """
-    raise NotImplementedError
+    try:
+        with OCRClient(preflight=False) as klient:
+            huelle = klient.wait(klient.get(target).sha256, timeout=timeout)
+    except TimeoutError as fehler:
+        _betriebsfehler(fehler)
+    except MineruOcrError as fehler:
+        _betriebsfehler(fehler)
+
+    typer.echo(f"{huelle.source_name}: {huelle.status.value}")
+    if not huelle.success:
+        # Ein eigener Code, weil das weder ein Erfolg noch ein Fehler DES
+        # WERKZEUGS ist: Das Werkzeug hat einwandfrei gearbeitet, das Ergebnis
+        # ist nur schlecht. Wer beides auf 1 wirft, kann in einer Schleife nicht
+        # mehr zwischen „kaputtes Dokument" und „kaputte Einrichtung"
+        # unterscheiden.
+        raise typer.Exit(code=3)
 
 
 @app.command()
@@ -172,7 +335,26 @@ def markdown(
     Exit-Code ist 3 (`raise typer.Exit(code=3)`). Einen halben Text auszugeben
     waere schlimmer als keinen: Er saehe vollstaendig aus.
     """
-    raise NotImplementedError
+    try:
+        with OCRClient(preflight=False) as klient:
+            huelle = klient.get(target)
+            if not huelle.success:
+                typer.echo(
+                    f"{huelle.source_name} steht auf {huelle.status.value} — "
+                    f"es gibt keinen vollstaendigen Text. Was ankam, zeigt "
+                    f"`mineru-ocr show {target}`.",
+                    err=True,
+                )
+                raise typer.Exit(code=3)
+            text = huelle.markdown
+    except MineruOcrError as fehler:
+        _betriebsfehler(fehler)
+
+    if out is not None:
+        out.write_text(text, encoding="utf-8")
+        typer.echo(f"{len(text)} Zeichen nach {out} geschrieben.", err=True)
+    else:
+        typer.echo(text)
 
 
 @app.command()
@@ -191,7 +373,72 @@ def retry(
     bezahlt. Das Kommando sagt vorher, um wie viele es geht, und fragt nach —
     ausser mit `--yes`.
     """
-    raise NotImplementedError
+    if target is None and not failed:
+        typer.echo(
+            "Entweder ein Dokument nennen oder `--failed` fuer alle "
+            "gescheiterten. Ohne beides waere nicht klar, was gemeint ist.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    try:
+        with OCRClient(preflight=False) as klient:
+            if target is not None:
+                betroffene: list[OCRWrapper] = [klient.get(target)]
+            else:
+                betroffene = [
+                    OCRWrapper.from_row(zeile, klient.conn)
+                    for zeile in db.list_documents(
+                        klient.conn, status=DocumentStatus.FAILED
+                    )
+                ]
+
+            zu_tun = [h for h in betroffene if h.status is DocumentStatus.FAILED]
+            if not zu_tun:
+                typer.echo("Nichts zu wiederholen.")
+                return
+
+            # VOR der Ausgabe von Geld wird gefragt. Jedes wieder vorgelegte
+            # Dokument wird vollstaendig neu verarbeitet und neu bezahlt.
+            typer.echo(
+                f"{len(zu_tun)} Dokument(e) werden erneut vorgelegt und dabei "
+                f"VOLLSTAENDIG NEU VERARBEITET — das kostet Geld."
+            )
+            if not yes and not typer.confirm("Fortfahren?"):
+                raise typer.Exit(code=0)
+
+            anzahl = klient.retry_failed(
+                zu_tun[0] if len(zu_tun) == 1 else _als_sammlung(zu_tun, klient)
+            )
+    except MineruOcrError as fehler:
+        _betriebsfehler(fehler)
+
+    typer.echo(f"{anzahl} von {len(zu_tun)} Job(s) wieder vorgelegt.")
+    if anzahl < len(zu_tun):
+        # Ein `aborted`-Job wird vom Werkzeug abgewiesen; sein Weg ist das
+        # erneute Einreihen. Das wird GESAGT und nicht stillschweigend
+        # weggezaehlt.
+        typer.echo(
+            f"{len(zu_tun) - anzahl} uebersprungen — vermutlich abgebrochene "
+            f"Jobs (`aborted`). Fuer die ist der Weg `mineru-ocr ocr <pfad>`, "
+            f"nicht `retry`.",
+            err=True,
+        )
+
+
+def _als_sammlung(huellen: list[OCRWrapper], klient: OCRClient) -> OCRMegaWrapper:
+    """Fasst schon gelesene Huellen zu einer Sammlung zusammen, ohne neu zu hashen.
+
+    `OCRMegaWrapper.from_paths` liest jede Datei — hier sind die Zeilen aber
+    laengst da, und die Datei kann sogar weg sein. Deshalb wird die Sammlung
+    unmittelbar gefuellt.
+    """
+    sammlung = OCRMegaWrapper.__new__(OCRMegaWrapper)
+    sammlung._conn = klient.conn
+    sammlung._settings = klient.settings
+    sammlung._huellen = {h.sha256: h for h in huellen}
+    sammlung._uebersprungen = {}
+    return sammlung
 
 
 @app.command()
@@ -212,7 +459,18 @@ def preflight(
     Exit-Code 1 bei einer Abweichung unter `--strict`, sonst 0 mit Warnungen im
     Bericht.
     """
-    raise NotImplementedError
+    try:
+        with OCRClient(preflight=False, strict=strict) as klient:
+            befund = klient.preflight()
+    except MineruOcrError as fehler:
+        _betriebsfehler(fehler)
+
+    zeilen = [
+        f"{eintrag['bewertung']:<14} {eintrag['punkt']:<20} "
+        f"soll={eintrag['soll']!r}  ist={eintrag['ist']!r}"
+        for eintrag in befund["checks"]
+    ]
+    _ausgeben(befund, json_out, "\n".join(zeilen))
 
 
 def main() -> None:
@@ -225,4 +483,5 @@ def main() -> None:
     darauf zu verlassen hiesse, eine Sicherheitszusage an die Darstellungs-Logik
     einer fremden Bibliothek zu haengen. Ein schlichter Traceback genuegt.
     """
-    raise NotImplementedError
+    app.pretty_exceptions_enable = False
+    app()

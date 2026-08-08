@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import attr
 import procrastinate
 from procrastinate import RetryDecision, testing
 from psycopg_pool import AsyncConnectionPool
@@ -85,12 +86,39 @@ def register_tasks(settings: Settings) -> None:
     Namen, gibt es keinen Fehler und keine Meldung — die Jobs bleiben liegen.
 
     Zusicherung:
-        Mehrfach aufrufbar; die zweite Anmeldung desselben Namens ist ein
-        Nichts-Tun. Baut keine Verbindung auf.
+        Mehrfach aufrufbar. Beim zweiten Aufruf werden die Tasks nicht erneut
+        angemeldet — wohl aber ihre EINSTELLUNGEN nachgezogen: die
+        Wiederholungs-Strategie und der Zeitplan des Waechters.
+
+        Warum das Nachziehen und nicht bloss ein Nichts-Tun: Genau daran ist es
+        beim Bauen gescheitert, und zwar still. `configure(settings)` sichert zu,
+        dass die uebergebene Einstellung gilt. Wer sie mit anderen Werten ein
+        zweites Mal ruft — kuerzere Wartezeiten, ein kleineres Versuchsbudget —
+        und dabei nur die Anmeldung ueberspringt, behaelt die Werte des ERSTEN
+        Aufrufs. Der Job wartete dann dreissig Sekunden statt der eingestellten
+        fuenfzig Millisekunden, und niemand sah, warum: Die Einstellung war ja
+        sichtbar gesetzt. Aufgefallen ist es erst daran, dass zwei
+        Integrationstests einzeln liefen und im vollstaendigen Lauf in den
+        Zeitablauf gerieten.
+
+        Baut keine Verbindung auf.
 
     Kosten: keine.
     """
     if config.TASK_OCR_DOCUMENT in app.tasks:
+        # Die Einstellungen nachziehen — siehe die Begruendung oben.
+        app.tasks[config.TASK_OCR_DOCUMENT].retry_strategy = OCRRetryStrategy(settings)
+
+        # Der Zeitplan des Waechters wird ERSETZT und nicht geaendert:
+        # `PeriodicTask.cron` ist schreibgeschuetzt (am Objekt festgestellt —
+        # ein Schreibversuch bricht zur Laufzeit ab). Ein neuer Eintrag an
+        # derselben Stelle im Verzeichnis erreicht dasselbe und geht mit der
+        # Bauart der fremden Klasse statt gegen sie.
+        for schluessel, eintrag in list(app.periodic_registry.periodic_tasks.items()):
+            if eintrag.task.name == config.TASK_RETRY_STALLED:
+                app.periodic_registry.periodic_tasks[schluessel] = attr.evolve(
+                    eintrag, cron=settings.stalled_check_cron
+                )
         return
 
     # In Dekorator-Form aufgerufen und nicht mit der Funktion als erstem
