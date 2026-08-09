@@ -185,23 +185,43 @@ Jede steht wegen eines bezahlten Fehlers, nicht wegen einer Vorliebe.
 
 ---
 
-## Das Testmaterial hat eine benannte Lücke
+## Das Testmaterial — was echt ist und was nicht
 
-Unter `artifacts/2026-08-05-doku-verifikationstest/` liegen **sechs echte
-Antworten** — das einzige Antwortmaterial, das ohne bezahlten Lauf existiert.
-Zwei Einschränkungen, die man kennen muss, bevor man aus ihnen Sicherheit ableitet
-(beide stehen ausführlich in `tests/conftest.py` am `FIXTURE_DIR`):
+Es gibt **zwei** Sätze echter Antworten, und der Unterschied zwischen ihnen ist
+der Unterschied zwischen dem Weg, den der Betrieb geht, und dem, den er nicht
+geht. Beide sind ausführlich in `tests/conftest.py` beschrieben, jeder an seiner
+eigenen Konstante.
 
-1. Sie stammen aus Läufen mit `transport: "inline"`, während der Betrieb
-   `tarball_b64` versendet. Für den Tarball-Pfad gibt es **kein** Offline-Material.
-2. Alle sechs sind **einseitige Bilder** mit `page_idx == 0`. Für die
-   Mehr-Teilstück-Lage — Seitenversatz beim Zusammensetzen, Bild-Vereinigung über
-   Stücke hinweg — gibt es ebenfalls kein echtes Material; diese Tests laufen
-   gegen erfundene Antworten.
+**`artifacts/2026-08-05-doku-verifikationstest/` — sechs Antworten mit
+`transport: "inline"`.** Der Betrieb versendet `tarball_b64`; diese sechs zeigen
+also nicht den Produktionspfad. Alle sechs sind einseitige Bilder mit
+`page_idx == 0`.
 
-Wer „die einzigen echten Antworten" liest und daraus schließt, das Übrige sei
-gegen echtes Material abgesichert, liegt falsch. Die Lücke schließt erst ein
-Live-Lauf.
+**`artifacts/2026-08-08-erster-tarball-lauf/` — sechs Antworten mit
+`tarball_b64`, also der Produktionspfad.** Sie sind am 08./09.08.2026 in
+bezahlten Läufen aufgenommen worden und decken die Lagen ab, für die es vorher
+nichts gab:
+
+- `gute_nacht.tarball.response.json` — der gewöhnliche Erfolg, einseitig.
+- `leere_seite.tarball.response.json` — die **leere Seite**. Sie hat das
+  `empty`-Kriterium am echten Verhalten festgestellt und zwei Fehler ans Licht
+  gebracht, die einander verdeckten.
+- `fehlerantwort.response.json` — eine echte `FAILED`-Antwort samt Traceback des
+  Workers. Nebenbei hat sie die Liste der gültigen Backend-Namen geliefert, die
+  jetzt in `config.GUELTIGE_BACKENDS` steht.
+- `mehrteilig_0_seiten_0-4` / `_1_seiten_5-9` / `_2_seiten_10-11` — **ein**
+  zwölfseitiges Dokument über drei Teilstücke. Damit läuft der Seitenversatz —
+  die fehleranfälligste Rechnung des Pakets — gegen echtes Material: Jedes
+  Teilstück trägt `page_idx` lokal ab 0, nach dem Zusammensetzen sind es 85
+  Blöcke mit `page_idx` lückenlos 0 bis 11. Die drei Stücke tragen außerdem 1,
+  2 und 0 Bilder, womit auch die Bild-Vereinigung über Stücke hinweg an echtem
+  Material hängt.
+
+**Was weiterhin nur gegen erfundene Antworten läuft:** eine echte
+**Namenskollision** zwischen Bildern zweier Teilstücke (`bild_namenskollisionen`
+in `assembly.assemble`). Die Namen sind Inhalts-Hashes, eine Kollision heißt also
+dasselbe Bild in zwei Stücken — möglich, aber in diesem Material nicht
+vorgekommen.
 
 ---
 

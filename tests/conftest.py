@@ -78,7 +78,9 @@ Der vollstaendige Archiv-Inhalt, wie er wirklich heisst: `doc.md`,
 `doc_middle.json`, `images/<inhaltshash>.jpg`.
 
 Die Antwort ist die eines EINSEITIGEN PDF. Fuer die Mehr-Teilstueck-Lage im
-Tarball-Format gibt es weiterhin kein Fixture."""
+Tarball-Format gibt es `MEHRTEILIG_FIXTURE` — drei echte Antworten desselben
+Dokuments, aufgenommen einen Tag spaeter. Der Satz „dafuer gibt es weiterhin
+kein Fixture" stand hier bis zum 10.08.2026 und war ab dem 09.08. falsch."""
 
 TEST_DSN = "host=localhost port=5437 dbname=mineru_ocr_test user=jurgen"
 """Eigene Datenbank auf der laufenden Instanz. NICHT `mineru_ocr` und schon gar
