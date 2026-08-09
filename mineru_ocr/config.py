@@ -216,13 +216,36 @@ class Settings:
     ergeben rund 9,3 MB kodiert."""
 
     max_pages_per_chunk: int = 20
-    """Obergrenze fuer die Seitenzahl eines Chunks. Hergeleitet aus dem
-    Antwort-Cap von rund 20 MB: gemessene Einzelseiten-Antworten liegen inline bei
-    23 bis 152 KB, der Tarball traegt zusaetzlich Layout- und Span-PDFs;
-    20 Seiten mal konservativ 0,75 MB sind rund 15 MB und damit unter dem Cap.
-    KONSERVATIV GESCHAETZT, nicht am Tarball gemessen — die Nachmessung steht
-    als offener Punkt (Plan 12.2), und beim ersten echten Riss wird gemessen und
-    nicht geraten erhoeht."""
+    """Obergrenze fuer die Seitenzahl eines Chunks.
+
+    AM TARBALL NACHGEMESSEN am 09.08.2026, an den fuenf konservierten echten
+    Antworten unter `artifacts/2026-08-08-erster-tarball-lauf/`:
+
+        41,5 KB je Seite — ein dichter Einzelseiter mit Tabelle und Bild
+        29,5 KB je Seite — fuenf Seiten dichter Fliesstext mit Bildern
+        16,2 KB je Seite — fuenf Seiten Deckblatt und Inhaltsverzeichnis
+        10,1 KB je Seite — zwei Seiten Ablaufplan
+         1,9 KB je Seite — eine leere Seite
+
+    Der schlechteste gemessene Wert ist also rund 41,5 KB je Seite. Bei 20
+    Seiten sind das etwa 0,81 MB Antwort gegen ein Cap von 20 MB — die Schwelle
+    hat Faktor 25 Reserve, und das Cap waere erst bei rund 490 Seiten je
+    Teilstueck ausgereizt.
+
+    DIE SCHAETZUNG, DIE HIER STAND, LAG UM ZWEI GROESSENORDNUNGEN DANEBEN: Sie
+    rechnete mit „konservativ 0,75 MB je Seite" und kam auf rund 15 MB fuer 20
+    Seiten, also knapp unter das Cap. Gemessen sind es 0,81 MB. Der Fehler lag
+    in der Zutat, nicht in der Rechnung — angenommen war, der Tarball trage
+    zusaetzlich zu den Inline-Formaten noch Layout- UND Span-PDF; das Span-PDF
+    gibt es gar nicht (siehe `assembly.ChunkArtifacts.span_pdf`), und das
+    Layout-PDF ist mit rund 40 KB klein.
+
+    Die Schwelle BLEIBT trotzdem bei 20, und das ist eine Entscheidung und kein
+    Versaeumnis: Die Antwortgroesse ist nicht die einzige Grenze. Ein groesseres
+    Teilstueck heisst auch laengere Verarbeitung je Job, mehr verlorene Arbeit
+    bei einem Fehlschlag und ein groesseres Fenster gegen die
+    Dreissig-Minuten-Aufbewahrung. Wer sie erhoehen will, hat mit dieser Messung
+    jetzt den Kopfraum belegt — und sollte die anderen drei Groessen mitdenken."""
 
     # -- Zeitverhalten -----------------------------------------------------
 
