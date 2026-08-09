@@ -289,10 +289,21 @@ def test_mehrere_ergebnisse_werden_nicht_stillschweigend_gekuerzt() -> None:
 def test_bilder_kommen_als_bytes_heraus() -> None:
     """Base64-Zeichenketten werden dekodiert, Unlesbares wirft.
 
-    OFFEN: Wie der Inline-Transport Bilder uebergibt, ist an echtem Material
-    nicht feststellbar — in allen sechs konservierten Antworten ist `images`
-    leer. Geprueft wird deshalb die Zusicherung dieser Funktion (beides annehmen,
-    bei allem anderen werfen), nicht das tatsaechliche Verhalten der Engine.
+    HIER STAND EINE BEHAUPTUNG, DIE IM SELBEN PROJEKT ZWEIMAL WIDERLEGT IST:
+    „in allen sechs konservierten Antworten ist `images` leer". Nachgezaehlt
+    sind es 22 Bilder ueber VIER der sechs Antworten (0, 0, 3, 7, 6, 6). Die
+    Korrektur steht seit dem 08.08.2026 an `assembly._bilder_dekodieren` und im
+    Nachbartest `test_inline_bilder_sind_base64_jpeg`, der `gesamt == 22`
+    erzwingt — nur hier war sie unveraendert stehengeblieben.
+
+    Die falsche Behauptung entstand daraus, dass nur EINE Antwort angesehen und
+    das Ergebnis auf alle sechs verallgemeinert wurde; zufaellig ist die erste
+    eine der beiden bildlosen. Genau derselbe Fehler, der auch die
+    Tarball-Annahmen getragen hat: ein Fall, formuliert als Aussage ueber alle.
+
+    Geprueft wird hier die Zusicherung der Funktion (Bytes und Base64 annehmen,
+    bei allem anderen werfen). Das ECHTE Verhalten der Engine prueft
+    `test_inline_bilder_sind_base64_jpeg` am konservierten Material.
     """
     antwort = _antwort(images={"a.jpg": base64.b64encode(b"bild").decode("ascii")})
     teil = unpack_response(antwort, Chunk(first_page=0, last_page=0))
@@ -965,6 +976,77 @@ def test_seitenversatz_gegen_ECHTE_mehrteilige_antworten(
     # Und der Doppeltreffer ist keine Eigenheit einzelner Antworten, sondern die
     # Regel: JEDES Teilstueck bringt sein eigenes v2 mit.
     assert all("doc_content_list_v2.json" in t.extras for t in teile)
+
+
+def test_randbloecke_werden_nicht_doppelt_angehaengt(
+    echte_mehrteilige_antworten: list[tuple[tuple[int, int], dict[str, Any]]],
+) -> None:
+    """`furniture=True` haengt nur an, was im Markdown WIRKLICH fehlt.
+
+    AM ECHTEN DOKUMENT GEMESSEN (08.08.2026, derselbe 12-Seiter): Die Engine
+    filtert die Randklassen NICHT einheitlich. Die `header`-Bloecke („Kanzlei")
+    stehen im Markdown; die `footer`-Bloecke („Kanzlei
+    Wirtschaftspruefungsgesellschaft") fehlen dort auf allen elf Seiten.
+
+    Die Voreinstellung `furniture=True` ist damit richtig — allein wegen der
+    Fusszeilen. Sie hat aber JEDEN Randblock angehaengt, auch die schon
+    vorhandenen Kopfzeilen: Der Kopf jeder Seite erschien zweimal. Gemessen
+    +561 Zeichen, davon rund 55 reine Dopplung.
+
+    Fuer den Zweck — die Ziffernfolge eines Aktenzeichens auffindbar machen —
+    ist die Dopplung harmlos. Sie ist trotzdem eine Ungenauigkeit, die jeder
+    spaetere Leser fuer einen Fehler der Engine halten muss, und sie verdirbt
+    die Zeichenzahl als grobes Qualitaetsmass.
+    """
+    from mineru_ocr.assembly import _blocktext
+
+    teile = [
+        unpack_response(antwort, Chunk(first_page=erste, last_page=letzte))
+        for (erste, letzte), antwort in echte_mehrteilige_antworten
+    ]
+    ergebnis = assemble(teile)
+
+    # Die Lage, die den Befund traegt: header IM Markdown, footer NICHT.
+    markdown = ergebnis["markdown"]
+    randtexte = {
+        _blocktext(b).strip()
+        for b in ergebnis["content_list"]
+        if b.get("type") in FURNITURE_TYPES and _blocktext(b).strip()
+    }
+    schon_da = {t for t in randtexte if t in markdown}
+    fehlend = randtexte - schon_da
+    assert schon_da, "Erwartet: mindestens ein Randblock steht schon im Markdown"
+    assert fehlend, "Erwartet: mindestens einer fehlt dort"
+
+    # EXAKT geprueft statt ueber Laengen abgeschaetzt: Angehaengt gehoert genau
+    # die Folge der Randbloecke, deren Text im Markdown FEHLT — in
+    # Dokumentreihenfolge, mit Leerzeile getrennt.
+    #
+    # Dass derselbe Text mehrfach vorkommt, ist dabei richtig und kein Duplikat:
+    # Elf Seiten tragen elf Fusszeilen. Weggelassen wird nur, was das Markdown
+    # ohnehin schon enthaelt.
+    erwartet = [
+        _blocktext(b).strip()
+        for b in ergebnis["content_list"]
+        if b.get("type") in FURNITURE_TYPES
+        and _blocktext(b).strip()
+        and _blocktext(b).strip() not in markdown
+    ]
+    voll = rendered_text(ergebnis, furniture=True)
+    assert voll == markdown + "\n\n" + "\n\n".join(erwartet)
+
+    # Und die Gegenprobe in Zahlen: Es sind die elf Fusszeilen, nicht die elf
+    # Kopfzeilen dazu.
+    assert len(erwartet) == len(
+        [
+            b
+            for b in ergebnis["content_list"]
+            if b.get("type") in FURNITURE_TYPES
+            and _blocktext(b).strip()
+            and _blocktext(b).strip() not in markdown
+        ]
+    )
+    assert all(t in fehlend for t in erwartet)
 
 
 def test_echte_leere_seite_ist_empty_und_nicht_kaputt(

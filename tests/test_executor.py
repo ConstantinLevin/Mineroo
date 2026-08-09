@@ -441,11 +441,21 @@ async def test_genau_ein_schreibvorgang(
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    """Zwischen Anlage und Endzustand wird die Zeile genau einmal beschrieben.
+    """Zwischen Anlage und Endzustand wird die Zeile GENAU EINMAL beschrieben.
 
-    Geprueft an `updated_at`: Vor dem Lauf steht sie auf dem Anlage-Zeitpunkt,
-    danach genau einmal weiter. Ein Zwischen-Update haette sie ein zweites Mal
-    bewegt — und ein Zwischenzustand ist genau das, was es nicht geben darf.
+    Das ist die Zusicherung, an der das ganze Ein-Buch-Modell haengt: kein
+    Zwischenstand, kein „laeuft gerade", keine Chunk-Zustaende in der Zeile.
+
+    DIESER TEST HAT SIE NICHT GEPRUEFT. Er verglich `updated_at` vorher und
+    nachher und verlangte „groesser" — das ist „MINDESTENS einmal". Zwei, drei
+    oder zehn Schreibvorgaenge haetten ihn genauso bestanden, und die
+    Begruendung im Docstring („Ein Zwischen-Update haette sie ein zweites Mal
+    bewegt") stimmt schlicht nicht: Ein zweites Update bewegt denselben
+    Zeitstempel ein zweites Mal weiter, und „weiter" bleibt „weiter".
+
+    Gezaehlt wird jetzt wirklich, mit einem Zaehl-Ausloeser auf der Tabelle. Das
+    ist die einzige Art, „genau einmal" zu pruefen, ohne dem Code zu glauben,
+    den man prueft.
     """
     eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
     sha, _ = _anlegen(db_conn, tmp_path, _pdf(3), seiten=3)
@@ -453,8 +463,33 @@ async def test_genau_ein_schreibvorgang(
     assert vorher is not None
     assert vorher.updated_at == vorher.created_at
 
-    runpod = FalscherRunPod([_fertige_antwort()])
-    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+    # Ein Zaehler, der JEDES UPDATE auf dieser Zeile mitschreibt — unabhaengig
+    # davon, welche Spalten es anfasst und ob es den Zeitstempel bewegt.
+    db_conn.execute("CREATE TABLE IF NOT EXISTS _schreibzaehler (sha256 text)")
+    db_conn.execute("TRUNCATE _schreibzaehler")
+    db_conn.execute(
+        "CREATE OR REPLACE FUNCTION _zaehle_schreibvorgang() RETURNS trigger AS $$ "
+        "BEGIN INSERT INTO _schreibzaehler VALUES (NEW.sha256); RETURN NEW; END; "
+        "$$ LANGUAGE plpgsql"
+    )
+    db_conn.execute(
+        "CREATE OR REPLACE TRIGGER _zaehl_trigger AFTER UPDATE ON documents "
+        "FOR EACH ROW EXECUTE FUNCTION _zaehle_schreibvorgang()"
+    )
+    db_conn.commit()
+    try:
+        runpod = FalscherRunPod([_fertige_antwort()])
+        await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+        zeile = db_conn.execute(
+            "SELECT count(*) FROM _schreibzaehler WHERE sha256 = %s", (sha,)
+        ).fetchone()
+        assert zeile is not None
+        # DREI Teilstuecke sind gelaufen — und trotzdem genau EIN Schreibvorgang.
+        assert zeile[0] == 1, f"{zeile[0]} Schreibvorgaenge statt genau einem"
+    finally:
+        db_conn.execute("DROP TRIGGER IF EXISTS _zaehl_trigger ON documents")
+        db_conn.commit()
 
     nachher = get_document(db_conn, sha)
     assert nachher is not None

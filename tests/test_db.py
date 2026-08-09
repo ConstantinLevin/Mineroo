@@ -264,20 +264,51 @@ def test_zweites_einfuegen_ist_ein_nichts_tun(
 async def test_terminal_schreiben_setzt_alles_in_einer_transaktion(
     db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
 ) -> None:
-    """Nach dem Aufruf sind Zustand, raw, error, notes und updated_at gesetzt —
-    es gibt keinen Zwischenzustand mit raw und Status `new`."""
+    """Alles wird in EINEM Schreibvorgang gesetzt — es gibt keinen
+    Zwischenzustand mit `raw` und Status `new`.
+
+    DER TEST HAT DIE TRANSAKTIONALITAET NICHT GEPRUEFT, obwohl sein Name sie
+    nennt: Er sah ausschliesslich die Endwerte an. Dieselben Endwerte entstehen
+    auch aus fuenf einzelnen UPDATEs nacheinander — und dazwischen gaebe es
+    genau den Zwischenzustand, den es nicht geben darf.
+
+    Gezaehlt wird jetzt mit einem Ausloeser auf der Tabelle. Das ist die einzige
+    Art, „in einem Schreibvorgang" zu pruefen, ohne dem Code zu glauben, den man
+    prueft.
+    """
     _einfuegen(db_conn)
     vorher = get_document(db_conn, HASH)
     assert vorher is not None
 
-    await write_terminal_async(
-        async_conn,
-        sha256=HASH,
-        status=DocumentStatus.DONE,
-        raw={"markdown": "Text", "content_list": []},
-        image_tag_at_submit=":17d4955b2",
-        notes=[{"kind": "hinweis", "at": "2026-08-08"}],
+    db_conn.execute("CREATE TABLE IF NOT EXISTS _schreibzaehler_db (sha256 text)")
+    db_conn.execute("TRUNCATE _schreibzaehler_db")
+    db_conn.execute(
+        "CREATE OR REPLACE FUNCTION _zaehle_db_schreibvorgang() RETURNS trigger AS $$ "
+        "BEGIN INSERT INTO _schreibzaehler_db VALUES (NEW.sha256); RETURN NEW; END; "
+        "$$ LANGUAGE plpgsql"
     )
+    db_conn.execute(
+        "CREATE OR REPLACE TRIGGER _zaehl_db_trigger AFTER UPDATE ON documents "
+        "FOR EACH ROW EXECUTE FUNCTION _zaehle_db_schreibvorgang()"
+    )
+    db_conn.commit()
+    try:
+        await write_terminal_async(
+            async_conn,
+            sha256=HASH,
+            status=DocumentStatus.DONE,
+            raw={"markdown": "Text", "content_list": []},
+            image_tag_at_submit=":17d4955b2",
+            notes=[{"kind": "hinweis", "at": "2026-08-08"}],
+        )
+        zaehler = db_conn.execute(
+            "SELECT count(*) FROM _schreibzaehler_db WHERE sha256 = %s", (HASH,)
+        ).fetchone()
+        assert zaehler is not None
+        assert zaehler[0] == 1, f"{zaehler[0]} Schreibvorgaenge statt genau einem"
+    finally:
+        db_conn.execute("DROP TRIGGER IF EXISTS _zaehl_db_trigger ON documents")
+        db_conn.commit()
 
     nachher = get_document(db_conn, HASH)
     assert nachher is not None

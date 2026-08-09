@@ -928,6 +928,29 @@ async def write_terminal_async(
                 # Derselbe Endzustand ein zweites Mal: Der erste Schreibvorgang
                 # gewinnt, `raw` wird NICHT ersetzt. Das ist der harmlose
                 # Wiederlauf nach einem Absturz im Schreibfenster.
+                #
+                # DIE VERMERKE WERDEN TROTZDEM ANGEHAENGT. Frueher kehrte diese
+                # Stelle vor dem gesamten UPDATE zurueck, und damit fielen auch
+                # `notes` und `image_tag_at_submit` des zweiten Laufs weg — obwohl
+                # der Docstring nur `raw` ausnimmt („insbesondere wird `raw` NICHT
+                # ersetzt") und die Zusicherung am `notes`-Parameter das Gegenteil
+                # sagt: „die Liste wird ANGEHAENGT, nie ersetzt".
+                #
+                # Das ist kein Wortklauben: Genau in diesem Fall — ein zweiter
+                # Lauf, der dasselbe Ergebnis noch einmal erzeugt hat — ist die
+                # Beobachtung, DASS es ihn gab, die einzige Spur davon. Sie
+                # wegzuwerfen macht den harmlosen Wiederlauf unsichtbar, und
+                # unsichtbare Wiederlaeufe sind bezahlte Wiederlaeufe.
+                #
+                # `raw` und `status` bleiben unberuehrt, `updated_at` ebenfalls:
+                # Der Zeitstempel gehoert zum Ergebnis, und das Ergebnis ist das
+                # des ERSTEN Laufs.
+                if notes:
+                    await conn.execute(
+                        "UPDATE documents SET notes = notes || %s::jsonb "
+                        "WHERE sha256 = %s",
+                        (Jsonb(list(notes)), sha256),
+                    )
                 return
             raise TerminalOverwriteError(
                 f"{sha256} steht bereits endgueltig auf {vorher.value!r} und "

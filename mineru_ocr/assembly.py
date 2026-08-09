@@ -1044,6 +1044,23 @@ def rendered_text(
             continue
         if foreign_filter is not None and foreign_filter(text):
             continue
+        # WAS SCHON IM MARKDOWN STEHT, WIRD NICHT ANGEHAENGT. Die Engine
+        # filtert die Randklassen NICHT einheitlich — am 08.08.2026 an einem
+        # echten 12-Seiter gemessen: Die `header`-Bloecke („Kanzlei") stehen im
+        # Markdown, die `footer`-Bloecke („Kanzlei
+        # Wirtschaftspruefungsgesellschaft") auf allen elf Seiten nicht.
+        #
+        # Ohne diese Pruefung wurde jeder Randblock angehaengt, auch der schon
+        # vorhandene: Der Kopf jeder Seite erschien zweimal. Fuer den Zweck —
+        # die Ziffernfolge eines Aktenzeichens auffindbar machen — ist die
+        # Dopplung harmlos, aber sie ist eine Ungenauigkeit, die jeder spaetere
+        # Leser fuer einen Fehler der Engine halten muss.
+        #
+        # Verglichen wird gegen das MARKDOWN und nicht gegen die bereits
+        # angehaengten: Zwei Seiten duerfen denselben Fusszeilentext beitragen,
+        # das ist kein Duplikat, sondern zweimal dieselbe Fusszeile.
+        if text in markdown:
+            continue
         angehaengt.append(text)
 
     if not angehaengt:
