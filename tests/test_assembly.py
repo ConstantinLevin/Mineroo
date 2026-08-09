@@ -22,11 +22,11 @@ from mineru_ocr.assembly import (
     ChunkArtifacts,
     assemble,
     is_empty,
-    rendered_text,
+    rendered_markdown,
     unpack_response,
 )
 from mineru_ocr.chunking import Chunk
-from mineru_ocr.errors import TerminalRunPodError
+from mineru_ocr.errors import IncompleteResultError, TerminalRunPodError
 
 
 def _antwort(
@@ -613,9 +613,122 @@ def test_echte_antworten_sind_nicht_leer(real_responses: list[dict[str, Any]]) -
 # --- Die Leseseite --------------------------------------------------------
 
 
-def test_randbloecke_lassen_sich_weglassen() -> None:
-    """`rendered_text(furniture=False)` liefert das Markdown der Engine
-    wortgleich — also ohne die Randbloecke, die sie selbst herausgefiltert hat.
+def test_beschaedigtes_markdown_wirft_statt_leer_zu_liefern() -> None:
+    """`markdown` als JSON-`null` ist eine Beschaedigung und wird gemeldet.
+
+    DER BEFUND, DER DIESEN TEST ERZWUNGEN HAT (10.08.2026): Als aus den beiden
+    Eigenschaften `markdown`/`content_list` der generische Zugang wurde, fiel
+    mit der Eigenschaft `markdown` auch ihre Typpruefung weg —
+    `OCRWrapper._feld("markdown", str, "")` hatte hier geworfen.
+    `rendered_markdown` setzte an dieser Stelle still `""` ein. Durch die echte
+    Kommandozeile gemessen: `mineru-ocr markdown … --out datei.md` endete mit
+    Exit-Code 0 und schrieb eine Datei, in der nur der eine Randblock stand.
+
+    Der Fliesstext ist hier ausdruecklich ein `text`-Block: Den haengt
+    `rendered_markdown` nicht an, weil er normalerweise schon im Markdown steht.
+    Faellt das Markdown weg, faellt er lautlos mit weg — die Ausgabe sieht dann
+    aus wie ein sehr kurzes Dokument statt wie ein Fehler.
+    """
+    ergebnis = {
+        "markdown": None,
+        "content_list": [
+            {"type": "header", "text": "Aktenzeichen 123/456", "page_idx": 0},
+            {"type": "text", "text": "Der ganze Fliesstext.", "page_idx": 0},
+        ],
+    }
+    with pytest.raises(IncompleteResultError) as fehler:
+        rendered_markdown(ergebnis)
+    # Die Meldung nennt das Feld und den vorgefundenen Typ — wer sie liest, weiss
+    # ohne weiteres Nachsehen, wo in `raw` er suchen muss.
+    assert "markdown" in str(fehler.value)
+    assert "NoneType" in str(fehler.value)
+
+
+def test_beschaedigte_content_list_wirft_statt_die_randbloecke_zu_verlieren() -> None:
+    """Eine `content_list`, die keine Liste ist, ist eine Beschaedigung.
+
+    Vorher fuehrte das zu einem sofortigen `return markdown` — also zu genau der
+    Ausgabe, die das nackte Engine-Markdown ist, ohne jeden Randblock. Damit
+    fehlte das Aktenzeichen, und zwar in einer Ausgabe, die vollstaendig aussah.
+    """
+    with pytest.raises(IncompleteResultError) as fehler:
+        rendered_markdown({"markdown": "Fliesstext.", "content_list": {"a": 1}})
+    assert "content_list" in str(fehler.value)
+    assert "dict" in str(fehler.value)
+
+
+def test_ein_kaputter_eintrag_wird_gemeldet_und_nicht_uebersprungen() -> None:
+    """Ein `content_list`-Eintrag, der kein Dict ist, haelt an.
+
+    Ueberspringen waere dasselbe Muster, das der Bild-Getter schon einmal hatte:
+    Dort filterte ein `isinstance` im Dict-Comprehension eines von drei Bildern
+    heraus, und der Aufrufer bekam eine Abbildung, die vollstaendig aussah. Ein
+    uebersprungener Eintrag kann der Randblock mit dem Aktenzeichen sein.
+    """
+    with pytest.raises(IncompleteResultError) as fehler:
+        rendered_markdown(
+            {
+                "markdown": "Fliesstext.",
+                "content_list": [
+                    {"type": "header", "text": "Aktenzeichen 123/456", "page_idx": 0},
+                    "das hier ist kein Eintrag",
+                ],
+            }
+        )
+    # Die Nummer steht drin, damit man den Eintrag in `raw` wiederfindet.
+    assert "1" in str(fehler.value)
+    assert "str" in str(fehler.value)
+
+
+def test_ein_ergebnis_ohne_beide_felder_ist_kein_ergebnis() -> None:
+    """Fehlen `markdown` UND `content_list`, ist es nichts Zusammengesetztes.
+
+    `assemble` schreibt beide Felder immer. Diese Form hat genau eine bekannte
+    Quelle: die Notfassung `_rohfassung_der_teile` aus dem Fehlerpfad, die
+    `chunks` auf oberster Ebene traegt. Sie erreicht die Darstellung im Betrieb
+    nicht, weil sie nur an `failed`/`input_error` haengt und das Kommando dort
+    schon vorher mit 3 aussteigt — aber wer sie von Hand darstellen laesst, soll
+    es erfahren statt eine leere Zeichenkette zu bekommen.
+
+    Dieselbe Pruefung steht auf der Schreibseite in `_aus_tarball`, und aus
+    demselben Grund: Genau diese Kombination heisst „das ist kein Ergebnis".
+    """
+    with pytest.raises(IncompleteResultError):
+        rendered_markdown({"chunks": [], "assembly_failed": "TypeError: …"})
+
+
+def test_ein_einzelnes_fehlendes_feld_wird_geduldet() -> None:
+    """Abwesenheit ist keine Beschaedigung — eine aeltere Fassung hat es nicht
+    geschrieben.
+
+    Die Trennung ist dieselbe wie in `OCRWrapper._feld` und der Grund, warum
+    `_pflichtfeld` einen `ersatz` hat: Ein Feld, das GAR NICHT da ist, sagt
+    nichts ueber die Unversehrtheit der uebrigen aus. Ein Feld, das da ist und
+    den falschen Typ hat, sagt genau das.
+    """
+    nur_markdown = rendered_markdown({"markdown": "# Titel\n\nText."})
+    assert nur_markdown == "# Titel\n\nText."
+
+    nur_liste = rendered_markdown(
+        {"content_list": [{"type": "header", "text": "Aktenzeichen 123/456", "page_idx": 0}]}
+    )
+    assert nur_liste == "Aktenzeichen 123/456"
+
+
+def test_das_nackte_engine_markdown_bleibt_unangetastet_erreichbar() -> None:
+    """`ergebnis['markdown']` ist das Markdown der Engine, wortgleich — ohne die
+    Randbloecke, die sie selbst herausgefiltert hat.
+
+    HIER STAND EIN TEST FUER EINEN SCHALTER, DEN ES NICHT MEHR GIBT. Er hiess
+    `test_randbloecke_lassen_sich_weglassen` und prueste `rendered_markdown(
+    furniture=False)`. Der Parameter ist entfallen; `rendered_markdown` liefert
+    immer das ganze Dokument.
+
+    Die Zusicherung dahinter gilt aber weiter und ist jetzt wichtiger als
+    vorher: Wer das nackte Engine-Markdown will, kommt nach wie vor daran — es
+    steht unveraendert im Feld `markdown` und damit ueber `huelle["markdown"]`
+    offen. Das ist die Gegenleistung dafuer, dass die Darstellung keine
+    Schalter hat: Sie muss keine haben, weil die Bausteine offen liegen.
     """
     ergebnis = assemble(
         [
@@ -630,12 +743,17 @@ def test_randbloecke_lassen_sich_weglassen() -> None:
             )
         ]
     )
-    assert rendered_text(ergebnis, furniture=False) == "# Introduction\n\nFliesstext."
+    assert ergebnis['markdown'] == "# Introduction\n\nFliesstext."
 
 
-def test_randbloecke_werden_voreingestellt_angehaengt() -> None:
-    """Die VOREINSTELLUNG haengt die Randbloecke an — dort liegt das
+def test_randbloecke_werden_immer_angehaengt() -> None:
+    """Die Randbloecke werden angehaengt, ohne Wenn und Aber — dort liegt das
     Aktenzeichen.
+
+    Frueher war das eine VOREINSTELLUNG (`furniture=True`), also eine
+    Entscheidung, die der Aufrufer haette umdrehen koennen. Seit dem 09.08.2026
+    gibt es den Schalter nicht mehr, und damit ist aus der Voreinstellung eine
+    Zusicherung geworden.
 
     Der Befund dahinter, an zwei unabhaengigen Stellen belegt: MinerUs Markdown
     filtert fuenf Blockklassen heraus, und das Aktenzeichen liegt als
@@ -655,7 +773,7 @@ def test_randbloecke_werden_voreingestellt_angehaengt() -> None:
             )
         ]
     )
-    text = rendered_text(ergebnis)
+    text = rendered_markdown(ergebnis)
     assert "Aktenzeichen 123/456" in text
     # Angehaengt, nie ersetzt: Das Markdown der Engine steht unveraendert vorn.
     assert text.startswith("# Introduction\n\nFliesstext.")
@@ -687,19 +805,31 @@ def test_alle_fuenf_randklassen_werden_erfasst() -> None:
             )
         ]
     )
-    text = rendered_text(ergebnis)
+    text = rendered_markdown(ergebnis)
     for klasse in FURNITURE_TYPES:
         assert f"rand-{klasse}" in text, klasse
 
 
-def test_fremdsprachenfilter_wird_angewandt() -> None:
-    """Der uebergebene Filter entscheidet, welche Bloecke wegfallen — die
-    Voreinstellung filtert NICHTS.
+def test_modell_prosa_kommt_MIT_und_ist_auffindbar() -> None:
+    """Das ganze Dokument heisst: auch die Modell-Prosa in den Randbloecken.
 
-    Der Filter ist keine Zierde: Ueber die 15 Kalibrierungs-Dokumente stehen 30
-    Fundstellen englischer Modell-Prosa in genau diesen Bloecken. „Wer die
-    Bloecke ungefiltert anhaengt, schreibt Werkzeug-Kommentare in deutsche
-    Steuerakten."
+    HIER STANDEN ZWEI TESTS FUER EINEN PARAMETER, DEN ES NICHT MEHR GIBT.
+    `rendered_text` hatte einen `foreign_filter`, mit dem der Aufrufer
+    Blocktexte aussortieren konnte. Er ist entfallen, weil er dieselbe Frage
+    stellte wie `furniture` — „was gehoert zum Text?" — und sie mit einer
+    Voreinstellung beantwortete. Diese Entscheidung gehoert dem Abnehmer.
+
+    WAS BLEIBT, ist die Messung dahinter, und sie ist der Grund, warum dieser
+    Test weiterhin existiert: Ueber die 15 Kalibrierungs-Dokumente stehen 30
+    Fundstellen englischer Modell-Prosa in genau den Klassen, die hier
+    angehaengt werden — „im selben Feld und mit demselben Typ wie echter
+    Inhalt". Wer `rendered_markdown` benutzt, bekommt sie mit. Das ist die
+    Zusicherung, nicht ein Versehen.
+
+    Und die zweite Haelfte, ohne die die erste eine Zumutung waere: Sie ist
+    AUFFINDBAR. In `content_list` steht sie als eigener Eintrag, mit `type` und
+    `page_idx` — wer sie aussortieren will, hat den Ansatzpunkt, und zwar einen
+    besseren als eine Zeichenketten-Pruefung auf dem fertigen Text.
     """
     prosa = "The image does not contain any readable content."
     ergebnis = assemble(
@@ -714,42 +844,33 @@ def test_fremdsprachenfilter_wird_angewandt() -> None:
             )
         ]
     )
-    ohne_filter = rendered_text(ergebnis)
-    assert prosa in ohne_filter
+    text = rendered_markdown(ergebnis)
 
-    mit_filter = rendered_text(
-        ergebnis, foreign_filter=lambda block: block.startswith("The image")
-    )
-    assert prosa not in mit_filter
-    assert "Aktenzeichen 123/456" in mit_filter
+    # BEIDES kommt mit — das Aktenzeichen, um dessentwillen angehaengt wird,
+    # und die Prosa, die man dabei in Kauf nimmt.
+    assert "Aktenzeichen 123/456" in text
+    assert prosa in text
 
-
-def test_filter_greift_nie_in_das_markdown_der_engine() -> None:
-    """Der Filter wirkt nur auf die angehaengten Randbloecke.
-
-    Sonst stuende am Ende ein Text da, den weder die Engine noch der Aufrufer je
-    gesehen hat — und die Zusicherung „es wird nie etwas entfernt, nur ergaenzt"
-    waere gebrochen.
-    """
-    ergebnis = assemble(
-        [
-            _teil(
-                Chunk(first_page=0, last_page=0),
-                markdown="The image shows a chart.",
-                content_list=[{"type": "header", "text": "Kopf", "page_idx": 0}],
-            )
-        ]
-    )
-    text = rendered_text(ergebnis, foreign_filter=lambda block: True)
-    assert text == "The image shows a chart."
+    # Und die Prosa ist ueber die Struktur greifbar, nicht nur ueber den Text.
+    prosa_bloecke = [
+        b for b in ergebnis["content_list"] if b.get("text") == prosa
+    ]
+    assert len(prosa_bloecke) == 1
+    assert prosa_bloecke[0]["type"] == "aside_text"
+    assert prosa_bloecke[0]["page_idx"] == 0
 
 
 def test_ohne_randbloecke_sind_beide_wege_gleich(
     real_responses: list[dict[str, Any]],
 ) -> None:
-    """Traegt ein Dokument keine Randbloecke, liefern beide Einstellungen
-    dasselbe — die Voreinstellung kann nichts kaputt machen, wo es nichts
-    anzuhaengen gibt."""
+    """Traegt ein Dokument keine Randbloecke, ist `rendered_markdown`
+    zeichengleich mit dem Markdown der Engine.
+
+    Die Gegenprobe zum Anhaengen: Wo es nichts zu ergaenzen gibt, ergaenzt es
+    nichts. Das ist die untere Haelfte der Zusicherung „es wird nie etwas
+    entfernt, nur ergaenzt" — die obere prueft
+    `test_randbloecke_werden_nicht_doppelt_angehaengt` am echten Dokument.
+    """
     for antwort in real_responses:
         teil = unpack_response(antwort, Chunk(first_page=0, last_page=0))
         ohne_rand = ChunkArtifacts(
@@ -766,7 +887,7 @@ def test_ohne_randbloecke_sind_beide_wege_gleich(
             extras=teil.extras,
         )
         ergebnis = assemble([ohne_rand])
-        assert rendered_text(ergebnis) == rendered_text(ergebnis, furniture=False)
+        assert rendered_markdown(ergebnis) == ergebnis['markdown']
 
 
 # --- Die Abruf-Regel als Maschinenpruefung -------------------------------
@@ -1032,7 +1153,7 @@ def test_randbloecke_werden_nicht_doppelt_angehaengt(
         and _blocktext(b).strip()
         and _blocktext(b).strip() not in markdown
     ]
-    voll = rendered_text(ergebnis, furniture=True)
+    voll = rendered_markdown(ergebnis)
     assert voll == markdown + "\n\n" + "\n\n".join(erwartet)
 
     # Und die Gegenprobe in Zahlen: Es sind die elf Fusszeilen, nicht die elf
@@ -1247,8 +1368,8 @@ def test_tabelleninhalt_geht_nicht_verloren() -> None:
     hier denselben Fall wie beim Aktenzeichen zu vermuten — bezahlter Text, der
     es nie in die Ausgabe schafft. Nachgemessen an den sechs Antworten stimmt das
     NICHT: MinerUs eigenes `markdown` traegt alle drei `table_body` bereits
-    zeichengleich. `rendered_text` verliert also nichts, und dieser Test prueft
-    es deshalb auch nicht.
+    zeichengleich. `rendered_markdown` verliert also nichts, und dieser Test
+    prueft es deshalb auch nicht.
 
     Der Schaden lag allein bei `is_empty`: Ein Dokument, dessen `markdown` leer
     ist und dessen einziger Inhalt eine Tabelle ist, galt als `empty` und waere
@@ -1295,8 +1416,8 @@ def test_blocktext_sammelt_alle_textfelder_statt_des_ersten_passenden() -> None:
     standard normal distribution and density"). Die frueherer Fassung gab das
     ERSTE passende Feld zurueck (`content`) und liess die Unterschrift liegen.
 
-    Geprueft wird `_blocktext` unmittelbar und nicht ueber `rendered_text`:
-    `chart` ist kein Randblock, wird also von `rendered_text` gar nicht
+    Geprueft wird `_blocktext` unmittelbar und nicht ueber `rendered_markdown`:
+    `chart` ist kein Randblock, wird also von `rendered_markdown` gar nicht
     angehaengt — und muss es auch nicht, weil MinerUs Markdown beide Texte
     nachweislich schon traegt. Die Auswirkung des Sammelns liegt bei `is_empty`
     und bei jedem kuenftigen Leser dieser Funktion.

@@ -39,12 +39,12 @@ import binascii
 import io
 import json
 import tarfile
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Final, TypeVar
 
 from .chunking import Chunk
-from .errors import TerminalRunPodError
+from .errors import IncompleteResultError, TerminalRunPodError
 
 W = TypeVar("W")
 """Der erwartete Typ eines benannten Antwortfeldes in `_geprueft` — `str` fuer
@@ -71,9 +71,11 @@ Dokuments nachgezeichnet — `model.json` fuehrt es als
 `middle.json` legt denselben Text unter `discarded_blocks[6]` ab, `content_list`
 fuehrt ihn als `{"type": "header", "text": "Aktenzeichen …"}` — und das Markdown
 hat ihn nicht mehr. „Der Filter trifft nicht die Kennung, sondern die Zone."
-Daraus folgt der Satz, an dem die Voreinstellung von `rendered_text` haengt:
-„Fuer den Bescheid-Korpus ist ein Write-back aus dem nackten Markdown damit
-nachweislich schlechter als das, was heute schon auf den Records liegt."
+Daraus folgt der Satz, aus dem `rendered_markdown` diese Bloecke OHNE Schalter
+anhaengt — woertlich aus `docs/MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md`,
+Abschnitt 5.4, Befund (1): „Fuer den Bescheid-Korpus ist ein Write-back aus dem
+nackten Markdown damit nachweislich schlechter als das, was heute schon auf den
+Records liegt."
 
 Die Liste ist damit keine Stilfrage, sondern die Stelle, an der ueber die
 Auffindbarkeit der Steuerakten entschieden wird."""
@@ -817,8 +819,9 @@ hier denselben Fall wie beim Aktenzeichen zu vermuten: bezahlter Text, der es ni
 in die Ausgabe schafft. Nachgemessen (08.08.2026) stimmt das NICHT: Fuer alle
 drei Faelle traegt MinerUs eigenes `markdown` den Inhalt bereits — die drei
 `table_body`, die `chart_caption` und der `content` des Diagramms sind darin
-zeichengleich enthalten. `rendered_text` verliert sie also nicht, und es haengt
-sie auch nicht an, weil `table`, `chart` und `image` keine Randbloecke sind.
+zeichengleich enthalten. `rendered_markdown` verliert sie also nicht, und es
+haengt sie auch nicht an, weil `table`, `chart` und `image` keine Randbloecke
+sind.
 
 Der Schaden lag ausschliesslich bei `is_empty`: Ein Dokument, dessen `markdown`
 leer ist und dessen einziger Inhalt eine Tabelle ist, lieferte `_blocktext` fuer
@@ -951,133 +954,187 @@ def is_empty(result: dict[str, Any]) -> bool:
     return True
 
 
-def rendered_text(
-    result: dict[str, Any],
-    *,
-    furniture: bool = True,
-    foreign_filter: Callable[[str], bool] | None = None,
-) -> str:
-    """Bereitet den fertigen Text auf — Leseseite, aendert nichts am Gespeicherten.
+def _pflichtfeld(result: dict[str, Any], name: str, typ: type[W], ersatz: W) -> W:
+    """Holt ein Feld des GESPEICHERTEN Ergebnisses und besteht auf seinem Typ.
 
-    Der Unterschied zum `markdown` im Ergebnis: Dort steht der Text, wie die
-    Engine ihn geliefert hat — und die Engine hat dabei fuenf Blockklassen
-    HERAUSGEFILTERT (`FURNITURE_TYPES`). Hier bekommt der Aufrufer sie zurueck,
-    und er kann eine eigene Entscheidung darueber treffen, was er fuer
-    fremdsprachige Modell-Prosa haelt.
+    Der Unterschied zu `_geprueft`, und warum es beide gibt: `_geprueft` steht auf
+    der SCHREIBSEITE, beim Auspacken einer frisch bezahlten Antwort. Dort ist ein
+    Feld mit falschem Typ kein Grund aufzuhoeren — es wandert nach `uebrig` und
+    landet in `extras`, ist also aufgehoben, und der Lauf geht weiter. Hier ist
+    die LESESEITE: Das Ergebnis liegt laengst in der Datenbank, es gibt kein
+    `extras` mehr, in das etwas gerettet werden koennte, und der Aufrufer hat
+    nach einer Darstellung gefragt. Ein stiller Ersatzwert waere hier kein
+    Aufheben, sondern ein Verlust mit freundlichem Gesicht.
 
-    KORREKTUR EINER FALSCHEN ZUSICHERUNG AUS PHASE A. Der Vertrag stand hier
-    urspruenglich anders: `furniture=True` sollte Randbloecke „im Text lassen",
-    und die Zusicherung lautete, mit den Voreinstellungen sei das Ergebnis
-    zeichengleich mit `result["markdown"]`. Beides zusammen war nur widerspruchs-
-    frei unter der Annahme, MinerUs Markdown TRAGE die Randbloecke. Diese Annahme
-    ist falsch, und sie ist an zwei unabhaengigen Stellen widerlegt: an allen
-    sechs konservierten Antworten vom 05.08.2026 nachgezaehlt und in der
-    Kalibrierung ueber 15 Dokumente gemessen (Zahlen bei `FURNITURE_TYPES`).
-    Haette die alte Zusicherung Bestand, waere die VOREINSTELLUNG dieses Moduls
-    genau die Variante, von der die Kalibrierung sagt: „Fuer den Bescheid-Korpus
-    ist ein Write-back aus dem nackten Markdown damit nachweislich schlechter als
-    das, was heute schon auf den Records liegt." Die Zusicherung ist deshalb
-    ersetzt; der Parametername bleibt, weil er unter der richtigen Annahme
-    stimmt.
+    `ersatz` wird ausschliesslich benutzt, wenn das Feld GAR NICHT da ist. Das
+    ist eine Abwesenheit — eine aeltere Fassung hat es nicht geschrieben — und
+    keine Beschaedigung. Dieselbe Trennung trifft `OCRWrapper._feld`; sie ist
+    hier wiederholt und nicht importiert, weil `assembly` nichts von der Fassade
+    weiss und auch nichts von ihr wissen soll.
 
-    Warum der zweite Filter keine offene Stelle mehr ist, sondern die Sicherung
-    dieser Abhilfe: Die Kalibrierung hat ueber die 15 Dokumente 30 Fundstellen
-    englischer Modell-Prosa gezaehlt — Erklaerungen des Modells darueber, warum
-    ein Bildbereich nichts Lesbares enthalte —, „im selben Feld und mit demselben
-    Typ wie echter Inhalt, ueberwiegend in `aside_text`, `footer` und `header`".
-    Also genau in den Bloecken, die diese Funktion anhaengt. Woertlich: „Wer die
-    Bloecke ungefiltert anhaengt, schreibt Werkzeug-Kommentare in deutsche
-    Steuerakten und verunreinigt genau den Index, den er reparieren will."
+    Raises:
+        IncompleteResultError: Das Feld ist da, hat aber einen anderen Typ. Der
+            haeufigste Fall ist JSON-`null`.
+    """
+    if name not in result:
+        return ersatz
+    wert = result[name]
+    if isinstance(wert, typ):
+        return wert
+    raise IncompleteResultError(
+        f"Das Feld {name!r} des gespeicherten Ergebnisses ist "
+        f"{type(wert).__name__} statt {typ.__name__}. Es wird NICHT durch einen "
+        f"leeren Wert ersetzt: Ein leeres Feld sieht aus wie ein leeres "
+        f"Dokument, und die Ausgabe waere dann von einem gueltigen Ergebnis "
+        f"nicht zu unterscheiden. Die Zeile ist beschaedigt oder stammt aus "
+        f"einer anderen Fassung; ihr Inhalt steht unveraendert in `raw`."
+    )
 
-    Die ENTSCHEIDUNG, was Fremdtext ist, gehoert trotzdem nicht hierher, sondern
-    zum Rueckschreibeweg nach DEVONthink — deshalb ein Filter des Aufrufers und
-    keine eingebaute Heuristik. Eine Voreinstellung, die stillschweigend filtert,
-    waere genau die Anmassung, die dieser Aufbau vermeidet.
 
-    WAS DER FILTER NICHT ERREICHT, und das ist eine offene Stelle und keine
-    Nachlaessigkeit: Er wirkt ausschliesslich auf die ANGEHAENGTEN Randbloecke.
-    Im Markdown der Engine wird nichts geloescht — siehe die Zusicherung unten,
-    und den Grund dafuer: Dort stuende sonst am Ende ein Text, den weder die
-    Engine noch der Aufrufer je gesehen hat.
+def rendered_markdown(result: dict[str, Any]) -> str:
+    """Das GANZE Dokument in Markdown-Form. Leseseite, aendert nichts am Gespeicherten.
 
-    Am 08.08.2026 im ersten echten Mehr-Teilstueck-Lauf ist aufgefallen, dass
-    genau dort erzeugter Text steht. Fuer Bild- und Diagrammbloecke legt MinerU
-    eine eigene Deutung des Bildes in das Feld `content` — im gemessenen Fall
-    zwei Mermaid-Flowcharts zu zwei Organigrammen — und bettet sie ZUSAETZLICH
-    in sein eigenes Markdown ein. Das ist dokumentiertes Verhalten der
-    multimodalen Ausgabe: „when `content` exists, a collapsed HTML `<details>`
-    block is appended after the image, using the block `sub_type` as the summary
-    label when available and falling back to `image content` or `chart
-    content`."
+    Alles, was auf dem Dokument steht, in einer Darstellung. Das Markdown der
+    Engine ist davon der grosse Bestandteil, aber nicht das Ganze: Die Engine
+    filtert beim Erzeugen ihres Markdowns Blockklassen HERAUS (`FURNITURE_TYPES`),
+    und die gehoeren zum Dokument. Sie kommen hier zurueck.
 
-    Der INHALT dieser Bloecke ist modellerzeugt und kann falsch sein: Eines der
-    beiden gemessenen Diagramme fuehrt einen Knoten zweimal, mit demselben
-    Anteil — eine Struktur, die ihre eigene Logik nicht erfuellt, also die
-    Halluzinations-Signatur aus Lehre 10 des Projekt-README.
+    KEINE SCHALTER, und das ist der Punkt. Frueher hiess diese Funktion
+    `rendered_text` und hatte zwei Parameter — `furniture`, um die Randbloecke
+    weglassen zu koennen, und `foreign_filter`, um vom Modell erzeugten Text
+    auszusortieren. Beide sind weg, weil beide dieselbe Frage stellten: „Was
+    gehoert zum Text?" Diese Frage hat hier keine Antwort zu suchen. Eine
+    Voreinstellung dafuer waere eine redaktionelle Behauptung, und die gehoert
+    dem, der das Ergebnis benutzt, nicht dem, der es aufbereitet.
 
-    WIE MAN SIE FINDET, falls der Rueckschreibeweg sie entfernen soll: Es sind
-    HTML-`<details>`-Bloecke unmittelbar nach einem Bildverweis
-    `![](images/….jpg)`, mit einem `<summary>` aus dem `sub_type` des Blocks
-    (sonst `image content` bzw. `chart content`). In der `content_list` stehen
-    dieselben Texte als `content` von Eintraegen mit `type` `image` oder `chart`
-    — dort sind sie strukturiert greifbar, im Markdown nur ueber ihre Form.
+    Wer weniger will als alles, hat den Weg dafuer: `wrapper["content_list"]`
+    liefert jeden Block einzeln, samt `type` und `page_idx`, und
+    `wrapper["markdown"]` das nackte Engine-Markdown. Aus beiden laesst sich
+    jede Auswahl bauen — an der Stelle, an der jemand weiss, wofuer.
 
-    ENTSCHIEDEN IST DAS NICHT. Ob erzeugte Deutungen in den Steuerindex duerfen,
-    ist eine Frage des Rueckschreibewegs und nicht dieses Moduls; es gibt
-    ausserdem einen benannten Hebel bei der Engine selbst (`f_make_md_mode`),
-    dessen Erreichbarkeit ueber unseren Worker nicht geprueft ist. Diese Stelle
-    beschreibt den Sachverhalt, damit die Entscheidung getroffen werden KANN —
-    sie trifft sie nicht.
+    WORAUS SICH „DAS GANZE" ZUSAMMENSETZT, gemessen und nicht angenommen:
+
+        Das Markdown der Engine, unveraendert und vollstaendig. Es traegt den
+        Fliesstext, die Ueberschriften, die Tabellen als HTML, die Bildverweise
+        — und die vom Modell erzeugten Deutungen von Bildern, die MinerU in
+        `<details>`-Bloecke einbettet (dokumentiertes Verhalten der
+        multimodalen Ausgabe).
+
+        Dazu die Randbloecke, die im Markdown FEHLEN. Am 08.08.2026 an einem
+        echten zwoelfseitigen Dokument gemessen: Die `header`-Bloecke stehen im
+        Markdown, die `footer`-Bloecke auf allen elf Seiten nicht. Die Engine
+        filtert also nicht einheitlich, und welche Klasse sie wegfiltert, ist
+        keine Konstante, auf die man sich verlassen kann.
+
+    WARUM DIE RANDBLOECKE ZAEHLEN, und das ist der teuer bezahlte Teil: In ihnen
+    liegt das Aktenzeichen. Die Kalibrierung hat den Weg an den Layout-Daten
+    eines Bescheids nachgezeichnet — `content_list` fuehrt ihn als
+    `{"type": "header", "text": "Aktenzeichen 123/456/7890/012/345/6"}`, und das
+    Markdown hat ihn nicht mehr. „Der Filter trifft nicht die Kennung, sondern
+    die Zone." Die volle Rechnung steht bei `FURNITURE_TYPES`.
+
+    WAS DER AUFRUFER UEBER DAS ERGEBNIS WISSEN MUSS, weil „alles" auch das
+    Unerwuenschte einschliesst — zwei Messungen, beide nicht vermutet:
+
+        In den angehaengten Randbloecken steht MODELL-PROSA. Ueber die 15
+        Kalibrierungs-Dokumente wurden 30 Fundstellen englischer Erklaerungen
+        gezaehlt — Saetze des Modells darueber, warum ein Bildbereich nichts
+        Lesbares enthalte —, „im selben Feld und mit demselben Typ wie echter
+        Inhalt, ueberwiegend in `aside_text`, `footer` und `header`". Also genau
+        in den Klassen, die hier zurueckkommen.
+
+        Im Markdown der Engine stehen ERZEUGTE DEUTUNGEN VON BILDERN. Fuer Bild-
+        und Diagrammbloecke legt MinerU eine eigene Lesart des Bildes in das Feld
+        `content` und bettet sie als `<details>`-Block hinter den Bildverweis —
+        dokumentiertes Verhalten der multimodalen Ausgabe. Am 08.08.2026
+        gemessen: zwei Mermaid-Flowcharts zu zwei Organigrammen, und eines davon
+        fuehrt einen Knoten zweimal mit demselben Anteil, erfuellt seine
+        eigene Logik also nicht.
+
+    Beides ist HIER nicht gefiltert, und das ist Absicht: Was davon unerwuenscht
+    ist, weiss nur der Abnehmer. Wer auswaehlen will, hat die Bausteine — die
+    Modell-Prosa steht als eigener Eintrag in `content_list` (mit `type` und
+    `page_idx`), die erzeugten Deutungen als `content` von `image`- und
+    `chart`-Eintraegen, und im Markdown erkennbar an ihrer `<details>`-Form.
 
     Args:
         result: Das zusammengesetzte Ergebnis.
-        furniture: True (Voreinstellung) haengt die Randbloecke aus
-            `content_list` an das Markdown an — sie gehoeren zum Dokument, und in
-            ihnen liegt das Aktenzeichen. False liefert `result["markdown"]`
-            wortgleich, also den von der Engine selbst gefilterten Text.
-        foreign_filter: Bekommt einen Blocktext, gibt True zurueck, wenn er
-            WEGGELASSEN werden soll. None heisst: nichts weglassen. Wirkt nur auf
-            die angehaengten Randbloecke — im Markdown der Engine wird nichts
-            geloescht, denn dort stuende sonst am Ende ein Text, den weder die
-            Engine noch der Aufrufer je gesehen hat.
 
     Zusicherung:
-        Mit `furniture=False` ist das Ergebnis zeichengleich mit
-        `result["markdown"]`, unabhaengig von `foreign_filter`.
+        Das Ergebnis BEGINNT mit dem Markdown der Engine, zeichengleich; alles
+        Weitere ist angehaengt. Es wird nie etwas entfernt, nur ergaenzt — diese
+        Funktion kann den Text der Engine nicht verschlechtern.
 
-        Mit `furniture=True` beginnt das Ergebnis mit genau diesem Markdown; alles
-        Weitere ist angehaengt. Es wird also NIE etwas entfernt, nur ergaenzt —
-        die Funktion kann den Text der Engine nicht verschlechtern.
+        Angehaengt wird ein Randblock nur, wenn sein Text im Markdown FEHLT.
+        Dass elf Seiten elf gleichlautende Fusszeilen beitragen, ist dabei kein
+        Duplikat, sondern elfmal dieselbe Fusszeile.
 
         Die Randbloecke kommen in Dokumentreihenfolge, ohne eingefuegte Marker.
         Kein „--- Randbloecke ---", keine Seitenangabe davor: Das waere eine
         erfundene Struktur, die jeder nachgelagerte Leser erst lernen muesste,
-        und fuer den Zweck — die Ziffernfolge des Aktenzeichens auffindbar machen
-        — bringt sie nichts. Wer die Herkunft je Block braucht, liest
+        und fuer den Zweck — die Ziffernfolge des Aktenzeichens auffindbar
+        machen — bringt sie nichts. Wer die Herkunft je Block braucht, liest
         `content_list`; dort steht sie samt `page_idx` und `type`.
+
+        UND: Es kommt entweder das ganze Dokument heraus oder eine Ausnahme.
+        Niemals eine Zeichenkette, die weniger ist, als der Name verspricht.
+        Hier stand frueher an drei Stellen ein stilles Ausweichen — ein
+        `markdown`, das nicht `str` war, wurde zu `""`; eine `content_list`, die
+        keine Liste war, fuehrte zu einem sofortigen `return markdown`; ein
+        Eintrag, der kein Dict war, wurde uebersprungen. Alle drei erzeugten
+        eine Ausgabe, die VOLLSTAENDIG AUSSAH.
+
+        Gemessen am 10.08.2026 durch die echte Kommandozeile gegen eine echte
+        `done`-Zeile mit `raw = {"markdown": null, "content_list": [header
+        „Aktenzeichen 123/456/7890", text „Der ganze Fliesstext des
+        Bescheids."]}`: `mineru-ocr markdown … --out datei.md` endete mit
+        Exit-Code 0 und schrieb eine Datei mit dem einen Wort
+        „Aktenzeichen 123/456/7890" — der ganze Fliesstext fehlte, und nichts
+        sagte es. Das ist derselbe Verlust, den der Bild-Getter schon einmal
+        hatte, als ein `isinstance`-Filter eines von drei Bildern verschwinden
+        liess.
+
+        Abwesenheit ist davon ausgenommen und bleibt geduldet: Fehlt eines der
+        beiden Felder ganz, ist das eine aeltere Fassung und keine
+        Beschaedigung. Fehlen BEIDE, ist es kein zusammengesetztes Ergebnis —
+        `assemble` schreibt immer beide — und auch das wird gesagt, statt still
+        eine leere Zeichenkette zu liefern.
+
+    Raises:
+        IncompleteResultError: Das gespeicherte Ergebnis ist beschaedigt — ein
+            Feld mit falschem Typ, ein `content_list`-Eintrag, der kein Dict
+            ist, oder ein Ergebnis ohne beide Felder. Nichts davon ist verloren;
+            es steht unveraendert in `raw`.
 
     Kosten: keine.
     """
-    markdown = result.get("markdown", "")
-    if not isinstance(markdown, str):
-        markdown = ""
-    if not furniture:
-        return markdown
-
-    eintraege = result.get("content_list", [])
-    if not isinstance(eintraege, list):
-        return markdown
+    if "markdown" not in result and "content_list" not in result:
+        raise IncompleteResultError(
+            "Dieses Ergebnis traegt weder `markdown` noch `content_list`. "
+            "`assembly.assemble` schreibt beide Felder immer, also ist es kein "
+            "zusammengesetztes Ergebnis — vermutlich die Notfassung aus dem "
+            "Fehlerpfad (`_rohfassung_der_teile`, erkennbar an `chunks` und "
+            "`assembly_failed`) oder eine Zeile aus einer anderen Fassung. Was "
+            "da ist, steht unveraendert in `raw`."
+        )
+    markdown = _pflichtfeld(result, "markdown", str, "")
+    eintraege = _pflichtfeld(result, "content_list", list, [])
 
     angehaengt: list[str] = []
-    for eintrag in eintraege:
+    for nummer, eintrag in enumerate(eintraege):
         if not isinstance(eintrag, dict):
-            continue
+            raise IncompleteResultError(
+                f"Eintrag {nummer} von `content_list` ist "
+                f"{type(eintrag).__name__} statt dict. Uebersprungen wird er "
+                f"NICHT: Ein uebersprungener Eintrag kann ein Randblock mit dem "
+                f"Aktenzeichen sein, und die Ausgabe saehe dann vollstaendig "
+                f"aus. Der Eintrag ist nicht verloren — er steht unveraendert "
+                f"in `raw`."
+            )
         if eintrag.get("type") not in FURNITURE_TYPES:
             continue
         text = _blocktext(eintrag).strip()
         if not text:
-            continue
-        if foreign_filter is not None and foreign_filter(text):
             continue
         # WAS SCHON IM MARKDOWN STEHT, WIRD NICHT ANGEHAENGT. Die Engine
         # filtert die Randklassen NICHT einheitlich — am 08.08.2026 an einem

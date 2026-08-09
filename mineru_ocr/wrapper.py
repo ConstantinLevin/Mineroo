@@ -350,34 +350,44 @@ class OCRWrapper:
     # Eine Zeile ist entweder endgueltig, dann ist das Ergebnis ganz, oder sie ist
     # es nicht, dann gibt es keins.
 
-    @property
-    def markdown(self) -> str:
-        """Der Text des Dokuments, in Dokumentreihenfolge.
+    def __getitem__(self, name: str) -> Any:
+        """Ein Element des gespeicherten Ergebnisses, unveraendert.
 
-        Zusicherung:
-            Ist der gespeicherte Wert keine Zeichenkette — was nur bei einer
-            beschaedigten Zeile vorkommt —, wird geworfen und NICHT still eine
-            leere Zeichenkette geliefert. Der Unterschied ist der ganze Punkt:
-            Ein leerer Rueckgabewert sieht aus wie ein leeres Dokument, und ein
-            Formfehler in `raw` waere damit von einer leeren Seite nicht mehr zu
-            unterscheiden.
+        `huelle["markdown"]` ist `huelle.raw["markdown"]`, `huelle["content_list"]`
+        ist `huelle.raw["content_list"]`, und so fort fuer jedes Element, das
+        `assembly.assemble` erzeugt: `images`, `middle`, `layout_pdfs`,
+        `envelopes`, `extras` — und alles, was spaeter dazukommt, ohne dass hier
+        etwas nachgetragen werden muesste.
+
+        WARUM EIN ZUGANG STATT EINES GETTERS JE FELD: Hier standen vorher
+        `markdown` und `content_list` als eigene Eigenschaften. Beide taten
+        nichts anderes, als ein Feld durchzureichen — sie waren eine
+        handverlesene Auswahl aus dem, was ohnehin vollstaendig da ist, und jede
+        solche Auswahl ist eine Aussage darueber, was wichtig sei. Diese Aussage
+        hat hier niemand zu treffen: In `raw` steht alles gleichberechtigt
+        nebeneinander, und der Zugang bildet das ab.
+
+        Ausgenommen bleibt, was mehr tut als durchreichen: `images` wandelt aus
+        Base64 zurueck nach Bytes, und das kann ein generischer Zugang nicht —
+        `huelle["images"]` liefert die gespeicherten Zeichenketten.
 
         Raises:
             IncompleteResultError: Die Zeile hat noch kein Ergebnis (`new`) oder
                 ist gescheitert. Es gibt dann nichts auszugeben — was da ist,
-                steht in `raw`. Oder: das gespeicherte Feld hat den falschen Typ.
+                steht in `raw`.
+            KeyError: Das Ergebnis traegt dieses Element nicht. Ausdruecklich ein
+                Fehler und kein `None`: Ein stiller Ersatzwert liesse einen
+                Tippfehler wie ein leeres Feld aussehen.
         """
-        return self._feld("markdown", str, "")
+        return self._ergebnis()[name]
 
-    @property
-    def content_list(self) -> list[dict[str, Any]]:
-        """Die Strukturliste, mit den Seitenzahlen des Originals.
+    def __contains__(self, name: str) -> bool:
+        """Ob das gespeicherte Ergebnis dieses Element traegt.
 
-        Raises:
-            IncompleteResultError: Wie bei `markdown` — auch fuer ein Feld des
-                falschen Typs, statt still eine leere Liste zu liefern.
+        Damit `if "layout_pdfs" in huelle` moeglich ist, ohne den `KeyError` aus
+        `__getitem__` als Steuerfluss zu benutzen.
         """
-        return self._feld("content_list", list, [])
+        return name in self._ergebnis()
 
     @property
     def images(self) -> dict[str, builtins.bytes]:
@@ -466,25 +476,33 @@ class OCRWrapper:
         self._sicherstellen_dass_raw_geladen_ist()
         return self.row.raw if self.row.raw is not None else {}
 
-    def rendered_text(
-        self,
-        *,
-        furniture: bool = True,
-        foreign_filter: Callable[[str], bool] | None = None,
-    ) -> str:
-        """Text mit Einfluss auf Randbloecke. Siehe `assembly.rendered_text`.
+    @property
+    def rendered_markdown(self) -> str:
+        """Das GANZE Dokument in Markdown-Form. Siehe `assembly.rendered_markdown`.
 
-        KORREKTUR EINER ZUSICHERUNG AUS PHASE A: Hier stand, das Ergebnis sei mit
-        den Voreinstellungen zeichengleich mit `markdown`. Das ist falsch, und
-        zwar messbar — MinerUs Markdown FILTERT fuenf Blockklassen heraus, und in
-        genau ihnen liegt das Aktenzeichen. Die Voreinstellung `furniture=True`
-        haengt sie deshalb an. Wer das nackte Markdown der Engine will, nimmt
-        `furniture=False`; DANN ist es zeichengleich mit `markdown`. Die volle
-        Begruendung samt Zahlen steht an `assembly.FURNITURE_TYPES`.
+        Alles, was auf dem Dokument steht, in einer Darstellung. `self["markdown"]`
+        — das Markdown der Engine — ist davon der grosse Bestandteil, aber nicht
+        das Ganze: Die Engine filtert beim Erzeugen ihres Markdowns Blockklassen
+        heraus, und in genau ihnen liegt das Aktenzeichen.
+
+        OHNE SCHALTER, und das ist Absicht. Diese Methode hiess `rendered_text`
+        und hatte zwei Parameter, `furniture` und `foreign_filter`. Beide
+        stellten dieselbe Frage — „was gehoert zum Text?" —, und beide
+        beantworteten sie mit einer Voreinstellung. Das ist eine redaktionelle
+        Entscheidung, und sie gehoert dem, der das Ergebnis benutzt, nicht dem,
+        der es aufbereitet. Wer eine Auswahl braucht, baut sie aus
+        `self["markdown"]` und `self["content_list"]` — an der Stelle, an der er
+        weiss, wofuer.
+
+        Raises:
+            IncompleteResultError: Die Zeile hat noch kein Ergebnis — oder das
+                gespeicherte Ergebnis ist beschaedigt und laesst sich nicht ganz
+                darstellen (`markdown` mit falschem Typ, `content_list` keine
+                Liste oder mit einem Eintrag, der kein Dict ist, oder beide
+                Felder fehlen). Eine halbe Ausgabe gibt es nicht: Sie saehe
+                vollstaendig aus. Was da ist, steht unveraendert in `raw`.
         """
-        return assembly.rendered_text(
-            self._ergebnis(), furniture=furniture, foreign_filter=foreign_filter
-        )
+        return assembly.rendered_markdown(self._ergebnis())
 
     # -- Umgang -----------------------------------------------------------
 
@@ -492,7 +510,7 @@ class OCRWrapper:
         """Liest die Zeile neu und verwirft alle zwischengespeicherten Ergebnisse.
 
         Returns:
-            Dieselbe Huelle, damit man `w.refresh().markdown` schreiben kann.
+            Dieselbe Huelle, damit man `w.refresh().rendered_markdown` schreiben kann.
 
         Raises:
             DocumentNotFound: Die Zeile gibt es nicht mehr.

@@ -331,13 +331,18 @@ def markdown(
     target: Annotated[str, typer.Argument(help="Hash oder Pfad.")],
     out: Annotated[Path | None, typer.Option(help="Zieldatei; ohne Angabe auf die Standardausgabe.")] = None,
 ) -> None:
-    """Schreibt den fertigen Text eines Dokuments heraus.
+    """Schreibt das GANZE Dokument in Markdown-Form heraus.
 
-    Nur den Text. Strukturliste, Bilder und die Rohantworten gibt es ueber den
-    Python-Weg (`OCRWrapper.content_list`, `.images`, `.raw`) — sie auch noch
-    ueber die Kommandozeile anzubieten hiesse, die Getter-Schicht ein zweites Mal
-    zu bauen, und Binaerdaten haben auf der Standardausgabe ohnehin nichts zu
-    suchen.
+    Ausgegeben wird `OCRWrapper.rendered_markdown` — also alles, was auf dem
+    Dokument steht, einschliesslich der Randbloecke, die MinerU aus seinem
+    eigenen Markdown herausfiltert und in denen das Aktenzeichen liegt. Wer das
+    nackte Engine-Markdown will, nimmt den Python-Weg (`huelle["markdown"]`).
+
+    Nur der Text. Strukturliste, Bilder und die Rohantworten gibt es ueber den
+    Python-Weg (`huelle["content_list"]`, `huelle.images`, `huelle.raw`) — sie
+    auch noch ueber die Kommandozeile anzubieten hiesse, die Zugangsschicht ein
+    zweites Mal zu bauen, und Binaerdaten haben auf der Standardausgabe ohnehin
+    nichts zu suchen.
 
     Ist das Dokument nicht erfolgreich terminal, wird NICHTS ausgegeben und der
     Exit-Code ist 3 (`raise typer.Exit(code=3)`). Einen halben Text auszugeben
@@ -354,7 +359,7 @@ def markdown(
                     err=True,
                 )
                 raise typer.Exit(code=3)
-            text = huelle.markdown
+            text = huelle.rendered_markdown
     except MineruOcrError as fehler:
         _betriebsfehler(fehler)
 

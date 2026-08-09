@@ -125,7 +125,7 @@ async def test_zweiter_aufruf_faellt_nicht_zurueck(
     zweite = OCRWrapper.from_path(pfad, db_conn, settings)
     assert zweite.status is DocumentStatus.DONE
     assert zweite.success
-    assert zweite.markdown == "schon erkannt"
+    assert zweite["markdown"] == "schon erkannt"
 
 
 def test_kein_metadaten_normalisierter_hash(
@@ -423,8 +423,8 @@ async def test_getter_liefern_das_fertige(
     )
     huelle.refresh()
 
-    assert huelle.markdown == "Seite A\n\nSeite B"
-    assert [e["page_idx"] for e in huelle.content_list] == [0, 1]
+    assert huelle["markdown"] == "Seite A\n\nSeite B"
+    assert [e["page_idx"] for e in huelle["content_list"]] == [0, 1]
     # Die Bilder kommen als BYTES heraus, nicht als Base64 — in der Datenbank
     # liegen sie als Zeichenketten, weil jsonb keine Bytes kennt.
     assert huelle.images == {"bild.jpg": b"\xff\xd8\xff"}
@@ -441,9 +441,9 @@ async def test_getter_werfen_ohne_ergebnis(
     pfad = _datei(tmp_path, "neu.png", PNG_KOPF + b"neu")
     huelle = OCRWrapper.from_path(pfad, db_conn, settings)
     with pytest.raises(IncompleteResultError):
-        huelle.markdown
+        huelle["markdown"]
     with pytest.raises(IncompleteResultError):
-        huelle.content_list
+        huelle["content_list"]
 
 
 async def test_gelistete_zeile_laedt_raw_nach(
@@ -474,7 +474,7 @@ async def test_gelistete_zeile_laedt_raw_nach(
     assert gelistet.raw_loaded is False
 
     aus_liste = OCRWrapper.from_row(gelistet, db_conn)
-    assert aus_liste.markdown == "steht in raw"
+    assert aus_liste["markdown"] == "steht in raw"
 
 
 async def test_raw_wirft_auch_bei_gescheiterten_nicht(
@@ -498,7 +498,7 @@ async def test_raw_wirft_auch_bei_gescheiterten_nicht(
 
     # Die Getter werfen …
     with pytest.raises(IncompleteResultError):
-        huelle.markdown
+        huelle["markdown"]
     # … `raw` nicht.
     assert huelle.raw["markdown"] == "das kam noch an"
     assert huelle.raw["failure"]["type"] == "TerminalRunPodError"
@@ -551,10 +551,10 @@ async def test_refresh_verwirft_die_zwischenspeicherung(
     assert huelle.raw["markdown"] == "erster Stand"
 
     huelle.refresh()
-    assert huelle.markdown == "zweiter Stand"
+    assert huelle["markdown"] == "zweiter Stand"
 
 
-async def test_rendered_text_haengt_randbloecke_an(
+async def test_rendered_markdown_ist_das_ganze_dokument(
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],
     settings: Settings,
@@ -585,8 +585,8 @@ async def test_rendered_text_haengt_randbloecke_an(
     )
     huelle.refresh()
 
-    assert huelle.rendered_text(furniture=False) == "Fliesstext."
-    assert "Aktenzeichen 123/456" in huelle.rendered_text()
+    assert huelle["markdown"] == "Fliesstext."
+    assert "Aktenzeichen 123/456" in huelle.rendered_markdown
 
 
 def test_to_dict_traegt_kein_raw(

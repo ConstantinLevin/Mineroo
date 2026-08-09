@@ -422,7 +422,7 @@ async def test_get_braucht_keinen_pfad(
     pfad.unlink()
 
     ueber_hash = offener_client.get(huelle.sha256)
-    assert ueber_hash.markdown == "steht in der Datenbank"
+    assert ueber_hash["markdown"] == "steht in der Datenbank"
 
 
 def test_hash_oder_pfad_wird_festgelegt_unterschieden(

@@ -256,13 +256,28 @@ class TerminalOverwriteError(DatabaseError):
 
 
 class IncompleteResultError(MineruOcrError):
-    """Ein Gesamtergebnis wurde abgefragt, bevor alle Chunks erfolgreich terminal sind.
+    """Ein Gesamtergebnis wurde abgefragt und kann nicht ganz geliefert werden.
 
     Die Getter der Fassade werfen lieber, als einen Teil zu liefern. Grund: Ein
     aeusserlich vollstaendiges Ergebnis, dem in der Mitte zwanzig Seiten fehlen,
     ist der Fehler, den niemand bemerkt — genau der, an dem die Ad-hoc-Skripte
     einmal vorbeigelaufen sind. Wer Teile sehen will, greift auf die Rohantworten
     zu; die stehen offen.
+
+    ZWEI ANLAESSE, und der zweite stand hier lange nicht, obwohl der Code ihn
+    schon warf:
+
+        Die Zeile ist noch nicht so weit — abgefragt, bevor alle Chunks
+        erfolgreich terminal sind. Es gibt schlicht noch nichts.
+
+        Die Zeile ist BESCHAEDIGT — ein Feld des gespeicherten Ergebnisses hat
+        einen anderen Typ als zugesichert (der haeufigste Fall ist JSON-`null`),
+        ein `content_list`-Eintrag ist kein Dict, oder das Ergebnis traegt
+        weder `markdown` noch `content_list` und ist damit gar kein
+        zusammengesetztes Ergebnis. Geworfen wird auch hier, statt einen leeren
+        Wert zu liefern: Ein leeres Feld sieht aus wie ein leeres Dokument, und
+        genau daran ist die Beschaedigung sonst nicht mehr zu erkennen.
+        Zustaendig sind `OCRWrapper._feld` und `assembly._pflichtfeld`.
     """
 
 

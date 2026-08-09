@@ -504,3 +504,51 @@ async def test_markdown_schreibt_in_eine_datei(
     assert ergebnis.exit_code == 0
     assert ziel.read_text(encoding="utf-8") == "Der ganze Text"
     assert "Der ganze Text" not in ergebnis.stdout
+
+
+async def test_markdown_meldet_eine_beschaedigte_zeile_statt_sie_auszugeben(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    """Eine `done`-Zeile mit beschaedigtem `raw` endet mit 1 und schreibt NICHTS.
+
+    DER GEFAEHRLICHE FALL, und deshalb steht er hier: Der Wachposten des
+    Kommandos ist `huelle.success`, und der liest die STATUS-Spalte. Ueber `raw`
+    sagt er gar nichts. Eine Zeile, die `done` ist und deren `markdown` als
+    JSON-`null` dasteht, kommt also bis zur Darstellung durch.
+
+    GEMESSEN, bevor es diesen Test gab (10.08.2026, durch genau diesen Weg):
+    Exit-Code 0, und in der Datei stand „Aktenzeichen 123/456/7890" — der eine
+    Randblock. Der Fliesstext des Bescheids, der im echten Betrieb aus
+    `markdown` kaeme, fehlte vollstaendig, und nichts sagte es. Die Datei sah
+    aus wie ein kurzes Dokument.
+
+    Der Fliesstext steht hier als `content_list`-Eintrag vom Typ `text` und
+    NICHT in `markdown`, und das ist der Kern des Tests: Ein Typ, den
+    `rendered_markdown` nicht anhaengt, weil er normalerweise schon im Markdown
+    steht. Faellt das Markdown weg, faellt er lautlos mit weg.
+    """
+    huelle = _anlegen(db_conn, tmp_path, "beschaedigt.png", _test_datenbank)
+    await write_terminal_async(
+        async_conn,
+        sha256=huelle.sha256,
+        status=DocumentStatus.DONE,
+        raw={
+            "markdown": None,
+            "content_list": [
+                {"type": "header", "text": "Aktenzeichen 123/456/7890", "page_idx": 0},
+                {"type": "text", "text": "Der ganze Fliesstext.", "page_idx": 0},
+            ],
+            "images": {},
+        },
+    )
+
+    ziel = tmp_path / "beschaedigt.md"
+    ergebnis = cli.invoke(app, ["markdown", huelle.sha256, "--out", str(ziel)])
+    assert ergebnis.exit_code == 1
+    assert not ziel.exists()
+    assert "IncompleteResultError" in ergebnis.output
+    assert "markdown" in ergebnis.output

@@ -16,10 +16,10 @@ macht beides bequem benutzbar. Der uebliche Weg:
 
         # Ein einzelnes Dokument abwarten und ansehen:
         fertig = client.wait("<sha256>")
-        print(fertig.markdown)
+        print(fertig.rendered_markdown)
 
         # Oder spaeter, ohne zu warten — auch aus einer anderen Sitzung:
-        print(client.get("<sha256>").markdown)
+        print(client.get("<sha256>").rendered_markdown)
 
 Und derselbe Dienst ueber die Kommandozeile:
 
