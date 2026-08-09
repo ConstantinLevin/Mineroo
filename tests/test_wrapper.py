@@ -69,18 +69,39 @@ def test_gleicher_inhalt_gleiche_zeile(
     db_conn: psycopg.Connection[Any], settings: Settings, tmp_path: Path
 ) -> None:
     """Dieselbe Datei unter zwei Pfaden ergibt EINE Zeile — der rohe Byte-Hash
-    ist die Identitaet."""
+    ist die Identitaet. Und der zweite Pfad wird VERMERKT.
+
+    Der zweite Teil fehlte lange, obwohl das Schema ihn zusichert („der zweite
+    wird als Eintrag in `notes` vermerkt statt die Zeile zu ueberschreiben"):
+    `append_note_async` hatte im ganzen Paket keinen Aufrufer, und es gab keine
+    synchrone Fassung fuer den einzigen Ort, an dem sie gebraucht wird.
+
+    Am 08.08.2026 am echten Datensatz belegt: Zwei Kopien bereits verarbeiteter
+    Dateien in einem anderen Verzeichnis wurden korrekt als „bereits fertig"
+    erkannt und NICHT neu bezahlt — hinterliessen aber keine Spur. Wer spaeter
+    unter dem zweiten Pfad sucht, findet nichts und haelt die Datei fuer nie
+    verarbeitet.
+    """
     inhalt = PNG_KOPF + b"gleicher inhalt"
     erste = OCRWrapper.from_path(_datei(tmp_path, "a.png", inhalt), db_conn, settings)
-    zweite = OCRWrapper.from_path(
-        _datei(tmp_path, "unterordner/b.png", inhalt), db_conn, settings
-    )
+    zweiter_pfad = _datei(tmp_path, "unterordner/b.png", inhalt)
+    zweite = OCRWrapper.from_path(zweiter_pfad, db_conn, settings)
 
     assert erste.sha256 == zweite.sha256
     assert len(list_documents(db_conn)) == 1
     # Der ZUERST gesehene Pfad gewinnt — die zweite Anlage beruehrt die Zeile
     # nicht (`ON CONFLICT DO NOTHING`).
     assert zweite.source_path == erste.source_path
+
+    # Und der zweite steht als Vermerk da, samt seinem vollen Pfad.
+    vermerke = [v for v in zweite.row.notes if v.get("kind") == "zweiter_pfad"]
+    assert len(vermerke) == 1
+    assert vermerke[0]["pfad"] == str(zweiter_pfad.resolve())
+
+    # Denselben Pfad noch einmal zu sehen ist der Normalfall eines wiederholten
+    # Ordner-Durchlaufs und darf die Liste NICHT vollschreiben.
+    nochmal = OCRWrapper.from_path(zweiter_pfad, db_conn, settings)
+    assert len([v for v in nochmal.row.notes if v.get("kind") == "zweiter_pfad"]) == 1
 
 
 async def test_zweiter_aufruf_faellt_nicht_zurueck(

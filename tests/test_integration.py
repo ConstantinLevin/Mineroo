@@ -269,6 +269,27 @@ async def test_erschoepfte_versuche_enden_failed(
 
     Und der Versuchszaehler steht am Ende auf `max_attempts - 1` — die Zahl der
     Laeufe ist `attempts + 1`, also genau `max_attempts`.
+
+    DIESER TEST BEHAUPTETE LANGE DAS GEGENTEIL SEINES EIGENEN NAMENS. Sein Titel
+    und dieser Docstring sagten „Zeile `failed`"; der Koerper pruefte
+    `status is NEW` und trug einen Kommentar, der die Abweichung wegerklaerte
+    („Die Zeile bleibt `new`: Ein WIEDERHOLBARER Fehler laesst sie unberuehrt,
+    auch der letzte"). Damit war die Absicht im Titel festgehalten und der Defekt
+    im Koerper festgeschrieben — und zwei Zusicherungen im Paket standen
+    daneben und sagten dasselbe wie der Titel: `errors.py` („nach Erschoepfung
+    der Versuche wird daraus `failed`") und `db.py` (`FAILED` = „nicht
+    wiederholbar ODER Versuche erschoepft").
+
+    Gebaut war es nicht: Die Strategie gab bei erschoepftem Budget `None`
+    zurueck, der Executor schrieb bei wiederholbaren Fehlern nichts, und er
+    kannte den Versuchszaehler gar nicht. Ein dreimal transient gescheitertes
+    Dokument endete mit Job `failed` und Zeile `new` — es tauchte nie im
+    `failed`-Zaehler auf, sondern fuer immer unter „pending".
+
+    Jetzt reicht `ocr_document` dem Executor durch, ob dies der letzte Versuch
+    ist, und der Executor schreibt dann — mit den bis dahin abgeholten,
+    BEZAHLTEN Teilstuecken, die ein Schreibvorgang von der Task-Ebene aus nicht
+    haette.
     """
     tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "c.png")
@@ -292,11 +313,16 @@ async def test_erschoepfte_versuche_enden_failed(
 
     zeile = get_document(db_conn, sha)
     assert zeile is not None
-    # Die Zeile bleibt `new`: Ein WIEDERHOLBARER Fehler laesst sie unberuehrt,
-    # auch der letzte. Das ist der Fall ENDED_WITHOUT_RESULT, und er heilt beim
-    # naechsten Einreihen von selbst.
-    assert zeile.status is DocumentStatus.NEW
-    assert derive_status(zeile, jobs).phase is Phase.ENDED_WITHOUT_RESULT
+    # DIE ZEILE SAGT `failed` — wie Titel, Docstring, `errors.py` und `db.py` es
+    # alle vier zusichern. Ein wiederholbarer Fehler laesst sie unberuehrt,
+    # SOLANGE noch ein Versuch kommt; beim letzten wird geschrieben.
+    assert zeile.status is DocumentStatus.FAILED
+    assert derive_status(zeile, jobs).phase is Phase.TERMINAL
+    # Und der Grund steht daneben, sonst saehe die Zeile aus wie ein Ergebnis
+    # ohne Anlass.
+    assert zeile.raw is not None
+    assert zeile.raw["failure"]["type"] == "TransientRunPodError"
+    assert zeile.error is not None and "TIMED_OUT" in zeile.error
 
 
 async def test_doppeltes_einreihen_wird_abgefangen(

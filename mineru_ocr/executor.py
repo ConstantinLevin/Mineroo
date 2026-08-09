@@ -100,6 +100,7 @@ async def process_document(
     settings: Settings,
     runpod: RunPodAccess,
     pool: AsyncConnectionPool,
+    letzter_versuch: bool = False,
 ) -> None:
     """Verarbeitet ein Dokument vollstaendig und schreibt genau einmal sein Ergebnis.
 
@@ -401,9 +402,10 @@ async def process_document(
         # ausdruecklich NICHT gefangen: Beim Herunterfahren soll der Job
         # `aborted` enden und die Zeile `new` bleiben. Sie hier als endgueltigen
         # Fehler zu schreiben, machte aus jedem Strg-C reihenweise `failed`.
-        if should_run_again(fehler):
-            # Wiederholbar: WERFEN, ohne die Zeile anzufassen. Die Warteschlange
-            # legt den Job erneut vor, das Dokument laeuft von vorn.
+        if should_run_again(fehler) and not letzter_versuch:
+            # Wiederholbar UND es kommt noch ein Versuch: WERFEN, ohne die Zeile
+            # anzufassen. Die Warteschlange legt den Job erneut vor, das Dokument
+            # laeuft von vorn.
             #
             # `should_run_again` und nicht die Einstufung unmittelbar: Diese
             # Stelle und die Wiederholungs-Strategie in `tasks.py` MUESSEN
@@ -412,6 +414,27 @@ async def process_document(
             # Begruendung samt des Falls, an dem es schon einmal auseinanderlief,
             # steht an `errors.should_run_again`.
             raise
+
+        # AB HIER WIRD GESCHRIEBEN — entweder weil der Fehler endgueltig ist,
+        # oder weil dies der letzte Versuch war.
+        #
+        # Der zweite Fall hat lange gefehlt, und zwar so, dass die Buecher
+        # falsch aussahen statt laut zu werden: `errors.py` sicherte zu „nach
+        # Erschoepfung der Versuche wird daraus `failed`", `db.py` fuehrte
+        # `FAILED` als „nicht wiederholbar ODER Versuche erschoepft" — gebaut war
+        # weder das eine noch das andere. Die Strategie gab bei erschoepftem
+        # Budget schlicht `None` zurueck, der Executor schrieb bei wiederholbaren
+        # Fehlern ausdruecklich nichts, und der Executor kannte den
+        # Versuchszaehler gar nicht. Ein Dokument, das dreimal transient
+        # scheiterte, endete mit Job `failed` und Zeile `new` — es tauchte nie im
+        # `failed`-Zaehler auf, sondern fuer immer unter „pending". Wer die
+        # Buecher las, sah keine gescheiterten Dokumente, obwohl welche da waren.
+        #
+        # Warum die Entscheidung von aussen kommt und nicht hier getroffen wird:
+        # Der Versuchszaehler gehoert der Warteschlange. Ihn hier zu lesen hiesse,
+        # Procrastinate in ein Modul zu holen, das ausdruecklich nichts von ihm
+        # weiss. Der Aufrufer weiss es ohnehin — `tasks.py` fragt dafuer
+        # dieselbe eine Funktion, die auch die Wiederholungs-Strategie fragt.
 
         # Endgueltig: ZUERST schreiben, DANN werfen. Diese Reihenfolge ist der
         # Grund, warum Job-Endzustand und Zeile immer dieselbe Wahrheit tragen.

@@ -27,6 +27,7 @@ import binascii
 import builtins
 import hashlib
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -109,10 +110,11 @@ class OCRWrapper:
             with PdfReader(path) as leser:
                 seiten = leser.page_count
 
-        db.insert_document(
+        pfad = str(path.resolve())
+        angelegt = db.insert_document(
             conn,
             sha256=sha256,
-            source_path=str(path.resolve()),
+            source_path=pfad,
             source_name=path.name,
             size_bytes=path.stat().st_size,
             mime=typ.mime,
@@ -126,6 +128,49 @@ class OCRWrapper:
                 f"lesbar. Das deutet auf eine abgebrochene Transaktion beim "
                 f"Aufrufer hin."
             )
+
+        # DERSELBE INHALT UNTER EINEM ZWEITEN PFAD. Die bestehende Zeile wird
+        # nicht angetastet — der zuerst gesehene `source_path` gewinnt, das ist
+        # die Zusicherung von `insert_document`. Aber der zweite Pfad wird
+        # VERMERKT, und genau das fehlte: Das Schema sichert es zu („der zweite
+        # wird als Eintrag in `notes` vermerkt statt die Zeile zu ueberschreiben"),
+        # und `append_note_async` hatte im ganzen Paket keinen Aufrufer.
+        #
+        # Am 08.08.2026 am echten Datensatz belegt: Zwei Kopien derselben Dateien
+        # unter einem anderen Verzeichnis wurden korrekt als „bereits fertig"
+        # erkannt und NICHT neu bezahlt — hinterliessen aber keine Spur. Wer
+        # spaeter unter dem zweiten Pfad sucht, findet nichts und haelt die Datei
+        # fuer nie verarbeitet.
+        #
+        # Nur bei einem NOCH NICHT BEKANNTEN Pfad. Verglichen wird gegen den
+        # Gewinner-Pfad UND gegen die schon vermerkten — nicht nur gegen den
+        # Gewinner. Der Unterschied ist der wiederholte Ordner-Durchlauf, also
+        # der Normalfall dieses Aufbaus: Der zweite Pfad ist vom Gewinner
+        # dauerhaft verschieden, und eine Pruefung allein gegen den Gewinner
+        # haenge bei jedem Durchlauf einen weiteren identischen Vermerk an.
+        # `notes` waere nach einer Woche eine Liste aus derselben Zeile.
+        bekannte_pfade = {zeile.source_path} | {
+            v.get("pfad") for v in zeile.notes if v.get("kind") == "zweiter_pfad"
+        }
+        if not angelegt and pfad not in bekannte_pfade:
+            db.append_note(
+                conn,
+                sha256,
+                {
+                    "kind": "zweiter_pfad",
+                    "at": datetime.now(UTC).isoformat(),
+                    "pfad": pfad,
+                    "name": path.name,
+                    "hinweis": (
+                        "Dieselbe Datei (gleicher sha256) wurde unter einem "
+                        "zweiten Pfad gefunden. Verarbeitet wird die Zeile des "
+                        "zuerst gesehenen Pfads; hier steht der zweite, damit er "
+                        "auffindbar bleibt."
+                    ),
+                },
+            )
+            zeile = db.get_document(conn, sha256) or zeile
+
         return cls.from_row(zeile, conn)
 
     @classmethod

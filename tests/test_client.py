@@ -213,8 +213,26 @@ def test_altes_image_ist_warnung_kein_abbruch(
 def test_rechenzentren_werden_gemeldet(
     _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
 ) -> None:
-    """Die Konfiguration wird berichtet; der Client richtet kein Verhalten danach
-    — das ist eine Entscheidung des Menschen und kein Schalter im Programm."""
+    """Die Rechenzentren werden berichtet, wenn der Endpoint sie ausweist — und
+    sonst gilt die Frage als OFFEN, nicht als beantwortet.
+
+    Der Client richtet kein Verhalten danach; das ist eine Entscheidung des
+    Menschen und kein Schalter im Programm. Umso wichtiger ist, dass die Zeile
+    nicht so aussieht, als haette sie etwas festgestellt.
+
+    WAS HIER FRUEHER STAND UND WARUM ES FALSCH WAR: Die Pruefung las
+    `dataCenterIds` ODER, ersatzweise, `gpuTypeIds`. Der echte Endpoint weist
+    keine `dataCenterIds` aus — im Lauf am 08.08.2026 meldete die Zeile deshalb
+    `['NVIDIA RTX A5000', 'NVIDIA L4', 'NVIDIA GeForce RTX 3090', 'NVIDIA
+    GeForce RTX 4090']` unter der Ueberschrift „EU fuer den Steuer-Bestand".
+    Das sind GPU-Typen. Ausgerechnet die Pruefung, an der die Datenschutz-Frage
+    fuer einen personenbezogenen Steuerkorpus haengt, sah ein Feld an, das die
+    Frage nicht beantworten kann — und meldete `gemeldet`.
+
+    Die Vorrichtung bildet den echten Schnappschuss ab (mit `gpuTypeIds`, ohne
+    `dataCenterIds`). Der richtige Befund ist damit `nicht_pruefbar`, und dieser
+    Test schreibt genau das fest.
+    """
     _worker_am_leben(db_conn)
     with OCRClient(
         db_dsn=_test_datenbank, api_key="erfunden", preflight=False
@@ -222,8 +240,21 @@ def test_rechenzentren_werden_gemeldet(
         befund = klient.preflight()
 
     rechenzentren = [b for b in befund["checks"] if b["punkt"] == "datacenters"][0]
-    assert rechenzentren["bewertung"] == "gemeldet"
     assert "EU" in rechenzentren["soll"]
+    # Der Endpoint weist keine Rechenzentren aus -> die Frage bleibt offen.
+    assert rechenzentren["bewertung"] == "nicht_pruefbar"
+    assert rechenzentren["ist"] is None
+
+    # Und wenn er sie ausweist, werden sie gemeldet — und zwar SIE, nicht die
+    # GPU-Typen.
+    runpod.endpoint = _guter_endpoint(dataCenterIds=["EU-RO-1", "EUR-IS-1"])
+    with OCRClient(
+        db_dsn=_test_datenbank, api_key="erfunden", preflight=False
+    ) as klient:
+        befund = klient.preflight()
+    rechenzentren = [b for b in befund["checks"] if b["punkt"] == "datacenters"][0]
+    assert rechenzentren["bewertung"] == "gemeldet"
+    assert rechenzentren["ist"] == ["EU-RO-1", "EUR-IS-1"]
 
 
 def test_abweichung_bricht_nur_mit_strict_ab(

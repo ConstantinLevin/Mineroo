@@ -962,6 +962,35 @@ async def write_terminal_async(
         await conn.execute("SELECT pg_notify(%s, %s)", (DONE_CHANNEL, sha256))
 
 
+def append_note(
+    conn: psycopg.Connection[Any], sha256: str, note: dict[str, Any]
+) -> None:
+    """Die synchrone Fassung von `append_note_async` — Wort fuer Wort dieselbe
+    Zusicherung, nur auf einer synchronen Verbindung.
+
+    Es gibt sie, weil der EINZIGE Aufrufer synchron ist: `OCRWrapper.from_path`
+    vermerkt hier den zweiten Pfad, unter dem dieselbe Datei gefunden wurde.
+    Solange nur die asynchrone Fassung existierte, hatte `append_note_async`
+    ueberhaupt keinen Aufrufer im Paket — die Zusicherung im Schema-Docstring
+    („der zweite wird als Eintrag in `notes` vermerkt") war damit unerfuellt,
+    und der zweite Pfad verschwand spurlos. Am 08.08.2026 am echten Datensatz
+    belegt: Zwei Kopien derselben Dateien unter einem anderen Verzeichnis
+    hinterliessen keine einzige Spur.
+
+    Raises:
+        DocumentNotFound: Kein Eintrag zu diesem Hash. Still nichts zu tun waere
+            hier schlechter als zu werfen: Eine Beobachtung, die ins Leere
+            geschrieben wird, faellt sonst nie auf.
+    """
+    ergebnis = conn.execute(
+        "UPDATE documents SET notes = notes || %s::jsonb "
+        "WHERE sha256 = %s RETURNING sha256",
+        (Jsonb([note]), sha256),
+    ).fetchone()
+    if ergebnis is None:
+        raise DocumentNotFound(f"Kein Eintrag zu {sha256}, Notiz nicht angehaengt.")
+
+
 async def append_note_async(
     conn: psycopg.AsyncConnection[Any], sha256: str, note: dict[str, Any]
 ) -> None:

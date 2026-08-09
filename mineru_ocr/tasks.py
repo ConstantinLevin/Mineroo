@@ -16,7 +16,7 @@ Warteschlangen weiss; was hier hinzukommt, ist ausschliesslich die Anbindung.
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Final
 
 import attr
 import procrastinate
@@ -25,7 +25,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from . import config, executor
 from .config import Settings
-from .errors import ConfigurationError, should_run_again
+from .errors import ConfigurationError, TransientRunPodError, should_run_again
 from .runpod import RunPodClient
 
 app = procrastinate.App(connector=testing.InMemoryConnector())
@@ -215,6 +215,40 @@ def configure(settings: Settings, *, for_worker: bool) -> procrastinate.App:
     return app
 
 
+def wird_erneut_vorgelegt(
+    exception: BaseException, job: procrastinate.jobs.Job, settings: Settings
+) -> bool:
+    """Die EINE Antwort auf „legt die Warteschlange diesen Job noch einmal vor?"
+
+    Sie wird an ZWEI Stellen gebraucht, und beide muessen sie gleich beantworten:
+
+        `OCRRetryStrategy.get_retry_decision` — lege ich ihn wieder vor?
+        `ocr_document` — ist dies der letzte Versuch, muss der Executor also
+            schreiben statt zu werfen?
+
+    Warum das eine gemeinsame Funktion ist und nicht zweimal dieselbe Bedingung:
+    Genau dieselbe Konstruktion gibt es schon eine Ebene tiefer bei
+    `errors.should_run_again`, und sie steht dort, weil die Frage „wiederholbar?"
+    einmal an zwei Stellen unterschiedlich beantwortet wurde. Der Fehler ist
+    hier derselbe, nur teurer: Faende `ocr_document` „letzter Versuch" und die
+    Strategie legte trotzdem vor, liefe ein Job noch einmal auf einer Zeile, die
+    schon `failed` sagt — und der Guard laesst `failed` ausdruecklich durch, das
+    Dokument wuerde also vollstaendig neu bezahlt.
+
+    Zusicherung:
+        True genau dann, wenn der Fehler wiederholbar ist UND das Budget aus
+        `settings.max_attempts` noch nicht erschoepft ist.
+
+    Kosten: keine.
+    """
+    if not should_run_again(exception):
+        return False
+    # `attempts` ist die Zahl der BISHERIGEN Versuche und beginnt bei 0. Die
+    # ausfuehrliche Begruendung samt der Plan-Unschaerfe steht an der
+    # Aufrufstelle in `get_retry_decision`.
+    return job.attempts + 1 < settings.max_attempts
+
+
 class OCRRetryStrategy(procrastinate.BaseRetryStrategy):
     """Entscheidet, ob ein gescheiterter Job noch einmal vorgelegt wird.
 
@@ -280,14 +314,19 @@ class OCRRetryStrategy(procrastinate.BaseRetryStrategy):
 
         Kosten: keine.
         """
+        # DIE ENTSCHEIDUNG SELBST steht in `wird_erneut_vorgelegt`, weil
+        # `ocr_document` sie ebenfalls braucht — und beide Stellen sie gleich
+        # beantworten muessen. Die Begruendung steht dort.
+        #
+        # Was in dieser Antwort steckt, ausgeschrieben, damit es niemand
+        # nachschlagen muss:
+        #
         # `should_run_again` und nicht `classify_failure` unmittelbar: Die
         # Einstufung hat DREI Werte, und aus dreien muessen diese Stelle und der
         # Ausnahme-Pfad des Executors dieselben zwei Gruppen bilden. Genau daran
         # ist es beim Bauen schon einmal auseinandergelaufen — Begruendung in
         # voller Laenge an `errors.should_run_again`.
-        if not should_run_again(exception):
-            return None
-
+        #
         # `attempts` ist die Zahl der BISHERIGEN Versuche und beginnt bei 0
         # (Referenz: „The first time a job is run, attempts will be 0"). Die Zahl
         # der bisherigen Laeufe ist also `attempts + 1`, und `max_attempts` sagt,
@@ -303,7 +342,7 @@ class OCRRetryStrategy(procrastinate.BaseRetryStrategy):
         # `Settings.max_attempts`: „wie oft ein Dokument insgesamt versucht
         # wird". Wer drei Wartezeiten will, setzt `max_attempts=4` — der Wert ist
         # ein Parameter, die Rechnung bleibt dieselbe.
-        if job.attempts + 1 >= self._settings.max_attempts:
+        if not wird_erneut_vorgelegt(exception, job, self._settings):
             return None
 
         # `retry_in` nimmt ganze Sekunden — `TimeDeltaParams` ist eine
@@ -340,12 +379,63 @@ async def ocr_document(context: procrastinate.JobContext, sha256: str) -> None:
     Kosten: JA.
     """
     mittel = context.additional_context
+    einstellungen = mittel["settings"]
+
+    # OB DIES DER LETZTE VERSUCH IST, weiss nur diese Ebene: Der Versuchszaehler
+    # gehoert der Warteschlange, und der Executor weiss ausdruecklich nichts von
+    # ihr. Also wird die Frage hier beantwortet und die Antwort weitergereicht.
+    #
+    # Wozu der Executor sie braucht: Bei einem wiederholbaren Fehler wirft er
+    # normalerweise, ohne die Zeile anzufassen — die Warteschlange legt ja neu
+    # vor. Kommt aber kein Versuch mehr, faende dieses „neu vorlegen" nie statt,
+    # und die Zeile bliebe fuer immer `new`. Genau so war es gebaut: Ein
+    # Dokument, das dreimal transient scheiterte, endete mit Job `failed` und
+    # Zeile `new`, tauchte nie im `failed`-Zaehler auf und zaehlte fuer immer als
+    # „pending" — obwohl `errors.py` und `db.py` beide zusichern, aus
+    # erschoepften Versuchen werde `failed`.
+    #
+    # Geschrieben wird im EXECUTOR und nicht hier, obwohl die Erkenntnis hier
+    # entsteht: Dort liegen die bis dahin abgeholten Teilstuecke. Sie sind
+    # bezahlt und gehoeren in `raw`; ein Schreibvorgang von dieser Ebene aus
+    # haette sie nicht und wuerde eine leere `failed`-Zeile hinterlassen.
+    #
+    # Die Bedingung ist NICHT nachgebaut, sondern dieselbe Funktion, die auch die
+    # Wiederholungs-Strategie fragt. Zwei Formulierungen derselben Regel waren in
+    # diesem Paket schon einmal der teuerste Fehler.
+    #
+    # Ein Fehler, der GAR NICHT wiederholbar ist, faellt hier nicht auf: Fuer ihn
+    # schreibt der Executor ohnehin, unabhaengig von dieser Angabe. `letzter`
+    # ist deshalb nur fuer den wiederholbaren Fall interessant.
+    letzter = not wird_erneut_vorgelegt(
+        _ERSCHOEPFUNGS_SONDE, context.job, einstellungen
+    )
+
     await executor.process_document(
         sha256,
-        settings=mittel["settings"],
+        settings=einstellungen,
         runpod=mittel["runpod"],
         pool=mittel["pool"],
+        letzter_versuch=letzter,
     )
+
+
+_ERSCHOEPFUNGS_SONDE: Final = TransientRunPodError(
+    "Sonde: nur zur Frage, ob das Versuchsbudget noch reicht"
+)
+"""Ein Stellvertreter-Fehler, um `wird_erneut_vorgelegt` nach dem BUDGET zu
+fragen, ohne einen echten Fehler zu haben.
+
+Der Grund fuer den Umweg: Ob dies der letzte Versuch ist, muss VOR dem Lauf
+feststehen — der Executor bekommt es als Parameter. Einen Fehler gibt es zu
+diesem Zeitpunkt noch nicht. `wird_erneut_vorgelegt` beantwortet aber zwei
+Fragen in einer: „ist der Fehler wiederholbar" UND „reicht das Budget". Mit
+einem ausdruecklich wiederholbaren Stellvertreter faellt die erste Frage weg,
+und uebrig bleibt genau die zweite.
+
+Warum kein zweiter Zaehler-Vergleich an dieser Stelle: Er waere eine zweite
+Formulierung derselben Regel, und genau daran ist dieses Paket schon einmal
+auseinandergelaufen. Ein Stellvertreter ist haesslicher als ein `if`, aber er
+kann nicht von der Strategie abweichen."""
 
 
 async def retry_stalled(context: procrastinate.JobContext, timestamp: int) -> None:

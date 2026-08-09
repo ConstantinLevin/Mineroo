@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 import re
 from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
@@ -32,6 +33,14 @@ from .db import DerivedStatus, DocumentStatus
 from .errors import ConfigDriftError, ConfigurationError, DocumentNotFound
 from .runpod import RunPodClient
 from .wrapper import OCRMegaWrapper, OCRWrapper
+
+log = logging.getLogger("mineru_ocr.client")
+"""Der Logger dieses Moduls.
+
+Er steht hier, weil `ocr_start` eine Warnung ueber den fehlenden Daemon BAUTE
+und dann wegwarf: Bei `strict` wurde sie geworfen, sonst verfiel sie
+ersatzlos — `client.py` kannte `logging` nicht. Der Docstring sagte „aber es
+soll gesagt sein", und gesagt wurde nichts."""
 
 T = TypeVar("T")
 
@@ -110,6 +119,43 @@ def _runpod_fragen(
             return await was(zugang)
 
     return _synchron_ausfuehren(lauf())
+
+
+def _umgebung_ohne_geheimnisse(umgebung: Any) -> dict[str, Any]:
+    """Reduziert die Worker-Umgebung auf das, was der Preflight fragen wollte.
+
+    WARUM ES DIESE FUNKTION GIBT: Der Preflight gab die vollstaendige Umgebung
+    des Workers aus — und die traegt `RUNPOD_AI_API_KEY` und
+    `RUNPOD_ENDPOINT_SECRET` im Klartext. Am 08.08.2026 stand beides in der
+    Konsolenausgabe eines gewoehnlichen `mineru-ocr preflight`. Von dort wandert
+    es in den Scrollback, in jedes Log, in jedes Kopieren-und-Einfuegen.
+
+    Das verletzt die harte Regel des Projekts — der Schluessel steht nur im
+    `Authorization`-Header und wird nie ausgegeben. `Settings.__repr__` maskiert
+    eigens dafuer; der Preflight ging daran vorbei, indem er eine FREMDE
+    Umgebung roh durchreichte. Die Regel gilt aber der Sache und nicht der
+    Herkunft: Ein Geheimnis der Gegenseite ist genauso wenig auszugeben wie das
+    eigene.
+
+    Was uebrig bleibt, ist genau das, wonach die Pruefung laut ihrem eigenen
+    `soll` fragt („MINERU_MAX_CONCURRENCY vorhanden") und was zur Diagnose
+    taugt: die `MINERU_*`-Variablen, also die, die dieses Projekt selbst setzt
+    und die keine Zugangsdaten tragen. Alles Uebrige wird gezaehlt statt
+    gezeigt — die Zahl beantwortet „ist da ueberhaupt eine Umgebung", ohne
+    etwas preiszugeben.
+
+    Es wird bewusst NICHT nach Schluesselnamen gefiltert („alles ausser KEY,
+    SECRET, TOKEN"): Eine solche Liste ist immer unvollstaendig, und die naechste
+    Variable mit einem Namen, an den niemand gedacht hat, stuende wieder im
+    Klartext. Erlaubt wird, was bekannt harmlos ist, statt zu verbieten, was
+    bekannt gefaehrlich ist.
+    """
+    if not isinstance(umgebung, dict):
+        return {"nicht_lesbar": type(umgebung).__name__}
+    eigene = {
+        name: wert for name, wert in umgebung.items() if str(name).startswith("MINERU_")
+    }
+    return {**eigene, "weitere_variablen": len(umgebung) - len(eigene)}
 
 
 class OCRClient:
@@ -296,7 +342,7 @@ class OCRClient:
             merken(
                 "worker_env",
                 "MINERU_MAX_CONCURRENCY vorhanden",
-                umgebungen[0] if umgebungen else None,
+                _umgebung_ohne_geheimnisse(umgebungen[0]) if umgebungen else None,
                 "in_ordnung" if umgebungen else "nicht_pruefbar",
             )
 
@@ -304,11 +350,24 @@ class OCRClient:
             # Steuer-Bestand gilt die EU-Pflicht; der Client richtet kein
             # Verhalten danach, weil das eine Entscheidung des Menschen ist und
             # kein Schalter im Programm (Plan 2.4, kein `pii`-Flag).
+            #
+            # AUSSCHLIESSLICH `dataCenterIds`, und KEIN Rueckfall auf
+            # `gpuTypeIds`. Der Rueckfall stand hier und hat am 08.08.2026 im
+            # echten Lauf genau das getan, wovor er schuetzen sollte: Er meldete
+            # `['NVIDIA RTX A5000', 'NVIDIA L4', 'NVIDIA GeForce RTX 3090',
+            # 'NVIDIA GeForce RTX 4090']` unter der Ueberschrift „EU fuer den
+            # Steuer-Bestand". Das sind GPU-Typen. Die Zeile sah aus, als haette
+            # sie die Datenschutz-Frage beantwortet, und hatte ein Feld
+            # angesehen, das sie gar nicht beantworten kann.
+            #
+            # Fehlt `dataCenterIds`, lautet die Antwort „nicht pruefbar" — die
+            # Frage bleibt dann sichtbar offen, statt falsch beantwortet zu sein.
+            rechenzentren = konfiguration.get("dataCenterIds")
             merken(
                 "datacenters",
                 "EU fuer den Steuer-Bestand (Entscheidung des Menschen)",
-                konfiguration.get("dataCenterIds") or konfiguration.get("gpuTypeIds"),
-                "gemeldet",
+                rechenzentren,
+                "gemeldet" if rechenzentren else "nicht_pruefbar",
             )
 
         # --- Das Worker-Image: Warnung, kein Abbruch --------------------
@@ -319,12 +378,25 @@ class OCRClient:
         else:
             # Ein alter Bezeichner ist eine WARNUNG und kein Abbruch: Auch mit
             # altem Image kann man arbeiten, man sollte es nur wissen.
-            merken(
-                "image_tag",
-                "aktuelles Worker-Image",
-                marke,
-                "warnung" if marke and ":17d4955b2" in marke else "in_ordnung",
-            )
+            #
+            # UND EIN UNBEKANNTER IST „NICHT PRUEFBAR", nicht „in Ordnung".
+            # `image_tag()` gibt vertragsgemaess `None` zurueck, wenn das
+            # Template den Bezeichner nicht ausweist — ein gueltiges Ergebnis.
+            # `None` ist falsy, und die frueherer Fassung fiel damit auf
+            # „in_ordnung": Sie bescheinigte ein aktuelles Image genau dann, wenn
+            # sie ueberhaupt keines kannte. Das verletzt den Grundsatz, den der
+            # Docstring dieser Funktion selbst aufstellt — „sonst lautet das
+            # Ergebnis ‚nicht pruefbar‘ und ausdruecklich NICHT ‚in Ordnung‘. Der
+            # Unterschied ist der ganze Wert dieser Pruefung."
+            if not marke:
+                merken("image_tag", "aktuelles Worker-Image", marke, "nicht_pruefbar")
+            else:
+                merken(
+                    "image_tag",
+                    "aktuelles Worker-Image",
+                    marke,
+                    "warnung" if ":17d4955b2" in marke else "in_ordnung",
+                )
 
         # --- Kontostand -------------------------------------------------
         try:
@@ -406,21 +478,49 @@ class OCRClient:
             Laeuft ein Dokument schon, ist das kein Fehler, sondern der Normalfall
             beim wiederholten Durchlaufen eines Ordners.
 
+        Verhalten bei fehlendem Daemon — die beiden Faelle sauber getrennt:
+
+            Mit `strict` (der VOREINSTELLUNG) wird geworfen, BEVOR etwas
+            eingereiht ist. Das ist eine ausdrueckliche Festlegung des
+            Auftraggebers und keine Ableitung: „ja natürlich der client soll
+            dann sterben und errorn". Praktische Folge, die man kennen muss:
+            `mineru-ocr ocr ~/Scans` schlaegt ohne laufenden Daemon mit
+            Exit-Code 1 fehl und reiht NICHTS ein. Das ist gewollt.
+
+            Ohne `strict` wird eingereiht und die Lage protokolliert. Jobs
+            anzuhaeufen, die niemand abholt, ist dann zulaessig — der Daemon
+            kann spaeter starten.
+
+            HIER STAND FRUEHER EIN WIDERSPRUCH, und zwar zwei Zeilen
+            auseinander: „Jobs anzuhaeufen, die niemand abholt, ist zulaessig"
+            unmittelbar ueber einem Wurf, der genau das verhinderte. Der Satz
+            beschrieb den `strict=False`-Fall und las sich wie eine Aussage ueber
+            beide. Aufgeloest ist er, indem die Faelle getrennt benannt sind —
+            NICHT, indem der Wurf entfernt wird. Der Wurf ist die Entscheidung,
+            der Satz war die ungenaue Beschreibung.
+
+            Und die Warnung im nicht-strengen Fall wird jetzt wirklich
+            ausgegeben. Sie wurde vorher gebaut und weggeworfen: `client.py`
+            kannte `logging` nicht, also verfiel sie ersatzlos, waehrend der
+            Docstring „aber es soll gesagt sein" versprach.
+
         Raises:
-            ConfigurationError: Kein Daemon erreichbar UND `strict` — sonst nur
-                eine Warnung. Jobs anzuhaeufen, die niemand abholt, ist zulaessig
-                (der Daemon kann spaeter starten), aber es soll gesagt sein.
+            ConfigurationError: Kein Daemon erreichbar UND `strict`.
 
         Kosten: keine unmittelbar. Mittelbar: alles, was der Daemon danach tut.
         """
         if not db.worker_heartbeats(self.conn):
             meldung = (
-                "Es laeuft kein Daemon. Die Jobs werden eingereiht und bleiben "
-                "liegen, bis einer startet — das ist zulaessig, aber es soll "
-                "gesagt sein. Starten mit `mineru-ocr daemon`."
+                "Es laeuft kein Daemon. Starten mit `mineru-ocr daemon`."
             )
             if self._settings.strict:
                 raise ConfigurationError(meldung)
+            log.warning(
+                "%s Die Jobs werden eingereiht und bleiben liegen, bis einer "
+                "startet — das ist ohne `strict` zulaessig, aber es soll gesagt "
+                "sein.",
+                meldung,
+            )
 
         huellen = [target] if isinstance(target, OCRWrapper) else list(target)
         for huelle in huellen:
