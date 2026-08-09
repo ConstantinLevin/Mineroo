@@ -134,6 +134,7 @@ def ocr(
     paths: Annotated[list[Path], typer.Argument(help="Dateien oder Verzeichnisse.")],
     glob: Annotated[str, typer.Option(help="Welche Dateien in Verzeichnissen.")] = "**/*",
     start: Annotated[bool, typer.Option(help="Direkt einreihen (Voreinstellung) oder nur registrieren.")] = True,
+    strict: Annotated[bool, typer.Option(help="Ohne laufenden Daemon abbrechen (Voreinstellung) oder trotzdem einreihen.")] = True,
     json_out: Annotated[bool, typer.Option("--json", help="Maschinenlesbar ausgeben.")] = False,
 ) -> None:
     """Registriert Dokumente und reiht sie ein. Blockiert nicht.
@@ -149,11 +150,18 @@ def ocr(
     Wiederholtes Aufrufen auf demselben Verzeichnis ist der vorgesehene Gebrauch,
     kein Missbrauch: Fertiges wird nicht angefasst, nur Fehlendes laeuft.
 
+    OHNE LAUFENDEN DAEMON bricht das Kommando ab und reiht NICHTS ein — das ist
+    die Voreinstellung und eine ausdrueckliche Festlegung („ja natürlich der
+    client soll dann sterben und errorn"). Mit `--no-strict` wird trotzdem
+    eingereiht; die Jobs bleiben dann liegen, bis ein Daemon startet. Der
+    Schalter fehlte, obwohl der Client den Unterschied kennt — der zweite Weg war
+    ueber die Kommandozeile schlicht nicht erreichbar.
+
     Gibt aus, wie viele Dokumente neu, wie viele bereits vorhanden, wie viele
     uebersprungen und wie viele eingereiht wurden.
     """
     try:
-        with OCRClient(preflight=False) as klient:
+        with OCRClient(preflight=False, strict=strict) as klient:
             huellen: list[OCRWrapper] = []
             uebersprungen: dict[str, int] = {}
 

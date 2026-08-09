@@ -692,6 +692,35 @@ Es gibt dabei nichts abzuwägen und nichts zu wählen. Auch „das strukturierte
 - **Layout- und Span-PDF kommen dagegen MIT — aber nur im Tarball-/S3-Transport:** MinerUs `aio_do_parse` hat `f_draw_layout_bbox=True` und `f_draw_span_bbox=True` als Default, der Worker überschreibt sie nicht; die PDFs landen im Ausgabeverzeichnis, und `tarball_b64`/`s3` packen das **ganze Verzeichnis**. Der Inline-Transport liefert nur die vier benannten Formate. **Tarball trägt also strikt mehr als Inline** — ein weiteres Argument für Tarball als Default.
 - **Die „zweite `content_list`-Fassung" ist ein Versions-Fallback:** `package.py` sucht `{basename}_content_list.json` und fällt auf `{basename}_content_list_v2.json` zurück — zwei Dateinamens-Generationen derselben Ausgabe, kein zusätzliches Format.
 
+> **ZURÜCKGENOMMEN am 09.08.2026 — die beiden vorstehenden Punkte über das Span-PDF und die „zweite `content_list`-Fassung" sind widerlegt.** Sie bleiben nach Pflegeregel 2 stehen (*Widerlegtes wird als widerlegt gekennzeichnet, nicht überschrieben*), weil die Anatomie des Irrtums wertvoller ist als die zurückgenommene Aussage. Widerlegt wurde beides zuerst **am Material** (erste echte `tarball_b64`-Antworten, konserviert unter `artifacts/2026-08-08-erster-tarball-lauf/`) und danach **am Quelltext** von MinerU selbst.
+>
+> **Es gibt kein Span-PDF, in keinem Transport.** Der vollständige Archiv-Inhalt einer echten Antwort ist: `doc.md`, `doc_content_list.json`, `doc_content_list_v2.json`, `doc_layout.pdf`, `doc_middle.json`, `images/<inhaltshash>.jpg`. Der Grund steht in `mineru/cli/common.py`: `do_parse` und `aio_do_parse` tragen `f_draw_span_bbox=True` als Vorgabe, aber **jeder VLM-Pfad überschreibt sie bedingungslos** in der ersten Zeile des Funktionskörpers —
+>
+> ```python
+> async def _async_process_vlm(...):
+>     parse_method = "vlm"
+>     f_draw_span_bbox = False
+> ```
+>
+> — ebenso `_process_vlm`, beide Hybrid-Pfade und `_process_office_doc`. Nur `_process_pipeline` reicht den Parameter durch. Die offizielle Doku sagt zu `span.pdf` ausdrücklich: *„Only applicable to pipeline backend."* Wir fahren `vlm-auto-engine`.
+>
+> **Wo der Fehlschluss lag — und das ist die eigentliche Lehre:** Gelesen wurde die **Signatur** von `aio_do_parse`, und daraus geschlossen, der Worker überschreibe die Vorgabe nicht. Der zweite Halbsatz stimmt sogar; die Folgerung nicht, weil MinerU **selbst** überschreibt, eine Funktionsebene tiefer. **Ein Default in einer Signatur ist keine Zusicherung über das Verhalten.** Der Satz „Tarball trägt strikt mehr als Inline" bleibt richtig — Layout-PDF und Bilder kommen wirklich nur so —, seine Begründung ist um das Span-PDF zu kürzen.
+>
+> **Die beiden `content_list`-Fassungen sind kein Fallback, sondern zwei verschiedene Formate, die gleichzeitig im Archiv liegen.** In `mineru/cli/common.py`, Funktion `_process_output`, werden beide bedingungslos nacheinander geschrieben, aus **zwei verschiedenen** `MakeMode`s:
+>
+> ```python
+> content_list    = make_func(pdf_info, MakeMode.CONTENT_LIST,    image_dir)  # -> *_content_list.json
+> content_list_v2 = make_func(pdf_info, MakeMode.CONTENT_LIST_V2, image_dir)  # -> *_content_list_v2.json
+> ```
+>
+> Die offizielle Doku: *„content_list_v2.json is the new structured output added in 3.0. All backends now emit it in addition to the legacy content_list.json"* — oben nach Seiten gruppiert, jeder Eintrag mit einheitlicher `type + content`-Struktur, und ausdrücklich *„(development version, subject to change)"*. Gemessen an einer echten Antwort: die flache Fassung führt 13 Blöcke, alles `text` mit `text_level` und `page_idx`; die v2 ist nach Seiten geschachtelt, unterscheidet `title`/`paragraph`/`table` und trägt zusätzlich `table_type`, `table_nest_level` und `title_content.level`.
+>
+> **Die praktische Folge war ein stiller Datenverlust.** Beide Dateinamen treffen dasselbe Zuordnungsmuster (`_content_list` + `.json`). Wer sie als „zwei Namen derselben Ausgabe" behandelt, nimmt eine und verwirft die andere — und der Verlust erzeugt kein Fehlersignal, weil das Ergebnis vollständig aussieht. Der Fall galt als hypothetisch und kam beim **allerersten** bezahlten Lauf. `mineru_ocr` hebt die Verliererin seither unter ihrem Archivnamen in `extras` auf.
+>
+> **Der Punkt zu `model.json` bleibt gültig** und ist unabhängig davon: `parse.py` des Workers setzt `f_dump_model_output=False`, MinerUs eigener Default wäre `True`. Die echten Antworten bestätigen es — kein `model.json` im Archiv.
+>
+> **Nachprüf-Ort für beides:** `mineru/cli/common.py` im MinerU-Repository (Funktionen `_process_output`, `_async_process_vlm`, `_process_vlm`) und die offizielle Seite *Output File Format*. Fixtures und ausführbare Prüfung: `tests/test_assembly.py::test_echte_tarball_antwort_wird_vollstaendig_ausgepackt` und `::test_echte_tarball_antwort_traegt_zwei_content_list_generationen`.
+
 **Beide Driver-Skripte tragen den alten Filter im Code und müssen vor dem 30k-Lauf geändert werden** (Anforderungsliste 11.3, Punkt 9).
 
 ---

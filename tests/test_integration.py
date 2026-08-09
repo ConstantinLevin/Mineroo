@@ -325,6 +325,76 @@ async def test_erschoepfte_versuche_enden_failed(
     assert zeile.error is not None and "TIMED_OUT" in zeile.error
 
 
+async def test_absturz_mitten_im_dokument_heilt_durch_den_waechter(
+    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+) -> None:
+    """(a) Der Prozess stirbt HART mitten im Dokument — der Waechter legt neu vor.
+
+    Dieses Szenario stand als Pflicht in Plan 10.2 und FEHLTE ersatzlos. Es ist
+    der einzige Weg, auf dem `retry_stalled` ueber seine ganze Laenge geprueft
+    wird: `test_wartungs_queue_verhungert_nicht` zeigt nur, dass der Waechter
+    ueberhaupt laeuft, nicht dass er ein haengendes Dokument heilt.
+
+    Der Unterschied zum geordneten Herunterfahren (Szenario (e)) ist wesentlich:
+    Dort endet der Job `aborted`, weil der Worker sich abmeldet und seine Jobs
+    ordentlich beendet. Hier stirbt der Prozess, OHNE das zu tun — der Job bleibt
+    auf `doing` stehen, und niemand arbeitet mehr daran. Ohne den Waechter bliebe
+    er dort fuer immer liegen, und das Dokument waere unsichtbar verloren: Es
+    stuende auf `new`, saehe aus wie „wartet" und wartete auf niemanden.
+
+    DER HARTE TOD WIRD NACHGESTELLT statt erzeugt, und zwar deterministisch: Ein
+    wirklich abgeschossener Prozess braeuchte im Test dreissig Sekunden, bis sein
+    Herzschlag als veraltet gilt (`get_stalled_jobs` zaehlt ab
+    `seconds_since_heartbeat=30`). Nachgestellt wird deshalb der Zustand, den er
+    hinterlaesst: ein Job auf `doing`, dessen Worker-Zeile einen alten Herzschlag
+    traegt. Genau das sieht der Waechter, und genau daran entscheidet er.
+    """
+    tasks.configure(int_settings, for_worker=False)
+    sha = _anlegen(db_conn, tmp_path, "a.png")
+    tasks.defer_document(sha)
+
+    # Den Zustand nach einem harten Tod herstellen: Der Job ist `doing`, der
+    # Worker, der ihn hielt, meldet sich seit zwei Minuten nicht mehr.
+    # `id` ist GENERATED ALWAYS — die Kennung vergibt Postgres, wir lesen sie.
+    tote_kennung = db_conn.execute(
+        "INSERT INTO procrastinate_workers (last_heartbeat) "
+        "VALUES (now() - interval '2 minutes') RETURNING id"
+    ).fetchone()
+    assert tote_kennung is not None
+    db_conn.execute(
+        "UPDATE procrastinate_jobs SET status = 'doing', worker_id = %s "
+        "WHERE queueing_lock = %s",
+        (tote_kennung[0], sha),
+    )
+    db_conn.commit()
+
+    jobs = _jobs_zu(db_conn, sha)
+    assert len(jobs) == 1
+    assert jobs[0].status == "doing"
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.NEW
+
+    # Jetzt laeuft ein FRISCHER Daemon. Diesmal antwortet RunPod normal.
+    runpod = ProtokollRunPod()
+
+    async def dokument_fertig() -> bool:
+        z = get_document(db_conn, sha)
+        return z is not None and z.status is DocumentStatus.DONE
+
+    await _daemon_laufen_lassen(
+        int_settings, runpod, bis=dokument_fertig, zeit=90.0
+    )
+
+    # DER WAECHTER HAT GEHEILT: Das Dokument ist von vorn gelaufen und fertig.
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    assert zeile.raw is not None
+    # Und es wurde wirklich verarbeitet, nicht bloss umgebucht.
+    assert runpod.aufrufe >= 1
+
+
 async def test_doppeltes_einreihen_wird_abgefangen(
     db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
 ) -> None:

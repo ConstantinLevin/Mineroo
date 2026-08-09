@@ -994,6 +994,41 @@ def rendered_text(
     keine eingebaute Heuristik. Eine Voreinstellung, die stillschweigend filtert,
     waere genau die Anmassung, die dieser Aufbau vermeidet.
 
+    WAS DER FILTER NICHT ERREICHT, und das ist eine offene Stelle und keine
+    Nachlaessigkeit: Er wirkt ausschliesslich auf die ANGEHAENGTEN Randbloecke.
+    Im Markdown der Engine wird nichts geloescht — siehe die Zusicherung unten,
+    und den Grund dafuer: Dort stuende sonst am Ende ein Text, den weder die
+    Engine noch der Aufrufer je gesehen hat.
+
+    Am 08.08.2026 im ersten echten Mehr-Teilstueck-Lauf ist aufgefallen, dass
+    genau dort erzeugter Text steht. Fuer Bild- und Diagrammbloecke legt MinerU
+    eine eigene Deutung des Bildes in das Feld `content` — im gemessenen Fall
+    zwei Mermaid-Flowcharts zu zwei Organigrammen — und bettet sie ZUSAETZLICH
+    in sein eigenes Markdown ein. Das ist dokumentiertes Verhalten der
+    multimodalen Ausgabe: „when `content` exists, a collapsed HTML `<details>`
+    block is appended after the image, using the block `sub_type` as the summary
+    label when available and falling back to `image content` or `chart
+    content`."
+
+    Der INHALT dieser Bloecke ist modellerzeugt und kann falsch sein: Eines der
+    beiden gemessenen Diagramme fuehrt einen Knoten zweimal, mit demselben
+    Anteil — eine Struktur, die ihre eigene Logik nicht erfuellt, also die
+    Halluzinations-Signatur aus Lehre 10 des Projekt-README.
+
+    WIE MAN SIE FINDET, falls der Rueckschreibeweg sie entfernen soll: Es sind
+    HTML-`<details>`-Bloecke unmittelbar nach einem Bildverweis
+    `![](images/….jpg)`, mit einem `<summary>` aus dem `sub_type` des Blocks
+    (sonst `image content` bzw. `chart content`). In der `content_list` stehen
+    dieselben Texte als `content` von Eintraegen mit `type` `image` oder `chart`
+    — dort sind sie strukturiert greifbar, im Markdown nur ueber ihre Form.
+
+    ENTSCHIEDEN IST DAS NICHT. Ob erzeugte Deutungen in den Steuerindex duerfen,
+    ist eine Frage des Rueckschreibewegs und nicht dieses Moduls; es gibt
+    ausserdem einen benannten Hebel bei der Engine selbst (`f_make_md_mode`),
+    dessen Erreichbarkeit ueber unseren Worker nicht geprueft ist. Diese Stelle
+    beschreibt den Sachverhalt, damit die Entscheidung getroffen werden KANN —
+    sie trifft sie nicht.
+
     Args:
         result: Das zusammengesetzte Ergebnis.
         furniture: True (Voreinstellung) haengt die Randbloecke aus

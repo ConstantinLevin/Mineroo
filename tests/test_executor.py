@@ -1095,6 +1095,50 @@ async def test_eingabeprobleme_enden_input_error_nicht_failed(
     assert runpod2.abgesendet == []
 
 
+async def test_zu_grosses_bild_wird_abgelehnt_ohne_zu_bezahlen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Der Aufruest-Pfad, end-to-end: abgelehnt, `input_error`, NICHTS abgesendet.
+
+    Ein Bild ueber der Nutzlast-Grenze laesst sich nicht seitenweise zerlegen —
+    nur PDFs koennen das. Der Fall ist bewusst NICHT gebaut (Rastern und
+    verkleinert versenden), weil er im gesamten geprueften Bestand nicht vorkam;
+    die groesste Einzelseite mass 1,27 MB gegen eine Grenze von 7 MB.
+
+    Geprueft wurde bisher die Entscheidung selbst (`test_chunking`) und ihr
+    Auftauchen im Bericht (`test_wrapper`) — aber nicht die Frage, an der Geld
+    haengt: Kommt die Ablehnung wirklich VOR dem ersten bezahlten Aufruf?
+
+    Und der zweite Teil: Der Endzustand ist `input_error`, nicht `failed`. Er
+    steht damit im Terminal-Guard und wird nicht wieder angefasst — ein
+    Wiederlauf koennte an der Groesse nichts aendern und wuerde nur kosten.
+    """
+    from mineru_ocr.errors import TooLargeError
+
+    zu_gross = b"\x89PNG\r\n\x1a\n" + b"x" * (exec_settings.max_payload_bytes + 1000)
+    sha, _ = _anlegen(
+        db_conn, tmp_path, zu_gross, name="riesig.png", typ=DocumentType.PNG
+    )
+    runpod = FalscherRunPod([_fertige_antwort()])
+
+    with pytest.raises(TooLargeError) as gefangen:
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    # DIE ZUSICHERUNG, an der Geld haengt: kein einziger Aufruf.
+    assert runpod.abgesendet == []
+    assert runpod.abgeholt == []
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
+    # Der Marker, an dem der Bericht diese Faelle findet.
+    assert "AUFRUESTBAR" in str(gefangen.value)
+    assert zeile.error is not None and "AUFRUESTBAR" in zeile.error
+
+
 def test_ungueltiges_backend_faellt_lokal_auf(settings: Settings) -> None:
     """Ein Tippfehler im Backend-Namen kostet keinen Kaltstart mehr.
 
