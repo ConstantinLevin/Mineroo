@@ -430,6 +430,41 @@ async def test_getter_liefern_das_fertige(
     assert huelle.images == {"bild.jpg": b"\xff\xd8\xff"}
 
 
+async def test_fehlendes_images_wird_gemeldet_statt_leer_zu_liefern(
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ein Ergebnis ohne `images` ist beschaedigt und wird gemeldet.
+
+    WARUM DAS EIN EIGENER TEST IST UND NICHT EINE FEINHEIT: `{}` ist bei diesem
+    Feld ein voellig gewoehnliches Ergebnis — zwei der sechs echten Antworten
+    haben wirklich keine Bilder. Ein stiller Ersatzwert brachte den Schaden also
+    in genau die Form, in der ihn niemand mehr erkennt: „dieses Dokument hat
+    keine Bilder", ununterscheidbar von der Wahrheit.
+
+    `_feld` hatte diesen Ersatzwert, begruendet mit „eine aeltere Fassung hat es
+    nicht geschrieben". Nachgeprueft (10.08.2026): `assembly.assemble` schreibt
+    `images` in jeder Fassung seit `0938725`, und alle acht Zeilen der
+    Produktionsdatenbank tragen den Schluessel. Die Fassung, auf die sich die
+    Duldung berief, hat es nie gegeben.
+    """
+    pfad = _datei(tmp_path, "ohne_bilder.png", PNG_KOPF + b"ohne")
+    huelle = OCRWrapper.from_path(pfad, db_conn, settings)
+    await write_terminal_async(
+        async_conn,
+        sha256=huelle.sha256,
+        status=DocumentStatus.DONE,
+        raw={"markdown": "Text.", "content_list": []},
+    )
+    huelle.refresh()
+
+    with pytest.raises(IncompleteResultError) as fehler:
+        _ = huelle.images
+    assert "images" in str(fehler.value)
+
+
 async def test_getter_werfen_ohne_ergebnis(
     db_conn: psycopg.Connection[Any], settings: Settings, tmp_path: Path
 ) -> None:

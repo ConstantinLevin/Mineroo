@@ -954,8 +954,8 @@ def is_empty(result: dict[str, Any]) -> bool:
     return True
 
 
-def _pflichtfeld(result: dict[str, Any], name: str, typ: type[W], ersatz: W) -> W:
-    """Holt ein Feld des GESPEICHERTEN Ergebnisses und besteht auf seinem Typ.
+def _pflichtfeld(result: dict[str, Any], name: str, typ: type[W]) -> W:
+    """Holt ein Feld des GESPEICHERTEN Ergebnisses. Fehlt es, ist das ein Fehler.
 
     Der Unterschied zu `_geprueft`, und warum es beide gibt: `_geprueft` steht auf
     der SCHREIBSEITE, beim Auspacken einer frisch bezahlten Antwort. Dort ist ein
@@ -966,18 +966,40 @@ def _pflichtfeld(result: dict[str, Any], name: str, typ: type[W], ersatz: W) -> 
     nach einer Darstellung gefragt. Ein stiller Ersatzwert waere hier kein
     Aufheben, sondern ein Verlust mit freundlichem Gesicht.
 
-    `ersatz` wird ausschliesslich benutzt, wenn das Feld GAR NICHT da ist. Das
-    ist eine Abwesenheit — eine aeltere Fassung hat es nicht geschrieben — und
-    keine Beschaedigung. Dieselbe Trennung trifft `OCRWrapper._feld`; sie ist
-    hier wiederholt und nicht importiert, weil `assembly` nichts von der Fassade
-    weiss und auch nichts von ihr wissen soll.
+    WARUM ES KEINEN ERSATZWERT GIBT — eine Korrektur an dieser Funktion selbst,
+    einen Tag nach ihrer Einfuehrung. Sie hatte zuerst einen Parameter `ersatz`,
+    der genommen wurde, wenn das Feld GAR NICHT da war, mit der Begruendung, das
+    sei Abwesenheit („eine aeltere Fassung hat es nicht geschrieben") und keine
+    Beschaedigung. Diese Begruendung war aus `OCRWrapper._feld` uebernommen und
+    NICHT geprueft. Nachgeprueft (10.08.2026) ist sie falsch:
+
+        `assemble` schreibt `markdown`, `content_list` und `images` in JEDER
+        Fassung seit der Erstimplementierung — nachgesehen in allen neun
+        Commits, die `assembly.py` je angefasst haben (`0938725` bis `13ac25a`).
+        Eine Fassung, die eines davon ausliess, hat es nie gegeben.
+
+        Alle acht Zeilen der Produktionsdatenbank tragen alle drei Schluessel,
+        `markdown` als `string` und `content_list` als `array`.
+
+    Ein fehlendes Feld ist damit kein alter Stand, sondern genauso eine
+    Beschaedigung wie ein falscher Typ — und es hat dieselbe Folge: Fehlt
+    `markdown`, kommen nur die Randbloecke heraus und der Fliesstext ist
+    lautlos weg; fehlt `content_list`, fehlt das Aktenzeichen. Beides sieht
+    nach einem kurzen Dokument aus und nicht nach einem Fehler.
 
     Raises:
-        IncompleteResultError: Das Feld ist da, hat aber einen anderen Typ. Der
-            haeufigste Fall ist JSON-`null`.
+        IncompleteResultError: Das Feld fehlt, oder es ist da und hat einen
+            anderen Typ (haeufigster Fall: JSON-`null`).
     """
     if name not in result:
-        return ersatz
+        raise IncompleteResultError(
+            f"Dem gespeicherten Ergebnis fehlt das Feld {name!r}. "
+            f"`assembly.assemble` schreibt es immer, in jeder Fassung — die "
+            f"Zeile ist also beschaedigt oder von fremder Hand geschrieben. Sie "
+            f"wird NICHT mit einem leeren Wert dargestellt: Die Ausgabe saehe "
+            f"dann nach einem kurzen Dokument aus statt nach einem Fehler. Was "
+            f"da ist, steht unveraendert in `raw`."
+        )
     wert = result[name]
     if isinstance(wert, typ):
         return wert
@@ -986,8 +1008,8 @@ def _pflichtfeld(result: dict[str, Any], name: str, typ: type[W], ersatz: W) -> 
         f"{type(wert).__name__} statt {typ.__name__}. Es wird NICHT durch einen "
         f"leeren Wert ersetzt: Ein leeres Feld sieht aus wie ein leeres "
         f"Dokument, und die Ausgabe waere dann von einem gueltigen Ergebnis "
-        f"nicht zu unterscheiden. Die Zeile ist beschaedigt oder stammt aus "
-        f"einer anderen Fassung; ihr Inhalt steht unveraendert in `raw`."
+        f"nicht zu unterscheiden. Die Zeile ist beschaedigt; ihr Inhalt steht "
+        f"unveraendert in `raw`."
     )
 
 
@@ -1094,31 +1116,44 @@ def rendered_markdown(result: dict[str, Any]) -> str:
         hatte, als ein `isinstance`-Filter eines von drei Bildern verschwinden
         liess.
 
-        Abwesenheit ist davon ausgenommen und bleibt geduldet: Fehlt eines der
-        beiden Felder ganz, ist das eine aeltere Fassung und keine
-        Beschaedigung. Fehlen BEIDE, ist es kein zusammengesetztes Ergebnis —
-        `assemble` schreibt immer beide — und auch das wird gesagt, statt still
-        eine leere Zeichenkette zu liefern.
+        EIN FEHLENDES FELD IST DABEI GENAUSO EINE BESCHAEDIGUNG WIE EIN
+        FALSCHER TYP, und das stand hier zuerst anders. Die erste Fassung dieser
+        Pruefung duldete ein einzeln fehlendes Feld mit der Begruendung, das sei
+        ein alter Stand. Die Begruendung war ungeprueft und ist falsch —
+        `assemble` schreibt beide Felder in jeder Fassung, die es je gab
+        (nachgesehen in allen neun Commits an dieser Datei; Rechnung an
+        `_pflichtfeld`). Und die Folge ist dieselbe wie beim falschen Typ: Fehlt
+        `markdown`, kommen nur die Randbloecke heraus; fehlt `content_list`,
+        fehlt das Aktenzeichen. Die Duldung erzeugte also genau die Teilausgabe,
+        gegen die dieser ganze Absatz steht — samt eines Tests, der sie
+        festschrieb.
 
     Raises:
         IncompleteResultError: Das gespeicherte Ergebnis ist beschaedigt — ein
-            Feld mit falschem Typ, ein `content_list`-Eintrag, der kein Dict
-            ist, oder ein Ergebnis ohne beide Felder. Nichts davon ist verloren;
-            es steht unveraendert in `raw`.
+            fehlendes Feld, ein Feld mit falschem Typ, ein
+            `content_list`-Eintrag, der kein Dict ist, oder gar kein Ergebnis.
+            Nichts davon ist verloren; es steht unveraendert in `raw`.
 
     Kosten: keine.
     """
+    if not result:
+        raise IncompleteResultError(
+            "Die Zeile ist terminal, traegt aber ueberhaupt kein Ergebnis — "
+            "`raw` ist leer oder NULL. Es gibt nichts darzustellen. Was der "
+            "Lauf gemacht hat, steht in `notes` und `error`."
+        )
     if "markdown" not in result and "content_list" not in result:
         raise IncompleteResultError(
-            "Dieses Ergebnis traegt weder `markdown` noch `content_list`. "
-            "`assembly.assemble` schreibt beide Felder immer, also ist es kein "
-            "zusammengesetztes Ergebnis — vermutlich die Notfassung aus dem "
-            "Fehlerpfad (`_rohfassung_der_teile`, erkennbar an `chunks` und "
-            "`assembly_failed`) oder eine Zeile aus einer anderen Fassung. Was "
-            "da ist, steht unveraendert in `raw`."
+            "Dieses Ergebnis traegt weder `markdown` noch `content_list` und "
+            "ist damit gar kein zusammengesetztes Ergebnis. Die eine bekannte "
+            "Form dieser Art ist die Notfassung aus dem Fehlerpfad "
+            "(`_rohfassung_der_teile`, erkennbar an `chunks` und "
+            "`assembly_failed`); sie haengt an `failed`/`input_error` und "
+            "sollte die Darstellung im Betrieb nie erreichen. Was da ist, steht "
+            "unveraendert in `raw`."
         )
-    markdown = _pflichtfeld(result, "markdown", str, "")
-    eintraege = _pflichtfeld(result, "content_list", list, [])
+    markdown = _pflichtfeld(result, "markdown", str)
+    eintraege = _pflichtfeld(result, "content_list", list)
 
     angehaengt: list[str] = []
     for nummer, eintrag in enumerate(eintraege):

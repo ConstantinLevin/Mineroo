@@ -697,22 +697,58 @@ def test_ein_ergebnis_ohne_beide_felder_ist_kein_ergebnis() -> None:
         rendered_markdown({"chunks": [], "assembly_failed": "TypeError: …"})
 
 
-def test_ein_einzelnes_fehlendes_feld_wird_geduldet() -> None:
-    """Abwesenheit ist keine Beschaedigung — eine aeltere Fassung hat es nicht
-    geschrieben.
+def test_ein_einzelnes_fehlendes_feld_wird_GEMELDET() -> None:
+    """Auch ein EINZELN fehlendes Feld ist eine Beschaedigung, kein alter Stand.
 
-    Die Trennung ist dieselbe wie in `OCRWrapper._feld` und der Grund, warum
-    `_pflichtfeld` einen `ersatz` hat: Ein Feld, das GAR NICHT da ist, sagt
-    nichts ueber die Unversehrtheit der uebrigen aus. Ein Feld, das da ist und
-    den falschen Typ hat, sagt genau das.
+    HIER STAND DER UMGEKEHRTE TEST, und er war der schlimmere Fehler dieser
+    Runde. Er hiess `test_ein_einzelnes_fehlendes_feld_wird_geduldet` und
+    behauptete `assert rendered_markdown({"content_list": [header]}) ==
+    "Aktenzeichen 123/456"` — also genau die Teilausgabe, gegen die die drei
+    Tests darueber geschrieben wurden, nur als Zusicherung festgeschrieben. Die
+    Begruendung dafuer („eine aeltere Fassung hat das Feld nicht geschrieben")
+    war aus `OCRWrapper._feld` uebernommen und nie geprueft.
+
+    NACHGEPRUEFT (10.08.2026) IST SIE FALSCH, an zwei unabhaengigen Stellen:
+
+        `assemble` schreibt `markdown` und `content_list` in JEDER Fassung, die
+        es je gab — nachgesehen in allen neun Commits, die `assembly.py`
+        angefasst haben, von `0938725` (Erstimplementierung) bis `13ac25a`.
+
+        Alle acht Zeilen der Produktionsdatenbank tragen beide Schluessel,
+        `markdown` als `string` und `content_list` als `array`.
+
+    Die Folge des Fehlens ist dieselbe wie die des falschen Typs, und das ist
+    der eigentliche Grund: Ohne `markdown` kommen nur die Randbloecke heraus,
+    ohne `content_list` fehlt das Aktenzeichen. Beides sieht aus wie ein kurzes
+    Dokument.
     """
-    nur_markdown = rendered_markdown({"markdown": "# Titel\n\nText."})
-    assert nur_markdown == "# Titel\n\nText."
+    with pytest.raises(IncompleteResultError) as ohne_markdown:
+        rendered_markdown(
+            {
+                "content_list": [
+                    {"type": "header", "text": "Aktenzeichen 123/456", "page_idx": 0},
+                    {"type": "text", "text": "Der ganze Fliesstext.", "page_idx": 0},
+                ]
+            }
+        )
+    assert "markdown" in str(ohne_markdown.value)
 
-    nur_liste = rendered_markdown(
-        {"content_list": [{"type": "header", "text": "Aktenzeichen 123/456", "page_idx": 0}]}
-    )
-    assert nur_liste == "Aktenzeichen 123/456"
+    with pytest.raises(IncompleteResultError) as ohne_liste:
+        rendered_markdown({"markdown": "# Titel\n\nText."})
+    assert "content_list" in str(ohne_liste.value)
+
+
+def test_eine_terminale_zeile_ohne_jedes_ergebnis_wird_gemeldet() -> None:
+    """`raw` leer bei terminaler Zeile: eigene Meldung, eigene Diagnose.
+
+    Nicht mit der Notfassung des Fehlerpfads zusammengeworfen, obwohl beide
+    „keine der beiden Felder" heissen: Ein leeres `raw` deutet auf die
+    Schreibseite, die Notfassung auf ein gescheitertes Zusammensetzen. Wer die
+    falsche der beiden Spuren verfolgt, sucht an der falschen Stelle.
+    """
+    with pytest.raises(IncompleteResultError) as fehler:
+        rendered_markdown({})
+    assert "kein Ergebnis" in str(fehler.value)
 
 
 def test_das_nackte_engine_markdown_bleibt_unangetastet_erreichbar() -> None:

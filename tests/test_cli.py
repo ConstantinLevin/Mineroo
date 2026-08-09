@@ -552,3 +552,38 @@ async def test_markdown_meldet_eine_beschaedigte_zeile_statt_sie_auszugeben(
     assert not ziel.exists()
     assert "IncompleteResultError" in ergebnis.output
     assert "markdown" in ergebnis.output
+
+
+async def test_markdown_meldet_auch_ein_FEHLENDES_pflichtfeld(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    """Nicht nur der falsche Typ, auch das fehlende Feld endet mit 1.
+
+    Gemessen und nicht aus dem Nachbartest gefolgert: Der Wurf kommt zwar aus
+    derselben Funktion, aber ob die Kommandozeile ihn wirklich faengt und ob die
+    Datei wirklich ungeschrieben bleibt, ist eine Aussage ueber diesen Weg und
+    nicht ueber `rendered_markdown`.
+
+    Der Fall ist real und nicht konstruiert: Er entstand daraus, dass die erste
+    Fassung der Pruefung ein einzeln fehlendes Feld DULDETE — mit einer
+    Begruendung („aeltere Fassung"), die nie geprueft war und sich als falsch
+    erwiesen hat. Ohne `content_list` fehlt das Aktenzeichen, und die Ausgabe
+    saehe vollstaendig aus.
+    """
+    huelle = _anlegen(db_conn, tmp_path, "ohne_liste.png", _test_datenbank)
+    await write_terminal_async(
+        async_conn,
+        sha256=huelle.sha256,
+        status=DocumentStatus.DONE,
+        raw={"markdown": "Fliesstext ohne die Randbloecke.", "images": {}},
+    )
+
+    ziel = tmp_path / "ohne_liste.md"
+    ergebnis = cli.invoke(app, ["markdown", huelle.sha256, "--out", str(ziel)])
+    assert ergebnis.exit_code == 1
+    assert not ziel.exists()
+    assert "content_list" in ergebnis.output

@@ -414,7 +414,7 @@ class OCRWrapper:
                 einzelnes Bild nicht dekodierbar ist. Die Meldung nennt seinen
                 Namen — wer ihn hat, findet das Bild in `raw` wieder.
         """
-        roh = self._feld("images", dict, {})
+        roh = self._feld("images", dict)
         bilder: dict[str, builtins.bytes] = {}
         for name, wert in roh.items():
             if isinstance(wert, builtins.bytes):
@@ -435,8 +435,9 @@ class OCRWrapper:
                 ) from fehler
         return bilder
 
-    def _feld(self, name: str, typ: type[F], ersatz: F) -> F:
-        """Holt ein Feld des Ergebnisses und besteht auf seinem Typ.
+    def _feld(self, name: str, typ: type[F]) -> F:
+        """Holt ein Feld des Ergebnisses. Fehlt es oder hat es den falschen Typ,
+        wird geworfen.
 
         Der frueherer Bau war ueberall derselbe — `wert if isinstance(wert, typ)
         else ersatz` —, und er hatte ueberall dieselbe Schwaeche: Ein Formfehler
@@ -444,20 +445,41 @@ class OCRWrapper:
         ein leeres Dokument. Damit war der einzige Hinweis auf eine beschaedigte
         Zeile ausgerechnet der, den man fuer ein gueltiges Ergebnis haelt.
 
-        `ersatz` wird ausschliesslich benutzt, wenn das Feld GAR NICHT da ist —
-        etwa weil eine aeltere Fassung es nicht geschrieben hat. Das ist eine
-        Abwesenheit, keine Beschaedigung.
+        HIER STAND EIN ERSATZWERT FUER DEN FALL, DASS DAS FELD GAR NICHT DA IST,
+        mit der Begruendung, das sei Abwesenheit („eine aeltere Fassung hat es
+        nicht geschrieben") und keine Beschaedigung. Die Begruendung war nie
+        geprueft. Nachgeprueft (10.08.2026) ist sie falsch: `assembly.assemble`
+        schreibt `images` — das einzige Feld, das ueber diese Funktion geht — in
+        JEDER Fassung seit der Erstimplementierung, nachgesehen in allen neun
+        Commits an `assembly.py`, und alle acht Zeilen der Produktionsdatenbank
+        tragen den Schluessel. Ein fehlendes `images` ist damit dasselbe wie ein
+        `images` mit falschem Typ: eine beschaedigte oder fremd geschriebene
+        Zeile.
+
+        Und die Folge waere dieselbe wie ueberall in dieser Datei: Ein leeres
+        `{}` heisst „dieses Dokument hat keine Bilder", und das ist ein
+        vollkommen gewoehnliches Ergebnis — zwei der sechs echten Antworten
+        haben wirklich keine. Der Ersatzwert haette den Schaden also in genau
+        die Form gebracht, in der ihn niemand mehr erkennt.
         """
         ergebnis = self._ergebnis()
         if name not in ergebnis:
-            return ersatz
+            raise IncompleteResultError(
+                f"Dem gespeicherten Ergebnis fehlt das Feld {name!r}. "
+                f"`assembly.assemble` schreibt es immer, in jeder Fassung — die "
+                f"Zeile ist also beschaedigt oder von fremder Hand geschrieben. "
+                f"Sie wird NICHT mit einem leeren Wert beantwortet: Ein leeres "
+                f"Feld ist hier ein gueltiges Ergebnis und damit der einzige "
+                f"Schaden, den man nicht sieht. Was da ist, steht unveraendert "
+                f"in `raw`."
+            )
         wert = ergebnis[name]
         if isinstance(wert, typ):
             return wert
         raise IncompleteResultError(
             f"Das Feld {name!r} des gespeicherten Ergebnisses ist "
             f"{type(wert).__name__} statt {typ.__name__}. Die Zeile ist "
-            f"beschaedigt oder stammt aus einer anderen Fassung. Der Inhalt ist "
+            f"beschaedigt oder von fremder Hand geschrieben. Der Inhalt ist "
             f"nicht verloren — er steht unveraendert in `raw`."
         )
 
