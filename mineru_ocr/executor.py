@@ -726,8 +726,21 @@ async def _stuecke_verarbeiten(
         antwort = await _mit_kontopause(
             abholen, runpod=runpod, settings=settings, schritt="Abholen"
         )
-        _endzustand_uebersetzen(antwort, job)
         try:
+            # BEIDE Schritte im selben Schutz: das Bewerten des Endzustands und
+            # das Auspacken. Der erste stand frueher davor, und damit ueberlebte
+            # eine bezahlte FEHLERANTWORT nur als Python-Textdarstellung in einer
+            # Fehlermeldung.
+            #
+            # Am 09.08.2026 an einer erzwungenen echten Fehlerantwort gemessen,
+            # wie viel darin steckt: Sie traegt `error` auf oberster Ebene, dazu
+            # ein volles `output` mit `ok: false`, dem `debug`-Block (GPU,
+            # Modellverzeichnis, Phasenzeiten) und einem vollstaendigen
+            # `traceback` aus dem Worker. Das ist die brauchbarste Diagnose, die
+            # es zu einem gescheiterten Dokument ueberhaupt gibt — und sie war
+            # nur als Zeichenkette in `raw["failure"]["message"]` vorhanden,
+            # nicht als abfragbares JSON.
+            _endzustand_uebersetzen(antwort, job)
             teile.append(assembly.unpack_response(antwort, chunk))
         except Exception as fehler:
             # DIE ANTWORT IST BEZAHLT und liegt in genau diesem Moment zum

@@ -914,6 +914,59 @@ def test_echte_tarball_antwort_wird_vollstaendig_ausgepackt(
     ]
 
 
+def test_seitenversatz_gegen_ECHTE_mehrteilige_antworten(
+    echte_mehrteilige_antworten: list[tuple[tuple[int, int], dict[str, Any]]],
+) -> None:
+    """Die fehleranfaelligste Rechnung des Pakets — endlich an echtem Material.
+
+    Bis zum 09.08.2026 gab es fuer die Mehr-Teilstueck-Lage KEIN echtes
+    Antwortmaterial: Die sechs konservierten Antworten sind alle einseitig mit
+    `page_idx == 0`. Der Seitenversatz beim Zusammensetzen lief damit gegen
+    erfundene Antworten — also gegen genau die Vorstellung, die er richtig
+    umsetzen soll.
+
+    Diese drei Antworten sind die echten Teilstuecke EINES Dokuments: ein
+    12-seitiges Steuerdokument, in drei Stuecke zu 5, 5 und 2 Seiten geschnitten
+    und einzeln durch den echten Endpoint geschickt.
+
+    WAS SIE BEWEISEN: Jedes Teilstueck traegt `page_idx` LOKAL, beginnend bei 0.
+    Das ist die Annahme, auf der die ganze Korrektur ruht — sie stand als „am
+    Quelltext geprueft, 05.08.2026" im Vertrag, war aber nie an einer echten
+    mehrteiligen Antwort nachgesehen. Ohne die Korrektur traege das Dokument
+    dreimal eine „Seite 0", und weil die Liste dabei vollstaendig und plausibel
+    aussieht, faellt es niemandem auf.
+    """
+    from mineru_ocr.assembly import unpack_response
+    from mineru_ocr.chunking import verify_page_coverage
+
+    teile = [
+        unpack_response(antwort, Chunk(first_page=erste, last_page=letzte))
+        for (erste, letzte), antwort in echte_mehrteilige_antworten
+    ]
+
+    # ERST der Befund ueber die Rohdaten: lokal, jeweils ab 0.
+    lokal = [
+        sorted({b["page_idx"] for b in t.content_list if "page_idx" in b})
+        for t in teile
+    ]
+    assert lokal == [[0, 1, 2, 3, 4], [0, 1, 2, 3, 4], [0, 1]]
+
+    # Die Abdeckung geht auf — dieselbe Pruefung, die der Executor fahrt.
+    verify_page_coverage([t.chunk for t in teile], 12)
+
+    # UND DANN das Ergebnis: lueckenlos die Seiten des ORIGINALS.
+    ergebnis = assemble(teile)
+    seiten = sorted({b["page_idx"] for b in ergebnis["content_list"]})
+    assert seiten == list(range(12))
+    # Die Gesamtzahl stimmt mit dem Lauf durch das Tool am 08.08.2026 ueberein.
+    assert len(ergebnis["content_list"]) == 85
+    assert is_empty(ergebnis) is False
+
+    # Und der Doppeltreffer ist keine Eigenheit einzelner Antworten, sondern die
+    # Regel: JEDES Teilstueck bringt sein eigenes v2 mit.
+    assert all("doc_content_list_v2.json" in t.extras for t in teile)
+
+
 def test_echte_leere_seite_ist_empty_und_nicht_kaputt(
     echte_leere_antwort: dict[str, Any],
 ) -> None:

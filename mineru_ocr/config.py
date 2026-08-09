@@ -97,6 +97,37 @@ QUEUE_OCR = "ocr"
 """Queue der Dokument-Jobs."""
 
 QUEUE_MAINTENANCE = "maintenance"
+
+GUELTIGE_BACKENDS: Final = frozenset(
+    {
+        "hybrid-auto-engine",
+        "hybrid-http-client",
+        "pipeline",
+        "vlm-auto-engine",
+        "vlm-http-client",
+    }
+)
+"""Die Backend-Namen, die der Worker annimmt.
+
+VON DER GEGENSEITE ABGELESEN, nicht ausgedacht. Am 09.08.2026 wurde absichtlich
+ein ungueltiger Name geschickt; die Fehlerantwort nannte die Liste selbst:
+
+    „input validation failed: backend must be one of ['hybrid-auto-engine',
+    'hybrid-http-client', 'pipeline', 'vlm-auto-engine', 'vlm-http-client'];
+    got 'gibt-es-nicht'"
+
+WOZU DIE PRUEFUNG HIER STEHT UND NICHT ERST DORT: Ein Tippfehler im Backend-
+Namen war bis dahin nur zu erfahren, indem man dafuer bezahlte. Der Job wird
+eingereiht, ein Worker faehrt hoch — im gemessenen Fall 177 Sekunden Wartezeit —,
+und erst dann kommt `FAILED` mit der Meldung zurueck. Bei einem Bestandslauf
+ueber 30 000 Dokumente traefe das JEDES Dokument einzeln, und es waere jedes Mal
+derselbe Fehler.
+
+Die Liste kann veralten, wenn der Worker neue Backends bekommt. Das ist der
+bewusst in Kauf genommene Preis: Ein hier faelschlich abgelehnter Name kostet
+eine Zeile in dieser Datei, ein nicht abgelehnter kostet einen Kaltstart je
+Dokument. Der Nachpruef-Ort steht in der Fehlermeldung selbst — der Worker
+nennt seine Liste, wenn man ihn falsch fragt."""
 """Queue des Waechters. Eigene Queue, weil periodische Tasks sonst um dieselben
 Concurrency-Slots konkurrieren wie die OCR-Jobs und bei vollem Pool verhungern —
 die Procrastinate-Doku empfiehlt fuer genau dieses Problem die Queue-Trennung
@@ -154,14 +185,18 @@ class Settings:
     41 Formeln fallen und verlor stillschweigend Indizes, bei 2,2-facher Laufzeit.
     Der Wert ist ein Parameter und kein festverdrahteter Wert, weil die
     Vergleichsmessung fuer andere Materialarten aussteht — aber die Voreinstellung
-    ist das Gemessene, nicht das Bequeme (Plan 11)."""
+    ist das Gemessene, nicht das Bequeme (Plan 11).
+
+    Geprueft wird er gegen `GUELTIGE_BACKENDS`, siehe dort."""
 
     transport: str = "tarball_b64"
     """Fest. Bei diesem Transport ist ein `formats`-Feld wirkungslos: es kommt
     immer alles zurueck. Damit ist die Abruf-Regel („alles holen, alles
     persistieren, nie filtern") Mechanik statt Disziplin — an Disziplin ist sie
-    schon einmal gescheitert. Zusaetzlich traegt der Tarball die Layout- und
-    Span-PDFs, die der Inline-Transport gar nicht liefert (Plan 6)."""
+    schon einmal gescheitert. Zusaetzlich traegt der Tarball das Layout-PDF und
+    die Bilder, die der Inline-Transport gar nicht liefert (Plan 6). Das
+    Span-PDF gehoerte frueher in diese Aufzaehlung; es entsteht mit unserem
+    Backend gar nicht erst (Begruendung an `assembly.ChunkArtifacts.span_pdf`)."""
 
     # -- Zerlegung grosser Dokumente --------------------------------------
 
@@ -331,6 +366,32 @@ class Settings:
 
     retry_factor: float = 4.0
     """Faktor des Rueckzugs: rund 30 Sekunden, 2 Minuten, 8 Minuten."""
+
+    def __post_init__(self) -> None:
+        """Prueft die Werte, die die Gegenseite sonst erst gegen Bezahlung prueft.
+
+        Hier steht AUSDRUECKLICH NUR, was ohne Netz und ohne Datenbank
+        entscheidbar ist. Alles Weitere — laeuft der Endpoint, reicht das Konto,
+        stimmt die Image-Fassung — gehoert in den Preflight, der fragen darf.
+
+        Warum der Backend-Name dazugehoert: Er ist von hier aus vollstaendig
+        pruefbar (die Gegenseite hat ihre Liste selbst genannt, siehe
+        `GUELTIGE_BACKENDS`), und ein Tippfehler darin war bis dahin nur zu
+        erfahren, indem man dafuer bezahlte — 177 Sekunden Kaltstart bis zur
+        Fehlermeldung, und das je Dokument.
+
+        Raises:
+            ConfigurationError: Der Backend-Name steht nicht in
+                `GUELTIGE_BACKENDS`.
+        """
+        if self.backend not in GUELTIGE_BACKENDS:
+            raise ConfigurationError(
+                f"backend={self.backend!r} kennt der Worker nicht. Gueltig sind: "
+                f"{sorted(GUELTIGE_BACKENDS)}. Die Liste stammt aus der "
+                f"Fehlerantwort des Workers selbst (09.08.2026) — sie kann "
+                f"veralten, wenn er neue Backends bekommt; dann gehoert sie in "
+                f"config.GUELTIGE_BACKENDS nachgetragen."
+            )
 
     def __repr__(self) -> str:
         """Wie die Voreinstellung, aber mit maskiertem API-Schluessel.

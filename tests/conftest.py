@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -117,6 +117,103 @@ gueltige leere Liste galt als „Platz frei", und die v2-Fassung ueberschrieb di
 flache), und eine Vollstaendigkeitspruefung, die eine echt leere Seite fuer ein
 kaputtes Archiv gehalten haette — was aus dem gueltigen `empty` ein `failed`
 gemacht haette, mit Wiedervorlage und erneutem Bezahlen."""
+
+
+MEHRTEILIG_FIXTURE: Final = [
+    (
+        (0, 4),
+        Path(__file__).resolve().parent.parent
+        / "artifacts"
+        / "2026-08-08-erster-tarball-lauf"
+        / "mehrteilig_0_seiten_0-4.response.json",
+    ),
+    (
+        (5, 9),
+        Path(__file__).resolve().parent.parent
+        / "artifacts"
+        / "2026-08-08-erster-tarball-lauf"
+        / "mehrteilig_1_seiten_5-9.response.json",
+    ),
+    (
+        (10, 11),
+        Path(__file__).resolve().parent.parent
+        / "artifacts"
+        / "2026-08-08-erster-tarball-lauf"
+        / "mehrteilig_2_seiten_10-11.response.json",
+    ),
+]
+"""Drei ECHTE Tarball-Antworten EINES Dokuments — die drei Teilstuecke eines
+12-seitigen Steuerdokuments, aufgenommen am 09.08.2026.
+
+DIE LUECKE, DIE SIE SCHLIESST, war die groesste des Testmaterials und stand
+lange ausdruecklich benannt hier: Fuer die Mehr-Teilstueck-Lage gab es kein
+echtes Material, also lief der Seitenversatz beim Zusammensetzen — die
+fehleranfaelligste Rechnung des ganzen Pakets — gegen erfundene Antworten.
+
+WAS SIE BEWEISEN, und was vorher nur eine Annahme war: JEDES Teilstueck traegt
+`page_idx` LOKAL, beginnend bei 0. Gemessen: Teilstueck 0 (Originalseiten 0-4)
+hat `page_idx` 0 bis 4, Teilstueck 1 (Originalseiten 5-9) ebenfalls 0 bis 4,
+Teilstueck 2 (Originalseiten 10-11) hat 0 und 1. Ohne die Versatz-Korrektur
+traege das Dokument dreimal eine „Seite 0" — und weil die Liste dabei
+vollstaendig und plausibel aussieht, faellt es niemandem auf.
+
+Nach dem Zusammensetzen: 85 Bloecke, `page_idx` lueckenlos 0 bis 11. Dieselbe
+Zahl wie im Lauf durch das Tool am 08.08.2026 — die Fixtures und der echte
+Durchlauf stimmen ueberein.
+
+Ein weiterer Befund nebenbei: Auch hier traegt JEDES Teilstueck sein eigenes
+`doc_content_list_v2.json` in `extras`. Der Doppeltreffer ist nicht an einzelne
+Antworten gebunden, sondern die Regel."""
+
+FEHLERANTWORT_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "artifacts"
+    / "2026-08-08-erster-tarball-lauf"
+    / "fehlerantwort.response.json"
+)
+"""Eine echte `FAILED`-Antwort des Workers — erzwungen am 09.08.2026.
+
+Erzeugt, indem ein GUELTIGES PDF mit einem ungueltigen Backend-Namen geschickt
+wurde: Die lokalen Pruefungen haetten daran nichts zu beanstanden, der Fehler
+entsteht ausschliesslich auf der Gegenseite. Genau die Lage, die
+`executor._endzustand_uebersetzen` bewerten muss und fuer die es kein Material
+gab.
+
+WAS SIE ZEIGT — und was mehr ist, als der Code bis dahin annahm:
+
+    `status: "FAILED"` und, auf OBERSTER Ebene, ein `error` mit der Meldung
+    im Klartext.
+
+    Ein vollstaendiges `output` — eine Fehlerantwort ist also NICHT leer. Darin
+    `ok: false`, der `debug`-Block mit GPU, Modellverzeichnis und Phasenzeiten,
+    und ein kompletter `traceback` aus dem Worker.
+
+Der Traceback ist die brauchbarste Diagnose, die es zu einem gescheiterten
+Dokument gibt. Er war vorher nur als Python-Textdarstellung in
+`raw["failure"]["message"]` vorhanden, weil `_endzustand_uebersetzen` vor dem
+Schutzblock stand; jetzt steht die ganze Antwort als abfragbares JSON unter
+`raw["unverwertbare_antworten"]`.
+
+Und die Antwort hat noch etwas geliefert, das nirgends dokumentiert war: die
+Liste der gueltigen Backend-Namen. Der Worker nennt sie selbst, wenn man ihn
+falsch fragt — sie steht jetzt in `config.GUELTIGE_BACKENDS` und wird lokal
+geprueft, statt 177 Sekunden Kaltstart je Dokument zu kosten."""
+
+
+@pytest.fixture
+def echte_mehrteilige_antworten() -> list[tuple[tuple[int, int], dict[str, Any]]]:
+    """Die drei echten Teilstueck-Antworten samt ihrem Seitenbereich."""
+    return [
+        (bereich, json.loads(pfad.read_text()))
+        for bereich, pfad in MEHRTEILIG_FIXTURE
+    ]
+
+
+@pytest.fixture
+def echte_fehlerantwort() -> dict[str, Any]:
+    """Die echte FAILED-Antwort, vollstaendig geladen."""
+    geladen: dict[str, Any] = json.loads(FEHLERANTWORT_FIXTURE.read_text())
+    return geladen
 
 
 @pytest.fixture

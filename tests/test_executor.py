@@ -954,6 +954,78 @@ async def test_bezahlte_antwort_mit_formfehler_wird_aufgehoben(
     assert "TerminalRunPodError" in aufgehoben[0]["fehler"]
 
 
+async def test_echte_fehlerantwort_landet_vollstaendig_in_raw(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    echte_fehlerantwort: dict[str, Any],
+) -> None:
+    """Eine ECHTE `FAILED`-Antwort steht danach als abfragbares JSON in `raw`.
+
+    Erzwungen am 09.08.2026 gegen den echten Endpoint (gueltiges PDF,
+    ungueltiger Backend-Name) und als Fixture konserviert. Sie zeigt, dass eine
+    Fehlerantwort weit mehr traegt als „es ging schief": `error` auf oberster
+    Ebene, ein volles `output` mit `ok: false`, den `debug`-Block mit GPU,
+    Modellverzeichnis und Phasenzeiten — und einen kompletten `traceback` aus
+    dem Worker.
+
+    Vorher stand `_endzustand_uebersetzen` VOR dem Schutzblock, der bezahlte
+    Antworten aufhebt. Der Traceback ueberlebte damit nur als Python-
+    Textdarstellung, eingebettet in die Fehlermeldung — vorhanden, aber weder
+    abfragbar noch zuverlaessig lesbar. Fuer die beste Diagnose, die es zu einem
+    gescheiterten Dokument gibt, ist das zu wenig.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"loest fehler aus", name="f.png", typ=DocumentType.PNG
+    )
+    runpod = FalscherRunPod([echte_fehlerantwort])
+
+    with pytest.raises(TerminalRunPodError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.raw is not None
+
+    aufgehoben = zeile.raw["unverwertbare_antworten"]
+    assert len(aufgehoben) == 1
+    # Die GANZE Antwort, unveraendert.
+    assert aufgehoben[0]["antwort"] == echte_fehlerantwort
+    # Und damit insbesondere das, wofuer man sie aufhebt.
+    ausgabe = aufgehoben[0]["antwort"]["output"]
+    assert ausgabe["ok"] is False
+    assert "Traceback" in ausgabe["traceback"]
+    assert ausgabe["debug"]["gpu"]["name"].startswith("NVIDIA")
+
+
+def test_ungueltiges_backend_faellt_lokal_auf(settings: Settings) -> None:
+    """Ein Tippfehler im Backend-Namen kostet keinen Kaltstart mehr.
+
+    Die gueltigen Namen sind von der Gegenseite ABGELESEN: Am 09.08.2026 wurde
+    absichtlich ein ungueltiger geschickt, und die Fehlerantwort nannte die
+    Liste selbst. Bis dahin war ein Tippfehler nur zu erfahren, indem man dafuer
+    bezahlte — im gemessenen Fall 177 Sekunden Wartezeit bis zur Meldung, und
+    das je Dokument. Ueber einen Bestandslauf waere es derselbe Fehler 30 000
+    Mal.
+    """
+    import dataclasses
+
+    from mineru_ocr.config import GUELTIGE_BACKENDS
+    from mineru_ocr.errors import ConfigurationError
+
+    # Die Voreinstellung ist gueltig.
+    assert settings.backend in GUELTIGE_BACKENDS
+
+    with pytest.raises(ConfigurationError, match="kennt der Worker nicht"):
+        dataclasses.replace(settings, backend="vlm-auto-engien")
+
+    # Und jeder von der Gegenseite genannte Name geht durch.
+    for name in GUELTIGE_BACKENDS:
+        assert dataclasses.replace(settings, backend=name).backend == name
+
+
 # --- Verbindungen und Abbruch ---------------------------------------------
 
 
