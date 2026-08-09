@@ -197,14 +197,35 @@ def test_es_gibt_kein_runsync() -> None:
 # --- Die Fehlerzuordnung --------------------------------------------------
 
 
-async def test_404_beim_abfragen_ist_endgueltig(echte_settings: Settings) -> None:
-    """`status` wirft ResultLostError bei HTTP 404 — kein Weiterfragen, kein
-    Retry."""
+async def test_404_beendet_das_abfragen_aber_nicht_das_dokument(
+    echte_settings: Settings,
+) -> None:
+    """HTTP 404 beendet das ABFRAGEN endgueltig — das DOKUMENT aber nicht.
+
+    Der Test hiess frueher `test_404_beim_abfragen_ist_endgueltig` und sein
+    Docstring sagte „kein Weiterfragen, kein Retry". Geprueft hat er nur, DASS
+    geworfen wird; ueber die Terminalitaet stand nichts im Koerper. Und die
+    Einstufung ist das Gegenteil: `ResultLostError` erbt von
+    `TransientRunPodError` und gilt als wiederholbar — das Dokument laeuft neu
+    und wird dabei erneut bezahlt.
+
+    Wer nach dem alten Namen ging, hielt die Doppelbezahlung fuer
+    ausgeschlossen. Deshalb prueft dieser Test jetzt BEIDE Haelften, und sein
+    Name nennt sie.
+    """
+    from mineru_ocr.errors import FailureKind, classify_failure, should_run_again
+
     client, _ = _client(
         echte_settings, Aufzeichnung(httpx.Response(404, text="not found"))
     )
-    with pytest.raises(ResultLostError):
+    with pytest.raises(ResultLostError) as gefangen:
         await client.status("job-1")
+
+    # Das Abfragen ist vorbei — `await_result` bricht daran ab, statt
+    # weiterzupollen. Das ist die Haelfte, die der alte Name meinte.
+    # Und die andere Haelfte, die er verschwieg:
+    assert classify_failure(gefangen.value) is FailureKind.RETRYABLE
+    assert should_run_again(gefangen.value) is True
 
 
 async def test_402_ergibt_kontostands_ausnahme(echte_settings: Settings) -> None:

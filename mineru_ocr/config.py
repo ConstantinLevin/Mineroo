@@ -98,6 +98,15 @@ QUEUE_OCR = "ocr"
 
 QUEUE_MAINTENANCE = "maintenance"
 
+DEFAULT_WAIT_POLL_SECONDS: Final = 5.0
+"""Abstand der Rueckfallabfrage beim Warten auf ein Ergebnis, in Sekunden.
+
+Als Konstante und nicht als Zahl im Feld: `Settings.wait_poll_seconds` benutzt
+sie, und `db.wait_for_terminal` ebenfalls — und dessen Vorgabewert war vorher
+eine zweite, fest verdrahtete `5.0`. Der Docstring am Feld verbietet genau das
+(„weil eine Zahl an zwei Stellen beim naechsten Mal an einer geaendert wird"),
+und die Verletzung stand direkt daneben."""
+
 GUELTIGE_BACKENDS: Final = frozenset(
     {
         "hybrid-auto-engine",
@@ -332,11 +341,15 @@ class Settings:
     fuenfzehn Cent, aus zwei Gruenden: Pausieren kostet nichts, und der Rest muss
     ausreichen, die bereits laufenden Chunks noch zu Ende zu bezahlen."""
 
-    wait_poll_seconds: float = 5.0
+    wait_poll_seconds: float = DEFAULT_WAIT_POLL_SECONDS
     """Abstand der Rueckfallabfrage in `wait()`. Das Wecksignal ist der Normalweg;
     dieser Wert deckt den Fall, dass es nicht ankommt (abgerissene Verbindung,
     Schreibvorgang von aussen). Steht hier und nicht als Zahl in zwei Docstrings,
-    weil eine Zahl an zwei Stellen beim naechsten Mal an einer geaendert wird."""
+    weil eine Zahl an zwei Stellen beim naechsten Mal an einer geaendert wird.
+
+    Die Zahl selbst steht in `DEFAULT_WAIT_POLL_SECONDS` — genau wegen dieses
+    Satzes: `db.wait_for_terminal` trug sie ein zweites Mal fest verdrahtet, also
+    genau die Lage, die hier ausgeschlossen werden sollte."""
 
     balance_recheck_seconds: float = 900.0
     """Abstand der Kontostands-Pruefungen in der Warteschleife. Eine Viertelstunde

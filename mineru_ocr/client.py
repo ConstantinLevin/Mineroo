@@ -25,6 +25,7 @@ from types import TracebackType
 from typing import Any, Final, TypeVar
 
 import psycopg
+import procrastinate.exceptions
 from procrastinate import utils
 
 from . import db, tasks
@@ -699,12 +700,37 @@ class OCRClient:
                             juengster.queue,
                             juengster.lock,
                         )
-                    except Exception:  # noqa: BLE001
+                    except procrastinate.exceptions.ProcrastinateException as fehler:
+                        # NUR Procrastinates eigene Ablehnung wird uebergangen.
                         # Ein `aborted`-Job wird vom Werkzeug ABGEWIESEN (am
                         # Objekt belegt, Feature-Verifikation Punkt 19). Sein
                         # Heilungsweg ist `ocr_start`, nicht diese Methode —
                         # also uebergehen und NICHT mitzaehlen, statt mit einer
                         # Ausnahme den ganzen Stapel aufzuhalten.
+                        #
+                        # FRUEHER STAND HIER `except Exception` — und damit
+                        # verschwand JEDER Fehler in diesem `continue`: ein
+                        # Datenbank-Aussetzer, ein geloeschter Job, ein
+                        # Programmierfehler. Die Kommandozeile uebersetzt die
+                        # Differenz zwischen gefundenen und vorgelegten Jobs
+                        # anschliessend in „vermutlich abgebrochene Jobs
+                        # (`aborted`)". Ein Postgres-Aussetzer waehrend eines
+                        # Stapel-Retrys ueber 200 Dokumente erschien damit als
+                        # „0 von 200 wieder vorgelegt — vermutlich abgebrochen":
+                        # eine Fehldiagnose, die als plausible Auskunft auftritt
+                        # und die niemand als falsch erkennen kann.
+                        #
+                        # Alles, was NICHT von Procrastinate kommt, geht deshalb
+                        # jetzt nach oben. Ein lauter Abbruch mitten im Stapel
+                        # ist unangenehm; eine stille Falschmeldung ueber den
+                        # ganzen Stapel ist schlimmer.
+                        log.debug(
+                            "Job %s wurde nicht wieder vorgelegt (%s: %s) — "
+                            "vermutlich `aborted`.",
+                            juengster.id,
+                            type(fehler).__name__,
+                            fehler,
+                        )
                         continue
                     erledigt += 1
             return erledigt

@@ -367,7 +367,7 @@ def retry(
 
     Durchgriff auf Procrastinates eigenes Werkzeug. Abgebrochene Jobs (`aborted`,
     etwa vom Herunterfahren) nimmt es NICHT an — die werden uebersprungen und
-    gemeldet; ihr Weg ist `add` (erneut einreihen).
+    gemeldet; ihr Weg ist `ocr` (erneut einreihen).
 
     Jedes wieder vorgelegte Dokument wird vollstaendig neu verarbeitet und neu
     bezahlt. Das Kommando sagt vorher, um wie viele es geht, und fragt nach —

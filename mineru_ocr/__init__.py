@@ -25,7 +25,7 @@ Und derselbe Dienst ueber die Kommandozeile:
 
     mineru-ocr setup
     mineru-ocr daemon                   # in einem eigenen Fenster: der Exekutor
-    mineru-ocr add ~/Scans
+    mineru-ocr ocr ~/Scans
     mineru-ocr status
 
 Was hier steht, ist die zugesicherte Flaeche. Alles andere in den Untermodulen

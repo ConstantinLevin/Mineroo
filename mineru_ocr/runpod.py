@@ -330,7 +330,30 @@ class RunPodClient:
             raise TransientRunPodError(f"{was}: Transportfehler: {fehler}") from fehler
 
         self._pruefen(antwort, was)
-        geparst = antwort.json()
+
+        # Das Parsen wird UEBERSETZT wie ueberall sonst. `_anfragen` tut das fuer
+        # den REST-Weg seit jeher; hier stand ein nacktes `antwort.json()`, und
+        # eine Nicht-JSON- oder Nicht-Objekt-Antwort — eine Fehlerseite eines
+        # Zwischenservers etwa, mit HTTP 200 ausgeliefert — kam als rohes
+        # `ValueError` bzw. `AttributeError` heraus.
+        #
+        # Das ist nicht bloss unschoen: `classify_failure` kennt diese Typen
+        # nicht und stuft Unbekanntes als ENDGUELTIG ein. Eine voruebergehende
+        # Stoerung haette so ein Dokument endgueltig scheitern lassen.
+        try:
+            geparst = antwort.json()
+        except ValueError as fehler:
+            raise TransientRunPodError(
+                f"{was}: Antwort war kein JSON ({fehler}). Bei GraphQL ist das "
+                f"typischerweise eine Fehlerseite eines Zwischenservers, mit "
+                f"HTTP 200 ausgeliefert — also voruebergehend."
+            ) from fehler
+        if not isinstance(geparst, dict):
+            raise TransientRunPodError(
+                f"{was}: Antwort ist {type(geparst).__name__} statt eines "
+                f"Objekts. Erwartet wurde eine GraphQL-Antwort mit `data` oder "
+                f"`errors`."
+            )
 
         # GraphQL antwortet auf Fehler mit HTTP 200 und einem `errors`-Feld. Wer
         # nur den Antwortcode prueft, haelt eine Fehlerantwort fuer ein Ergebnis
@@ -456,9 +479,27 @@ class RunPodClient:
         Raises:
             ResultLostError: HTTP 404. Das Ergebnis ist nicht mehr abrufbar (die
                 Aufbewahrung von rund dreissig Minuten ist abgelaufen) oder die
-                Kennung ist unbekannt. ENDGUELTIG — weiter abzufragen kann nie
-                mehr etwas liefern, und ein neuer Versuch wuerde den Parse ein
-                zweites Mal bezahlen, ohne die Ursache zu beheben.
+                Kennung ist unbekannt.
+
+                ZWEI DINGE, DIE MAN AUSEINANDERHALTEN MUSS — hier stand lange
+                nur das erste, und daraus wurde eine falsche Zusicherung:
+
+                Das ABFRAGEN dieses Jobs ist endgueltig vorbei. Weiter zu
+                fragen kann nie mehr etwas liefern, deshalb beendet
+                `await_result` die Schleife sofort.
+
+                Das DOKUMENT ist es nicht. `ResultLostError` erbt von
+                `TransientRunPodError`, `classify_failure` stuft es als
+                `RETRYABLE` ein, und die Warteschlange legt den Job neu vor —
+                das Dokument laeuft von vorn und wird dabei erneut bezahlt.
+
+                Frueher stand hier „ENDGUELTIG — ein neuer Versuch wuerde den
+                Parse ein zweites Mal bezahlen, ohne die Ursache zu beheben".
+                Der zweite Halbsatz beschreibt zutreffend, was passiert; das
+                Wort davor behauptete, es passiere nicht. Fuenfzig Zeilen
+                weiter unten sagte `await_result` das Gegenteil und verwies
+                dabei ausgerechnet auf diese Stelle. Am Verhalten gemessen
+                stimmt `errors.py`: wiederholbar.
             TransientRunPodError: Transportfehler oder HTTP 5xx — hier wird
                 weiter abgefragt.
             ConfigurationError: HTTP 401 oder 403.

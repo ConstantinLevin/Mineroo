@@ -38,6 +38,8 @@ from procrastinate.jobs import Job
 from psycopg.rows import class_row
 from psycopg.types.json import Jsonb
 
+from .config import DEFAULT_WAIT_POLL_SECONDS
+
 from .errors import (
     ConfigurationError,
     DatabaseError,
@@ -1031,7 +1033,7 @@ def wait_for_terminal(
     conn: psycopg.Connection[Any],
     sha256: str,
     timeout: float | None = None,
-    poll_seconds: float = 5.0,
+    poll_seconds: float = DEFAULT_WAIT_POLL_SECONDS,
 ) -> DocumentRow:
     """Wartet, bis ein Dokument endgueltig ist, und gibt die Zeile zurueck.
 

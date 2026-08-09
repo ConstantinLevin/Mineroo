@@ -330,13 +330,14 @@ async def async_conn(_test_datenbank: str) -> AsyncIterator[Any]:
         await conn.close()
 
 
-@pytest.fixture
-def mock_runpod() -> Any:
-    """Ein RunPod-Zugang mit vorgegebenen Antworten, ohne Netz und ohne Kosten.
-
-    Wird in Phase B gefuellt: ein `httpx.MockTransport`, der Absenden und
-    Abfragen bedient und dabei die konservierten Antworten ausliefert. Der
-    Transport ist die Naht, an der das Netz endet — `RunPodClient` nimmt einen
-    fertigen HTTP-Client entgegen, genau dafuer.
-    """
-    pytest.skip("Vorrichtung folgt in Phase B")
+# EINE VORRICHTUNG STAND HIER UND WURDE VON KEINEM TEST BENUTZT: `mock_runpod`,
+# ein Platzhalter aus Phase A mit `pytest.skip("Vorrichtung folgt in Phase B")`
+# im Koerper. Phase B ist gebaut, und sie hat den Platzhalter nicht gebraucht —
+# `tests/test_runpod.py` setzt einen `httpx.MockTransport` unmittelbar ein, und
+# `tests/test_executor.py` benutzt eine eigene Umsetzung des `RunPodAccess`-
+# Protokolls. Beides ist naeher an der jeweiligen Naht als eine gemeinsame
+# Vorrichtung es waere.
+#
+# Entfernt statt stehengelassen: Eine Vorrichtung, die aussieht, als gaebe es
+# einen vorgesehenen Weg, den aber niemand geht, kostet beim naechsten Leser
+# genau die Minute, die er braucht, um festzustellen, dass sie nichts tut.

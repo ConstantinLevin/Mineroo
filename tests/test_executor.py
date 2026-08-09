@@ -24,9 +24,11 @@ from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, get_document, insert_document
 from mineru_ocr.errors import (
     ConfigurationError,
+    CorruptDocumentError,
     InsufficientBalanceError,
     TerminalRunPodError,
     TransientRunPodError,
+    UnsupportedTypeError,
 )
 from mineru_ocr.executor import process_document, wait_for_balance
 from mineru_ocr.mime import DocumentType
@@ -998,6 +1000,64 @@ async def test_echte_fehlerantwort_landet_vollstaendig_in_raw(
     assert ausgabe["ok"] is False
     assert "Traceback" in ausgabe["traceback"]
     assert ausgabe["debug"]["gpu"]["name"].startswith("NVIDIA")
+
+
+async def test_eingabeprobleme_enden_input_error_nicht_failed(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Was VOR dem ersten bezahlten Aufruf schiefgeht, ist `input_error`.
+
+    `db.py` trennt die beiden Endzustaende genau daran: `failed` beantwortet
+    „wofuer haben wir bezahlt?", `input_error` sagt „mit dieser Eingabe konnten
+    wir nichts anfangen". Zwei Faelle landeten trotzdem auf `failed`, beide
+    ueber die Regel „Unbekanntes ist endgueltig":
+
+        eine MIME-Zeichenkette, zu der es keinen bekannten Typ gibt,
+        und eine Quelldatei, die zwischen Einreihen und Verarbeiten
+        verschwindet.
+
+    Bezahlt ist in beiden Faellen nichts. Und der Unterschied ist nicht bloss
+    Etikett: `input_error` steht im Terminal-Guard und wird nicht wieder
+    angefasst, `failed` ausdruecklich schon — ein Retry von Hand liesse ein
+    Dokument mit unbekanntem MIME-Typ also erneut anlaufen, ohne dass sich
+    daran etwas aendern koennte.
+    """
+    # 1. Unbekannte MIME-Zeichenkette in der Zeile.
+    sha_mime, _ = _anlegen(
+        db_conn, tmp_path, b"inhalt", name="m.png", typ=DocumentType.PNG
+    )
+    db_conn.execute(
+        "UPDATE documents SET mime = %s WHERE sha256 = %s",
+        ("application/x-gibt-es-nicht", sha_mime),
+    )
+    runpod = FalscherRunPod([_fertige_antwort()])
+    with pytest.raises(UnsupportedTypeError):
+        await process_document(
+            sha_mime, settings=exec_settings, runpod=runpod, pool=pool
+        )
+    zeile = get_document(db_conn, sha_mime)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
+    # Und es wurde NICHTS abgesendet.
+    assert runpod.abgesendet == []
+
+    # 2. Quelldatei zwischen Einreihen und Verarbeiten geloescht.
+    sha_weg, pfad = _anlegen(
+        db_conn, tmp_path, b"gleich weg", name="w.png", typ=DocumentType.PNG
+    )
+    pfad.unlink()
+    runpod2 = FalscherRunPod([_fertige_antwort()])
+    with pytest.raises(CorruptDocumentError):
+        await process_document(
+            sha_weg, settings=exec_settings, runpod=runpod2, pool=pool
+        )
+    zeile = get_document(db_conn, sha_weg)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
+    assert runpod2.abgesendet == []
 
 
 def test_ungueltiges_backend_faellt_lokal_auf(settings: Settings) -> None:

@@ -934,6 +934,20 @@ def is_empty(result: dict[str, Any]) -> bool:
         # Ein Bild ohne Bildunterschrift traegt keinen Text und trotzdem Inhalt.
         if isinstance(eintrag, dict) and eintrag.get("img_path"):
             return False
+
+    # UND ZULETZT DIE BILDER SELBST. Sie standen hier nicht, und das war eine
+    # Luecke mit Ansage: Am `images`-Feld von `ChunkArtifacts` steht ausgezaehlt,
+    # dass die Antwort regelmaessig MEHR Bilder traegt, als die `content_list`
+    # ueber `img_path` erwaehnt — gemessen 3 gegen 1 Erwaehnung, 7 gegen 4, 6
+    # gegen 1, 6 gegen 3. Ein Dokument, dessen einziger Ertrag solche unerwaehnten
+    # Bilder sind, lief damit durch beide Pruefungen darueber und galt als leer.
+    #
+    # `empty` heisst laut Vertrag: nie wieder ansehen. Bezahlte Bilder auf diesem
+    # Weg zu verlieren waere genau der unsichtbare Verlust, gegen den der eigene
+    # Grundsatz dieser Funktion steht — „im Zweifel NICHT leer".
+    bilder = result.get("images")
+    if isinstance(bilder, dict) and bilder:
+        return False
     return True
 
 

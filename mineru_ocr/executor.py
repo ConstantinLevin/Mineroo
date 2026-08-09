@@ -42,11 +42,13 @@ from psycopg_pool import AsyncConnectionPool
 from . import assembly, chunking, db
 from .config import Settings
 from .errors import (
+    CorruptDocumentError,
     InputError,
     InsufficientBalanceError,
     SourceChangedError,
     TerminalRunPodError,
     TransientRunPodError,
+    UnsupportedTypeError,
     should_run_again,
 )
 from .mime import DocumentType
@@ -287,7 +289,27 @@ async def process_document(
     try:
         # --- 2.: Datei lesen und den Hash gegenpruefen -------------------
         pfad = Path(zeile.source_path)
-        rohbytes = pfad.read_bytes()
+        try:
+            rohbytes = pfad.read_bytes()
+        except OSError as fehler:
+            # Zwischen Einreihen und Verarbeiten geloescht, verschoben oder
+            # unlesbar geworden. Das ist ein EINGABE-Problem und kein bezahlter
+            # Fehlschlag — es passiert vor jedem Kontakt mit RunPod.
+            #
+            # Ohne diese Uebersetzung fiel ein `FileNotFoundError` durch die
+            # Regel „Unbekanntes ist endgueltig" auf `failed`, also in den
+            # Zustand, der laut `db.py` die Frage „wofuer haben wir bezahlt?"
+            # beantwortet. Bezahlt war hier nichts.
+            #
+            # `SourceChangedError` waere das falsche Etikett: Die Datei hat sich
+            # nicht geaendert, sie ist weg. Beide sind `InputError`, die
+            # Meldung soll aber sagen, was wirklich los ist.
+            raise CorruptDocumentError(
+                f"Die Quelldatei unter {zeile.source_path} ist nicht lesbar: "
+                f"{type(fehler).__name__}: {fehler}. Sie wurde zwischen dem "
+                f"Einreihen und dem Verarbeiten geloescht, verschoben oder "
+                f"unzugaenglich gemacht. Es wurde nichts bezahlt."
+            ) from fehler
         tatsaechlich = hashlib.sha256(rohbytes).hexdigest()
         if tatsaechlich != sha256:
             raise SourceChangedError(
@@ -656,7 +678,19 @@ def _typ_aus_mime(mime: str) -> str:
     for typ in DocumentType:
         if typ.mime == mime:
             return typ.value
-    raise TerminalRunPodError(
+    # `UnsupportedTypeError` (also ein `InputError`) und NICHT
+    # `TerminalRunPodError`: Diese Stelle liegt VOR jedem Kontakt mit RunPod.
+    # Hier ist noch kein Cent ausgegeben, und `db.py` trennt die beiden
+    # Endzustaende genau daran — `failed` beantwortet „wofuer haben wir
+    # bezahlt?", `input_error` sagt „mit dieser Eingabe konnten wir nichts
+    # anfangen". Ein unbekannter MIME-Typ ist der zweite Fall.
+    #
+    # Praktische Folge, weshalb es nicht bloss Etikett ist: `input_error` steht
+    # im Terminal-Guard und wird nicht wieder angefasst, `failed` ausdruecklich
+    # schon (fuer den Retry von Hand). Ein Dokument, dessen MIME-Typ das
+    # Programm nicht kennt, gehoert in die erste Gruppe — ein Wiederlauf aendert
+    # daran nichts und kostet nur.
+    raise UnsupportedTypeError(
         f"Die Zeile traegt die MIME-Zeichenkette {mime!r}, zu der es keinen "
         f"bekannten Typ gibt. Entweder wurde die Zeile von einer aelteren "
         f"Fassung angelegt, oder die Tabelle in mime.py hat sich geaendert."
