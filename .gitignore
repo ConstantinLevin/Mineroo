@@ -1,6 +1,10 @@
 # Python-Bytecode und Werkzeug-Zwischenstaende — nichts davon gehoert ins
-# Repository. Das Wurzel-.gitignore dieses Repos deckt sie nicht ab, deshalb
-# hier.
+# Repository.
+#
+# Diese Datei war bis zum 10.08.2026 die .gitignore eines UNTERVERZEICHNISSES:
+# Das Projekt lag im Repository des Home-Verzeichnisses, und der Kommentar hier
+# verwies auf dessen Wurzel-.gitignore. Seit der Herausloesung IST dies die
+# Wurzel-.gitignore, und der Verweis ist entfallen.
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -9,3 +13,9 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Abdeckungs-Zwischenstand von `coverage run`. Bis zum 10.08.2026 versehentlich
+# mitgefuehrt (Commit 76b2abf, derselbe Griff, der auch die Diskussionsstaende
+# hereinbrachte). Die Datei aendert sich bei jedem Lauf und erzeugt sonst
+# dauerhaftes Rauschen im Arbeitsbaum.
+.coverage
