@@ -498,3 +498,12 @@ def main() -> None:
     """
     app.pretty_exceptions_enable = False
     app()
+
+
+if __name__ == "__main__":  # pragma: no cover — nur der Modul-Aufruf
+    # `python -m mineru_ocr.cli …` ohne installiertes Paket. Ohne diesen Block
+    # tat der Aufruf NICHTS und endete mit Exit 0 — kein Kommando, keine
+    # Meldung, kein Fehler. Wer aus dem Verzeichnis heraus arbeitet (so steht
+    # es in CLAUDE.md), probiert genau ihn zuerst und haelt das stille
+    # Nichtstun fuer einen Erfolg.
+    main()
