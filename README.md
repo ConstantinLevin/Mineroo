@@ -216,8 +216,25 @@ Teilstücke.
 - **`ocr_concurrency = 24` ist gesetzt, nicht gemessen.** Messbar nur im
   Bestandslauf.
 
-Die Aufgabenverwaltung läuft über **beads** (`bd list`), nicht über Dateien in
-diesem Repository.
+Die Aufgabenverwaltung läuft über **beads**, nicht über Dateien in diesem
+Repository. Aus diesem Verzeichnis heraus braucht sie allerdings einen Zusatz:
+
+```bash
+bd -C /Users/jurgen list --status open
+```
+
+**Warum nicht einfach `bd list`:** Die beads-Datenbank liegt in
+`/Users/jurgen/.beads/`, und `bd` sucht seinen Arbeitsbereich zwar aufwärts, hört
+aber an der Repository-Grenze auf — die seit der Herauslösung am 10.08.2026
+zwischen diesem Projekt und der Datenbank verläuft. Gemessen am 12.08.2026:
+`bd where` meldet von hier aus „No active beads workspace found", während
+derselbe Aufruf aus `/Users/jurgen` die 13 offenen Aufgaben liefert.
+`BEADS_DIR=/Users/jurgen/.beads` wirkt ebenso.
+
+Ein eigenes `bd init` wäre **falsch**: Es legte einen zweiten Tracker an, während
+die Aufgaben dieses Projekts mit denen der übrigen in *einer* Datenbank stehen
+und dort auch hingehören. Welcher der Wege dauerhaft eingerichtet wird, ist eine
+offene Entscheidung — sie steht als Aufgabe `jurgen-s36` im Tracker selbst.
 
 ---
 
