@@ -226,10 +226,22 @@ bd -C /Users/jurgen list --status open
 **Warum nicht einfach `bd list`:** Die beads-Datenbank liegt in
 `/Users/jurgen/.beads/`, und `bd` sucht seinen Arbeitsbereich zwar aufwärts, hört
 aber an der Repository-Grenze auf — die seit der Herauslösung am 10.08.2026
-zwischen diesem Projekt und der Datenbank verläuft. Gemessen am 12.08.2026:
-`bd where` meldet von hier aus „No active beads workspace found", während
-derselbe Aufruf aus `/Users/jurgen` die 13 offenen Aufgaben liefert.
-`BEADS_DIR=/Users/jurgen/.beads` wirkt ebenso.
+zwischen diesem Projekt und der Datenbank verläuft. Am 12.08.2026 gemessen, je
+Kommando getrennt:
+
+| Aufruf | von hier aus | aus `/Users/jurgen` |
+|---|---|---|
+| `bd where` (nennt den Arbeitsbereich) | `Error: No active beads workspace found.` | `/Users/jurgen/.beads`, prefix `jurgen`, database `/Users/jurgen/.beads/embeddeddolt` |
+| `bd list --status open` (nennt die Aufgaben) | `Error: no beads database found` | die Aufgabenliste |
+
+`bd where` gibt also den Ort aus, nicht die Aufgaben — die beiden Kommandos
+beantworten verschiedene Fragen und werden hier deshalb getrennt geführt. Mit
+`bd -C /Users/jurgen …` oder `BEADS_DIR=/Users/jurgen/.beads …` liefern beide aus
+diesem Verzeichnis dasselbe wie aus dem Home-Verzeichnis.
+
+Eine Anzahl offener Aufgaben steht hier bewusst **nicht**: Sie ändert sich mit
+jedem Eintrag, und eine Zahl in einem Dokument, die niemand mitpflegt, ist beim
+nächsten Lesen falsch. Der Nachprüf-Ort ist der Aufruf selbst.
 
 Ein eigenes `bd init` wäre **falsch**: Es legte einen zweiten Tracker an, während
 die Aufgaben dieses Projekts mit denen der übrigen in *einer* Datenbank stehen
