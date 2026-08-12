@@ -109,34 +109,78 @@ def test_der_modulaufruf_zeigt_wirklich_die_hilfe() -> None:
     )
 
 
-def test_ein_unbekanntes_kommando_endet_mit_zwei() -> None:
-    """Auch der Fehlerweg geht durch `main()` — und liefert den vertraglichen Code.
+RICH_RAHMEN = ("╭", "╰", "│", "─")
+"""Die Kastenzeichen, mit denen Rich einen Traceback rahmt. Sie sind der
+Unterschied, an dem sich `main()` von `app()` messen laesst — und sie bleiben
+auch dann stehen, wenn `NO_COLOR` gesetzt ist und die Ausgabe in eine Pipe
+geht (beides nachgemessen am 12.08.2026)."""
 
-    Zweck ist nicht der Exit-Code an sich (den prueft `test_cli.py` bereits ueber
-    `CliRunner`), sondern dass er AUF DIESEM WEG ankommt. Ein `__main__`-Block,
-    der `app()` statt `main()` aufriefe, wuerde beim `--help` nicht auffallen:
-    Die Hilfe saehe gleich aus, und der Unterschied — `main()` schaltet
-    `pretty_exceptions_enable` ab, damit ein Traceback keine lokalen Variablen
-    und damit moeglicherweise eine `Settings` mit dem Schluessel druckt — zeigt
-    sich erst, wenn etwas schiefgeht.
 
-    Ein unbekanntes Kommando ist der einzige Fehlerweg, der ohne Datenbank,
-    ohne Netz und ohne Kosten erreichbar ist.
+def test_der_modulaufruf_geht_wirklich_durch_main() -> None:
+    """Ein unbehandelter Fehler kommt SCHLICHT heraus, nicht rich-formatiert.
+
+    HIER STAND EIN TEST, DER SEINE EIGENE ZUSAGE NICHT EINGELOEST HAT. Er hiess
+    `test_ein_unbekanntes_kommando_endet_mit_zwei`, prueste `mineru-ocr
+    gibtesnicht` auf Exit-Code 2 und behauptete im Docstring, damit sei
+    gesichert, dass der Modul-Weg durch `main()` laeuft. Nachgemessen
+    (12.08.2026) stimmt das nicht: Ein unbekanntes Kommando endet auch bei
+    direktem `app()`-Aufruf mit 2. Der Test waere gruen geblieben, waehrend
+    genau die Zusage gebrochen ist, um derentwillen er dastand.
+
+    WORUM ES WIRKLICH GEHT: `main()` setzt `app.pretty_exceptions_enable =
+    False`, bevor es `app()` aufruft. Mit der Voreinstellung druckt Typer bei
+    einer unbehandelten Ausnahme einen rich-formatierten Traceback SAMT den
+    lokalen Variablen jedes Rahmens — und unter denen kann eine `Settings`
+    stehen. Deren `__repr__` maskiert den Schluessel zwar, aber sich darauf zu
+    verlassen hiesse, eine Sicherheitszusage an die Darstellungs-Logik einer
+    fremden Bibliothek zu haengen. Die volle Begruendung steht an `cli.main`.
+
+    Ein `__main__`-Block, der `app()` statt `main()` aufriefe, faellt beim
+    `--help` NICHT auf: Die Hilfe saehe zeichengleich aus. Sichtbar wird der
+    Unterschied nur, wenn eine Ausnahme durchschlaegt.
+
+    DER GEWAEHLTE FEHLERWEG, und warum es dieser ist: Jedes Kommando in `cli.py`
+    faengt ausschliesslich `MineruOcrError`. Alles andere entkommt und landet bei
+    Typer — das ist die Stelle, an der sich die Einstellung zeigt. Ein
+    syntaktisch ungueltiger Verbindungs-String erzeugt in psycopg eine
+    `ProgrammingError`, also gerade KEINEN `MineruOcrError`, und er wird
+    zurueckgewiesen, BEVOR irgendeine Verbindung aufgebaut wird. Damit braucht
+    dieser Test keine laufende Datenbank, ruehrt keine an und kostet nichts.
+
+    Gemessen wurde der Kontrast am 12.08.2026, mit denselben
+    Umgebungsvariablen wie unten: ueber `app()` kommen 12126 Zeichen mit
+    Kastenzeichen heraus, ueber `main()` 2711 ohne.
     """
     umgebung = dict(os.environ)
     umgebung["COLUMNS"] = "200"
     umgebung["NO_COLOR"] = "1"
 
     lauf = subprocess.run(
-        [sys.executable, "-m", "mineru_ocr.cli", "gibtesnicht"],
+        [sys.executable, "-m", "mineru_ocr.cli", "setup", "--dsn", "kein-gueltiger-dsn ==="],
         cwd=WURZEL,
         env=umgebung,
         capture_output=True,
         text=True,
         timeout=60,
     )
+    ausgabe = lauf.stdout + lauf.stderr
 
-    assert lauf.returncode == 2, (
-        f"Erwartet 2 (falsche Benutzung), bekam {lauf.returncode}. "
-        f"stdout:\n{lauf.stdout}\nstderr:\n{lauf.stderr}"
+    # Erst die Voraussetzung des Tests selbst: Es MUSS eine unbehandelte
+    # Ausnahme durchgeschlagen sein. Faengt cli.py diesen Fall eines Tages ab
+    # oder wandelt psycopg ihn in einen MineruOcrError, misst der Test nichts
+    # mehr — und soll das sagen, statt still gruen zu bleiben.
+    assert "Traceback (most recent call last)" in ausgabe, (
+        "Es ist keine unbehandelte Ausnahme durchgeschlagen, also prueft dieser "
+        "Test die Traceback-Form gar nicht mehr. Entweder faengt `cli.setup` "
+        "den Fall inzwischen ab, oder psycopg wirft etwas anderes. Der Test "
+        f"braucht dann einen neuen Fehlerweg. Ausgabe war:\n{ausgabe}"
+    )
+
+    gefunden = [z for z in RICH_RAHMEN if z in ausgabe]
+    assert not gefunden, (
+        f"Der Traceback ist rich-formatiert (Kastenzeichen {gefunden} gefunden). "
+        f"Das heisst: `pretty_exceptions_enable` steht auf True, der "
+        f"`__main__`-Block ruft also nicht `main()` auf, sondern `app()` "
+        f"unmittelbar. Damit druckt ein Absturz die lokalen Variablen jedes "
+        f"Rahmens — moeglicherweise samt einer `Settings`. Ausgabe war:\n{ausgabe}"
     )
