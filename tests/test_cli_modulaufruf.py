@@ -109,11 +109,12 @@ def test_der_modulaufruf_zeigt_wirklich_die_hilfe() -> None:
     )
 
 
-RICH_RAHMEN = ("╭", "╰", "│", "─")
-"""Die Kastenzeichen, mit denen Rich einen Traceback rahmt. Sie sind der
-Unterschied, an dem sich `main()` von `app()` messen laesst — und sie bleiben
-auch dann stehen, wenn `NO_COLOR` gesetzt ist und die Ausgabe in eine Pipe
-geht (beides nachgemessen am 12.08.2026)."""
+SCHLICHTER_RAHMEN = '  File "'
+"""Die Signatur eines gewoehnlichen Python-Tracebacks: Das `traceback`-Modul
+schreibt je Rahmen eine Zeile `  File "<pfad>", line N, in <funktion>`. Rich
+stellt Pfade anders dar und erzeugt diese Form nie. Nachgemessen am 12.08.2026
+unter drei Kodierungen (Vorgabe, `ascii`, `utf-8`): im schlichten Traceback
+immer vorhanden, im rich-formatierten nie."""
 
 
 def test_der_modulaufruf_geht_wirklich_durch_main() -> None:
@@ -147,13 +148,44 @@ def test_der_modulaufruf_geht_wirklich_durch_main() -> None:
     zurueckgewiesen, BEVOR irgendeine Verbindung aufgebaut wird. Damit braucht
     dieser Test keine laufende Datenbank, ruehrt keine an und kostet nichts.
 
-    Gemessen wurde der Kontrast am 12.08.2026, mit denselben
-    Umgebungsvariablen wie unten: ueber `app()` kommen 12126 Zeichen mit
-    Kastenzeichen heraus, ueber `main()` 2711 ohne.
+    WAS HIER GEPRUEFT WIRD, und das ist beim ersten Anlauf zu schwach gewesen:
+    Die erste Fassung dieses Tests suchte nach Rich-Kastenzeichen (`╭`, `│`, …)
+    und verlangte, dass keine da sind. Das war eine KOSMETISCHE Eigenschaft und
+    von der Kodierung des Kindprozesses abhaengig: Unter
+    `PYTHONIOENCODING=ascii` weicht Rich auf ASCII-Rahmen aus, die Suche fand
+    nichts, und der Test waere trotz direktem `app()`-Aufruf gruen geblieben
+    (nachgemessen 12.08.2026). Der Test erbte diese Variable ausserdem aus der
+    Umgebung, kontrollierte sie also nicht einmal.
+
+    Jetzt wird zweierlei geprueft, beides unabhaengig von der Kodierung und
+    beides an der Sache statt an der Darstellung:
+
+        DIE LOKALEN VARIABLEN SELBST. Das ist die Zusage, um die es geht, und
+        sie ist direkt beobachtbar. Mit eingeschalteten Rich-Tracebacks druckt
+        Typer je Rahmen eine Tabelle der lokalen Namen — gemessen steht darin
+        woertlich `einstellung = Settings(db_dsn='kein-gueltiger-dsn ===',
+        endpoint_id='l79lebhinxaqjz', api_key='***', …)`. Eine `Settings`
+        landet also wirklich im Traceback. Dass der Schluessel dabei als `***`
+        erscheint, ist genau der Umstand, auf den man sich NICHT verlassen soll:
+        Die Maskierung steckt in `Settings.__repr__`, und eine
+        Sicherheitszusage an die Darstellungs-Logik einer fremden Bibliothek zu
+        haengen ist der Fehler, den `cli.main` ausdruecklich vermeidet.
+
+        DIE FORM DES TRACEBACKS. Ein gewoehnlicher Python-Traceback traegt je
+        Rahmen eine Zeile `  File "…", line N, in …`; Rich erzeugt diese Form
+        nie. Zwei unabhaengige Merkmale sind besser als eines: Wenn eines durch
+        eine kuenftige Fassung von Typer oder Rich stumpf wird, faellt es auf,
+        weil das andere anschlaegt.
+
+    Und die Kodierung des Kindprozesses wird unten festgelegt statt geerbt —
+    nicht weil die Pruefungen sie noch braeuchten, sondern weil ein Test, dessen
+    Aussagekraft an einer Umgebungsvariablen haengt, die er nicht setzt, genau
+    so still versagt, wie es hier passiert ist.
     """
     umgebung = dict(os.environ)
     umgebung["COLUMNS"] = "200"
     umgebung["NO_COLOR"] = "1"
+    umgebung["PYTHONIOENCODING"] = "utf-8"
 
     lauf = subprocess.run(
         [sys.executable, "-m", "mineru_ocr.cli", "setup", "--dsn", "kein-gueltiger-dsn ==="],
@@ -176,11 +208,23 @@ def test_der_modulaufruf_geht_wirklich_durch_main() -> None:
         f"braucht dann einen neuen Fehlerweg. Ausgabe war:\n{ausgabe}"
     )
 
-    gefunden = [z for z in RICH_RAHMEN if z in ausgabe]
-    assert not gefunden, (
-        f"Der Traceback ist rich-formatiert (Kastenzeichen {gefunden} gefunden). "
-        f"Das heisst: `pretty_exceptions_enable` steht auf True, der "
-        f"`__main__`-Block ruft also nicht `main()` auf, sondern `app()` "
-        f"unmittelbar. Damit druckt ein Absturz die lokalen Variablen jedes "
-        f"Rahmens — moeglicherweise samt einer `Settings`. Ausgabe war:\n{ausgabe}"
+    # Die Zusage selbst: keine lokalen Variablen in der Ausgabe. `Settings(` ist
+    # dafuer das Mass, weil eine erzeugte `Settings` nur in der Locals-Tabelle
+    # steht — die Quellzeile daneben lautet `Settings.load(...)`, nicht
+    # `Settings(`. Nachgemessen unter `ascii` wie unter `utf-8`.
+    assert "Settings(" not in ausgabe, (
+        "Die Ausgabe enthaelt eine ausgeschriebene `Settings` — also druckt "
+        "Typer die lokalen Variablen der Rahmen. Das heisst: "
+        "`pretty_exceptions_enable` steht auf True, der `__main__`-Block ruft "
+        "nicht `main()` auf, sondern `app()` unmittelbar. Genau davor steht die "
+        "Begruendung an `cli.main`: Der Schluessel erscheint hier zwar als "
+        "`***`, aber nur, weil `Settings.__repr__` ihn maskiert — darauf soll "
+        f"sich die Zusage nicht stuetzen. Ausgabe war:\n{ausgabe}"
+    )
+
+    assert SCHLICHTER_RAHMEN in ausgabe, (
+        f"Im Traceback fehlt die Zeilenform {SCHLICHTER_RAHMEN!r}, die das "
+        f"`traceback`-Modul je Rahmen schreibt. Der Traceback stammt also nicht "
+        f"aus Pythons eigener Ausgabe, sondern von Rich — dieselbe Ursache wie "
+        f"oben. Ausgabe war:\n{ausgabe}"
     )
