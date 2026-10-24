@@ -1146,7 +1146,10 @@ def _runpod_ueber_http(
 
 
 async def test_herunterfahren_bricht_den_laufenden_runpod_job_ab(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+    db_conn: psycopg.Connection[Any],
+    int_settings: Settings,
+    tmp_path: Path,
+    erzeuger: Erzeuger,
 ) -> None:
     """Faehrt der Daemon herunter, waehrend ein Job bei RunPod laeuft, geht
     `/cancel` fuer genau diesen Job hinaus, bevor der Daemon zurueckkehrt.
@@ -1154,9 +1157,8 @@ async def test_herunterfahren_bricht_den_laufenden_runpod_job_ab(
     Sonst liefe der Job bei RunPod weiter und kostete Geld, ohne dass ihn noch
     jemand abholt. Der ECHTE Daemon laeuft, nur RunPod ist ersetzt.
     """
-    tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "abbruch.png")
-    tasks.defer_document(sha)
+    erzeuger.einreihen(sha)
     gegenstelle = ErsatzRunPodHttp(lambda job, nr, sek: {"id": job, "status": "IN_PROGRESS"})
     runpod = _runpod_ueber_http(int_settings, gegenstelle)
 
@@ -1179,13 +1181,15 @@ async def test_herunterfahren_bricht_den_laufenden_runpod_job_ab(
 
 
 async def test_aufgegebener_job_wird_vor_der_wiederholung_abgebrochen_durch_den_daemon(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+    db_conn: psycopg.Connection[Any],
+    int_settings: Settings,
+    tmp_path: Path,
+    erzeuger: Erzeuger,
 ) -> None:
     """Reisst ein Job sein Zeitbudget, geht `/cancel` fuer ihn hinaus, BEVOR der
     zweite Versuch ein neues `/run` schickt."""
-    tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "budget.png")
-    tasks.defer_document(sha)
+    erzeuger.einreihen(sha)
     knapp = dataclasses.replace(int_settings, job_timeout_seconds=0.3)
     gegenstelle = ErsatzRunPodHttp(lambda job, nr, sek: {"id": job, "status": "IN_PROGRESS"})
     runpod = _runpod_ueber_http(knapp, gegenstelle)
@@ -1204,7 +1208,10 @@ async def test_aufgegebener_job_wird_vor_der_wiederholung_abgebrochen_durch_den_
 
 
 async def test_lange_in_der_warteschlange_ist_kein_grund_aufzugeben(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+    db_conn: psycopg.Connection[Any],
+    int_settings: Settings,
+    tmp_path: Path,
+    erzeuger: Erzeuger,
 ) -> None:
     """Ein Job, der dreimal laenger in der Schlange steht, als das Zeitbudget
     erlaubt, wird nicht abgebrochen und nicht neu abgesendet, sondern fertig.
@@ -1212,9 +1219,8 @@ async def test_lange_in_der_warteschlange_ist_kein_grund_aufzugeben(
     Ohne das stuende der Job hinter einem grossen Lauf in einer Schleife aus
     Abbruch und Neu-Einreihen, und jeder Durchgang kostete neu.
     """
-    tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "schlange.png")
-    tasks.defer_document(sha)
+    erzeuger.einreihen(sha)
     knapp = dataclasses.replace(int_settings, job_timeout_seconds=0.3)
 
     def status(job: str, nr: int, sekunden: float) -> dict[str, Any]:
