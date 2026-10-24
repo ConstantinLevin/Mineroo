@@ -174,6 +174,31 @@ async def test_schluessel_steht_nur_im_header(echte_settings: Settings) -> None:
     assert SCHLUESSEL not in str(fehler.value)
 
 
+async def test_abbruch_geht_an_cancel_mit_der_kennung(
+    echte_settings: Settings,
+) -> None:
+    """`cancel` schickt `POST /cancel/<job-id>` an den Endpoint — und der Schluessel
+    reist auch dabei nur im Header.
+
+    Aufgegebene Jobs laufen bei RunPod sonst weiter und kosten Geld. Die Kennung
+    steht im Pfad und nirgends sonst; eine Nutzlast braucht der Abbruch nicht.
+    """
+    client, transport = _client(
+        echte_settings,
+        Aufzeichnung(_antwort({"id": "job-9", "status": "CANCELLED"})),
+    )
+    antwort = await client.cancel("job-9")
+
+    assert antwort["status"] == "CANCELLED"
+    assert len(transport.anfragen) == 1
+    anfrage = transport.anfragen[0]
+    assert anfrage.method == "POST"
+    assert str(anfrage.url) == f"{API_BASE}/l79lebhinxaqjz/cancel/job-9"
+    assert anfrage.headers["Authorization"] == f"Bearer {SCHLUESSEL}"
+    assert SCHLUESSEL not in str(anfrage.url)
+    assert SCHLUESSEL not in anfrage.content.decode()
+
+
 def test_es_gibt_kein_runsync() -> None:
     """Der Zugang bietet keine Methode, die `/runsync` aufruft.
 
@@ -638,6 +663,7 @@ def test_kein_kommando_veraendert_bezahlte_ressourcen() -> None:
         "aclose",
         "await_result",
         "balance",
+        "cancel",
         "endpoint",
         "image_tag",
         "status",

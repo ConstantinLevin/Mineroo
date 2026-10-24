@@ -512,6 +512,43 @@ class RunPodClient:
             f"Job {job_id} abfragen",
         )
 
+    async def cancel(self, job_id: str) -> dict[str, Any]:
+        """Bricht einen Job bei RunPod ab: `POST {API_BASE}/{endpoint_id}/cancel/{job_id}`.
+
+        Wozu: Ein Job, den das Paket aufgibt (Zeitbudget abgelaufen) oder dessen
+        Wartenden der Daemon beim Herunterfahren abbricht, laeuft bei RunPod
+        sonst weiter und kostet Geld, ohne dass ihn jemand abholt. RunPod stoppt
+        damit laufende Jobs und nimmt wartende aus der Schlange.
+
+        Das ist KEIN Eingriff in eine bezahlte Ressource (Endpoint, Template,
+        Worker): Es betrifft genau einen Job, den dieses Paket selbst abgesendet
+        hat.
+
+        Args:
+            job_id: Die Kennung aus `submit`. Sie steht nur im Pfad.
+
+        Returns:
+            Die Antwort der Gegenseite (`id` und `status`, in der Regel
+            `CANCELLED`), ungefiltert.
+
+        Raises:
+            ResultLostError: HTTP 404, die Kennung ist unbekannt oder abgelaufen.
+            ConfigurationError: HTTP 401 oder 403.
+            TransientRunPodError: Transportfehler oder HTTP 5xx.
+            TerminalRunPodError: Alles uebrige.
+
+        Die Aufrufer fangen das alle: Ein misslungener Abbruch darf weder den
+        Grund verdecken, aus dem abgebrochen wird (Zeitbudget, Herunterfahren),
+        noch die Wiedervorlage verhindern.
+
+        Kosten: keine; spart im Gegenteil, was der Job sonst weiter kostete.
+        """
+        return await self._anfragen(
+            "POST",
+            f"{API_BASE}/{self._settings.endpoint_id}/cancel/{job_id}",
+            f"Job {job_id} abbrechen",
+        )
+
     async def await_result(self, job_id: str) -> dict[str, Any]:
         """Fragt einen Job ab, bis er terminal ist, und gibt die letzte Antwort zurueck.
 
