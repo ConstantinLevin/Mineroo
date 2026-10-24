@@ -221,19 +221,22 @@ falsch fragt — sie steht jetzt in `config.GUELTIGE_BACKENDS` und wird lokal
 geprueft, statt 177 Sekunden Kaltstart je Dokument zu kosten."""
 
 
-def _ohne_aufnahme_ueberspringen(was: str, pfade: list[Path]) -> None:
+def _ohne_aufnahme_ueberspringen(grund: str, pfade: list[Path]) -> None:
     """Ueberspringt den anfordernden Test, wenn eine der Aufnahmen fehlt.
+
+    `grund` ist der Anfang des Skip-Grunds („Aufnahme … fehlt"); angehaengt
+    werden die Herkunft der Luecke und die fehlenden Dateinamen.
 
     Die Aufnahmen, um die es geht, sind vor dem ersten Push entfernt worden,
     weil sie personenbezogene Daten trugen (Mineroo#2). Der Grund steht in der
     Ausgabe von `pytest -rs`, samt den fehlenden Dateinamen: Die Ersatzaufnahmen
-    muessen unter GENAU diesen Namen liegen, sonst bleibt der Test still
-    uebersprungen.
+    muessen unter GENAU diesen Namen liegen, sonst wird der Test weiter
+    uebersprungen, ohne je zu scheitern.
     """
     fehlend = [pfad.name for pfad in pfade if not pfad.exists()]
     if fehlend:
         pytest.skip(
-            f"{was} (personenbezogen, vor dem ersten Push entfernt, Mineroo#2); "
+            f"{grund} (personenbezogen, vor dem ersten Push entfernt, Mineroo#2); "
             f"Ersatz kommt mit dem Ticket zum MinerU-4-Vertrag: {', '.join(fehlend)}"
         )
 

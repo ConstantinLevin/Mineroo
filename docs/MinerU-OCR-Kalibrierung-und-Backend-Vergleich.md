@@ -43,7 +43,7 @@ Serifen werden als Satzzeichen gedeutet; Wörter zerfallen an falschen Stellen. 
 
 ### Klasse D — Handschrift und Formular-Kollaps
 
-Handschrift wird durch Drucktext-OCR gejagt; wo Handschrift auf Formulardruck trifft, kollabieren beide ineinander. Erkennungssignal: **kein Substring-Muster** — komplettes Lexikon-Versagen, kein Rücktausch möglich. Belege: `Unthaltskaste landwitshoftlich Fläch` → *Unterhaltungskosten landwirtschaftliche Fläche*; `Staat gepr Bautechrifter unt Zimmera méster` → *staatl. gepr. Bautechniker und Zimmermeister*; Bank-Wasserzeichen als Text erkannt (`VR Bcispiclstodt` → *VR Beispielstadt*). **Kein lokales Backend löst diese Klasse** (Abschnitt 3); MinerU liefert hier Substanz, aber mit Erfindungen (Abschnitt 5).
+Handschrift wird durch Drucktext-OCR gejagt; wo Handschrift auf Formulardruck trifft, kollabieren beide ineinander. Erkennungssignal: **kein Substring-Muster** — komplettes Lexikon-Versagen, kein Rücktausch möglich. Belege: `Unthaltskaste landwitshoftlich Fläch` → *Unterhaltungskosten landwirtschaftliche Fläche*; `Staat gepr Bautechrifter unt Zimmera méster` → *staatl. gepr. Bautechniker und Zimmermeister*; Bank-Wasserzeichen als Text erkannt (`VR Bnuspielsiadt` → *VR Beispielstadt*). **Kein lokales Backend löst diese Klasse** (Abschnitt 3); MinerU liefert hier Substanz, aber mit Erfindungen (Abschnitt 5).
 
 ### Klasse E — Fremdsprache und Zeichensatz-Mismatch
 

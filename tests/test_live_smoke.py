@@ -31,10 +31,10 @@ WAS OFFLINE ABGESICHERT IST, seit die Antworten dieser Läufe als Fixtures unter
 `artifacts/2026-08-08-erster-tarball-lauf/` liegen: das `empty`-Kriterium und
 die Form einer echten Fehlerantwort. Diese zwei brauchen kein Geld mehr.
 
-Der Tarball-Auspacker und der Seitenversatz über drei echte Teilstücke waren
+Der Tarball-Auspacker und der Seitenversatz ueber drei echte Teilstuecke waren
 ebenso abgesichert, bis Mineroo#2 die Aufnahmen dazu entfernte, weil sie
 personenbezogene Daten trugen. Ihre Tests laufen ausgesetzt (`pytest -rs`), bis
-Ersatzaufnahmen ohne Personenbezug unter denselben Namen liegen; bis dahin läuft
+Ersatzaufnahmen ohne Personenbezug unter denselben Namen liegen; bis dahin laeuft
 dieser Weg offline nur gegen erfundene Antworten.
 """
 

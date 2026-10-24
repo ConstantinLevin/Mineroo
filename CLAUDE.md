@@ -213,8 +213,8 @@ also nicht den Produktionspfad. Alle sechs sind einseitige Bilder mit
 **`artifacts/2026-08-08-erster-tarball-lauf/` — Antworten mit `tarball_b64`,
 also der Produktionspfad.** Sie sind am 08./09.08.2026 in
 bezahlten Läufen aufgenommen worden und deckten die Lagen ab, für die es vorher
-nichts gab. Zwei davon sind vor dem ersten Push entfernt worden; im Repository
-liegen noch `leere_seite` und `fehlerantwort`:
+nichts gab. Zwei der Aufnahmen (vier Antwortdateien) sind vor dem ersten Push
+entfernt worden; im Repository liegen noch `leere_seite` und `fehlerantwort`:
 
 - `gute_nacht.tarball.response.json` — der gewöhnliche Erfolg, einseitig;
   **vor dem ersten Push entfernt**, weil der Tarball den Text einer privaten
@@ -237,17 +237,19 @@ liegen noch `leere_seite` und `fehlerantwort`:
   und Randblöcke in `tests/test_assembly.py`), sind **ausgesetzt**: Die
   Vorrichtung `echte_mehrteilige_antworten` überspringt sie mit Grund
   (`pytest -rs`), bis das Ticket zum MinerU-4-Vertrag neue Aufnahmen aus Material
-  ohne Personenbezug unter denselben Namen ablegt. Bis dahin läuft der
-  Seitenversatz nur gegen erfundene Antworten.
+  ohne Personenbezug unter denselben Namen ablegt. Bis dahin laufen der
+  Seitenversatz und die Randblöcke nur gegen erfundene Antworten.
 
 **Was nur gegen erfundene Antworten läuft:** eine echte
 **Namenskollision** zwischen Bildern zweier Teilstücke (`bild_namenskollisionen`
 in `assembly.assemble`). Die Namen sind Inhalts-Hashes, eine Kollision heißt also
 dasselbe Bild in zwei Stücken — möglich, aber in diesem Material nicht
 vorgekommen. Bis die Ersatzaufnahmen liegen, außerdem alles, was die zwei
-entfernten Aufnahmen trugen: der gewöhnliche, nicht leere Tarball-Erfolg (Bilder,
-Layout-PDF, die zwei `content_list`-Generationen) und der Seitenversatz über
-mehrere Teilstücke.
+entfernten Aufnahmen trugen: der gewöhnliche, nicht leere Tarball-Erfolg (Bilder
+und Inhalt in beiden `content_list`-Generationen; Layout-PDF und zweite
+Generation prüft `leere_seite` nur in leerer Form), der Seitenversatz über
+mehrere Teilstücke und dass ein Randblock, dessen Text schon im Markdown steht,
+nicht noch einmal angehängt wird.
 
 ---
 

@@ -896,6 +896,43 @@ def test_modell_prosa_kommt_MIT_und_ist_auffindbar() -> None:
     assert prosa_bloecke[0]["page_idx"] == 0
 
 
+def test_randbloecke_im_markdown_werden_nicht_doppelt_angehaengt() -> None:
+    """Ein Randblock, dessen Text schon im Markdown steht, kommt nicht noch
+    einmal dazu — derselbe fehlende Fusszeilentext auf zwei Seiten dagegen
+    zweimal.
+
+    Die Lage hat das echte Dokument vom 08.08.2026 gezeigt: Kopfzeilen im
+    Markdown, Fusszeilen nicht (siehe
+    `test_randbloecke_werden_nicht_doppelt_angehaengt`). Dessen Aufnahmen sind
+    vor dem ersten Push entfernt (Mineroo#2), der Test laeuft ausgesetzt. Bis
+    Ersatzaufnahmen liegen, haelt dieser Test die Zusicherung an einer
+    erfundenen Antwort fest; ohne ihn liesse sich die Pruefung in
+    `rendered_markdown` loeschen, und die Suite bliebe gruen.
+    """
+    markdown = "Muster GmbH\n\nSeite eins.\n\nMuster GmbH\n\nSeite zwei."
+    fusszeile = "Muster GmbH, Beispielweg 1"
+    ergebnis = assemble(
+        [
+            _teil(
+                Chunk(first_page=0, last_page=1),
+                markdown=markdown,
+                content_list=[
+                    {"type": "header", "text": "Muster GmbH", "page_idx": 0},
+                    {"type": "text", "text": "Seite eins.", "page_idx": 0},
+                    {"type": "footer", "text": fusszeile, "page_idx": 0},
+                    {"type": "header", "text": "Muster GmbH", "page_idx": 1},
+                    {"type": "text", "text": "Seite zwei.", "page_idx": 1},
+                    {"type": "footer", "text": fusszeile, "page_idx": 1},
+                ],
+            )
+        ]
+    )
+    # Die Kopfzeile steht schon im Markdown und fehlt deshalb im Anhang; die
+    # Fusszeile fehlt dort und kommt je Seite einmal — zweimal dieselbe
+    # Fusszeile ist kein Duplikat.
+    assert rendered_markdown(ergebnis) == markdown + "\n\n" + fusszeile + "\n\n" + fusszeile
+
+
 def test_ohne_randbloecke_sind_beide_wege_gleich(
     real_responses: list[dict[str, Any]],
 ) -> None:
@@ -905,7 +942,10 @@ def test_ohne_randbloecke_sind_beide_wege_gleich(
     Die Gegenprobe zum Anhaengen: Wo es nichts zu ergaenzen gibt, ergaenzt es
     nichts. Das ist die untere Haelfte der Zusicherung „es wird nie etwas
     entfernt, nur ergaenzt" — die obere prueft
-    `test_randbloecke_werden_nicht_doppelt_angehaengt` am echten Dokument.
+    `test_randbloecke_werden_nicht_doppelt_angehaengt` am echten Dokument (seit
+    Mineroo#2 ausgesetzt) und bis zu dessen Ersatzaufnahmen
+    `test_randbloecke_im_markdown_werden_nicht_doppelt_angehaengt` an einer
+    erfundenen Antwort.
     """
     for antwort in real_responses:
         teil = unpack_response(antwort, Chunk(first_page=0, last_page=0))

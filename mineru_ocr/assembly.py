@@ -636,8 +636,8 @@ def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
         (die Antworten tragen `_version_name` und `_backend`); ein selbst
         ausgedachtes Zusammenfuehren waere eine Behauptung ueber ein fremdes
         Format, die schon beim naechsten Modellwechsel falsch sein kann und im
-        Ergebnis nicht mehr als Erfindung erkennbar waere. Der spaetere
-        Rueckschreibeweg braucht ohnehin die einzelnen Bloecke.
+        Ergebnis nicht mehr als Erfindung erkennbar waere. Ein Abnehmer, der
+        mit `middle` arbeitet, braucht ohnehin die einzelnen Bloecke.
 
         `layout_pdfs`, `span_pdfs`: ebenso als Listen in Reihenfolge.
 

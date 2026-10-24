@@ -2,9 +2,9 @@
 
 Dies ist der einzige Prozess, der mit RunPod spricht, und der einzige mit
 Nebenlaeufigkeit. Alles andere — Fassade und Kommandozeile — legt Zeilen an
-und liest. Damit ist jede
-Komponente einzeln startbar und tot-startbar, und der Zustand liegt zu jedem
-Zeitpunkt vollstaendig an einem Ort, den man mit gewoehnlichem SQL ansehen kann.
+und liest. Damit ist jede Komponente einzeln startbar und tot-startbar, und der
+Zustand liegt zu jedem Zeitpunkt vollstaendig an einem Ort, den man mit
+gewoehnlichem SQL ansehen kann.
 
 Zwei Worker in EINEM Prozess, und das ist die eine Stelle dieses Entwurfs, die
 auf unbelegtem Grund steht. Gebraucht werden sie, weil periodische Tasks
