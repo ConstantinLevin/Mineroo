@@ -101,6 +101,47 @@ gar nichts, und es sieht aus wie ein Hänger. Das ist die häufigste Überraschu
 dieses Aufbaus — `preflight` sagt es einem ausdrücklich, statt es einen suchen zu
 lassen.
 
+### Welcher Prozess welche App hält
+
+Procrastinate wird so benutzt, wie es vorgesehen ist: **jeder Prozess baut seine
+App einmal und behält sie.** Es gibt keine App auf Modulebene (`tasks.py` hat
+keine), und nirgends wird ein Konnektor zur Laufzeit umgeschaltet — kein
+`replace_connector`, kein `with_connector`, kein Zuweisen an `app.connector`.
+
+| Prozess | App | Gebaut von | Pool |
+|---|---|---|---|
+| `mineru-ocr daemon` | **genau eine**: `PsycopgConnector`, die Tasks samt Retry-Strategie und der Waechter angemeldet | `tasks.build_daemon_app` | der des Daemons (`AsyncConnectionPool`, `check=AsyncConnectionPool.check_connection`), per `app.open_async(pool=…)` uebergeben |
+| jeder `OCRClient` (auch hinter dem Kommando) | **eine eigene**: `SyncPsycopgConnector`, **keine** angemeldeten Tasks | `tasks.build_client_app`, geoeffnet in `OCRClient.__enter__` | `NullConnectionPool(max_size=1, num_workers=1)`, vom Client angelegt **und** geschlossen |
+| `mineru-ocr setup` | eine fluechtige, nur fuers Schema | `db._procrastinate_schema_anwenden_falls_noetig` | der Konnektor-eigene |
+
+Was daraus folgt und nicht aus einer einzelnen Datei hervorgeht:
+
+- **Der Daemon-Prozess baut keine zweite App.** Jede weitere App im selben Prozess
+  benennt Procrastinates eingebauten Task `remove_old_jobs` um. (Die Tests haben
+  zwei Apps im Prozess, das ist harmlos; dieses Paket benutzt `remove_old_jobs`
+  nicht.)
+- **Der Client reiht per Namen und mit ausdruecklicher Queue ein**, Name und Queue
+  aus denselben `config`-Konstanten wie die Anmeldung des Daemons:
+  `tasks.enqueue_document` ruft `app.configure_task(name=…, queue=…, lock=…,
+  queueing_lock=…, connection=…).defer(sha256=…)`. Ohne `queue=` landete der Job in
+  `default`, die der Daemon nie liest. Mit `connection=` laeuft das Einreihen auf
+  der eigenen Verbindung des Clients (`autocommit`), nicht auf einer aus dem Pool.
+- **Ein Client haelt zwischen zwei Aufrufen keine Procrastinate-Verbindung.**
+  `list_jobs`, `list_tasks` und `retry_job_by_id` laufen synchron ueber seine App,
+  mit je einer kurzlebigen Verbindung. Je Agent bleiben so ein bis zwei
+  Verbindungen: die des Clients und, waehrend er wartet, die Warte-Verbindung.
+  `client._synchron_ausfuehren` gibt es nur noch fuer die kurzen Lesefragen an
+  RunPod.
+- **Der Client schliesst seinen Pool selbst**, weil `app.close()` einen uebergebenen
+  Pool nicht schliesst. Der Pool des Daemons gehoert dem Daemon und wird NACH den
+  Workern geschlossen.
+- **Ein synchroner Konnektor kann nicht nur einreihen** — das stand frueher in
+  `tasks.py` und ist am Objekt widerlegt: Er fuehrt auch `list_jobs`, `list_tasks`
+  und `retry_job_by_id` aus. Nur einen Worker kann er nicht tragen.
+- `InMemoryConnector` uebergeht `connection=`. Dass das Einreihen wirklich auf der
+  Verbindung des Clients laeuft, laesst sich nur gegen echtes Postgres pruefen
+  (`tests/test_client.py`, `tests/test_integration.py`).
+
 ### Ein Buch, nicht zwei
 
 Die Tabelle `documents` trägt **ausschließlich Endzustände**:
