@@ -17,6 +17,7 @@ import psycopg
 import pytest
 from procrastinate.jobs import Job
 
+from mineru_ocr.config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS
 from mineru_ocr.db import (
     DocumentRow,
     DocumentStatus,
@@ -951,3 +952,55 @@ def test_worker_lebenszeichen_sind_lesbar(db_conn: psycopg.Connection[Any]) -> N
     kennung, gesehen = lebende[0]
     assert isinstance(kennung, int)
     assert isinstance(gesehen, datetime)
+
+
+@pytest.mark.db
+def test_alter_herzschlag_zaehlt_nicht_als_laufender_daemon(
+    db_conn: psycopg.Connection[Any],
+) -> None:
+    """Nach einem Absturz bleibt die Worker-Zeile stehen, und ihr Alter ist das
+    Merkmal: Ein Herzschlag aelter als die Schwelle ist kein laufender Daemon.
+
+    Der Fall, der das ausgeloest hat: eine 67 Tage alte Zeile liess `status`
+    „laeuft" sagen.
+    """
+    db_conn.execute(
+        "INSERT INTO procrastinate_workers (last_heartbeat) "
+        "VALUES (now() - interval '67 days')"
+    )
+    assert worker_heartbeats(db_conn) == []
+
+    # Ein frischer Herzschlag daneben zaehlt, der alte weiterhin nicht.
+    db_conn.execute(
+        "INSERT INTO procrastinate_workers (last_heartbeat) "
+        "VALUES (now() - interval '5 seconds')"
+    )
+    lebende = worker_heartbeats(db_conn)
+    assert len(lebende) == 1
+
+
+@pytest.mark.db
+def test_die_schwelle_gilt_an_der_datenbankuhr_und_ist_einstellbar(
+    db_conn: psycopg.Connection[Any],
+) -> None:
+    """Das Alter rechnet die Datenbank: `last_heartbeat` und die Schwelle werden
+    in der Abfrage gegeneinander gehalten, nie gegen die Uhr des Clients.
+
+    Gezeigt an der Grenze: Ein 20 Sekunden alter Herzschlag liegt unter der
+    Voreinstellung (30 s), aber ueber einer Schwelle von 10 s.
+    """
+    db_conn.execute(
+        "INSERT INTO procrastinate_workers (last_heartbeat) "
+        "VALUES (now() - interval '20 seconds')"
+    )
+    assert len(worker_heartbeats(db_conn)) == 1
+    assert len(worker_heartbeats(db_conn, max_age_seconds=60)) == 1
+    assert worker_heartbeats(db_conn, max_age_seconds=10) == []
+
+
+def test_die_voreingestellte_schwelle_deckt_drei_verpasste_herzschlaege() -> None:
+    """Die Schwelle ist Procrastinates eigene Grenze fuer „gilt als haengengeblieben"
+    (`stalled_worker_timeout`, Voreinstellung 30 s) und liegt damit ueber dem
+    Herzschlag-Abstand (`update_heartbeat_interval`, Voreinstellung 10 s): Ein
+    einzelner verspaeteter Herzschlag macht den Daemon nicht tot."""
+    assert DAEMON_HEARTBEAT_MAX_AGE_SECONDS == 30.0

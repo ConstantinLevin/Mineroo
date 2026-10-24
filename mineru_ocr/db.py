@@ -38,7 +38,7 @@ from procrastinate.jobs import Job
 from psycopg.rows import class_row
 from psycopg.types.json import Jsonb
 
-from .config import DEFAULT_WAIT_POLL_SECONDS
+from .config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS, DEFAULT_WAIT_POLL_SECONDS
 
 from .errors import (
     ConfigurationError,
@@ -1339,7 +1339,11 @@ def derive_status(row: DocumentRow, jobs: Sequence[Job]) -> DerivedStatus:
 # --------------------------------------------------------------------------
 
 
-def worker_heartbeats(conn: psycopg.Connection[Any]) -> list[tuple[int, datetime]]:
+def worker_heartbeats(
+    conn: psycopg.Connection[Any],
+    *,
+    max_age_seconds: float = DAEMON_HEARTBEAT_MAX_AGE_SECONDS,
+) -> list[tuple[int, datetime]]:
     """Liest Procrastinates Worker-Lebenszeichen. UNDOKUMENTIERT — mit Vorsicht.
 
     Diese Funktion greift auf eine Tabelle zu, die Procrastinate in der
@@ -1373,19 +1377,36 @@ def worker_heartbeats(conn: psycopg.Connection[Any]) -> list[tuple[int, datetime
     fuer die der Preflight sie stellt („arbeitet ueberhaupt jemand?"), genuegt
     das.
 
-    Deshalb ist der Zugriff hier eingesperrt: EINE Funktion, ein Aufrufer (der
-    Preflight), eine Warnung. Bei jedem Procrastinate-Upgrade gehoert sie erneut
-    geprueft; bricht sie, bricht genau eine Stelle und nicht der Betrieb.
+    Deshalb ist der Zugriff hier eingesperrt: EINE Funktion, eine Warnung. Bei
+    jedem Procrastinate-Upgrade gehoert sie erneut geprueft; bricht sie, bricht
+    genau eine Stelle und nicht der Betrieb.
+
+    NUR FRISCHE HERZSCHLAEGE ZAEHLEN. Nach einem Absturz bleibt die Worker-Zeile
+    bis zum naechsten Start stehen — abgeraeumt wird sie dann von Procrastinate
+    selbst (`Worker.run` ruft `prune_stalled_workers`) —, und ihr Alter ist das
+    Merkmal: Eine 67 Tage alte Zeile liess frueher „der Daemon laeuft" sagen. Als
+    Lebenszeichen gilt deshalb nur ein Herzschlag, der juenger ist als
+    `max_age_seconds`. Das Alter rechnet DIE DATENBANK (`clock_timestamp()` gegen
+    `last_heartbeat`, beides ihre Uhr): Der Client kann eine andere Zeit oder
+    Zeitzone haben, und ein Vergleich mit seiner Uhr wuerde einen laufenden
+    Daemon fuer tot erklaeren oder einen toten fuer lebendig. `clock_timestamp()`
+    und nicht `now()`, weil `now()` innerhalb einer Transaktion auf ihren Beginn
+    eingefroren ist.
 
     Wozu ueberhaupt: Das haeufigste Betriebs-Missverstaendnis dieser Architektur
     ist „es passiert nichts" bei totem Daemon. Producer legen Zeilen an, Jobs
     stapeln sich, und alles sieht normal aus — nur arbeitet niemand. Der Client
     soll das SAGEN, statt es einen suchen zu lassen.
 
+    Args:
+        max_age_seconds: Wie alt der Herzschlag hoechstens sein darf. Die
+            Voreinstellung ist `config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS`.
+
     Returns:
-        Ein Eintrag je lebendem Worker mit Kennung und letztem Lebenszeichen.
-        Leere Liste heisst: kein Worker laeuft. Das ist eine Feststellung, kein
-        Fehler — im Ruhezustand ist genau das richtig.
+        Ein Eintrag je lebendem Worker mit Kennung und letztem Lebenszeichen,
+        juengstes zuerst. Leere Liste heisst: kein Worker laeuft (oder nur
+        Zeilen abgestuerzter Worker stehen noch da). Das ist eine Feststellung,
+        kein Fehler — im Ruhezustand ist genau das richtig.
 
     Raises:
         DatabaseError: Die Tabelle gibt es nicht (mehr) oder sie sieht anders aus
@@ -1400,7 +1421,10 @@ def worker_heartbeats(conn: psycopg.Connection[Any]) -> list[tuple[int, datetime
             (kennung, gesehen)
             for kennung, gesehen in conn.execute(
                 "SELECT id, last_heartbeat FROM procrastinate_workers "
-                "ORDER BY last_heartbeat DESC"
+                "WHERE last_heartbeat > "
+                "clock_timestamp() - make_interval(secs => %s::double precision) "
+                "ORDER BY last_heartbeat DESC",
+                (max_age_seconds,),
             ).fetchall()
         ]
     except psycopg.Error as fehler:

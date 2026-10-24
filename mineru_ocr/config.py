@@ -360,6 +360,17 @@ eine zweite, fest verdrahtete `5.0`. Der Docstring am Feld verbietet genau das
 („weil eine Zahl an zwei Stellen beim naechsten Mal an einer geaendert wird"),
 und die Verletzung stand direkt daneben."""
 
+DAEMON_HEARTBEAT_MAX_AGE_SECONDS: Final = 30.0
+"""Wie alt der juengste Herzschlag eines Workers hoechstens sein darf, damit der
+Daemon als laufend gilt, in Sekunden.
+
+Das ist Procrastinates eigene Grenze fuer „haengengeblieben": `stalled_worker_timeout`
+steht in der Voreinstellung auf 30 s, und der Daemon aendert sie nicht. Ein Worker
+meldet sich alle `update_heartbeat_interval` = 10 s; die Schwelle laesst also drei
+Herzschlaege ausfallen, bevor der Daemon als tot gilt, und ein einzelner
+verspaeteter macht ihn nicht tot. Die Zahl steht hier einmal, weil `status`,
+`preflight` und das Abschicken dieselbe Frage stellen."""
+
 GUELTIGE_BACKENDS: Final = frozenset(
     {
         "hybrid-auto-engine",
