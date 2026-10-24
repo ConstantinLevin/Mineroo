@@ -1,7 +1,11 @@
 # OCR-Strecke für die DEVONthink-Klassifikation — Einstieg, übertragbare Lehren, Pflegeregeln
 
+> **Hinweis (Mineroo#2):** Dieses Dokument beschreibt den Stand bis MinerU 3.4 und den alten Endpoint. Es ist Geschichte und wird nicht umgeschrieben. Aktuell gelten das [README](../README.md) des Repositories und die Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1).
+
+> **Bead-IDs:** Kennungen wie `jurgen-09v` oder `jurgen-oeu` in diesem Repository verweisen auf das frühere Aufgabensystem (beads). Es gilt für Mineroo nicht mehr; Aufgaben sind GitHub-Issues (`docs/agents/issue-tracker.md`). Die Inhalte der Beads liegen nicht in diesem Repository.
+
 **Stand:** 05.08.2026.
-**Wozu diese Datei:** Sie ist der Einstieg für jemanden mit null Vorkontext. Sie sagt, was hier liegt, in welcher Reihenfolge man liest, was das Vorhaben überhaupt ist, welche Lehren aus ihm über es hinaus tragen, wie dieses Dokumentenset gepflegt wird und welche Artefakte außerhalb dieses Verzeichnisses liegen. Sie ersetzt keines der vier Fachdokumente, sie führt in sie hinein.
+**Wozu diese Datei:** Sie ist der Einstieg für jemanden mit null Vorkontext. Sie sagt, was hier liegt, in welcher Reihenfolge man liest, was das Vorhaben überhaupt ist, welche Lehren aus ihm über es hinaus tragen, wie dieses Dokumentenset gepflegt wird und welche Artefakte außerhalb dieses Verzeichnisses liegen. Sie ersetzt keines der drei Fachdokumente, sie führt in sie hinein.
 
 ---
 
@@ -13,20 +17,17 @@ In einer DEVONthink-Datenbank liegt das Dokumentenarchiv eines Family Office; es
 
 ## 2. Was hier liegt und in welcher Reihenfolge man es liest
 
-Die vier Fachdokumente sind so geschnitten, dass jedes für sich lesbar ist; sie überschneiden sich bewusst dort, wo eine Aussage an beiden Orten gebraucht wird.
+Die drei Fachdokumente sind so geschnitten, dass jedes für sich lesbar ist; sie überschneiden sich bewusst dort, wo eine Aussage an beiden Orten gebraucht wird.
 
 | Reihenfolge | Dokument | Wofür |
 |---|---|---|
 | 1 | **[MinerU-RunPod-Geschichte-und-Entscheidungen.md](MinerU-RunPod-Geschichte-und-Entscheidungen.md)** | Woher das Projekt kommt, welche Entscheidungen mit welcher Begründung gefallen sind, was zurückgenommen wurde, was offen ist. Enthält das Glossar der Werkzeugbegriffe — **wer die anderen Dokumente ohne dieses Glossar liest, stolpert ab der ersten Quellenangabe.** |
 | 2 | **[MinerU-RunPod-Betriebshandbuch.md](MinerU-RunPod-Betriebshandbuch.md)** | Wie die Engine betrieben wird: Architektur, feste Infrastrukturfakten, Deploy, Job-Contract, Lifecycle von Vorflug bis Teardown, Abrechnungs-Wahrheiten, die vorhandenen Skripte und die Anforderungen an den künftigen Driver, die harten Regeln. |
-| 3 | **[MinerU-DEVONthink-Integrationsstrecke.md](MinerU-DEVONthink-Integrationsstrecke.md)** | Die Stufen vor und nach der Engine: Erkennung (welche Dokumente brauchen Behandlung), Export, Write-back, Statusführung. Hier steckt der Großteil der noch offenen Entscheidungen. |
-| 4 | **[MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md](MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md)** | Die Beweisschicht: welche Schadensklassen der Bestand hat, was die Engines auf ihnen leisten, und wie man OCR-Qualität misst, ohne sich selbst zu betrügen. |
+| 3 | **[MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md](MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md)** | Die Beweisschicht: welche Schadensklassen der Bestand hat, was die Engines auf ihnen leisten, und wie man OCR-Qualität misst, ohne sich selbst zu betrügen. |
 
-**Wer nur etwas nachschlagen will**, findet in Betriebshandbuch 17 und Integrationsstrecke 9 je eine Tabelle „Nachprüf-Orte": Behauptung → wo man den echten Zustand prüft.
+**Wer nur etwas nachschlagen will**, findet in Betriebshandbuch 17 eine Tabelle „Nachprüf-Orte": Behauptung → wo man den echten Zustand prüft.
 
-**Ebenfalls in diesem Verzeichnis, aber anderer Gegenstand:** `Klassifizierungs-Handbuch.md` und `Entscheidungsleitfaden-Offene-Punkte.md` beschreiben die Klassifikation selbst — die Suchrahmen, die Tag-Struktur, die Pass-Struktur. OCR ist dort Voraussetzung, nicht Thema. **Achtung, dort steht ein bekannter Fehler:** Das Handbuch führt unter „Was bereits gebaut ist" auf, jedes Dokument habe eine durchsuchbare Textebene. Das ist widerlegt und der Anlass für dieses ganze Vorhaben (Geschichte, Abschnitt 6, Punkt 11).
-
-**Die übrigen Dateien im Repo-Wurzelverzeichnis** (`StatusQuoDiscussion.md`, `ChatGPTOpinion.md`, `ChatGPTOpinion2.md`, `RENDERED_TAGGER_PROMPT.md`, die drei `Prompt1_Answer_*.md`) sind Diskussions- und Recherchestände aus der Frühphase des Trägerprojekts. Sie sind **nicht** Teil dieser Dokumentation und für die OCR-Strecke ungeprüft.
+**Die drei `Prompt1_Answer_*.md` im Repo-Wurzelverzeichnis** sind Recherchestände aus der Frühphase des Trägerprojekts. Sie sind **nicht** Teil dieser Dokumentation und für die OCR-Strecke ungeprüft.
 
 ---
 
@@ -74,10 +75,10 @@ Es kann auch heißen, dass eine Zwischenstufe an diesem einen Objekt scheitert �
 Bevor man eine erwartete Stückzahl von außen konstruiert, lohnt die Frage, ob der Gegenstand sie mitbringt. Wo er es tut, ist sie die bessere Sollgröße, weil sie pro Objekt gilt statt im Mittel. → Kalibrierung 5.1, Betriebshandbuch 11.3.
 
 **14. Was die Schnittstelle hergibt und was es bedeutet, sind zwei verschiedene Dinge.**
-„Das Feld ist befüllt" ist eine belegte Tatsache; „also ist der Inhalt brauchbar" ist eine Deutung, die falsch sein kann. Wer Qualität prüft, baut eine Leiter von billig-schwachen zu teuer-starken Belegen und betritt jede Sprosse erst, wenn die darunter bestanden ist — bis hinauf zum Lesen des Inhalts gegen erwartete Anker. Ein Feld, das man nicht angefragt hat, ist außerdem **kein leeres Feld**. → Integrationsstrecke 2.4, 2.5.
+„Das Feld ist befüllt" ist eine belegte Tatsache; „also ist der Inhalt brauchbar" ist eine Deutung, die falsch sein kann. Wer Qualität prüft, baut eine Leiter von billig-schwachen zu teuer-starken Belegen und betritt jede Sprosse erst, wenn die darunter bestanden ist — bis hinauf zum Lesen des Inhalts gegen erwartete Anker. Ein Feld, das man nicht angefragt hat, ist außerdem **kein leeres Feld**.
 
 **15. Defektklassen sind Kalibrier-Kompartimente, keine Suchthemen.**
-Ein Sammel-Label wie „braucht Behandlung" ist zu breit zum Kalibrieren, weil verschiedene Defekte verschiedene Signale und verschiedene Heilmittel haben. Pro Klasse: vorher definieren, mit einer billigen Abfrage Kandidaten erzeugen, die Zugehörigkeit mit dem richtigen tieferliegenden Lesepfad **beweisen**, Beinahe-Treffer ausdrücklich ausschließen, und Schwellen an einem bekannten Schadens-Set kalibrieren statt sie zu raten. → Integrationsstrecke 2.9.
+Ein Sammel-Label wie „braucht Behandlung" ist zu breit zum Kalibrieren, weil verschiedene Defekte verschiedene Signale und verschiedene Heilmittel haben. Pro Klasse: vorher definieren, mit einer billigen Abfrage Kandidaten erzeugen, die Zugehörigkeit mit dem richtigen tieferliegenden Lesepfad **beweisen**, Beinahe-Treffer ausdrücklich ausschließen, und Schwellen an einem bekannten Schadens-Set kalibrieren statt sie zu raten.
 
 **16. Widersprüche werden benannt, nicht still aufgelöst — und ein „ungeklärt" altert.**
 Wo zwei Quellen einander widersprechen, ist die plausiblere Fassung stillschweigend zu wählen eine unausgewiesene Entscheidung, von der der Leser nie erfährt. Und ein Vermerk „das ist offen" ist selbst eine Behauptung mit Datum: In diesem Projekt standen zwei Punkte als offen in einer Liste, die längst erledigt waren — einer davon neun Tage vor seiner Eintragung. Vor dem Abarbeiten nachsehen, ob der Eintrag noch stimmt. → Geschichte 4.3, 6.7; Betriebshandbuch 11.1.
@@ -98,9 +99,9 @@ Arbeitsverzeichnisse einzelner Sitzungen können jederzeit weggeräumt werden. D
 
 ## 4. Wie dieses Dokumentenset gepflegt wird
 
-Aus Lehre 17 folgt eine unangenehme Konsequenz: **Diese fünf Dateien sind ab sofort das größte Runbook des Projekts und damit sein größtes Landminen-Risiko.** Sie enthalten Dutzende datierte Momentaufnahmen, als „ungeprüft" markierte Aussagen und Angaben über Zustände, die anderswo konfiguriert sind. Deshalb gelten für sie selbst Regeln:
+Aus Lehre 17 folgt eine unangenehme Konsequenz: **Diese vier Dateien sind ab sofort das größte Runbook des Projekts und damit sein größtes Landminen-Risiko.** Sie enthalten Dutzende datierte Momentaufnahmen, als „ungeprüft" markierte Aussagen und Angaben über Zustände, die anderswo konfiguriert sind. Deshalb gelten für sie selbst Regeln:
 
-1. **Jede Aussage über einen anderswo konfigurierten Zustand trägt ihren Nachprüf-Ort.** Endpoint-Kennungen, Preise, Worker-Zahlen, Kontostände, Werkzeug-Fähigkeiten sind Momentaufnahmen; die Tabellen „Nachprüf-Orte" (Betriebshandbuch 17, Integrationsstrecke 9) sind der Index dafür. Wer eine solche Angabe benutzt, prüft sie; wer sie ändert, ändert sie dort und nicht nur an der Fundstelle.
+1. **Jede Aussage über einen anderswo konfigurierten Zustand trägt ihren Nachprüf-Ort.** Endpoint-Kennungen, Preise, Worker-Zahlen, Kontostände, Werkzeug-Fähigkeiten sind Momentaufnahmen; die Tabelle „Nachprüf-Orte" (Betriebshandbuch 17) ist der Index dafür. Wer eine solche Angabe benutzt, prüft sie; wer sie ändert, ändert sie dort und nicht nur an der Fundstelle.
 2. **Widerlegtes wird als widerlegt gekennzeichnet, nicht überschrieben.** Das Projekt hat mehrere Zurücknahmen, und ihre Anatomie ist wertvoller als die zurückgenommene Aussage (Geschichte 4). Wer eine Aussage kippt, schreibt hin, was vorher galt, warum es fiel und wodurch — sonst wiederholt jemand die Herleitung.
 3. **Wer eine dieser Dateien anfasst, denkt das Ganze neu und schreibt nur den Unterschied.** Die meisten Stellen sind über mehrere Runden entstanden und geprüft; sie bleiben stehen, wenn die Prüfung sie bestätigt. Neu geschrieben wird, was falsch war oder wo die neue Fassung nachweislich besser ist — nicht, wo sie nur anders wäre.
 4. **Konkrete Einzelwerte gehören nicht hierher.** Aktenzeichen, Steuernummern, Beträge, UUIDs einzelner Dokumente leben in den Artefakten und im Aufgaben-Tracker. Diese Dokumente halten Klassen, Verfahren und Entscheidungen. Ein Dokumenten-Dossier wäre nicht nur überflüssig, es würde beim ersten Bestandswechsel falsch.
@@ -110,7 +111,7 @@ Aus Lehre 17 folgt eine unangenehme Konsequenz: **Diese fünf Dateien sind ab so
 
 ## 5. Wo die Artefakte liegen — und was hier noch fehlt
 
-**In diesem Repository:** die fünf Dokumente unter `docs/`; `DEVONthink.sdef` (die maßgebliche Quelle dafür, was DEVONthinks Skript-Oberfläche hergibt); `scripts/ocr_run.py` und `scripts/ocr_pdfs.py` (die beiden bisherigen Driver als Dauerkopien — Vorlagen, nicht der künftige Driver); `scripts/ocr_test.py` (der Mini-Driver des Doku-Verifikationstests vom 05.08.2026 — nach den Anforderungen des Betriebshandbuchs gebaut, für Einzelseiten-Tests, ebenfalls nicht der künftige Driver) samt seinen Belegen unter `artifacts/2026-08-05-doku-verifikationstest/` (Chronik: Geschichte, Abschnitt 2.9).
+**In diesem Repository:** die vier Dokumente unter `docs/`; `scripts/ocr_run.py` und `scripts/ocr_pdfs.py` (die beiden bisherigen Driver als Dauerkopien — Vorlagen, nicht der künftige Driver); `scripts/ocr_test.py` (der Mini-Driver des Doku-Verifikationstests vom 05.08.2026 — nach den Anforderungen des Betriebshandbuchs gebaut, für Einzelseiten-Tests, ebenfalls nicht der künftige Driver) samt seinen Belegen unter `artifacts/2026-08-05-doku-verifikationstest/` (Chronik: Geschichte, Abschnitt 2.9).
 
 **Außerhalb dieses Repositories, aber tragend** (vollständig verzeichnet in Geschichte 7): das Fixture-Set aus 15 Schadens-Dokumenten samt seinem Befund-Katalog, die Ausgaben des Engine-Vergleichs und der Kalibrierung, die fünf Skills mit dem operativen Runbook und den allgemeinen RunPod-Anleitungen, die Wissensspeicher-Seiten des Projekts, die Aufgaben-Einträge im Tracker. **Diese Verteilung ist ein bekannter, ungelöster Zustand**: Solange die Beweisschicht und das operative Original in einem anderen Projektverzeichnis liegen und drei der fünf Skills nur Verweise auf ein drittes Verzeichnis sind, steht dieses Repository nicht für sich. Was davon hierher kopiert werden soll, ist eine offene Entscheidung.
 
@@ -120,7 +121,7 @@ Aus Lehre 17 folgt eine unangenehme Konsequenz: **Diese fünf Dateien sind ab so
 
   **Der Rest dieses Punktes gilt unverändert weiter, und deshalb steht er hier statt gelöscht zu werden:** Die beiden Skripte unter `scripts/` sind Ad-hoc-Werkzeuge aus einer einzigen Sitzung, geschrieben für zwei andere Bestände, mit fest verdrahteten Pfaden — sie haben nie einen Datenbank-Record gesehen und tragen mehrere benannte Fehler (Betriebshandbuch 11.2a). Ihr Wert ist, dass sie den Job-Contract erwiesenermaßen richtig bedienen und dass ihre Schwächen zu einer Anforderungsliste geworden sind (Betriebshandbuch 11.3). **`mineru_ocr` ist an ihnen gemessen und nicht aus ihnen gepatcht worden** — genau so, wie es hier gefordert war.
 
-  **Was der Driver NICHT erledigt hat:** Der große Lauf über den Gesamtbestand hat weiterhin nicht stattgefunden, und die Stufen davor und danach — Erkennung, Export, Write-back — sind unverändert offen (Integrationsstrecke). Gebaut ist Stufe 3, nicht die Strecke.
-- **Die Kommando-Referenz deckt die Engine-Seite ab, nicht die Datenbank-Seite.** Für Erkennung, Export, Write-back und Statusführung stehen die Verfahren und die Werkzeugnamen fest, die konkreten Aufrufe nicht — was daran liegt, dass dort die Entscheidungen selbst noch offen sind (Integrationsstrecke).
+  **Was der Driver NICHT erledigt hat:** Der große Lauf über den Gesamtbestand hat weiterhin nicht stattgefunden, und die Stufen davor und danach — Erkennung, Export, Write-back — sind unverändert offen. Gebaut ist Stufe 3, nicht die Strecke.
+- **Die Kommando-Referenz deckt die Engine-Seite ab, nicht die Datenbank-Seite.** Für Erkennung, Export, Write-back und Statusführung stehen die Verfahren und die Werkzeugnamen fest, die konkreten Aufrufe nicht — was daran liegt, dass dort die Entscheidungen selbst noch offen sind.
 - **Die lokale Alternative ist benannt, aber nicht bewertet.** Die OCR des Betriebssystems ist lokal, kostenlos und ohne Datenschutz-Frage; sie wurde in diesem Projekt genau einmal gemessen, für eine ganz andere Aufgabe, und lief nie gegen das Fixture-Set (Kalibrierung 5.2). Sie ist damit ein unbewerteter Kandidat, kein ausgeschiedener — die Frage ist offen, nicht beantwortet.
 - **Der Berührungspunkt zum Trägerprojekt.** Die Suchrahmen der Klassifikation und der geerntete Kennungsbestand leben ausschließlich im Aufgaben-Tracker. Die OCR-Strecke verliert und rettet genau diese Kennungen — die beiden Stränge berühren sich also hart, und wo dieser Bestand außerhalb des Trackers gesichert ist, ist ungeklärt.

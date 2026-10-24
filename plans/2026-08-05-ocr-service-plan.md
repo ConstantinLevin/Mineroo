@@ -1,5 +1,7 @@
 # Plan: `mineru_ocr` — der OCR-Service auf Postgres + Procrastinate
 
+> **Hinweis (Mineroo#2):** Dieser Plan beschreibt den Stand bis MinerU 3.4 und den alten Endpoint. Er bleibt maßgeblich für das, was die Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1) nicht ändert. Abgelöst ist alles, was dort unter „Was sich daran ändert“ steht, dazu alles, was der Umzug auf MinerU 4 ändert (Backend, Ausgabedateien, Antwortformat). Die Liste steht in der Spec und wird hier nicht wiederholt. Aktuell gelten das [README](../README.md) des Repositories und die Spec.
+
 **Stand:** 06.08.2026, vor Implementierung — **mit Nachträgen vom 07.–09.08.2026, siehe unten.**
 
 > **DIESER PLAN IST NICHT MEHR DER STAND DES CODES.** Er ist gebaut worden, und beim Bauen und beim ersten Betrieb gegen den echten Endpoint sind mehrere seiner Festlegungen zurückgenommen worden — teils durch Jurgen, teils am Material. Zurückgenommene Stellen sind an Ort und Stelle als solche gekennzeichnet und **nicht überschrieben** (Pflegeregel 2 des Dokumentensatzes: die Anatomie eines Irrtums ist wertvoller als die zurückgenommene Aussage). Wer diesen Plan als Auftrag liest, muss die Kästen mitlesen.
@@ -23,7 +25,7 @@ Leserichtung: Abschnitt 1 sagt, worum es geht. Abschnitt 2 hält die Vorgaben de
 - `MinerU-RunPod-Betriebshandbuch.md` — die Engine-Seite: Job-Contract, Kosten, Lifecycle, harte Regeln. **Pflichtlektüre vor dem Bau.**
 - `MinerU-RunPod-Geschichte-und-Entscheidungen.md` — warum die Engine so ist, wie sie ist; Entscheidungsregister.
 - `MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md` — was die Engine auf welchem Material leistet.
-- `MinerU-DEVONthink-Integrationsstrecke.md` — die Stufen VOR und NACH diesem Service (Erkennung, Export, Write-back). **Dieser Service ist Stufe 3 der dortigen Pipeline und nur Stufe 3** — er kennt keine DEVONthink-Records, nur Dateien rein, Text/Struktur raus.
+- Dieser Service ist **Stufe 3 einer größeren Pipeline und nur Stufe 3** — er kennt keine DEVONthink-Records, nur Dateien rein, Text/Struktur raus; die Stufen davor und danach liegen nicht in diesem Repository.
 - `plans/2026-08-06-procrastinate-feature-verifikation.md` — **jede Procrastinate-Feature-Stütze dieses Plans, einzeln belegt** (19 Punkte: 17 gegen die offizielle Doku, zwei Nachträge vom 06.08. teils am Objekt — Quellcode und SQL-Schema der installierten 3.9.0; je BESTÄTIGT/PRÄZISIERT/NICHT BELEGT, mit Zitat und Quellseite). Wo unten „Verifikation Punkt N" steht, ist das der Verweis dorthin; die NICHT-BELEGT-Punkte sind als Objekt-Tests im Testplan (10.2) eingeplant.
 
 ---
@@ -34,7 +36,7 @@ Es existiert eine produktionsbewiesene OCR-Engine: **MinerU** (VLM-basiert, Mode
 
 Was fehlt, ist die **lokale Seite**: ein wiederverwendbares Stück Software, mit dem man Dateien zur OCR gibt und Ergebnisse zurückbekommt — statt der bisherigen Ad-hoc-Skripte mit hartkodierten Pfaden (`scripts/ocr_run.py`, `scripts/ocr_pdfs.py`, dokumentierte Fehlerlisten in Betriebshandbuch 11). Dieses Stück Software ist der Auftrag.
 
-Es muss zwei Betriebsarten tragen (Integrationsstrecke, Abschnitt 6): den **Einmal-Bulk** (~30.000 Dokumente des DEVONthink-Bestands — Zahl unbelegt, siehe Geschichte 6.15) und den **laufenden Eingang** (~1.000 Neudokumente/Jahr, tröpfelnd). Und es muss den Abbruch/Wiederanlauf als Normalfall behandeln: Bei einem Lauf über Stunden ist der Crash kein Randfall, sondern Designannahme.
+Es muss zwei Betriebsarten tragen: den **Einmal-Bulk** (~30.000 Dokumente des DEVONthink-Bestands — Zahl unbelegt, siehe Geschichte 6.15) und den **laufenden Eingang** (~1.000 Neudokumente/Jahr, tröpfelnd). Und es muss den Abbruch/Wiederanlauf als Normalfall behandeln: Bei einem Lauf über Stunden ist der Crash kein Randfall, sondern Designannahme.
 
 ---
 
@@ -179,7 +181,7 @@ CREATE TABLE documents (
 ```
 
 **Intentionen:**
-- **`sha256` als Primärschlüssel** setzt Jurgens Dedup-Vorgabe (2.1) auf DB-Ebene um: dieselbe Datei kann nie zweimal existieren, egal wie viele Producer sie einreihen. Roher Byte-Hash, ausdrücklich **kein** Metadata-Stripping — ein Normalisierungsfehler würde falsche Dedup-Treffer erzeugen („gilt als fertig, wurde nie geOCRt"), den unsichtbarsten aller Fehler; und Dedup ist im DEVONthink-Vorlauf ohnehin erledigt (Klassifizierungs-Handbuch A.2). Liegt dieselbe Datei unter zwei Pfaden, gewinnt der zuerst gesehene `source_path`; der zweite wird als note angehängt.
+- **`sha256` als Primärschlüssel** setzt Jurgens Dedup-Vorgabe (2.1) auf DB-Ebene um: dieselbe Datei kann nie zweimal existieren, egal wie viele Producer sie einreihen. Roher Byte-Hash, ausdrücklich **kein** Metadata-Stripping — ein Normalisierungsfehler würde falsche Dedup-Treffer erzeugen („gilt als fertig, wurde nie geOCRt"), den unsichtbarsten aller Fehler; und Dedup ist im DEVONthink-Vorlauf ohnehin erledigt. Liegt dieselbe Datei unter zwei Pfaden, gewinnt der zuerst gesehene `source_path`; der zweite wird als note angehängt.
 - **Die Zeile speichert nur fertig — jetzt ohne jede Ausnahme** (Festlegungen 2.4): Zwischen ihrer Anlage (`new`) und dem Terminal-Schreiben fasst NIEMAND sie an. Chunks, Job-IDs, Zwischenstände, „läuft gerade" — alles davon ist entweder Laufzeit-Inneres des Executors oder steht ohnehin in Procrastinates eigenen Tabellen. **Der Dokument-Status ist eine abgeleitete Größe:** Zeile terminal → das ist der Status; sonst jüngster Job mit `queueing_lock = sha256` (`ORDER BY id DESC LIMIT 1` — „jüngster", weil bei `delete_jobs="never"` über die Zeit mehrere Jobs je Dokument existieren) → wartend/laufend/Versuch n samt Procrastinate-Details; gar kein Job → registriert, nie eingereiht. Konsequenz: `raw` wird nur beim Terminal-Schreiben geschrieben — nie chunk-weise fortgeschrieben, überschrieben nur, wenn ein gescheitertes Dokument erneut verarbeitet wird (4.2) —, und es gibt keine zwei Buchführungen, die je auseinanderlaufen könnten.
 - **`raw` = Liste der VOLLEN Antworten** ist Jurgens „raw section" (2.3) und die Abruf-Regel des Betriebshandbuchs (14a): alles geholt, alles persistiert; jede Formatierung passiert später on the fly in den Gettern (2.1). `tarball_b64` bleibt als Base64-String darin — KEINE Zerlegung beim Schreiben (jede Zerlegung wäre eine Auswertungs-Entscheidung zum falschen Zeitpunkt). Mengengerüst: ~0,5–1 MB je Seite, bei 30k Dokumenten zweistellige GB — TOAST-Speicherung, Plattenplatz vor dem Bulk prüfen (12.5). Die Juli-Empfehlung „Pfad+Hash statt Bytes-in-DB" betraf die INPUT-Bytes (bleiben als Pfad); die OUTPUTS gehören in die DB, weil sie die einzige dauerhafte Kopie sind (RunPod hält Ergebnisse 30 Minuten).
 
@@ -315,7 +317,7 @@ async def retry_stalled(context, timestamp):
 - `markdown`: Konkatenation in Chunk-Reihenfolge.
 - `content_list`: Konkatenation mit **`page_idx` + `start_page` des Chunks** — MinerU schneidet vor dem Parsen, `page_idx` startet je Chunk bei 0 (am Quelltext verifiziert, 05.08.2026).
 - `images`: Dict-Union — Dateinamen sind Inhalts-Hashes (kollisionsfrei; empirisch am 05.08.2026).
-- `middle`, Layout-/Span-PDFs: **unfusioniert als Liste je Chunk** — `middle` ist MinerU-intern versioniert; ein erfundener Merge wäre schlechter als die ehrliche Rohform, und der Write-back (Integrationsstrecke 4) braucht ohnehin die Blöcke, nicht ein fusioniertes middle.
+- `middle`, Layout-/Span-PDFs: **unfusioniert als Liste je Chunk** — `middle` ist MinerU-intern versioniert; ein erfundener Merge wäre schlechter als die ehrliche Rohform, und der Write-back braucht ohnehin die Blöcke, nicht ein fusioniertes middle.
 - **Vollständigkeits-Pflicht:** Getter, die Gesamtergebnisse liefern, werfen `IncompleteResultError`, solange nicht alle Chunks terminal-erfolgreich sind — still einen Teil zu liefern wäre exakt der „äußerlich vollständig"-Fehler aus Betriebshandbuch 11.2a-2.
 
 **Transport: `tarball_b64`, fest.** Intention (Betriebshandbuch 5a.1/14a): Bei diesem Transport ist `formats` ein No-op — es kommt IMMER alles, die Abruf-Regel ist Mechanik statt Disziplin (an Disziplin ist sie am 12.07. gescheitert). Zusätzlich trägt der Tarball die Layout-/Span-PDFs, die Inline gar nicht liefert. `s3` wird nicht implementiert (neuer externer PII-Dienst = Jurgens Entscheidung, nicht Modul-Default).
@@ -482,7 +484,7 @@ Vollform und Belege im Betriebshandbuch; hier die Checkliste, gegen die die Impl
 - **Kein Rendering-Fallback** für Einzelseiten > 7 MB und keine Zerlegung übergroßer Nicht-PDFs — Fall ohne belegtes Vorkommen; ehrlicher `input_error` **mit Aufrüst-Hinweis und Aufgaben-Eintrag** statt stiller Komplexität (Festlegung 2.4).
 - **Keine Endpoint-Mutation** (workersMax setzen usw.) — Kosten-Zustimmungsregel; der Preflight berichtet nur.
 - **Keine launchd-/Autostart-Automatik im ersten Wurf** — erst den Daemon im echten Betrieb beobachten (5.3).
-- **Keine DEVONthink-Integration** — Erkennung/Export/Write-back sind eigene, überwiegend offene Stufen (Integrationsstrecke); dieser Service liefert ihnen nur die saubere Schnittstelle (documents-Zeile + Getter).
+- **Keine DEVONthink-Integration** — Erkennung/Export/Write-back sind eigene, überwiegend offene Stufen außerhalb dieses Repositorys; dieser Service liefert ihnen nur die saubere Schnittstelle (documents-Zeile + Getter).
 - **Kein eigenes Web-/Status-UI** — `report()`/`status()` + SQL reichen; die `procrastinate_events`-Tabelle hält die Historie.
 - **Kein Metadata-normalisierter Hash** — Begründung in 4.1.
 - **Kein `pipeline`-Backend als Default** — `vlm-auto-engine` ist das gemessene; `backend` bleibt als Parameter durchgereicht (die benannte Messlücke aus Betriebshandbuch 6 bleibt eine Messlücke, keine stille Umentscheidung).
