@@ -48,6 +48,7 @@ from .config import Settings
 from .errors import (
     ConfigurationError,
     InsufficientBalanceError,
+    JobAufgegebenError,
     ResultLostError,
     TerminalRunPodError,
     TransientRunPodError,
@@ -91,11 +92,6 @@ Gemessen, nicht vermutet."""
 TERMINAL_STATUSES: Final = frozenset({"COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"})
 """Job-Zustaende, nach denen kein weiteres Abfragen mehr etwas aendert."""
 
-STARTED_STATUSES: Final = frozenset({"IN_PROGRESS", "RUNNING"})
-"""Job-Zustaende, in denen ein Worker den Job tatsaechlich bearbeitet. Erst ab
-hier laeuft das Zeitbudget (`Settings.job_timeout_seconds`): Warteschlange und
-Kaltstart gehoeren nicht dazu."""
-
 RUNNING_STATUSES: Final = frozenset({"IN_QUEUE", "IN_PROGRESS", "RUNNING"})
 """Job-Zustaende, bei denen weiter abgefragt wird. `RUNNING` steht hier, weil es
 im Betrieb beobachtet wurde, auch wenn die Dokumentation nur `IN_PROGRESS`
@@ -107,8 +103,8 @@ class RunPodAccess(Protocol):
     """Was der Executor von RunPod braucht — und mehr nicht.
 
     Fuenf Methoden, nicht zehn. Der Executor sendet ab, wartet ab, bricht einen
-    Job ab, liest den Kontostand und die Herkunft; die Endpoint-Konfiguration und die Worker-Liste
-    braucht er nie, die sind Sache des Preflight.
+    Job ab, liest den Kontostand und die Herkunft; die Endpoint-Konfiguration
+    und die Worker-Liste braucht er nie, die sind Sache des Preflight.
 
     Warum das als Protokoll ausgeschrieben steht und nicht einfach `RunPodClient`
     ueberall als Typ verwendet wird: Der Executor soll ohne Netz durchspielbar
@@ -538,15 +534,15 @@ class RunPodClient:
             Die Antwort der Gegenseite (`id` und `status`, in der Regel
             `CANCELLED`), ungefiltert.
 
+        Die Aufrufer fangen alles, was unten steht: Ein misslungener Abbruch darf
+        weder den Grund verdecken, aus dem abgebrochen wird (Zeitbudget,
+        Herunterfahren, Fehler beim Abholen), noch die Wiedervorlage verhindern.
+
         Raises:
             ResultLostError: HTTP 404, die Kennung ist unbekannt oder abgelaufen.
             ConfigurationError: HTTP 401 oder 403.
             TransientRunPodError: Transportfehler oder HTTP 5xx.
             TerminalRunPodError: Alles uebrige.
-
-        Die Aufrufer fangen das alle: Ein misslungener Abbruch darf weder den
-        Grund verdecken, aus dem abgebrochen wird (Zeitbudget, Herunterfahren),
-        noch die Wiedervorlage verhindern.
 
         Kosten: keine; spart im Gegenteil, was der Job sonst weiter kostete.
         """
@@ -577,7 +573,8 @@ class RunPodClient:
         except Exception as fehler:  # noqa: BLE001
             return (
                 f"Der Abbruch bei RunPod (/cancel) misslang ({type(fehler).__name__}: "
-                f"{fehler}); der Job kann weiterlaufen und weiter Geld kosten."
+                f"{fehler}); der Job kann weiterlaufen und weiter Geld kosten "
+                f"(oder ist schon beendet)."
             )
         return "Der Job wurde bei RunPod abgebrochen (/cancel)."
 
@@ -614,11 +611,13 @@ class RunPodClient:
             Der Rueckgabewert hat einen Status aus `TERMINAL_STATUSES`.
 
         Raises:
-            TransientRunPodError: `settings.job_timeout_seconds` ab
-                `IN_PROGRESS` ueberschritten. Wiederholbar: Ein Worker kann
-                haengen. Vorher ging `/cancel` fuer genau diesen Job hinaus; ein
-                misslungener Abbruch steht in der Meldung und aendert nichts am
-                Fehlertyp.
+            JobAufgegebenError: `settings.job_timeout_seconds` Sekunden in
+                Bearbeitung (alle Laeufe zusammen, die Schlange zaehlt nicht)
+                oder ebenso lange nur fehlgeschlagene Abfragen. Wiederholbar.
+                Vorher fragt das Paket ein letztes Mal ab und gibt das Ergebnis
+                zurueck, wenn der Job inzwischen terminal ist; sonst ging
+                `/cancel` fuer genau diesen Job hinaus. Ein misslungener Abbruch
+                steht in der Meldung und aendert nichts am Fehlertyp.
             ResultLostError: siehe `status`. Ebenfalls wiederholbar — der Job
                 wird dann neu geschickt, nicht das Dokument aufgegeben.
             asyncio.CancelledError: Der Daemon faehrt herunter. Wird NICHT
@@ -628,27 +627,54 @@ class RunPodClient:
 
         Kosten: keine ueber die von `submit` hinaus.
         """
-        # `None` heisst: Das Zeitbudget laeuft (noch) nicht. Es beginnt, wenn
-        # RunPod den Job als `IN_PROGRESS` meldet, und beginnt neu, wenn der Job
-        # danach wieder in die Schlange geht. Warteschlange und Kaltstart zaehlen
+        budget = self._settings.job_timeout_seconds
+        # Das Zeitbudget zaehlt die Zeit, in der RunPod den Job bearbeitet, und
+        # zwar ueber alle Laeufe zusammen. Warteschlange und Kaltstart zaehlen
         # nicht: Mit `/cancel` bei Ablauf wuerde ein Job, der hinter einem
         # grossen Lauf wartet, sonst immer wieder abgebrochen und neu bezahlt.
-        ende: float | None = None
+        # Ginge ein Job nach einem Lauf zurueck in die Schlange, beginnt der
+        # naechste Lauf NICHT mit vollem Budget: Sonst kaeme ein Job, den ein
+        # Worker nach dem anderen abstuerzen laesst, nie an die Grenze, und jeder
+        # Lauf wuerde bezahlt.
+        verbraucht = 0.0  # Sekunden aus abgeschlossenen Laeufen
+        lauf_seit: float | None = None  # Beginn des Laufs, der gerade andauert
+        # Eine eigene Grenze fuer fehlschlagende Abfragen, denn das Budget oben
+        # laeuft erst ab dem ersten Lauf: Faellt die Abfrage vorher dauerhaft aus,
+        # bliebe sonst kein Ende. Sie beginnt beim ersten Fehler einer Reihe und
+        # endet mit der ersten gelungenen Abfrage.
+        fehler_seit: float | None = None
         abstand = self._settings.poll_interval_seconds
         letzter_fehler: Exception | None = None
 
         while True:
-            if ende is not None and time.monotonic() >= ende:
+            jetzt = time.monotonic()
+            laufzeit = verbraucht
+            if lauf_seit is not None:
+                laufzeit += jetzt - lauf_seit
+            grund = None
+            if laufzeit >= budget:
+                grund = f"{budget} Sekunden in Bearbeitung (IN_PROGRESS)"
+            elif fehler_seit is not None and jetzt - fehler_seit >= budget:
+                grund = f"{budget} Sekunden lang nur fehlgeschlagene Abfragen"
+            if grund is not None:
+                # Vor dem Aufgeben ein letztes Mal fragen: Wird der Job im
+                # letzten Takt fertig, ist er bezahlt, und ihn abzubrechen und neu
+                # abzusenden zahlte ihn ein zweites Mal.
+                try:
+                    letzte = await self.status(job_id)
+                except Exception:  # noqa: BLE001 — der Grund zum Aufgeben steht
+                    letzte = None
+                if letzte is not None and letzte.get("status") in TERMINAL_STATUSES:
+                    return letzte
                 # Das Paket gibt den Job auf. Der Abbruch geht hinaus, BEVOR die
                 # Ausnahme den Aufrufer erreicht, der wiederholt: Sonst liefe der
                 # aufgegebene Job weiter und kostete Geld, waehrend der neue
                 # Versuch dasselbe Teilstueck ein zweites Mal bezahlt.
                 abbruch = await self._abbrechen_versuchen(job_id)
-                raise TransientRunPodError(
-                    f"Job {job_id} wurde in "
-                    f"{self._settings.job_timeout_seconds} Sekunden ab "
-                    f"IN_PROGRESS nicht terminal. Wiederholbar: Ein Worker kann "
-                    f"haengen. {abbruch} Letzter Fehler beim Abfragen: "
+                raise JobAufgegebenError(
+                    f"Job {job_id} wurde nach {grund} nicht terminal. "
+                    f"Wiederholbar: Ein Worker kann haengen oder RunPod nicht "
+                    f"erreichbar sein. {abbruch} Letzter Fehler beim Abfragen: "
                     f"{letzter_fehler}"
                 )
 
@@ -666,23 +692,31 @@ class RunPodClient:
                 # bezahltes, noch abholbares Ergebnis weg und bezahlt es beim
                 # naechsten Anlauf ein zweites Mal.
                 letzter_fehler = fehler
+                if fehler_seit is None:
+                    fehler_seit = jetzt
                 abstand = min(abstand * 2, 60.0)
                 await asyncio.sleep(abstand)
                 continue
 
+            fehler_seit = None
             zustand = antwort.get("status")
             if zustand in TERMINAL_STATUSES:
                 return antwort
-            if zustand in STARTED_STATUSES:
-                if ende is None:
-                    ende = time.monotonic() + self._settings.job_timeout_seconds
-            elif zustand == "IN_QUEUE":
-                ende = None
+            if zustand == "IN_QUEUE":
+                if lauf_seit is not None:
+                    verbraucht += time.monotonic() - lauf_seit
+                    lauf_seit = None
+            elif lauf_seit is None:
+                # `IN_PROGRESS`, das beobachtete `RUNNING` und jeder unbekannte
+                # Zustand: Von einem unbekannten Zustand weiss man nicht, ob der
+                # Job wartet; zaehlte er nicht, bliebe ein unbekanntes Wort ohne
+                # Ende offen und der Job ohne Abbruch bezahlt.
+                lauf_seit = time.monotonic()
             if zustand not in RUNNING_STATUSES:
                 # Ein unbekannter Zustand wird NICHT als Fehler behandelt und
                 # NICHT als terminal: Beides koennte einen laufenden, bezahlten
-                # Job wegwerfen. Weiterfragen kostet nichts; die Zeitschranke
-                # oben begrenzt es ohnehin.
+                # Job wegwerfen. Weiterfragen kostet nichts; das Zeitbudget
+                # oben begrenzt es.
                 letzter_fehler = TransientRunPodError(
                     f"Job {job_id} meldet den unbekannten Zustand {zustand!r} — "
                     f"weder terminal noch laufend. Es wird weiter abgefragt."

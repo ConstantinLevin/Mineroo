@@ -11,15 +11,18 @@ import asyncio
 import dataclasses
 import inspect
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 
+from mineru_ocr import runpod as runpod_modul
 from mineru_ocr.config import Settings
 from mineru_ocr.errors import (
     ConfigurationError,
     InsufficientBalanceError,
+    JobAufgegebenError,
     ResultLostError,
     TerminalRunPodError,
     TransientRunPodError,
@@ -73,6 +76,44 @@ def _client(
 
 def _antwort(daten: dict[str, Any], code: int = 200) -> httpx.Response:
     return httpx.Response(code, json=daten)
+
+
+class _Uhr:
+    """Eine Uhr, die nur der Schlaf der Warteschleife vorstellt.
+
+    Die Zeitbudget-Tests brauchen Zeitspannen, die lang gegen den Abfragetakt
+    sind. In echter Zeit hinge ihr Ausgang von der Last des Rechners ab; mit
+    dieser Uhr ist er festgelegt.
+    """
+
+    def __init__(self) -> None:
+        self.jetzt = 0.0
+        self._echter_schlaf = asyncio.sleep
+
+    def monotonic(self) -> float:
+        return self.jetzt
+
+    async def sleep(self, sekunden: float) -> None:
+        self.jetzt += sekunden
+        # Eine Schleife, die nie aufgibt, soll den Test scheitern lassen statt
+        # ihn aufzuhaengen.
+        assert self.jetzt < 10_000.0, "Die Warteschleife gibt nie auf"
+        await self._echter_schlaf(0)
+
+
+@pytest.fixture
+def uhr(monkeypatch: pytest.MonkeyPatch) -> _Uhr:
+    """Setzt die Uhr der Warteschleife in `runpod` auf eine vorgestellte.
+
+    Nur der Name `time` im Modul wird ersetzt, nicht `time.monotonic` selbst: Das
+    wirkte auf die ganze Ereignisschleife.
+    """
+    eine = _Uhr()
+    monkeypatch.setattr(
+        runpod_modul, "time", SimpleNamespace(monotonic=eine.monotonic)
+    )
+    monkeypatch.setattr(runpod_modul.asyncio, "sleep", eine.sleep)
+    return eine
 
 
 @pytest.fixture
@@ -511,7 +552,7 @@ async def test_misslungener_abbruch_verdeckt_die_zeitueberschreitung_nicht(
 
 
 async def test_zeitbudget_laeuft_nicht_in_der_warteschlange(
-    echte_settings: Settings,
+    echte_settings: Settings, uhr: _Uhr
 ) -> None:
     """Warteschlange und Kaltstart zaehlen nicht zum Zeitbudget.
 
@@ -539,18 +580,15 @@ async def test_zeitbudget_laeuft_nicht_in_der_warteschlange(
 
 
 async def test_zeitbudget_beginnt_bei_in_progress(
-    echte_settings: Settings,
+    echte_settings: Settings, uhr: _Uhr
 ) -> None:
     """Das Budget laeuft ab dem Moment, in dem RunPod `IN_PROGRESS` meldet.
 
-    Gemessen an der Dauer: zwanzig Abfragen in der Schlange sind mindestens
-    0,2 s Wartezeit, dann kommt das Budget von 0,2 s dazu. Zaehlte die
-    Schlange mit, kaeme die Ausnahme nach rund 0,2 s.
+    Zwanzig Sekunden in der Schlange, dann ein Budget von 10 Sekunden: Die
+    Ausnahme kommt nach 30 Sekunden. Zaehlte die Schlange mit, kaeme sie nach 10.
     """
-    import time
-
     knapp = dataclasses.replace(
-        echte_settings, job_timeout_seconds=0.2, poll_interval_seconds=0.01
+        echte_settings, job_timeout_seconds=10.0, poll_interval_seconds=1.0
     )
     client, _ = _client(
         knapp,
@@ -559,35 +597,181 @@ async def test_zeitbudget_beginnt_bei_in_progress(
             + [_antwort({"status": "IN_PROGRESS"})]
         ),
     )
-    begonnen = time.monotonic()
-    with pytest.raises(TransientRunPodError):
+    with pytest.raises(JobAufgegebenError):
         await client.await_result("j")
-    assert time.monotonic() - begonnen >= 0.38
+    assert uhr.jetzt == 30.0
 
 
-async def test_zeitbudget_beginnt_neu_wenn_der_job_zurueck_in_die_schlange_geht(
-    echte_settings: Settings,
+async def test_zeitbudget_zaehlt_nur_die_zeit_in_progress_ueber_alle_laeufe(
+    echte_settings: Settings, uhr: _Uhr
 ) -> None:
-    """Meldet RunPod nach `IN_PROGRESS` wieder `IN_QUEUE` (etwa weil ein Worker
-    wegbrach), zaehlt die Zeit in der Schlange wieder nicht mit.
+    """Geht der Job nach `IN_PROGRESS` zurueck in die Schlange (etwa weil ein
+    Worker wegbrach), zaehlt die Schlangenzeit nicht mit, die schon verbrauchte
+    Laufzeit aber bleibt verbraucht.
 
-    Zaehlte das Budget vom ersten `IN_PROGRESS` an weiter, waere es nach 0,5 s
-    Gesamtdauer (0,1 laufend, 0,4 wartend) laengst um.
+    Begaenne das Budget bei jedem Lauf neu, kaeme ein Job, den ein Worker nach
+    dem anderen abstuerzen laesst, nie an die Grenze: Jeder Lauf wuerde bezahlt,
+    und das Paket gaebe nie auf.
     """
     knapp = dataclasses.replace(
-        echte_settings, job_timeout_seconds=0.3, poll_interval_seconds=0.01
+        echte_settings, job_timeout_seconds=10.0, poll_interval_seconds=1.0
     )
-    client, _ = _client(
+    client, transport = _client(
         knapp,
         Aufzeichnung(
-            [_antwort({"status": "IN_PROGRESS"})] * 10
-            + [_antwort({"status": "IN_QUEUE"})] * 40
-            + [_antwort({"status": "IN_PROGRESS"})] * 5
+            [_antwort({"status": "IN_PROGRESS"})] * 6
+            + [_antwort({"status": "IN_QUEUE"})] * 100
+            + [_antwort({"status": "IN_PROGRESS"})]
+        ),
+    )
+    with pytest.raises(JobAufgegebenError):
+        await client.await_result("j")
+
+    # 6 s gelaufen, 100 s gewartet, dann die restlichen 4 s des Budgets.
+    assert uhr.jetzt == 110.0
+    assert sum("/cancel/" in str(a.url) for a in transport.anfragen) == 1
+
+
+async def test_wartezeit_in_der_schlange_nach_einem_lauf_verbraucht_das_budget_nicht(
+    echte_settings: Settings, uhr: _Uhr
+) -> None:
+    """Der Job laeuft kurz, steht lange in der Schlange und laeuft dann zu Ende."""
+    knapp = dataclasses.replace(
+        echte_settings, job_timeout_seconds=10.0, poll_interval_seconds=1.0
+    )
+    client, transport = _client(
+        knapp,
+        Aufzeichnung(
+            [_antwort({"status": "IN_PROGRESS"})] * 5
+            + [_antwort({"status": "IN_QUEUE"})] * 100
+            + [_antwort({"status": "IN_PROGRESS"})] * 3
             + [_antwort({"status": "COMPLETED", "output": {"ok": True}})]
         ),
     )
     antwort = await client.await_result("j")
+
     assert antwort["status"] == "COMPLETED"
+    assert not any("/cancel/" in str(a.url) for a in transport.anfragen)
+
+
+@pytest.mark.parametrize("zustand", ["IN_PROGRESS", "RUNNING", "STARTING"])
+async def test_jeder_zustand_ausser_der_schlange_laesst_das_budget_laufen(
+    echte_settings: Settings, uhr: _Uhr, zustand: str
+) -> None:
+    """`IN_PROGRESS`, das beobachtete `RUNNING` und ein unbekannter Zustand
+    zaehlen als Arbeit: Sonst haelte ein unbekanntes Wort fuer immer einen Platz
+    im Daemon und kostete weiter, ohne dass je abgebrochen wuerde."""
+    knapp = dataclasses.replace(
+        echte_settings, job_timeout_seconds=10.0, poll_interval_seconds=1.0
+    )
+    client, transport = _client(knapp, Aufzeichnung(_antwort({"status": zustand})))
+    with pytest.raises(JobAufgegebenError):
+        await client.await_result("j")
+
+    assert sum("/cancel/" in str(a.url) for a in transport.anfragen) == 1
+
+
+async def test_dauerhaft_fehlschlagende_abfragen_werden_aufgegeben(
+    echte_settings: Settings, uhr: _Uhr
+) -> None:
+    """Fallen die Abfragen vor dem ersten `IN_PROGRESS` dauerhaft aus (5xx), gibt
+    das Paket nach dem Zeitbudget auf und bricht ab.
+
+    Das Budget laeuft erst ab `IN_PROGRESS`; ohne eine eigene Grenze fuer
+    fehlschlagende Abfragen hielte ein Ausfall von RunPod jeden Platz im Daemon
+    ohne Ende besetzt.
+    """
+    knapp = dataclasses.replace(
+        echte_settings, job_timeout_seconds=100.0, poll_interval_seconds=1.0
+    )
+    client, transport = _client(
+        knapp, Aufzeichnung(_antwort({"error": "kaputt"}, code=503))
+    )
+    with pytest.raises(JobAufgegebenError) as fehler:
+        await client.await_result("j")
+
+    assert "Wiederholbar" in str(fehler.value)
+    assert sum("/cancel/" in str(a.url) for a in transport.anfragen) == 1
+
+
+async def test_ein_gelungenes_abfragen_setzt_die_fehlerfrist_zurueck(
+    echte_settings: Settings, uhr: _Uhr
+) -> None:
+    """Ein kurzer Ausfall mitten in der Schlange gibt den Job nicht auf."""
+    knapp = dataclasses.replace(
+        echte_settings, job_timeout_seconds=100.0, poll_interval_seconds=1.0
+    )
+    ausfall = _antwort({"error": "kaputt"}, code=503)
+    client, transport = _client(
+        knapp,
+        Aufzeichnung(
+            [_antwort({"status": "IN_QUEUE"})] * 3
+            + [ausfall] * 5
+            + [_antwort({"status": "IN_QUEUE"})] * 3
+            + [ausfall] * 5
+            + [_antwort({"status": "COMPLETED", "output": {"ok": True}})]
+        ),
+    )
+    antwort = await client.await_result("j")
+
+    assert antwort["status"] == "COMPLETED"
+    assert not any("/cancel/" in str(a.url) for a in transport.anfragen)
+
+
+async def test_ein_job_der_im_letzten_takt_fertig_wird_wird_nicht_abgebrochen(
+    echte_settings: Settings, uhr: _Uhr
+) -> None:
+    """Vor dem Aufgeben fragt das Paket ein letztes Mal ab.
+
+    Wird der Job im letzten Abfragetakt fertig, ist er bezahlt. Ihn abzubrechen
+    und neu abzusenden zahlte ihn ein zweites Mal.
+    """
+    knapp = dataclasses.replace(
+        echte_settings, job_timeout_seconds=3.0, poll_interval_seconds=1.0
+    )
+    client, transport = _client(
+        knapp,
+        Aufzeichnung(
+            [_antwort({"status": "IN_PROGRESS"})] * 3
+            + [_antwort({"status": "COMPLETED", "output": {"ok": True}})]
+        ),
+    )
+    antwort = await client.await_result("j")
+
+    assert antwort["status"] == "COMPLETED"
+    assert not any("/cancel/" in str(a.url) for a in transport.anfragen)
+
+
+@pytest.mark.parametrize(
+    ("code", "erwartet"),
+    [
+        (404, ResultLostError),
+        (401, ConfigurationError),
+        (403, ConfigurationError),
+        (500, TransientRunPodError),
+        (400, TerminalRunPodError),
+    ],
+)
+async def test_abbruch_uebersetzt_fehlerantworten_wie_die_anderen_aufrufe(
+    echte_settings: Settings, code: int, erwartet: type[Exception]
+) -> None:
+    """`cancel` wirft die Fehlerklassen, die sein Docstring verspricht."""
+    client, _ = _client(echte_settings, Aufzeichnung(_antwort({"error": "x"}, code)))
+    with pytest.raises(erwartet):
+        await client.cancel("job-9")
+
+
+async def test_abbruch_ueber_ein_totes_netz_wirft_wiederholbar(
+    echte_settings: Settings,
+) -> None:
+    def tot(anfrage: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Netz weg", request=anfrage)
+
+    client = RunPodClient(
+        echte_settings, http=httpx.AsyncClient(transport=httpx.MockTransport(tot))
+    )
+    with pytest.raises(TransientRunPodError):
+        await client.cancel("job-9")
 
 
 async def test_abbruch_wird_durchgereicht(echte_settings: Settings) -> None:

@@ -170,6 +170,17 @@ class TerminalRunPodError(RunPodError):
     """
 
 
+class JobAufgegebenError(TransientRunPodError):
+    """Das Paket hat einen Job aufgegeben und `/cancel` dafuer bereits versucht.
+
+    Wiederholbar wie jeder `TransientRunPodError`; `classify_failure` ordnet sie
+    dort ein. Eigene Klasse, damit der Executor am Typ erkennt, dass der Abbruch
+    schon hinausging: Er schickt ihn fuer jede andere Ausnahme, mit der das
+    Warten auf einen womoeglich noch laufenden Job endet, und dieselbe Kennung
+    nicht ein zweites Mal.
+    """
+
+
 class ResultLostError(TransientRunPodError):
     """`GET /status/<id>` antwortet 404: das Ergebnis ist nicht mehr abrufbar.
 
