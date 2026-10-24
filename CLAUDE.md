@@ -80,7 +80,7 @@ Neun Unterkommandos in `mineru_ocr/cli.py`: `setup`, `daemon`, `ocr`, `status`,
 `show`, `wait`, `markdown`, `retry`, `preflight`. Der übliche Ablauf:
 
 ```bash
-mineru-ocr setup        # Schema anlegen (documents + Procrastinates Tabellen)
+mineru-ocr setup        # Schema anlegen (documents, inputs + Procrastinates Tabellen)
 mineru-ocr daemon       # EIGENES Fenster: hier läuft der Exekutor
 mineru-ocr ocr ~/Scans  # einreihen
 mineru-ocr status
@@ -161,6 +161,28 @@ zurücksetzt, weil es keine gibt. Zuständig sind `db.DocumentStatus`,
 Erfolg geführt wäre es unsichtbarer Verlust, als Fehler geführt erzeugte es
 endlose Wiedervorlage und Doppelkosten.
 
+### Die Eingabe liegt als Bytes in der Datenbank, nicht als Pfad
+
+Die Bytes eines Dokuments stehen in der Tabelle `inputs` (`sha256 text PRIMARY
+KEY`, `content bytea NOT NULL`), **solange das Dokument kein Endergebnis hat**.
+Pfade gibt es weder in `documents` noch im Job; der Job trägt nur den Hash, und
+`mineru_ocr/wrapper.py` legt Zeile und Eingabe beim Abschicken in **einer**
+Transaktion an. Es entsteht keine Datei, und das Einreihen öffnet keine PDF: Die
+Seitenzahl bestimmt der Job aus den Bytes und schreibt sie mit dem Endergebnis.
+
+Der Job liest `content` über den Hash auf einer **eigenen kurzlebigen
+Verbindung** (`db.read_input_async`), immer mit `binary=True`, und prüft den Hash
+nach. Nicht aus dem Pool des Daemons: libpq behält seine Puffer in der Größe des
+größten je gelesenen Werts, bis die Verbindung schließt, und 24 Verbindungen
+banden so das Gigabyte. Ohne `binary=True` ginge der Wert als Hex über die
+Leitung, doppelt so groß.
+
+**Gelöscht wird die Eingabe mit dem Endergebnis, in derselben Transaktion**
+(`db.write_terminal_async`), bei `done`, `empty` und `input_error`. Bei `failed`
+bleibt sie stehen, damit `retry` etwas zu lesen hat. „Offen" ist ein Dokument
+also bis zum Löschen an zwei Stellen ablesbar, an der Zeile `new` und an der
+Eingabe; dass die Zeile erst am Ende des Jobs entsteht, ist ein eigenes Ticket.
+
 ### Drei Antworten auf einen Fehlschlag — an genau einer Stelle entschieden
 
 `errors.classify_failure` bildet jede Ausnahme auf `FailureKind` ab
@@ -203,13 +225,15 @@ hinweg, und eine Vereinigung behielte nur das letzte.)
 - `executor.py` kennt **Procrastinate nicht**. Es bekommt Einstellungen, einen
   RunPod-Zugang und eine Verbindung; die Warteschlange liegt darüber in
   `tasks.py`. Deshalb ist der Exekutor ohne Warteschlange testbar.
-- `db.py` ist die **einzige** Stelle mit SQL auf `documents`. Wer anderswo eine
+- `db.py` ist die **einzige** Stelle mit SQL auf `documents` und `inputs`. Wer anderswo eine
   Abfrage schreibt, umgeht den Vertrag; für den Lesezugriff aus dem Exekutor gibt
   es `db.get_document_async`.
 - `runpod.py` ist die einzige Stelle, die HTTP mit RunPod spricht. `RunPodAccess`
   ist das Protokoll dazu — Tests setzen dort eine eigene Umsetzung ein, statt mit
   `type: ignore` an der Klasse vorbeizuarbeiten.
-- `pdf.py` ist die einzige Stelle, die `pypdfium2` importiert. Die mypy-Ausnahme
+- `pdf.py` ist die einzige Stelle, die `pypdfium2` importiert. `PdfReader` öffnet
+  und schneidet aus `bytes` (ein `memoryview` nimmt pypdfium2 nicht an), nie von
+  einem Pfad. Die mypy-Ausnahme
   in `pyproject.toml` gilt genau dafür; importiert es jemand woanders, meldet
   mypy es sofort.
 - `client.py` und `cli.py` sind zwei Zugänge auf **dieselbe** Fläche. Das
