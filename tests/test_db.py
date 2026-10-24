@@ -349,6 +349,41 @@ def test_setup_meldet_eine_inputs_tabelle_mit_falschem_spaltentyp(
 
 
 @pytest.mark.db
+def test_setup_meldet_eine_inputs_tabelle_mit_nullbarem_content_oder_falschem_hash_typ(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Jede der Formbedingungen schlaegt einzeln an: `content` ohne NOT NULL und
+    `sha256` als anderer Typ als `text`."""
+    db_conn.execute("ALTER TABLE inputs ALTER COLUMN content DROP NOT NULL")
+    try:
+        with pytest.raises(Exception, match="NOT NULL"):
+            setup(_test_datenbank)
+    finally:
+        db_conn.execute("ALTER TABLE inputs ALTER COLUMN content SET NOT NULL")
+
+    db_conn.execute("ALTER TABLE inputs ALTER COLUMN sha256 TYPE varchar(64)")
+    try:
+        with pytest.raises(Exception, match="PRIMARY KEY"):
+            setup(_test_datenbank)
+    finally:
+        db_conn.execute("ALTER TABLE inputs ALTER COLUMN sha256 TYPE text")
+
+
+@pytest.mark.db
+def test_setup_laesst_sich_nicht_von_einer_gleichnamigen_tabelle_anderswo_irren(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Eine Tabelle `inputs` in einem anderen Schema gehoert nicht zur Pruefung:
+    Der Abgleich liest die Tabelle, die `search_path` aufloest."""
+    db_conn.execute("CREATE SCHEMA fremd")
+    try:
+        db_conn.execute("CREATE TABLE fremd.inputs (sha256 text, content text)")
+        setup(_test_datenbank)  # wirft nicht
+    finally:
+        db_conn.execute("DROP SCHEMA fremd CASCADE")
+
+
+@pytest.mark.db
 async def test_eingabe_wird_gespeichert_und_binaer_gelesen(
     db_conn: psycopg.Connection[Any], _test_datenbank: str
 ) -> None:

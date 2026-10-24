@@ -343,11 +343,14 @@ async def process_document(
             )
 
         # --- 3.: zerlegen, absenden, abholen ----------------------------
-        # Zuerst wird geprueft, was ohne RunPod pruefbar ist (PDF oeffnen, Groesse
-        # gegen die Anfragegrenze), und erst DANN auf Geld gewartet: Das Einreihen
-        # oeffnet keine PDF mehr, also faellt eine kaputte erst hier auf, und sie
-        # darf bei leerem Konto nicht einen Platz des Daemons belegen, bis wieder
-        # Geld da ist, obwohl RunPod nie gefragt wird.
+        # Zuerst wird geprueft, was sich billig ohne RunPod pruefen laesst (eine
+        # PDF oeffnen, bei allem anderen die Groesse gegen die Anfragegrenze), und
+        # erst DANN auf Geld gewartet: Das Einreihen oeffnet keine PDF mehr, also
+        # faellt eine kaputte erst hier auf, und sie darf bei leerem Konto nicht
+        # einen Platz des Daemons belegen, bis wieder Geld da ist, obwohl RunPod
+        # nie gefragt wird. Nicht davor: eine einzelne PDF-Seite ueber der Grenze.
+        # Sie faellt erst beim Schneiden auf (`chunking.iter_chunks` arbeitet
+        # traege und halbiert unterwegs), also nach dem Warten.
         if typ.is_pdf:
             with PdfReader(rohbytes) as leser:
                 seiten = leser.page_count

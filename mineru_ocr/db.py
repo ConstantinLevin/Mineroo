@@ -162,8 +162,7 @@ Chunk-Angaben in der Datenbank fuehren, gegen die Festlegung oben.
 Geschrieben wird `raw` NUR beim Terminal-Schreiben eines Durchlaufs und
 ueberschrieben nur dann, wenn ein gescheitertes Dokument erneut verarbeitet wird.
 Mengengeruest: rund 0,05 bis 0,1 MB je Seite; bei 30.000 Dokumenten sind das
-Gigabyte, die Postgres auslagert. (Die frueher hier stehende Schaetzung von 0,5
-bis 1 MB je Seite war rund zehnfach zu hoch.) Der Plattenplatz gehoert vor dem
+Gigabyte, die Postgres auslagert. Der Plattenplatz gehoert vor dem
 grossen Lauf geprueft (Plan 12.5). Warum die Ergebnisse in die Datenbank gehoeren
 und nicht als Pfad daneben: Sie sind ab dem Schreiben die EINZIGE dauerhafte
 Kopie — auf der Gegenseite liegt ein fertiges Ergebnis nur rund dreissig Minuten
@@ -472,7 +471,7 @@ def _datenbank_anlegen_falls_noetig(dsn: str) -> None:
 INPUT_SPALTEN: Final = frozenset({"sha256", "content"})
 """Die Spalten von `inputs`. Die Tabelle hat keine Zeilenklasse (der Executor
 liest nur `content`), also steht die Erwartung hier, und `_schema_abgleichen`
-vergleicht gegen sie."""
+vergleicht gegen sie. Typ, NOT NULL und Primaerschluessel stehen dort selbst."""
 
 MAX_INPUT_BYTES: Final = 1_000_000_000
 """Die groesste Eingabe, die sich ablegen laesst. Postgres begrenzt ein Feld und
@@ -505,14 +504,21 @@ def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
     }
     abweichungen: list[str] = []
     for tabelle, (soll, gegen) in erwartet.items():
-        ist = {
-            zeile[0]
-            for zeile in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = %s",
+        # Aus `pg_attribute` der Tabelle, die `search_path` aufloest, nicht aus
+        # `information_schema.columns` nach Namen: Das fasste gleichnamige
+        # Tabellen anderer Schemas dazu und meldete eine gesunde Datenbank als
+        # unpassend.
+        form = {
+            name: (typ, nicht_null)
+            for name, typ, nicht_null in conn.execute(
+                "SELECT a.attname, format_type(a.atttypid, a.atttypmod), "
+                "a.attnotnull FROM pg_attribute a "
+                "WHERE a.attrelid = %s::regclass AND a.attnum > 0 "
+                "AND NOT a.attisdropped",
                 (tabelle,),
             ).fetchall()
         }
+        ist = set(form)
         fehlend = soll - ist
         ueberzaehlig = ist - soll
         if fehlend or ueberzaehlig:
@@ -525,13 +531,6 @@ def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
             # Die Namen stimmen; ob die Form stimmt, sagen sie nicht. Ohne
             # Primaerschluessel scheitert `ON CONFLICT (sha256)` beim ersten
             # Abschicken, und `setup` haette vorher Erfolg gemeldet.
-            form = {
-                name: (typ, nullable)
-                for name, typ, nullable in conn.execute(
-                    "SELECT column_name, data_type, is_nullable "
-                    "FROM information_schema.columns WHERE table_name = 'inputs'"
-                ).fetchall()
-            }
             schluessel = {
                 zeile[0]
                 for zeile in conn.execute(
@@ -542,8 +541,8 @@ def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
                 ).fetchall()
             }
             if (
-                form.get("sha256", ("", ""))[0] != "text"
-                or form.get("content") != ("bytea", "NO")
+                form["sha256"][0] != "text"
+                or form["content"] != ("bytea", True)
                 or schluessel != {"sha256"}
             ):
                 abweichungen.append(

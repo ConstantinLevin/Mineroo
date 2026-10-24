@@ -233,7 +233,7 @@ def test_nicht_unterstuetzter_typ_hinterlaesst_keine_eingabe(
     assert zaehlung is not None and zaehlung[0] == 0
 
 
-def test_unterstuetzter_typ_wird_abgewiesen_ohne_die_datei_zu_lesen(
+def test_nicht_unterstuetzter_typ_wird_abgewiesen_ohne_die_datei_zu_lesen(
     db_conn: psycopg.Connection[Any],
     settings: Settings,
     tmp_path: Path,
@@ -299,6 +299,28 @@ def test_zeile_und_eingabe_entstehen_zusammen_oder_gar_nicht(
 
 
 # --- Der Ordner-Fall ------------------------------------------------------
+
+
+def test_refresh_dir_ueberspringt_zu_grosse_dateien_wie_from_dir(
+    db_conn: psycopg.Connection[Any],
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`refresh_dir` hat dieselbe Auslassregel wie `from_dir`: Eine zu grosse Datei
+    bricht das Nachsehen nicht ab."""
+    ordner = tmp_path / "bestand"
+    _datei(ordner, "a.png", PNG_KOPF + b"1")
+    mega = OCRMegaWrapper.from_dir(ordner, db_conn, settings)
+    monkeypatch.setattr(db, "MAX_INPUT_BYTES", 50)
+    _datei(ordner, "b_gross.png", PNG_KOPF + b"x" * 100)
+    _datei(ordner, "c_klein.png", PNG_KOPF + b"2")
+
+    neue = mega.refresh_dir(ordner)
+
+    assert [h.sha256 for h in neue] == [
+        hashlib.sha256(PNG_KOPF + b"2").hexdigest()
+    ]
 
 
 def test_from_dir_ueberspringt_zu_grosse_dateien_und_reiht_den_rest_ein(

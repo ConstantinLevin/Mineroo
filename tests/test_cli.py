@@ -421,6 +421,24 @@ def test_ocr_ohne_daemon_legt_nichts_ab(
         assert zaehlung is not None and zaehlung[0] == 0, tabelle
 
 
+def test_ocr_ohne_daemon_legt_mit_no_strict_und_no_start_ab(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Die Vorpruefung gilt nur fuer die Voreinstellung (`start` und `strict`):
+    `--no-strict` reiht trotzdem ein, `--no-start` legt nur ab. Beides endet mit 0
+    und laesst die Bytes in `inputs`."""
+    db_conn.execute("DELETE FROM procrastinate_workers")
+    for nr, schalter in enumerate(("--no-strict", "--no-start")):
+        datei = tmp_path / f"{nr}.png"
+        datei.write_bytes(PNG_KOPF + str(nr).encode())
+
+        ergebnis = cli.invoke(app, ["ocr", str(datei), schalter])
+
+        assert ergebnis.exit_code == 0, (schalter, ergebnis.output)
+    zaehlung = db_conn.execute("SELECT count(*) FROM inputs").fetchone()
+    assert zaehlung is not None and zaehlung[0] == 2
+
+
 # --- Das Kommando, das Geld ausgibt --------------------------------------
 
 

@@ -1333,10 +1333,14 @@ async def test_zu_grosses_bild_wird_abgelehnt_ohne_zu_bezahlen(
     sha, _ = _anlegen(
         db_conn, tmp_path, zu_gross, name="riesig.png", typ=DocumentType.PNG
     )
-    runpod = FalscherRunPod([_fertige_antwort()])
+    # Leeres Konto: Die Ablehnung darf nicht erst nach dem Warten auf Geld kommen.
+    runpod = FalscherRunPod([_fertige_antwort()], kontostand=0.0)
 
     with pytest.raises(TooLargeError) as gefangen:
-        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+        await asyncio.wait_for(
+            process_document(sha, settings=exec_settings, runpod=runpod, pool=pool),
+            timeout=5,
+        )
 
     # DIE ZUSICHERUNG, an der Geld haengt: kein einziger Aufruf.
     assert runpod.abgesendet == []

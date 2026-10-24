@@ -693,7 +693,7 @@ class OCRMegaWrapper:
                 continue
             try:
                 huelle = OCRWrapper.from_path(pfad, self._conn, self._settings)
-            except (UnsupportedTypeError, OSError):
+            except (UnsupportedTypeError, TooLargeError, OSError):
                 continue
             if huelle.sha256 not in self._huellen:
                 self._huellen[huelle.sha256] = huelle

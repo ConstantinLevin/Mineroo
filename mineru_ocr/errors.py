@@ -109,7 +109,10 @@ class CorruptDocumentError(InputError):
 
 
 class TooLargeError(InputError):
-    """Die Datei passt nicht unter die Payload-Grenze und laesst sich nicht zerlegen.
+    """Die Datei passt nicht unter eine Grenze und laesst sich nicht zerlegen.
+
+    Gemeint sind die Payload-Grenze einer Anfrage und, beim Abschicken, die
+    Grenze, die Postgres einem Feld setzt (`db.MAX_INPUT_BYTES`).
 
     Drei Faelle: eine einzelne PDF-Seite ueber der Grenze, eine Nicht-PDF-Datei
     ueber der Grenze (DOCX, TIFF — nicht seitenweise zerlegbar), und beim
