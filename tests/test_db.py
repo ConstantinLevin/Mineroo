@@ -377,7 +377,11 @@ def test_setup_laesst_sich_nicht_von_einer_gleichnamigen_tabelle_anderswo_irren(
     Der Abgleich liest die Tabelle, die `search_path` aufloest."""
     db_conn.execute("CREATE SCHEMA fremd")
     try:
-        db_conn.execute("CREATE TABLE fremd.inputs (sha256 text, content text)")
+        # Mit einer ueberzaehligen Spalte und anderem Typ: Mischte der Abgleich
+        # die Tabellen aller Schemas, schluege er hier sicher an.
+        db_conn.execute(
+            "CREATE TABLE fremd.inputs (sha256 text, content text, zusatz text)"
+        )
         setup(_test_datenbank)  # wirft nicht
     finally:
         db_conn.execute("DROP SCHEMA fremd CASCADE")

@@ -428,15 +428,24 @@ def test_ocr_ohne_daemon_legt_mit_no_strict_und_no_start_ab(
     `--no-strict` reiht trotzdem ein, `--no-start` legt nur ab. Beides endet mit 0
     und laesst die Bytes in `inputs`."""
     db_conn.execute("DELETE FROM procrastinate_workers")
-    for nr, schalter in enumerate(("--no-strict", "--no-start")):
+
+    def zaehlen(tabelle: str) -> int:
+        zaehlung = db_conn.execute(f"SELECT count(*) FROM {tabelle}").fetchone()
+        assert zaehlung is not None
+        return int(zaehlung[0])
+
+    # Die Job-Zahl ist der Gesamtstand: `--no-strict` bringt den ersten, `--no-start`
+    # keinen weiteren.
+    for nr, (schalter, jobs) in enumerate((("--no-strict", 1), ("--no-start", 1))):
         datei = tmp_path / f"{nr}.png"
         datei.write_bytes(PNG_KOPF + str(nr).encode())
 
         ergebnis = cli.invoke(app, ["ocr", str(datei), schalter])
 
         assert ergebnis.exit_code == 0, (schalter, ergebnis.output)
-    zaehlung = db_conn.execute("SELECT count(*) FROM inputs").fetchone()
-    assert zaehlung is not None and zaehlung[0] == 2
+        assert zaehlen("inputs") == nr + 1, schalter
+        # `--no-strict` reiht trotzdem ein, `--no-start` legt nur ab.
+        assert zaehlen("procrastinate_jobs") == jobs, schalter
 
 
 # --- Das Kommando, das Geld ausgibt --------------------------------------
