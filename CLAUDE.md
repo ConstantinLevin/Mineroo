@@ -246,10 +246,10 @@ in `assembly.assemble`). Die Namen sind Inhalts-Hashes, eine Kollision heißt al
 dasselbe Bild in zwei Stücken — möglich, aber in diesem Material nicht
 vorgekommen. Bis die Ersatzaufnahmen liegen, außerdem alles, was die zwei
 entfernten Aufnahmen trugen: der gewöhnliche, nicht leere Tarball-Erfolg (Bilder
-und Inhalt in beiden `content_list`-Generationen; Layout-PDF und zweite
-Generation prüft `leere_seite` nur in leerer Form), der Seitenversatz über
-mehrere Teilstücke und dass ein Randblock, dessen Text schon im Markdown steht,
-nicht noch einmal angehängt wird.
+und Inhalt in beiden `content_list`-Generationen; Layout-PDF, zweite Generation,
+fehlendes Span-PDF, Umschlag und `source` prüft weiter `leere_seite`), der
+Seitenversatz über mehrere Teilstücke und dass ein Randblock, dessen Text schon
+im Markdown steht, nicht noch einmal angehängt wird.
 
 ---
 

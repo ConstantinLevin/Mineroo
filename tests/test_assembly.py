@@ -896,10 +896,14 @@ def test_modell_prosa_kommt_MIT_und_ist_auffindbar() -> None:
     assert prosa_bloecke[0]["page_idx"] == 0
 
 
-def test_randbloecke_im_markdown_werden_nicht_doppelt_angehaengt() -> None:
+def test_erfundene_randbloecke_im_markdown_werden_nicht_doppelt_angehaengt() -> None:
     """Ein Randblock, dessen Text schon im Markdown steht, kommt nicht noch
     einmal dazu — derselbe fehlende Fusszeilentext auf zwei Seiten dagegen
     zweimal.
+
+    „Steht im Markdown" heisst: als Teilzeichenkette, nicht als eigener Absatz.
+    Die Kopfzeile steht hier deshalb eingebettet, als Ueberschrift; ein Abgleich
+    auf ganze Absaetze haengte sie wieder an und faellt damit auf.
 
     Die Lage hat das echte Dokument vom 08.08.2026 gezeigt: Kopfzeilen im
     Markdown, Fusszeilen nicht (siehe
@@ -909,7 +913,7 @@ def test_randbloecke_im_markdown_werden_nicht_doppelt_angehaengt() -> None:
     erfundenen Antwort fest; ohne ihn liesse sich die Pruefung in
     `rendered_markdown` loeschen, und die Suite bliebe gruen.
     """
-    markdown = "Muster GmbH\n\nSeite eins.\n\nMuster GmbH\n\nSeite zwei."
+    markdown = "# Muster GmbH\n\nSeite eins.\n\n# Muster GmbH\n\nSeite zwei."
     fusszeile = "Muster GmbH, Beispielweg 1"
     ergebnis = assemble(
         [
@@ -944,7 +948,7 @@ def test_ohne_randbloecke_sind_beide_wege_gleich(
     entfernt, nur ergaenzt" — die obere prueft
     `test_randbloecke_werden_nicht_doppelt_angehaengt` am echten Dokument (seit
     Mineroo#2 ausgesetzt) und bis zu dessen Ersatzaufnahmen
-    `test_randbloecke_im_markdown_werden_nicht_doppelt_angehaengt` an einer
+    `test_erfundene_randbloecke_im_markdown_werden_nicht_doppelt_angehaengt` an einer
     erfundenen Antwort.
     """
     for antwort in real_responses:
@@ -1294,6 +1298,21 @@ def test_echte_leere_seite_ist_empty_und_nicht_kaputt(
     assert "doc_content_list_v2.json" in teil.extras
     # Und das Layout-PDF ist da, obwohl die Seite leer ist.
     assert teil.layout_pdf is not None
+    # Was die entfernte Tarball-Aufnahme (Mineroo#2) ausserdem belegte und hier
+    # weiter an echtem Material laeuft: kein Span-PDF im VLM-Pfad, der Umschlag
+    # und die Felder neben dem Tarball (`source` ist die Transportart, nicht
+    # derselbe Wert wie `basename`).
+    assert teil.span_pdf is None
+    assert sorted(teil.envelope) == [
+        "delayTime",
+        "executionTime",
+        "id",
+        "output_meta",
+        "status",
+        "workerId",
+    ]
+    assert teil.extras["source"] == "b64"
+    assert teil.extras["basename"] == "doc"
 
     ergebnis = assemble([teil])
     assert is_empty(ergebnis) is True
