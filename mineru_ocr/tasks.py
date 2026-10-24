@@ -120,7 +120,8 @@ def build_client_app(settings: Settings) -> procrastinate.App:
 
     Der Client reiht per NAMEN ein (`enqueue_document`) und fragt die
     Job-Verwaltung ab; die Task-Funktionen kennt er nicht und braucht sie nicht.
-    Ein synchroner Zugang kann nur einreihen und abfragen — ein Client, der
+    Ein synchroner Zugang kann einreihen, abfragen und Jobs wiederholen
+    (`retry_job_by_id`); nur einen Worker kann er nicht tragen. Ein Client, der
     versehentlich einen Worker startet, waere ein zweiter Exekutor, von dem
     niemand weiss; mit ihm scheitert das.
 
@@ -196,7 +197,7 @@ class OCRRetryStrategy(procrastinate.BaseRetryStrategy):
         Die Strategie braucht `retry_base_seconds`, `retry_factor` und
         `max_attempts`. Sie holt sie sich nicht selbst — es gibt keine globale
         Einstellung, und das ist eine ausdrueckliche Regel (`config.py`). Gebaut
-        wird sie in `register_tasks`, das die Einstellung ohnehin hat.
+        wird sie in `build_daemon_app`, das die Einstellung ohnehin hat.
         """
         self._settings = settings
 
@@ -232,7 +233,7 @@ class OCRRetryStrategy(procrastinate.BaseRetryStrategy):
             `procrastinate_retry_job_v2` erhoeht den Zaehler bei jedem
             Zuruecksetzen auf `todo`, und sowohl der stalled-Waechter als auch ein
             Retry von Hand laufen durch genau diese Funktion (Feature-Verifikation
-            Punkt 19, am Objekt der installierten 3.9.0 belegt). Ein Retry von
+            Punkt 19, am Objekt von 3.9.0 belegt, fuer 3.10.0 unveraendert). Ein Retry von
             Hand auf einen erschoepften Job ist deshalb genau EIN weiterer
             Versuch, keine neue Dreier-Runde — und eine stalled-Wiederaufnahme
             zehrt am selben Budget.

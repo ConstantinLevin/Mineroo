@@ -896,7 +896,16 @@ async def test_pool_des_daemons_ersetzt_eine_beendete_verbindung(
         async with pool.connection() as verbindung:
             alt = verbindung.info.backend_pid
         db_conn.execute("SELECT pg_terminate_backend(%s)", (alt,))
-        await asyncio.sleep(0.3)  # der Server braucht einen Augenblick
+        # Der Server braucht einen Augenblick, bis die Verbindung wirklich weg
+        # ist; ohne das bekaeme der Pool sie noch lebendig zurueck.
+        ende = time.monotonic() + 5.0
+        while time.monotonic() < ende:
+            noch_da = db_conn.execute(
+                "SELECT 1 FROM pg_stat_activity WHERE pid = %s", (alt,)
+            ).fetchone()
+            if noch_da is None:
+                break
+            await asyncio.sleep(0.02)
 
         async with pool.connection() as verbindung:
             zeile = await (await verbindung.execute("SELECT 1")).fetchone()

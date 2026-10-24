@@ -95,7 +95,7 @@ def _job(attempts: int = 0) -> Job:
 def test_tasks_sind_unter_den_festgelegten_namen_angemeldet(
     app: procrastinate.App,
 ) -> None:
-    """Nach `configure` tragen die Tasks genau `config.TASK_OCR_DOCUMENT` und
+    """Nach dem Bauen der Daemon-App tragen die Tasks genau `config.TASK_OCR_DOCUMENT` und
     `config.TASK_RETRY_STALLED`.
 
     Der Fall, gegen den das steht, meldet keinen Fehler: Kennen Produzent und

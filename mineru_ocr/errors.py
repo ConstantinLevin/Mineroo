@@ -318,7 +318,7 @@ class FailureKind(enum.Enum):
     Wiedervorlage, nicht nur bei Strategie-Retries. Die stalled-Wiederaufnahme
     des Waechters und ein von Hand ausgeloester Retry laufen durch dieselbe
     SQL-Funktion `procrastinate_retry_job_v2` und erhoehen ihn ebenso
-    (Feature-Verifikation Punkt 19, am Objekt der installierten 3.9.0 belegt).
+    (Feature-Verifikation Punkt 19, am Objekt von 3.9.0 belegt, fuer 3.10.0 unveraendert).
     Ein Retry von Hand auf einen erschoepften Job ist deshalb genau EIN weiterer
     Versuch, keine neue Dreier-Runde.
     """

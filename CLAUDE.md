@@ -128,8 +128,9 @@ Was daraus folgt und nicht aus einer einzelnen Datei hervorgeht:
   der eigenen Verbindung des Clients (`autocommit`), nicht auf einer aus dem Pool.
 - **Ein Client haelt zwischen zwei Aufrufen keine Procrastinate-Verbindung.**
   `list_jobs`, `list_tasks` und `retry_job_by_id` laufen synchron ueber seine App,
-  mit je einer kurzlebigen Verbindung. Je Agent bleiben so ein bis zwei
-  Verbindungen: die des Clients und, waehrend er wartet, die Warte-Verbindung.
+  mit je einer kurzlebigen Verbindung. Je Agent bleibt so eine Verbindung: die
+  des Clients, auch waehrend `wait` (das laeuft auf ihr; die Spec rechnet mit
+  bis zu zwei, gemessen ist eine).
   `client._synchron_ausfuehren` gibt es nur noch fuer die kurzen Lesefragen an
   RunPod.
 - **Der Client schliesst seinen Pool selbst**, weil `app.close()` einen uebergebenen

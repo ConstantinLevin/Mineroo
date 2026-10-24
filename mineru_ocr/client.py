@@ -177,8 +177,8 @@ class OCRClient:
     zwei Aufrufen haelt der Client keine Procrastinate-Verbindung. Das Einreihen
     laeuft ueber seine eigene Verbindung (`connection=`), die Abfragen
     (`list_jobs`, `retry_job_by_id`, `list_tasks`) ueber je eine kurzlebige aus
-    dem Pool. Je Agent bleiben so ein bis zwei Verbindungen: die des Clients und,
-    waehrend er wartet, die Warte-Verbindung.
+    dem Pool. Je Agent bleibt so eine Verbindung: die des Clients, auch waehrend
+    `wait` (das laeuft auf ihr; die Spec rechnet mit bis zu zwei, gemessen ist eine).
 
     Nebenlaeufigkeit: Ein Client gehoert einem Aufrufer, synchron. Wer aus
     mehreren Programmteilen zugreift, nimmt mehrere Clients; die Datenbank
@@ -694,7 +694,7 @@ class OCRClient:
         zusammen — hier wird ausdruecklich enger gefiltert.)
 
         Zwei Eigenheiten des Werkzeugs, die man kennen muss (beide am Objekt der
-        installierten 3.9.0 belegt, Feature-Verifikation Punkt 19):
+        von 3.9.0 belegt und fuer 3.10.0 unveraendert, Feature-Verifikation Punkt 19):
 
         Es nimmt nur Jobs in `doing` oder `failed`. Ein `aborted`-Job — etwa vom
         Herunterfahren — wird ABGEWIESEN. Sein Heilungsweg ist `ocr_start`, nicht

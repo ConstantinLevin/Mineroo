@@ -12,7 +12,7 @@ import pytest
 from psycopg_pool import NullConnectionPool
 
 from mineru_ocr import client as client_modul
-from mineru_ocr import config
+from mineru_ocr import config, tasks
 from mineru_ocr.client import HASH_FORM, OCRClient
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, write_terminal_async
@@ -582,6 +582,92 @@ def test_conn_vor_dem_betreten_wirft(_test_datenbank: str) -> None:
         klient.conn
 
 
+def test_procrastinate_app_vor_dem_betreten_und_nach_dem_verlassen_wirft(
+    _test_datenbank: str, runpod: RunPodAntworten
+) -> None:
+    """Die App des Clients gibt es nur zwischen Betreten und Verlassen: Davor und
+    danach sagt der Client es, statt eine fehlende oder geschlossene App
+    herauszugeben."""
+    klient = OCRClient(db_dsn=_test_datenbank, api_key="x", preflight=False)
+    with pytest.raises(ConfigurationError, match="betreten"):
+        klient._procrastinate
+    with klient:
+        assert klient._procrastinate is not None
+    with pytest.raises(ConfigurationError, match="betreten"):
+        klient._procrastinate
+
+
+def _pools_aufzeichnen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[NullConnectionPool[Any]]:
+    """Ersetzt den Pool-Typ des Clients durch einen, der seine Pools merkt."""
+    angelegt: list[NullConnectionPool[Any]] = []
+
+    class Aufzeichnend(NullConnectionPool):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            angelegt.append(self)
+
+    monkeypatch.setattr(client_modul, "NullConnectionPool", Aufzeichnend)
+    return angelegt
+
+
+class _Absichtlich(Exception):
+    """Der Fehler, den die Tests unterwegs ausloesen."""
+
+
+def test_scheitert_der_preflight_beim_betreten_wird_alles_wieder_zugemacht(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ein `with` ruft `__exit__` nicht, wenn schon `__enter__` wirft. Scheitert
+    also der Preflight, nachdem Verbindung, Pool und App offen sind, muss der
+    Client sie selbst wieder zumachen — und den urspruenglichen Fehler weitergeben.
+    """
+    pools = _pools_aufzeichnen(monkeypatch)
+
+    def kaputt(self: OCRClient) -> dict[str, Any]:
+        raise _Absichtlich("preflight")
+
+    monkeypatch.setattr(OCRClient, "preflight", kaputt)
+    vorher = _verbindungen_stabil(db_conn)
+    klient = OCRClient(db_dsn=_test_datenbank, api_key="x", preflight=True)
+
+    with pytest.raises(_Absichtlich, match="preflight"):
+        klient.__enter__()
+
+    assert len(pools) == 1 and pools[0].closed
+    assert klient._conn is None and klient._pool is None and klient._app is None
+    assert _verbindungen_erreichen(db_conn, vorher), "Verbindung blieb offen"
+
+
+def test_scheitert_das_bauen_der_app_beim_betreten_wird_alles_wieder_zugemacht(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dasselbe, wenn es schon beim Bauen der App scheitert: Verbindung und Pool
+    sind dann offen, die App nicht."""
+    pools = _pools_aufzeichnen(monkeypatch)
+
+    def kaputt(settings: Settings) -> Any:
+        raise _Absichtlich("app")
+
+    monkeypatch.setattr(tasks, "build_client_app", kaputt)
+    vorher = _verbindungen_stabil(db_conn)
+    klient = OCRClient(db_dsn=_test_datenbank, api_key="x", preflight=False)
+
+    with pytest.raises(_Absichtlich, match="app"):
+        klient.__enter__()
+
+    assert len(pools) == 1 and pools[0].closed
+    assert klient._conn is None and klient._pool is None and klient._app is None
+    assert _verbindungen_erreichen(db_conn, vorher), "Verbindung blieb offen"
+
+
 # --- Die Procrastinate-Anbindung des Clients -------------------------------
 
 
@@ -612,6 +698,24 @@ def _verbindungen_erreichen(
     return _verbindungen(conn) == erwartet
 
 
+def _verbindungen_stabil(conn: psycopg.Connection[Any], *, sekunden: float = 3.0) -> int:
+    """Die Zahl der Verbindungen, sobald zwei Lesungen im Abstand gleich sind.
+
+    Eine einzelne Lesung kann eine Verbindung des Vortests noch mitzaehlen, die
+    Postgres erst einen Augenblick spaeter als beendet zeigt; die Ausgangszahl
+    waere dann zu hoch, und kein Warten auf eine feste Zahl holte das ein.
+    """
+    letzte = _verbindungen(conn)
+    ende = time.monotonic() + sekunden
+    while time.monotonic() < ende:
+        time.sleep(0.1)
+        jetzt = _verbindungen(conn)
+        if jetzt == letzte:
+            return jetzt
+        letzte = jetzt
+    return letzte
+
+
 def test_client_haelt_zwischen_aufrufen_keine_procrastinate_verbindung(
     _test_datenbank: str,
     db_conn: psycopg.Connection[Any],
@@ -630,7 +734,7 @@ def test_client_haelt_zwischen_aufrufen_keine_procrastinate_verbindung(
     bestuende zu Unrecht.
     """
     _worker_am_leben(db_conn)
-    vorher = _verbindungen(db_conn)
+    vorher = _verbindungen_stabil(db_conn)
 
     with OCRClient(
         db_dsn=_test_datenbank, api_key="erfunden", preflight=False
