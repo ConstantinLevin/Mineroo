@@ -1037,8 +1037,11 @@ async def test_herunterfahren_bricht_den_laufenden_runpod_job_ab(
 
     assert gegenstelle.ereignisse("cancel") == ["job-1"]
     # Der Abbruch kam NACH dem Absenden und nach mindestens einer Abfrage.
-    assert gegenstelle.verlauf.index(("cancel", "job-1")) > gegenstelle.verlauf.index(
-        ("run", "job-1")
+    vor_dem_abbruch = gegenstelle.verlauf[: gegenstelle.verlauf.index(("cancel", "job-1"))]
+    assert ("run", "job-1") in vor_dem_abbruch
+    assert ("status", "job-1") in vor_dem_abbruch
+    assert vor_dem_abbruch.index(("run", "job-1")) < vor_dem_abbruch.index(
+        ("status", "job-1")
     )
 
 

@@ -518,9 +518,10 @@ class RunPodClient:
     async def cancel(self, job_id: str) -> dict[str, Any]:
         """Bricht einen Job bei RunPod ab: `POST {API_BASE}/{endpoint_id}/cancel/{job_id}`.
 
-        Wozu: Ein Job, den das Paket aufgibt (Zeitbudget abgelaufen) oder dessen
-        Wartenden der Daemon beim Herunterfahren abbricht, laeuft bei RunPod
-        sonst weiter und kostet Geld, ohne dass ihn jemand abholt. RunPod stoppt
+        Wozu: Ein Job, den das Paket aufgibt (Zeitbudget abgelaufen, Fehler beim
+        Abfragen) oder dessen Wartenden der Daemon beim Herunterfahren abbricht,
+        laeuft bei RunPod sonst weiter und kostet Geld, ohne dass ihn jemand
+        abholt. RunPod stoppt
         damit laufende Jobs und nimmt wartende aus der Schlange.
 
         Das ist KEIN Eingriff in eine bezahlte Ressource (Endpoint, Template,

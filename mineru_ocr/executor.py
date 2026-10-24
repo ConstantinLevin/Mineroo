@@ -45,6 +45,8 @@ from .errors import (
     CorruptDocumentError,
     InputError,
     InsufficientBalanceError,
+    JobAufgegebenError,
+    ResultLostError,
     SourceChangedError,
     TerminalRunPodError,
     TransientRunPodError,
@@ -258,10 +260,16 @@ async def process_document(
             `input_error`.
         asyncio.CancelledError: Der Daemon faehrt herunter. Wird weitergeworfen,
             nicht verschluckt; vorher geht `/cancel` fuer den RunPod-Job hinaus,
-            auf den gerade gewartet wird. Der Job endet dann `aborted`, die Zeile bleibt `new`, und das
-            Dokument laeuft beim naechsten Einreihen von vorn. Es gibt fuer
-            `aborted` ausdruecklich kein Retry-Bordmittel (Feature-Verifikation
-            Punkt 19) — das erneute Einreihen IST der Heilungsweg.
+            auf den gerade gewartet wird. Der Job endet dann `aborted`, die
+            Zeile bleibt `new`, und das Dokument laeuft beim naechsten
+            Einreihen von vorn. Es gibt fuer `aborted` ausdruecklich kein
+            Retry-Bordmittel (Feature-Verifikation Punkt 19) — das erneute
+            Einreihen IST der Heilungsweg.
+
+    Endet das Warten auf einen Job mit einem Fehler, bei dem er bei RunPod
+    weiterlaufen kann (jeder ausser der Zeitueberschreitung, nach der der Client
+    schon abgebrochen hat, und dem verlorenen Ergebnis), geht `/cancel` vor dem
+    Weiterwerfen hinaus.
 
     Kosten: JA. Diese Funktion ist die einzige im Paket, die planmaessig Geld
     ausgibt. Ein Dokument mit N Chunks kostet N Parses; ein Wiederanlauf nach
@@ -772,6 +780,20 @@ async def _stuecke_verarbeiten(
             #
             # Ein zweites Signal (Strg-C zweimal) unterbricht auch diesen Abbruch;
             # wer zweimal drueckt, meint es so (siehe `daemon.run`).
+            await _abbruch_hinausschicken(runpod, job)
+            raise
+        except (JobAufgegebenError, ResultLostError):
+            # Beide brauchen keinen Abbruch von hier: Nach dem Zeitbudget hat der
+            # Client `/cancel` schon geschickt (daher der eigene Fehlertyp), und
+            # bei HTTP 404 kennt RunPod den Job nicht mehr.
+            raise
+        except Exception:
+            # Das Warten endet mit einem Fehler, und der Job kann bei RunPod
+            # weiterlaufen: die Kontopause, die nach der dritten widerspruechlichen
+            # 402 aufgibt, ein endgueltiger Fehler der Abfrage (HTTP 429 oder
+            # 400), ein Fehler der Zugangsdaten. Das Paket gibt ihn damit auf,
+            # und ohne Abbruch kostete er weiter, ohne dass ihn noch jemand
+            # abholt. Der Grund des Fehlers bleibt der Grund: Er wird weitergeworfen.
             await _abbruch_hinausschicken(runpod, job)
             raise
         try:

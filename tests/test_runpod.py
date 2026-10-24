@@ -112,7 +112,7 @@ def uhr(monkeypatch: pytest.MonkeyPatch) -> _Uhr:
     monkeypatch.setattr(
         runpod_modul, "time", SimpleNamespace(monotonic=eine.monotonic)
     )
-    monkeypatch.setattr(runpod_modul.asyncio, "sleep", eine.sleep)
+    monkeypatch.setattr(asyncio, "sleep", eine.sleep)
     return eine
 
 
@@ -709,6 +709,9 @@ async def test_ein_gelungenes_abfragen_setzt_die_fehlerfrist_zurueck(
             + [ausfall] * 5
             + [_antwort({"status": "IN_QUEUE"})] * 3
             + [ausfall] * 5
+            # Nach dem zweiten Ausfall folgt noch Schlange: Der Schlussabruf vor
+            # dem Aufgeben fande hier kein Ergebnis und rettete den Job nicht.
+            + [_antwort({"status": "IN_QUEUE"})] * 3
             + [_antwort({"status": "COMPLETED", "output": {"ok": True}})]
         ),
     )

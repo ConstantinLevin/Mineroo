@@ -185,11 +185,14 @@ Jede steht wegen eines bezahlten Fehlers, nicht wegen einer Vorliebe.
 - **Niemals `/runsync`.** Der Endpoint ist warteschlangenbasiert; `/runsync`
   wartet 60 Sekunden, ein Kaltstart dauert rund 8,5 Minuten. Abgesendet wird über
   `/run`, abgefragt über `/status/<job-id>`, abgebrochen über
-  `/cancel/<job-id>`. Abgebrochen wird ein Job, den das Paket nach Ablauf seines
-  Zeitbudgets aufgibt, und einer, dessen Warten der Daemon beim Herunterfahren
-  abbricht — sonst läuft er bei RunPod weiter und kostet. Das Zeitbudget
-  (`job_timeout_seconds`) läuft ab `IN_PROGRESS`; Warteschlange und Kaltstart
-  zählen nicht, und die Zeit in der Warteschlange hat keine Obergrenze.
+  `/cancel/<job-id>`. Abgebrochen wird ein Job, den das Paket aufgibt (Zeitbudget
+  abgelaufen, oder das Warten endet mit einem Fehler, etwa der dritten
+  widersprüchlichen 402 der Kontopause) und einer, dessen Warten der Daemon beim
+  Herunterfahren abbricht — sonst läuft er bei RunPod weiter und kostet. Das
+  Zeitbudget (`job_timeout_seconds`) zählt die Zeit in `IN_PROGRESS` über alle
+  Läufe des Jobs; Warteschlange und Kaltstart zählen nicht, und die Zeit in der
+  Warteschlange hat keine Obergrenze. Fehlschlagende Abfragen haben dieselbe
+  Frist. Vor dem Aufgeben fragt das Paket ein letztes Mal ab.
 - **Der API-Schlüssel steht nur im `Authorization`-Header**, nie in einer URL,
   und wird nie ausgegeben. Er liegt in `~/.runpod/config.toml` im Feld `apikey`.
 - **PDFium ist nicht threadsicher.** `asyncio.to_thread` um `pdf.py` herum ist

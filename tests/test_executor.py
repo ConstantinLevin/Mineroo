@@ -26,6 +26,8 @@ from mineru_ocr.errors import (
     ConfigurationError,
     CorruptDocumentError,
     InsufficientBalanceError,
+    JobAufgegebenError,
+    ResultLostError,
     TerminalRunPodError,
     TransientRunPodError,
     UnsupportedTypeError,
@@ -1338,4 +1340,100 @@ async def test_erfolgreicher_job_wird_nicht_abgebrochen(
     await process_document(
         sha, settings=exec_settings, runpod=runpod, pool=pool
     )
+    assert runpod.abgebrochen == []
+
+
+async def test_widerspruechliches_402_beim_abholen_bricht_den_job_ab(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Gibt die Kontopause beim Abholen auf, geht `/cancel` fuer den Job hinaus.
+
+    Nach der dritten widerspruechlichen 402 wirft `_mit_kontopause`, und das
+    Paket gibt den Job auf, der bei RunPod aber laeuft und weiter kostet.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"ein bild", name="b.png", typ=DocumentType.PNG
+    )
+
+    class ImmerLeerBeimAbholen(FalscherRunPod):
+        async def await_result(self, job_id: str) -> dict[str, Any]:
+            raise InsufficientBalanceError("HTTP 402 beim Abfragen")
+
+    runpod = ImmerLeerBeimAbholen()
+    with pytest.raises(TerminalRunPodError, match="widersprechen einander"):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert runpod.abgebrochen == ["job-0"]
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+
+
+async def test_endgueltiger_fehler_beim_abfragen_bricht_den_job_ab(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Endet das Warten mit einem Fehler, der den Job nicht beendet hat (etwa
+    HTTP 429 auf `/status`), geht `/cancel` hinaus; der Fehler bleibt der Grund."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"ein bild", name="b.png", typ=DocumentType.PNG
+    )
+
+    class Gedrosselt(FalscherRunPod):
+        async def await_result(self, job_id: str) -> dict[str, Any]:
+            raise TerminalRunPodError("HTTP 429 beim Abfragen")
+
+    runpod = Gedrosselt()
+    with pytest.raises(TerminalRunPodError, match="429"):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert runpod.abgebrochen == ["job-0"]
+
+
+async def test_aufgegebener_job_wird_vom_executor_nicht_zweimal_abgebrochen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """`JobAufgegebenError` heisst: `/cancel` ging im Client schon hinaus."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"ein bild", name="b.png", typ=DocumentType.PNG
+    )
+
+    class Aufgegeben(FalscherRunPod):
+        async def await_result(self, job_id: str) -> dict[str, Any]:
+            raise JobAufgegebenError("Zeitbudget abgelaufen")
+
+    runpod = Aufgegeben()
+    with pytest.raises(JobAufgegebenError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert runpod.abgebrochen == []
+
+
+async def test_verlorenes_ergebnis_wird_nicht_abgebrochen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Bei HTTP 404 kennt RunPod den Job nicht mehr; ein `/cancel` liefe ins Leere."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"ein bild", name="b.png", typ=DocumentType.PNG
+    )
+
+    class Verloren(FalscherRunPod):
+        async def await_result(self, job_id: str) -> dict[str, Any]:
+            raise ResultLostError("HTTP 404")
+
+    runpod = Verloren()
+    with pytest.raises(ResultLostError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
     assert runpod.abgebrochen == []
