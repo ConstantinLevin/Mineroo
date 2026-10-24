@@ -215,7 +215,14 @@ also der Produktionspfad.** Sie sind am 08./09.08.2026 in
 bezahlten Läufen aufgenommen worden und decken die Lagen ab, für die es vorher
 nichts gab:
 
-- `gute_nacht.tarball.response.json` — der gewöhnliche Erfolg, einseitig.
+- `gute_nacht.tarball.response.json` — der gewöhnliche Erfolg, einseitig;
+  **vor dem ersten Push entfernt**, weil der Tarball den Text einer privaten
+  E-Mail trug (Mineroo#2). Die zwei Tests, die sie lasen
+  (`test_echte_tarball_antwort_wird_vollstaendig_ausgepackt`,
+  `…_traegt_zwei_content_list_generationen` in `tests/test_assembly.py`), sind
+  **ausgesetzt**: Die Vorrichtung `echte_tarball_antwort` überspringt sie mit
+  Grund (`pytest -rs`), bis eine Ersatzaufnahme aus Material ohne Personenbezug
+  unter demselben Namen liegt.
 - `leere_seite.tarball.response.json` — die **leere Seite**. Sie hat das
   `empty`-Kriterium am echten Verhalten festgestellt und zwei Fehler ans Licht
   gebracht, die einander verdeckten.

@@ -50,6 +50,14 @@ TARBALL_FIXTURE = (
 )
 """Die erste ECHTE `tarball_b64`-Antwort — aufgenommen am 08.08.2026.
 
+AUSGESETZT, SOLANGE DIE DATEI FEHLT: Der Tarball trug den Text einer privaten
+E-Mail zweier Personen (Dokument, Inhaltslisten und Layout-PDF) und ist vor dem
+ersten Push aus dem Repository genommen worden (Mineroo#2). Die Tests, die ihn
+lesen, werden uebersprungen — mit diesem Grund in der Ausgabe von `pytest -rs` —
+bis eine neue Aufnahme aus Material ohne Personenbezug unter demselben Namen
+liegt (Ticket zum MinerU-4-Vertrag). Die Zahlen unten beschreiben die entfernte
+Aufnahme; die neue bekommt neue Zahlen.
+
 WOZU SIE DA IST: Der Betrieb versendet `tarball_b64`, und bis zu diesem Tag gab
 es dafuer KEIN Testmaterial. Der Auspacker fuer den Produktionspfad war damit
 gegen eine Vorstellung gebaut und gegen nichts geprueft — der teuerste Zustand,
@@ -252,7 +260,16 @@ def echte_tarball_antwort() -> dict[str, Any]:
 
     Siehe `TARBALL_FIXTURE` fuer das, was sie ueber den Produktionspfad gezeigt
     hat — insbesondere den Doppeltreffer auf dem `_content_list`-Muster.
+
+    Fehlt die Datei (siehe `TARBALL_FIXTURE`), ist jeder Test, der diese
+    Vorrichtung anfordert, uebersprungen — nicht bestanden und nicht gescheitert.
     """
+    if not TARBALL_FIXTURE.exists():
+        pytest.skip(
+            "Aufnahme der Tarball-Antwort fehlt (personenbezogen, vor dem ersten "
+            "Push entfernt, Mineroo#2); Ersatz kommt mit dem Ticket zum "
+            f"MinerU-4-Vertrag: {TARBALL_FIXTURE.name}"
+        )
     geladen: dict[str, Any] = json.loads(TARBALL_FIXTURE.read_text())
     return geladen
 

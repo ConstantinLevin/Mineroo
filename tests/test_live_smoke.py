@@ -109,7 +109,8 @@ def test_tarball_wird_ausgepackt() -> None:
     benutzen kann.
 
     GEFAHREN am 08.08.2026, Antwort konserviert als
-    `artifacts/2026-08-08-erster-tarball-lauf/gute_nacht.tarball.response.json`.
+    `artifacts/2026-08-08-erster-tarball-lauf/gute_nacht.tarball.response.json`
+    (vor dem ersten Push entfernt, Mineroo#2; siehe `TARBALL_FIXTURE`).
 
     DREI ANNAHMEN SIND DARAN GESCHEITERT:
 
