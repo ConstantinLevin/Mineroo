@@ -175,10 +175,21 @@ class JobAufgegebenError(TransientRunPodError):
 
     Wiederholbar wie jeder `TransientRunPodError`; `classify_failure` ordnet sie
     dort ein. Eigene Klasse, damit der Executor am Typ erkennt, dass der Abbruch
-    schon hinausging: Er schickt ihn fuer jede andere Ausnahme, mit der das
+    schon versucht wurde: Er schickt ihn fuer jede andere Ausnahme, mit der das
     Warten auf einen womoeglich noch laufenden Job endet, und dieselbe Kennung
-    nicht ein zweites Mal.
+    nicht ein zweites Mal, ausser wenn der Versuch misslang.
+
+    Attributes:
+        abgebrochen: `True`, wenn RunPod den Abbruch angenommen hat. `False`,
+            wenn er misslang (etwa weil RunPod nicht zu erreichen war): Dann
+            laeuft der Job womoeglich weiter, und der Executor versucht den
+            Abbruch noch einmal, bevor die Wiederholung dasselbe Teilstueck ein
+            zweites Mal absendet und bezahlt.
     """
+
+    def __init__(self, nachricht: str, *, abgebrochen: bool = True) -> None:
+        super().__init__(nachricht)
+        self.abgebrochen = abgebrochen
 
 
 class ResultLostError(TransientRunPodError):

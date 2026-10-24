@@ -305,13 +305,15 @@ class Settings:
     ganze Ergebnis — Abfrage und Abholung sind derselbe Aufruf."""
 
     job_timeout_seconds: float = 1_500.0
-    """Zeitbudget fuer EIN Teilstueck, gezaehlt ab dem Moment, in dem RunPod den
-    Job als `IN_PROGRESS` meldet. Warteschlange und Kaltstart zaehlen nicht mit:
-    Sonst wuerde ein Job, der hinter einem grossen Lauf wartet, bei Ablauf
-    abgebrochen (`/cancel`) und neu eingereiht, immer wieder und jedes Mal neu
-    bezahlt. 25 Minuten, damit ein Parse auch dann reicht, wenn der Worker waehrend
-    des Parsens erst Modelle laedt. Wird das Budget gerissen, geht `/cancel` fuer
-    den Job hinaus; der Fehler ist wiederholbar, nicht endgueltig."""
+    """Zeitbudget fuer EIN Teilstueck: die Zeit, in der RunPod den Job bearbeitet
+    (nicht `IN_QUEUE`), ueber alle Laeufe des Jobs zusammen. Warteschlange und
+    Kaltstart zaehlen nicht mit: Sonst wuerde ein Job, der hinter einem grossen
+    Lauf wartet, bei Ablauf abgebrochen (`/cancel`) und neu eingereiht, immer
+    wieder und jedes Mal neu bezahlt. Dieselbe Frist gilt fuer eine Reihe
+    fehlgeschlagener Abfragen (RunPod nicht erreichbar). 25 Minuten, damit ein
+    Parse auch dann reicht, wenn der Worker waehrend des Parsens erst Modelle
+    laedt. Wird das Budget gerissen, geht `/cancel` fuer den Job hinaus; der
+    Fehler ist wiederholbar, nicht endgueltig."""
 
     ocr_concurrency: int = 24
     """Wie viele Dokumente der Daemon gleichzeitig betreut. GESETZT, nicht

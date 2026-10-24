@@ -1437,3 +1437,68 @@ async def test_verlorenes_ergebnis_wird_nicht_abgebrochen(
         await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     assert runpod.abgebrochen == []
+
+
+async def test_aufgegebener_job_mit_misslungenem_abbruch_wird_vom_executor_abgebrochen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ging das `/cancel` des Clients nicht hinaus (etwa weil RunPod nicht zu
+    erreichen war), versucht der Executor es noch einmal.
+
+    Sonst liefe der Job weiter, und die Wiederholung sendete dasselbe Teilstueck
+    ein zweites Mal ab: genau die Doppelzahlung, die der Abbruch verhindern soll.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"ein bild", name="b.png", typ=DocumentType.PNG
+    )
+
+    class AbbruchMisslang(FalscherRunPod):
+        async def await_result(self, job_id: str) -> dict[str, Any]:
+            raise JobAufgegebenError("Abbruch misslang", abgebrochen=False)
+
+    runpod = AbbruchMisslang()
+    with pytest.raises(JobAufgegebenError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert runpod.abgebrochen == ["job-0"]
+
+
+async def test_herunterfahren_waehrend_des_abbruchs_nach_einem_fehler_gibt_ihn_nicht_auf(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Trifft das erste Signal zum Herunterfahren das `/cancel`, das nach einem
+    Fehler hinausgehen soll, wird es noch einmal geschickt, und das
+    `CancelledError` wird weitergeworfen.
+
+    Der Handler des Fehlers faengt das Signal nicht von selbst: Es kaeme mitten im
+    Abbruch an, und der Job liefe weiter.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"ein bild", name="b.png", typ=DocumentType.PNG
+    )
+
+    class Gedrosselt(FalscherRunPod):
+        def __init__(self) -> None:
+            super().__init__()
+            self.versuche = 0
+
+        async def await_result(self, job_id: str) -> dict[str, Any]:
+            raise TerminalRunPodError("HTTP 429 beim Abfragen")
+
+        async def cancel(self, job_id: str) -> dict[str, Any]:
+            self.versuche += 1
+            if self.versuche == 1:
+                raise asyncio.CancelledError()
+            return await super().cancel(job_id)
+
+    runpod = Gedrosselt()
+    with pytest.raises(asyncio.CancelledError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert runpod.abgebrochen == ["job-0"]

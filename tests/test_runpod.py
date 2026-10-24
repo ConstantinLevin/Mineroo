@@ -105,8 +105,10 @@ class _Uhr:
 def uhr(monkeypatch: pytest.MonkeyPatch) -> _Uhr:
     """Setzt die Uhr der Warteschleife in `runpod` auf eine vorgestellte.
 
-    Nur der Name `time` im Modul wird ersetzt, nicht `time.monotonic` selbst: Das
-    wirkte auf die ganze Ereignisschleife.
+    Von `time` wird nur der Name im Modul ersetzt, nicht `time.monotonic` selbst:
+    Das wirkte auf die ganze Ereignisschleife. `asyncio.sleep` dagegen ist fuer
+    den ganzen Prozess ersetzt, solange der Test laeuft; die Tests mit dieser
+    Uhr schlafen sonst nirgends.
     """
     eine = _Uhr()
     monkeypatch.setattr(
@@ -510,9 +512,10 @@ async def test_aufgegebener_job_wird_vor_der_wiederholung_abgebrochen(
     client, transport = _client(
         knapp, Aufzeichnung(_antwort({"status": "IN_PROGRESS"}))
     )
-    with pytest.raises(TransientRunPodError):
+    with pytest.raises(JobAufgegebenError) as fehler:
         await client.await_result("job-7")
 
+    assert fehler.value.abgebrochen is True
     abbrueche = [a for a in transport.anfragen if "/cancel/" in str(a.url)]
     assert len(abbrueche) == 1
     assert abbrueche[0].method == "POST"
@@ -549,6 +552,11 @@ async def test_misslungener_abbruch_verdeckt_die_zeitueberschreitung_nicht(
 
     assert "Wiederholbar" in str(fehler.value)
     assert "abbrechen" in str(fehler.value)
+    # Der Fehler sagt, dass der Abbruch NICHT hinausging, damit der Executor ihn
+    # noch einmal versucht, statt den Job weiterlaufen und doppelt bezahlen zu
+    # lassen.
+    assert isinstance(fehler.value, JobAufgegebenError)
+    assert fehler.value.abgebrochen is False
 
 
 async def test_zeitbudget_laeuft_nicht_in_der_warteschlange(

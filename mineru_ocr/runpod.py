@@ -553,7 +553,7 @@ class RunPodClient:
             f"Job {job_id} abbrechen",
         )
 
-    async def _abbrechen_versuchen(self, job_id: str) -> str:
+    async def _abbrechen_versuchen(self, job_id: str) -> tuple[bool, str]:
         """Bricht einen aufgegebenen Job ab, ohne je zu werfen, und sagt, was geschah.
 
         Ein Abbruch ist ein Versuch, Geld zu sparen, und darf nie den Grund
@@ -566,18 +566,20 @@ class RunPodClient:
         herunter, waehrend der Abbruch laeuft) geht durch.
 
         Returns:
-            Ein Satz fuer die Fehlermeldung: dass der Abbruch hinausging, oder
-            dass er misslang und der Job weiterlaufen und kosten kann.
+            Ob RunPod den Abbruch angenommen hat, und ein Satz fuer die
+            Fehlermeldung: dass der Abbruch hinausging, oder dass er misslang und
+            der Job weiterlaufen und kosten kann.
         """
         try:
             await self.cancel(job_id)
         except Exception as fehler:  # noqa: BLE001
             return (
+                False,
                 f"Der Abbruch bei RunPod (/cancel) misslang ({type(fehler).__name__}: "
                 f"{fehler}); der Job kann weiterlaufen und weiter Geld kosten "
-                f"(oder ist schon beendet)."
+                f"(oder ist schon beendet).",
             )
-        return "Der Job wurde bei RunPod abgebrochen (/cancel)."
+        return True, "Der Job wurde bei RunPod abgebrochen (/cancel)."
 
     async def await_result(self, job_id: str) -> dict[str, Any]:
         """Fragt einen Job ab, bis er terminal ist, und gibt die letzte Antwort zurueck.
@@ -605,8 +607,17 @@ class RunPodClient:
         dass das Ergebnis weg ist — es liegt auf der Gegenseite noch bis zu
         dreissig Minuten bereit. Wer hier abbricht, wirft ein bezahltes, noch
         abholbares Ergebnis weg und bezahlt es beim naechsten Anlauf ein zweites
-        Mal. Nur `ResultLostError` (404) beendet das Warten sofort, denn dann ist
-        wirklich nichts mehr da.
+        Mal. Eine fehlgeschlagene Abfrage vom Typ `TransientRunPodError` (Netz,
+        5xx) wird so wiederholt, bis die Frist fuer fehlgeschlagene Abfragen um
+        ist. Sofort beendet das Warten `ResultLostError` (404), denn dann ist
+        wirklich nichts mehr da, und jeder Fehler, der nicht wiederholbar ist
+        (`TerminalRunPodError`, `ConfigurationError`, `InsufficientBalanceError`):
+        Er geht unveraendert nach oben, und der Aufrufer bricht den Job ab, denn
+        er kann bei RunPod weiterlaufen.
+
+        Das Zeitbudget und die Frist gelten je Aufruf. Ruft der Executor nach
+        einer Kontopause (HTTP 402) erneut auf, beginnen beide von vorn; die
+        Kontopause ist auf `_KONTOPAUSEN_JE_SCHRITT` Runden begrenzt.
 
         Zusicherung:
             Der Rueckgabewert hat einen Status aus `TERMINAL_STATUSES`.
@@ -618,7 +629,8 @@ class RunPodClient:
                 Vorher fragt das Paket ein letztes Mal ab und gibt das Ergebnis
                 zurueck, wenn der Job inzwischen terminal ist; sonst ging
                 `/cancel` fuer genau diesen Job hinaus. Ein misslungener Abbruch
-                steht in der Meldung und aendert nichts am Fehlertyp.
+                steht in der Meldung, aendert nichts am Fehlertyp und steht in
+                `abgebrochen`, damit der Executor ihn noch einmal versucht.
             ResultLostError: siehe `status`. Ebenfalls wiederholbar — der Job
                 wird dann neu geschickt, nicht das Dokument aufgegeben.
             asyncio.CancelledError: Der Daemon faehrt herunter. Wird NICHT
@@ -671,12 +683,13 @@ class RunPodClient:
                 # Ausnahme den Aufrufer erreicht, der wiederholt: Sonst liefe der
                 # aufgegebene Job weiter und kostete Geld, waehrend der neue
                 # Versuch dasselbe Teilstueck ein zweites Mal bezahlt.
-                abbruch = await self._abbrechen_versuchen(job_id)
+                abgebrochen, abbruch = await self._abbrechen_versuchen(job_id)
                 raise JobAufgegebenError(
                     f"Job {job_id} wurde nach {grund} nicht terminal. "
                     f"Wiederholbar: Ein Worker kann haengen oder RunPod nicht "
                     f"erreichbar sein. {abbruch} Letzter Fehler beim Abfragen: "
-                    f"{letzter_fehler}"
+                    f"{letzter_fehler}",
+                    abgebrochen=abgebrochen,
                 )
 
             try:

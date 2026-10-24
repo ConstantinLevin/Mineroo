@@ -782,10 +782,21 @@ async def _stuecke_verarbeiten(
             # wer zweimal drueckt, meint es so (siehe `daemon.run`).
             await _abbruch_hinausschicken(runpod, job)
             raise
-        except (JobAufgegebenError, ResultLostError):
-            # Beide brauchen keinen Abbruch von hier: Nach dem Zeitbudget hat der
-            # Client `/cancel` schon geschickt (daher der eigene Fehlertyp), und
-            # bei HTTP 404 kennt RunPod den Job nicht mehr.
+        except JobAufgegebenError as aufgegeben:
+            # Nach dem Zeitbudget hat der Client `/cancel` schon geschickt (daher
+            # der eigene Fehlertyp). Misslang er, etwa weil RunPod nicht zu
+            # erreichen war, laeuft der Job womoeglich weiter, und die
+            # Wiederholung sendete dasselbe Teilstueck noch einmal ab: Dann
+            # versucht der Executor ihn noch einmal.
+            if not aufgegeben.abgebrochen:
+                await _abbruch_nach_fehler(runpod, job)
+            raise
+        except ResultLostError:
+            # HTTP 404: RunPod kennt den Job nicht mehr, ein Abbruch liefe ins
+            # Leere. (Der Fehlertyp gilt fuer jedes 404, auch fuer eines der
+            # Kontostandsabfrage in der Kontopause; dort ist ein ausbleibender
+            # Abbruch hinzunehmen, ein 404 der GraphQL-Schnittstelle ist nicht
+            # zu erwarten.)
             raise
         except Exception:
             # Das Warten endet mit einem Fehler, und der Job kann bei RunPod
@@ -794,7 +805,7 @@ async def _stuecke_verarbeiten(
             # 400), ein Fehler der Zugangsdaten. Das Paket gibt ihn damit auf,
             # und ohne Abbruch kostete er weiter, ohne dass ihn noch jemand
             # abholt. Der Grund des Fehlers bleibt der Grund: Er wird weitergeworfen.
-            await _abbruch_hinausschicken(runpod, job)
+            await _abbruch_nach_fehler(runpod, job)
             raise
         try:
             # BEIDE Schritte im selben Schutz: das Bewerten des Endzustands und
@@ -859,6 +870,23 @@ async def _abbruch_hinausschicken(runpod: RunPodAccess, job: str) -> None:
             type(fehler).__name__,
             fehler,
         )
+
+
+async def _abbruch_nach_fehler(runpod: RunPodAccess, job: str) -> None:
+    """Schickt RunPods Abbruch fuer `job`, auch wenn dabei das Herunterfahren kommt.
+
+    Der Aufrufer steckt im Handler eines Fehlers, nicht in dem eines
+    `CancelledError`; der Handler fuer diesen steht daneben und faengt nichts aus
+    einem Nachbarzweig. Trifft das erste Signal zum Herunterfahren das `/cancel`
+    hier, wuerde es unterbrochen, und der Job liefe weiter. Deshalb wird der
+    Abbruch dann noch einmal geschickt und das `CancelledError` weitergeworfen.
+    Ein zweites Signal unterbricht auch diesen Versuch (siehe `daemon.run`).
+    """
+    try:
+        await _abbruch_hinausschicken(runpod, job)
+    except asyncio.CancelledError:
+        await _abbruch_hinausschicken(runpod, job)
+        raise
 
 
 _KONTOPAUSEN_JE_SCHRITT = 3

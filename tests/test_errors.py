@@ -21,6 +21,7 @@ from mineru_ocr.errors import (
     IncompleteResultError,
     InputError,
     InsufficientBalanceError,
+    JobAufgegebenError,
     MineruOcrError,
     ResultLostError,
     SourceChangedError,
@@ -185,6 +186,7 @@ def test_klassifikation_hat_keine_seiteneffekte() -> None:
     "fehler, erwartet",
     [
         (ResultLostError("404"), FailureKind.RETRYABLE),
+        (JobAufgegebenError("Zeitbudget"), FailureKind.RETRYABLE),
         (InsufficientBalanceError("402"), FailureKind.BALANCE_PAUSE),
         (DocumentNotFound("weg"), FailureKind.TERMINAL),
         (UnsupportedTypeError("zip"), FailureKind.TERMINAL),
@@ -215,6 +217,7 @@ def test_zwei_gruppen_aus_drei_einstufungen() -> None:
     noch_einmal: list[Exception] = [
         TransientRunPodError("Gegenseite hustet"),
         ResultLostError("30 Minuten vorbei"),
+        JobAufgegebenError("Zeitbudget abgelaufen, Abbruch ging hinaus"),
         InsufficientBalanceError("402"),
         DatabaseError("Postgres kurz weg"),
     ]
