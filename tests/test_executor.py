@@ -1401,7 +1401,8 @@ async def test_aufgegebener_job_wird_vom_executor_nicht_zweimal_abgebrochen(
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    """`JobAufgegebenError` heisst: `/cancel` ging im Client schon hinaus."""
+    """`JobAufgegebenError` mit `abgebrochen=True` (der Vorgabe) heisst: `/cancel`
+    ging im Client schon hinaus."""
     sha, _ = _anlegen(
         db_conn, tmp_path, b"ein bild", name="b.png", typ=DocumentType.PNG
     )
@@ -1466,11 +1467,20 @@ async def test_aufgegebener_job_mit_misslungenem_abbruch_wird_vom_executor_abgeb
     assert runpod.abgebrochen == ["job-0"]
 
 
+@pytest.mark.parametrize(
+    "fehler",
+    [
+        TerminalRunPodError("HTTP 429 beim Abfragen"),
+        JobAufgegebenError("Abbruch misslang", abgebrochen=False),
+    ],
+    ids=["anderer_fehler", "aufgegeben_ohne_abbruch"],
+)
 async def test_herunterfahren_waehrend_des_abbruchs_nach_einem_fehler_gibt_ihn_nicht_auf(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
     exec_settings: Settings,
     tmp_path: Path,
+    fehler: Exception,
 ) -> None:
     """Trifft das erste Signal zum Herunterfahren das `/cancel`, das nach einem
     Fehler hinausgehen soll, wird es noch einmal geschickt, und das
@@ -1489,7 +1499,7 @@ async def test_herunterfahren_waehrend_des_abbruchs_nach_einem_fehler_gibt_ihn_n
             self.versuche = 0
 
         async def await_result(self, job_id: str) -> dict[str, Any]:
-            raise TerminalRunPodError("HTTP 429 beim Abfragen")
+            raise fehler
 
         async def cancel(self, job_id: str) -> dict[str, Any]:
             self.versuche += 1
