@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -96,6 +97,22 @@ gelesen, nie geschrieben."""
 
 MASKE: Final = "***"
 """Was anstelle des Schluessels in jeder Ausgabe steht."""
+
+_GEHEIMNIS_NAME: Final = re.compile(
+    r"(^|_)(\w*KEY|SECRET|TOKEN|PASSW\w*|PASSPHRASE|PWD|CREDENTIALS?|AUTH|BEARER|PRIVATE)(_|$)",
+    re.IGNORECASE,
+)
+
+
+def ist_geheimnisname(name: str) -> bool:
+    """Ob der Wert einer Umgebungsvariable dieses Namens nie angezeigt wird.
+
+    Gegen Namensteile zwischen Unterstrichen, nicht gegen Teilwoerter:
+    `HF_TOKEN` und `RUNPOD_AI_API_KEY` ja, `MAX_TOKENS` und `AUTHOR` nein. Eine
+    Liste von Namen bleibt unvollstaendig; sie gilt nur fuer Variablen, die der
+    Betreiber selbst in `[endpoint_env]` nennt.
+    """
+    return _GEHEIMNIS_NAME.search(name) is not None
 
 
 def _schluessel_aus_datei() -> str:
@@ -196,8 +213,11 @@ def _wert(
     return aus_datei, f"{name} in {pfad}"
 
 
-def _zeichenkette(name: str, wert: Any, herkunft: str) -> str:
-    """Ein Text ohne Leerraum am Rand.
+def _zeichenkette(name: str, wert: Any, herkunft: str, *, trimmen: bool = True) -> str:
+    """Ein Text, standardmaessig ohne Leerraum am Rand.
+
+    `trimmen=False` fuer einen DSN: libpq-Text, in dem ein maskiertes Leerzeichen
+    am Ende zum Passwort gehoeren kann.
 
     Der Fehler nennt den Typ und nie den Wert: Eine Tabelle statt des DSN-Textes
     kann ein Passwort tragen, und die Meldung geht in die Ausgabe.
@@ -207,7 +227,7 @@ def _zeichenkette(name: str, wert: Any, herkunft: str) -> str:
             f"{herkunft}: `{name}` muss ein Text sein, ist aber vom Typ "
             f"{type(wert).__name__}."
         )
-    return wert.strip()
+    return wert.strip() if trimmen else wert
 
 
 def _zahl(name: str, wert: Any, herkunft: str) -> int:
@@ -220,7 +240,8 @@ def _zahl(name: str, wert: Any, herkunft: str) -> int:
     elif isinstance(wert, int) and not isinstance(wert, bool):
         return wert
     raise ConfigurationError(
-        f"{herkunft}: `{name}` muss eine ganze Zahl sein, ist aber {wert!r}."
+        f"{herkunft}: `{name}` muss eine ganze Zahl sein, ist aber vom Typ "
+        f"{type(wert).__name__}."
     )
 
 
@@ -233,7 +254,8 @@ def _namen(name: str, wert: Any, herkunft: str) -> tuple[str, ...]:
         namen = [n.strip() for n in wert if n.strip()]
     else:
         raise ConfigurationError(
-            f"{herkunft}: `{name}` muss eine Liste von Namen sein, ist aber {wert!r}."
+            f"{herkunft}: `{name}` muss eine Liste von Namen sein, ist aber vom Typ "
+            f"{type(wert).__name__}."
         )
     if not namen:
         raise ConfigurationError(f"{herkunft}: `{name}` ist leer.")
@@ -267,14 +289,15 @@ def _sollwerte(
         herkunft = f"endpoint_env in {pfad}"
         if not isinstance(tabelle, dict):
             raise ConfigurationError(
-                f"{herkunft}: muss eine Tabelle `[endpoint_env]` sein, ist aber {tabelle!r}."
+                f"{herkunft}: muss eine Tabelle `[endpoint_env]` sein, ist aber vom Typ "
+                f"{type(tabelle).__name__}."
             )
         env: dict[str, str | None] = dict(DEFAULT_ENDPOINT_ENV)
         for variable, soll in tabelle.items():
             if isinstance(soll, bool) or not isinstance(soll, (str, int)):
                 raise ConfigurationError(
                     f"{herkunft}: Der Sollwert von `{variable}` muss ein Text oder "
-                    f"eine Zahl sein, ist aber {soll!r}."
+                    f"eine Zahl sein, ist aber vom Typ {type(soll).__name__}."
                 )
             env[variable] = str(soll)
         ergebnis["endpoint_env"] = env
@@ -706,7 +729,12 @@ class Settings:
         """
         teile = []
         for feld in dataclasses.fields(self):
-            wert = MASKE if feld.name == "api_key" else getattr(self, feld.name)
+            wert: Any = MASKE if feld.name == "api_key" else getattr(self, feld.name)
+            if feld.name == "endpoint_env":
+                wert = {
+                    k: (MASKE if v is not None and ist_geheimnisname(k) else v)
+                    for k, v in self.endpoint_env.items()
+                }
             teile.append(f"{feld.name}={wert!r}")
         return f"{type(self).__name__}({', '.join(teile)})"
 
@@ -801,7 +829,7 @@ class Settings:
             gefunden = _wert("db_dsn", umgebung, datei, config_path)
             if gefunden is None:
                 raise ConfigurationError(_fehlt("db_dsn", config_path))
-            dsn = _zeichenkette("db_dsn", *gefunden)
+            dsn = _zeichenkette("db_dsn", *gefunden, trimmen=False)
 
         einstellung = cls(
             db_dsn=dsn,

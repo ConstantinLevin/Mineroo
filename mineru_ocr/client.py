@@ -32,7 +32,7 @@ from procrastinate import utils
 from psycopg_pool import NullConnectionPool
 
 from . import db, tasks
-from .config import MASKE, Settings
+from .config import MASKE, Settings, ist_geheimnisname
 from .db import DerivedStatus, DocumentStatus
 from .errors import ConfigDriftError, ConfigurationError, DocumentNotFound
 from .runpod import RunPodClient
@@ -120,17 +120,13 @@ nicht fuehrt. Ein eigener Text und nicht `None`: `None` heisst dort „die Varia
 fehlt in der Umgebung", und das ist etwas anderes."""
 
 
-_GEHEIMNIS_NAME: Final = re.compile(r"KEY|SECRET|TOKEN|PASSW|CREDENTIAL", re.IGNORECASE)
-"""Namen von Variablen, deren Wert nie im Befund steht, auch wenn der Betreiber
-sie in `[endpoint_env]` nennt."""
-
-
 def _tag_von(image: Any) -> str | None:
     """Der Tag eines Image-Namens, `None` ohne einen.
 
     Gesucht wird nur im letzten Pfadteil (`registry:5000/repo` hat Port und keinen
-    Tag) und nach dem letzten Doppelpunkt, ohne einen angehaengten Digest. Ein fuehrender Doppelpunkt (`:abc`)
-    zaehlt: so steht der Tag manchmal an der Zeile, ohne den Repository-Namen.
+    Tag) und nach dem letzten Doppelpunkt, ohne einen angehaengten Digest. Ein
+    fuehrender Doppelpunkt (`:abc`) zaehlt: so steht der Tag manchmal an der
+    Zeile, ohne den Repository-Namen.
     """
     if not isinstance(image, str):
         return None
@@ -466,7 +462,7 @@ class OCRClient:
                     bewertung = "nicht_pruefbar"
                 else:
                     bewertung = _gesamtbewertung(zustaende, "abweichung")
-                if _GEHEIMNIS_NAME.search(variable):
+                if ist_geheimnisname(variable):
                     # Verglichen wurde der Wert; gezeigt wird er nicht. Wer ein
                     # Geheimnis in `[endpoint_env]` nennt, will es geprueft haben.
                     env_soll = MASKE if env_soll is not None else None

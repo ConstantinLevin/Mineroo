@@ -1265,3 +1265,33 @@ def test_konfigurierte_geheimnisvariable_wird_nicht_im_klartext_gezeigt(
         _pruefen(_test_datenbank, strict=True)
     assert GEHEIMNIS not in str(fehler.value)
     assert "soll-nicht-ausgeben" not in str(fehler.value)
+
+
+def test_geheimnisvariable_mit_richtigem_wert_ist_in_ordnung_und_bleibt_verdeckt(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verdeckt wird nur die Anzeige: Verglichen wird der Wert. Ein Worker ohne
+    die Variable bleibt als Fehlen sichtbar, einer ohne Umgebung als nicht
+    angegeben."""
+    datei = tmp_path / "config.toml"
+    datei.write_text(f'[endpoint_env]\nRUNPOD_AI_API_KEY = "{GEHEIMNIS}"\n')
+    monkeypatch.setenv("MINERU_OCR_CONFIG", str(datei))
+    _worker_am_leben(db_conn)
+
+    runpod.endpoint = _guter_endpoint(workers=[_worker("w1")])
+    punkt = _befund(_pruefen(_test_datenbank), "env:RUNPOD_AI_API_KEY")
+    assert punkt["bewertung"] == "in_ordnung"
+    assert punkt["soll"] == "***"
+    assert punkt["ist"] == {"w1": "***"}
+
+    ohne = _worker("w2")
+    del ohne["env"]["RUNPOD_AI_API_KEY"]
+    sonst = _worker("w3")
+    del sonst["env"]
+    runpod.endpoint = _guter_endpoint(workers=[ohne, sonst])
+    punkt = _befund(_pruefen(_test_datenbank), "env:RUNPOD_AI_API_KEY")
+    assert punkt["ist"] == {"w2": None, "w3": "(nicht angegeben)"}

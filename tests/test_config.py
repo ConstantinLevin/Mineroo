@@ -10,6 +10,7 @@ import pytest
 from mineru_ocr.config import (
     MASKE,
     Settings,
+    ist_geheimnisname,
 )
 from mineru_ocr.errors import ConfigurationError
 
@@ -553,3 +554,60 @@ def test_typfehler_bei_einem_text_nennt_den_wert_nicht(tmp_path: Path) -> None:
     assert "db_dsn" in meldung
     assert str(datei) in meldung
     assert "NICHT-AUSGEBEN" not in meldung
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["RUNPOD_AI_API_KEY", "HF_TOKEN", "DB_PASSWORD", "ADMIN_PASSWD", "SSH_PASSPHRASE",
+     "DB_PWD", "CLIENT_SECRET", "AWS_CREDENTIALS", "AUTH", "BEARER", "PRIVATE_KEY",
+     "APIKEY", "hf_token"],
+)
+def test_geheimnisnamen_werden_erkannt(name: str) -> None:
+    assert ist_geheimnisname(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["MINERU_MODEL_SOURCE", "MINERU_MAX_CONCURRENCY", "MINERU_VIRTUAL_VRAM_SIZE",
+     "MAX_TOKENS", "MAX_NEW_TOKENS", "AUTHOR", "KEYWORD"],
+)
+def test_andere_namen_bleiben_sichtbar(name: str) -> None:
+    """Ein Name, der nur ein Teilwort enthaelt, ist kein Geheimnis: Verdeckt
+    waere eine echte Abweichung nicht mehr zu lesen."""
+    assert not ist_geheimnisname(name)
+
+
+def test_repr_zeigt_das_geheimnis_in_den_endpoint_variablen_nicht(tmp_path: Path) -> None:
+    datei = tmp_path / "config.toml"
+    datei.write_text('[endpoint_env]\nHF_TOKEN = "NICHT-AUSGEBEN"\nMINERU_MAX_CONCURRENCY = "2"\n')
+    einstellung = _einstellung(config_path=datei)
+    text = repr(einstellung)
+    assert "NICHT-AUSGEBEN" not in text
+    assert "HF_TOKEN" in text
+    assert "'MINERU_MAX_CONCURRENCY': '2'" in text
+    assert einstellung.endpoint_env["HF_TOKEN"] == "NICHT-AUSGEBEN"
+
+
+@pytest.mark.parametrize(
+    "inhalt",
+    [
+        'endpoint_env = "NICHT-AUSGEBEN"\n',
+        '[endpoint_env]\nHF_TOKEN = ["NICHT-AUSGEBEN"]\n',
+        '[endpoint_env]\nHF_TOKEN = 1.5\n',
+        'workers_max = "NICHT-AUSGEBEN"\n',
+        'allowed_data_centers = {a = "NICHT-AUSGEBEN"}\n',
+    ],
+)
+def test_typfehler_der_sollwerte_nennen_den_wert_nicht(tmp_path: Path, inhalt: str) -> None:
+    datei = tmp_path / "config.toml"
+    datei.write_text(inhalt)
+    with pytest.raises(ConfigurationError) as fehler:
+        _einstellung(config_path=datei)
+    assert "NICHT-AUSGEBEN" not in str(fehler.value)
+
+
+def test_der_dsn_bleibt_wie_geschrieben() -> None:
+    """Ein DSN ist libpq-Text: Ein maskiertes Leerzeichen am Ende des Passworts
+    (`password=a\\ `) ist Teil davon und darf nicht abgeschnitten werden."""
+    dsn = "host=h password=geheim\\ "
+    assert _einstellung(environ={"MINERU_OCR_DB_DSN": dsn}, db_dsn=None).db_dsn == dsn
