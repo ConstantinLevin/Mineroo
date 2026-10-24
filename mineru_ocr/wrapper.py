@@ -44,6 +44,44 @@ F = TypeVar("F")
 — `str` fuer `markdown`, `list` fuer `content_list`, `dict` fuer `images`."""
 
 
+def _anlegen(
+    conn: psycopg.Connection[Any],
+    *,
+    data: builtins.bytes,
+    sha256: str,
+    source_path: str,
+    source_name: str,
+    mime: str,
+    page_count: int | None,
+    endpoint_id: str,
+) -> bool:
+    """Legt Zeile und Eingabe an — in EINER Transaktion, und nur neu.
+
+    Die Eingabe kommt nur zu einer Zeile, die dabei neu entsteht. Gibt es die
+    Zeile schon, ist das Dokument entweder fertig (dann ist seine Eingabe
+    absichtlich weg und darf nicht zurueckkehren) oder unterwegs oder gescheitert
+    (dann liegt seine Eingabe bereits da). Beides in einer Transaktion, damit es
+    keine Zeile ohne Eingabe gibt, die ein Job nicht lesen koennte.
+
+    Returns:
+        True, wenn die Zeile neu angelegt wurde.
+    """
+    with conn.transaction():
+        angelegt = db.insert_document(
+            conn,
+            sha256=sha256,
+            source_path=source_path,
+            source_name=source_name,
+            size_bytes=len(data),
+            mime=mime,
+            page_count=page_count,
+            endpoint_id=endpoint_id,
+        )
+        if angelegt:
+            db.insert_input(conn, sha256=sha256, content=data)
+    return angelegt
+
+
 class OCRWrapper:
     """Ein Dokument: seine Angaben, sein Zustand, sein Ergebnis.
 
@@ -101,22 +139,26 @@ class OCRWrapper:
 
         Kosten: keine.
         """
-        with path.open("rb") as datei:
-            sha256 = hashlib.file_digest(datei, "sha256").hexdigest()
+        # Einmal lesen: Hash, Typ und die abgelegte Eingabe stammen aus
+        # DENSELBEN Bytes. Zweimal zu lesen (erst hashen, dann ablegen) liesse
+        # eine Datei, die sich dazwischen aendert, unter dem falschen Hash
+        # landen.
+        data = path.read_bytes()
+        sha256 = hashlib.sha256(data).hexdigest()
 
-        typ = mime.sniff_path(path)
+        typ = mime.sniff_bytes(data)
         seiten: int | None = None
         if typ.is_pdf:
-            with PdfReader(path) as leser:
+            with PdfReader(data) as leser:
                 seiten = leser.page_count
 
         pfad = str(path.resolve())
-        angelegt = db.insert_document(
+        angelegt = _anlegen(
             conn,
+            data=data,
             sha256=sha256,
             source_path=pfad,
             source_name=path.name,
-            size_bytes=path.stat().st_size,
             mime=typ.mime,
             page_count=seiten,
             endpoint_id=settings.endpoint_id,
@@ -253,15 +295,15 @@ class OCRWrapper:
 
         seiten: int | None = None
         if typ.is_pdf:
-            with PdfReader(ziel) as leser:
+            with PdfReader(data) as leser:
                 seiten = leser.page_count
 
-        db.insert_document(
+        _anlegen(
             conn,
+            data=data,
             sha256=sha256,
             source_path=str(ziel),
             source_name=name,
-            size_bytes=len(data),
             mime=typ.mime,
             page_count=seiten,
             endpoint_id=settings.endpoint_id,

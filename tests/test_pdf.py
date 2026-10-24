@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-from pathlib import Path
 
 import pypdfium2
 import pytest
@@ -26,31 +25,27 @@ def _pdf_mit_seiten(seiten: int, breite: float = 200.0, hoehe: float = 300.0) ->
 
 
 @pytest.fixture
-def pdf_zehn(tmp_path: Path) -> Path:
-    datei = tmp_path / "zehn_seiten.pdf"
-    datei.write_bytes(_pdf_mit_seiten(10))
-    return datei
+def pdf_zehn() -> bytes:
+    return _pdf_mit_seiten(10)
 
 
 # --- Lesen ----------------------------------------------------------------
 
 
-def test_seitenzahl_stimmt(pdf_zehn: Path) -> None:
+def test_seitenzahl_stimmt(pdf_zehn: bytes) -> None:
     """`page_count` liefert die tatsaechliche Seitenzahl."""
     with PdfReader(pdf_zehn) as leser:
         assert leser.page_count == 10
 
 
-def test_kaputtes_pdf_ergibt_corrupt_document_error(tmp_path: Path) -> None:
-    """Beschaedigte, verschluesselte und passwortgeschuetzte Dateien sind fuer
+def test_kaputtes_pdf_ergibt_corrupt_document_error() -> None:
+    """Beschaedigte, verschluesselte und passwortgeschuetzte Eingaben sind fuer
     uns dasselbe: nicht verarbeitbar, endgueltig, ohne RunPod-Kontakt."""
-    datei = tmp_path / "kaputt.pdf"
-    datei.write_bytes(b"%PDF-1.7\nund dann nur noch Unsinn\n")
     with pytest.raises(CorruptDocumentError):
-        PdfReader(datei)
+        PdfReader(b"%PDF-1.7\nund dann nur noch Unsinn\n")
 
 
-def test_reader_ist_nach_dem_schliessen_unbrauchbar(pdf_zehn: Path) -> None:
+def test_reader_ist_nach_dem_schliessen_unbrauchbar(pdf_zehn: bytes) -> None:
     """Zugriff nach dem Verlassen des Kontext-Managers wirft."""
     with PdfReader(pdf_zehn) as leser:
         assert leser.page_count == 10
@@ -61,7 +56,7 @@ def test_reader_ist_nach_dem_schliessen_unbrauchbar(pdf_zehn: Path) -> None:
 # --- Schneiden ------------------------------------------------------------
 
 
-def test_schnitt_ist_null_basiert_und_einschliessend(pdf_zehn: Path) -> None:
+def test_schnitt_ist_null_basiert_und_einschliessend(pdf_zehn: bytes) -> None:
     """`extract(0, 0)` liefert genau die erste Seite; `extract(0, 2)` genau drei.
 
     Die Falle dahinter: pypdfium2 nimmt Seitenangaben in zwei Formen entgegen,
@@ -79,7 +74,7 @@ def test_schnitt_ist_null_basiert_und_einschliessend(pdf_zehn: Path) -> None:
                 geschnitten.close()
 
 
-def test_ausschnitt_ist_ein_lesbares_pdf(pdf_zehn: Path) -> None:
+def test_ausschnitt_ist_ein_lesbares_pdf(pdf_zehn: bytes) -> None:
     """Das Ergebnis ist ein vollstaendiges, fuer sich lesbares Dokument — nicht
     ein Bruchstueck, das nur im Zusammenhang funktioniert."""
     with PdfReader(pdf_zehn) as leser:
@@ -92,19 +87,17 @@ def test_ausschnitt_ist_ein_lesbares_pdf(pdf_zehn: Path) -> None:
         geoeffnet.close()
 
 
-def test_ausschnitt_laesst_sich_erneut_oeffnen(pdf_zehn: Path, tmp_path: Path) -> None:
-    """Der Ausschnitt laesst sich von der Platte erneut oeffnen und hat dieselbe
-    Seitenzahl — der Weg, den die Engine mit ihm gehen wird."""
+def test_ausschnitt_laesst_sich_erneut_oeffnen(pdf_zehn: bytes) -> None:
+    """Der Ausschnitt laesst sich erneut oeffnen und hat dieselbe Seitenzahl —
+    der Weg, den die Engine mit ihm gehen wird."""
     with PdfReader(pdf_zehn) as leser:
         ausschnitt = leser.extract(2, 4)
-    ziel = tmp_path / "ausschnitt.pdf"
-    ziel.write_bytes(ausschnitt)
-    with PdfReader(ziel) as erneut:
+    with PdfReader(ausschnitt) as erneut:
         assert erneut.page_count == 3
 
 
 def test_geschnittenes_pdf_hat_die_erwartete_seitenzahl(
-    pdf_zehn: Path, monkeypatch: pytest.MonkeyPatch
+    pdf_zehn: bytes, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Die Nachzaehlung im Schnitt greift: Ein Ausschnitt mit weniger Seiten als
     angefordert ergibt CorruptDocumentError.
@@ -131,7 +124,7 @@ def test_geschnittenes_pdf_hat_die_erwartete_seitenzahl(
             leser.extract(0, 2)
 
 
-def test_ungueltiger_bereich_ist_programmierfehler(pdf_zehn: Path) -> None:
+def test_ungueltiger_bereich_ist_programmierfehler(pdf_zehn: bytes) -> None:
     """`extract(5, 2)` und `extract(0, 999)` ergeben ValueError, keinen
     InputError — es liegt dann nicht an der Datei, sondern am Aufrufer."""
     with PdfReader(pdf_zehn) as leser:
@@ -140,7 +133,7 @@ def test_ungueltiger_bereich_ist_programmierfehler(pdf_zehn: Path) -> None:
                 leser.extract(erste, letzte)
 
 
-def test_meldung_nennt_die_zaehlweise(pdf_zehn: Path) -> None:
+def test_meldung_nennt_die_zaehlweise(pdf_zehn: bytes) -> None:
     """Die Fehlermeldung sagt, wie gezaehlt wird — sonst raet der naechste Leser,
     ob er sich um eins vertan hat oder um die Grenze."""
     with PdfReader(pdf_zehn) as leser:
@@ -151,7 +144,7 @@ def test_meldung_nennt_die_zaehlweise(pdf_zehn: Path) -> None:
     assert "einschliessend" in text
 
 
-def test_schnitt_blaeht_nicht_auf(pdf_zehn: Path) -> None:
+def test_schnitt_blaeht_nicht_auf(pdf_zehn: bytes) -> None:
     """Die Summe aller Einzelseiten bleibt in der Groessenordnung des Originals.
 
     Gemessen am 17-MB-Bescheid: Faktor 1,00. Der Test haelt die MESSUNG fest,
@@ -160,7 +153,7 @@ def test_schnitt_blaeht_nicht_auf(pdf_zehn: Path) -> None:
     ganzen Projekt verboten ist: dort wurden aus 360 MB Quelle 4,1 GB
     Einzelseiten.
     """
-    original = pdf_zehn.stat().st_size
+    original = len(pdf_zehn)
     with PdfReader(pdf_zehn) as leser:
         summe = sum(len(leser.extract(seite, seite)) for seite in range(leser.page_count))
     assert summe < original * 4, (

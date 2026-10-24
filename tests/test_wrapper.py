@@ -161,6 +161,75 @@ def test_nicht_unterstuetzter_typ_wirft_sofort(
     assert list_documents(db_conn) == []
 
 
+def _eingabe(conn: psycopg.Connection[Any], sha256: str) -> bytes | None:
+    """Die Bytes in `inputs` zu diesem Hash, oder None, wenn es keine gibt."""
+    zeile = conn.execute(
+        "SELECT content FROM inputs WHERE sha256 = %s", (sha256,)
+    ).fetchone()
+    return None if zeile is None else bytes(zeile[0])
+
+
+def test_abschicken_legt_die_bytes_in_inputs_ab(
+    db_conn: psycopg.Connection[Any], settings: Settings, tmp_path: Path
+) -> None:
+    """Aus einer Datei wie aus Bytes liegen die Bytes danach in `inputs`, unter
+    dem Hash, aus dem die Zeile entstand."""
+    aus_datei = PNG_KOPF + b"aus einer datei"
+    aus_bytes = PNG_KOPF + b"aus dem speicher"
+
+    a = OCRWrapper.from_path(_datei(tmp_path, "a.png", aus_datei), db_conn, settings)
+    b = OCRWrapper.from_bytes(aus_bytes, "b.png", db_conn, settings)
+
+    assert _eingabe(db_conn, a.sha256) == aus_datei
+    assert _eingabe(db_conn, b.sha256) == aus_bytes
+
+
+def test_zweites_abschicken_aendert_die_eingabe_nicht(
+    db_conn: psycopg.Connection[Any], settings: Settings, tmp_path: Path
+) -> None:
+    """Derselbe Inhalt ein zweites Mal legt keine zweite Eingabe an."""
+    inhalt = PNG_KOPF + b"einmal"
+    erste = OCRWrapper.from_path(_datei(tmp_path, "a.png", inhalt), db_conn, settings)
+    OCRWrapper.from_path(_datei(tmp_path, "b.png", inhalt), db_conn, settings)
+    OCRWrapper.from_bytes(inhalt, "c.png", db_conn, settings)
+
+    assert _eingabe(db_conn, erste.sha256) == inhalt
+    zaehlung = db_conn.execute("SELECT count(*) FROM inputs").fetchone()
+    assert zaehlung is not None and zaehlung[0] == 1
+
+
+async def test_fertiges_dokument_bekommt_keine_neue_eingabe(
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ist das Dokument fertig, ist seine Eingabe weg — und erneutes Abschicken
+    bringt sie nicht zurueck. Sonst bliebe ein Treffer als Leiche in `inputs`
+    liegen, und \"offen\" liesse sich an der Eingabe nicht mehr ablesen."""
+    pfad = _datei(tmp_path, "fertig.png", PNG_KOPF + b"fertig")
+    erste = OCRWrapper.from_path(pfad, db_conn, settings)
+    await write_terminal_async(
+        async_conn, sha256=erste.sha256, status=DocumentStatus.DONE, raw={}
+    )
+    assert _eingabe(db_conn, erste.sha256) is None
+
+    OCRWrapper.from_path(pfad, db_conn, settings)
+    assert _eingabe(db_conn, erste.sha256) is None
+
+
+def test_nicht_unterstuetzter_typ_hinterlaesst_keine_eingabe(
+    db_conn: psycopg.Connection[Any], settings: Settings, tmp_path: Path
+) -> None:
+    """Was abgewiesen wird, wird nicht abgelegt."""
+    with pytest.raises(UnsupportedTypeError):
+        OCRWrapper.from_path(_datei(tmp_path, "n.txt", b"text"), db_conn, settings)
+    with pytest.raises(UnsupportedTypeError):
+        OCRWrapper.from_bytes(b"nur text", "x.txt", db_conn, settings)
+    zaehlung = db_conn.execute("SELECT count(*) FROM inputs").fetchone()
+    assert zaehlung is not None and zaehlung[0] == 0
+
+
 def test_bytes_eingabe_landet_im_spool(
     db_conn: psycopg.Connection[Any], settings: Settings
 ) -> None:

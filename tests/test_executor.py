@@ -21,7 +21,7 @@ import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from mineru_ocr.config import Settings
-from mineru_ocr.db import DocumentStatus, get_document, insert_document
+from mineru_ocr.db import DocumentStatus, get_document, insert_document, insert_input
 from mineru_ocr.errors import (
     ConfigurationError,
     CorruptDocumentError,
@@ -138,9 +138,14 @@ def _anlegen(
     typ: DocumentType = DocumentType.PDF,
     seiten: int | None = None,
 ) -> tuple[str, Path]:
-    """Legt Datei und Zeile an und gibt Hash und Pfad zurueck."""
+    """Legt Zeile und Eingabe an und gibt Hash und einen Pfad zurueck, den es
+    NICHT gibt.
+
+    Der Pfad existiert nur, weil die Zeile noch eine Spalte dafuer hat. Auf der
+    Platte liegt nichts: Liest der Job die Eingabe von dort statt aus `inputs`,
+    findet er nichts, und der Test faellt.
+    """
     pfad = tmp_path / name
-    pfad.write_bytes(inhalt)
     sha = hashlib.sha256(inhalt).hexdigest()
     insert_document(
         conn,
@@ -152,6 +157,7 @@ def _anlegen(
         page_count=seiten,
         endpoint_id="l79lebhinxaqjz",
     )
+    insert_input(conn, sha256=sha, content=inhalt)
     return sha, pfad
 
 
@@ -258,21 +264,48 @@ async def test_guard_laesst_failed_durch(
 # --- Eingang --------------------------------------------------------------
 
 
-async def test_veraenderte_datei_wird_erkannt(
+async def test_eingabe_kommt_aus_inputs_nicht_von_einem_pfad(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    """Weicht der Hash beim Verarbeiten ab, endet das Dokument `input_error` mit
-    Vermerk — und es wird nichts abgeschickt."""
+    """Die Bytes, die RunPod bekommt, sind die aus `inputs`. Auf der Platte liegt
+    nichts (siehe `_anlegen`), und der Job liest trotzdem."""
     sha, pfad = _anlegen(
-        db_conn, tmp_path, b"urspruenglich", name="a.png", typ=DocumentType.PNG
+        db_conn, tmp_path, b"aus der datenbank", name="a.png", typ=DocumentType.PNG
     )
-    pfad.write_bytes(b"inzwischen etwas ganz anderes")
+    assert not pfad.exists()
 
     runpod = FalscherRunPod([_fertige_antwort()])
-    with pytest.raises(Exception):
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert [base64.b64decode(b) for b in runpod.abgesendet] == [b"aus der datenbank"]
+
+
+async def test_eingabe_mit_falschem_hash_wird_erkannt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Passen die gelesenen Bytes nicht zum Hash, endet das Dokument
+    `input_error` mit Vermerk — und es wird nichts abgeschickt.
+
+    Das kann nur eine beschaedigte Zeile sein: Der Job liest genau die Bytes, aus
+    denen der Hash gebildet wurde. Wird es doch einmal falsch, darf das Ergebnis
+    nicht unter einem fremden Hash abgelegt werden.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"urspruenglich", name="a.png", typ=DocumentType.PNG
+    )
+    db_conn.execute(
+        "UPDATE inputs SET content = %b WHERE sha256 = %s",
+        (b"inzwischen etwas ganz anderes", sha),
+    )
+
+    runpod = FalscherRunPod([_fertige_antwort()])
+    with pytest.raises(CorruptDocumentError):
         await process_document(
             sha, settings=exec_settings, runpod=runpod, pool=pool
         )
@@ -283,6 +316,108 @@ async def test_veraenderte_datei_wird_erkannt(
     assert zeile.status is DocumentStatus.INPUT_ERROR
     assert zeile.error is not None
     assert any(v["kind"] == "gescheitert" for v in zeile.notes)
+
+
+@pytest.mark.parametrize(
+    "antwort, erwartet",
+    [
+        (_fertige_antwort("Text"), DocumentStatus.DONE),
+        (_fertige_antwort("", content_list=[]), DocumentStatus.EMPTY),
+    ],
+)
+async def test_eingabe_wird_mit_dem_ergebnis_geloescht(
+    antwort: dict[str, Any],
+    erwartet: DocumentStatus,
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Nach `done` und `empty` ist die Eingabe weg."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"bild", name="a.png", typ=DocumentType.PNG
+    )
+    await process_document(
+        sha, settings=exec_settings, runpod=FalscherRunPod([antwort]), pool=pool
+    )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is erwartet
+    assert db_conn.execute(
+        "SELECT 1 FROM inputs WHERE sha256 = %s", (sha,)
+    ).fetchone() is None
+
+
+async def test_eingabe_ist_nach_input_error_geloescht(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Auch ein `input_error` ist ein Endergebnis: Ein Wiederlauf aenderte an der
+    Eingabe nichts, also bleibt sie nicht liegen."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"kein pdf", name="kaputt.pdf", typ=DocumentType.PDF
+    )
+    with pytest.raises(CorruptDocumentError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod([_fertige_antwort()]),
+            pool=pool,
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
+    assert db_conn.execute(
+        "SELECT 1 FROM inputs WHERE sha256 = %s", (sha,)
+    ).fetchone() is None
+
+
+async def test_eingabe_bleibt_nach_failed_stehen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Nach `failed` steht die Eingabe noch: `retry` braucht etwas zu lesen."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"bild", name="a.png", typ=DocumentType.PNG
+    )
+    runpod = FalscherRunPod([{"id": "j", "status": "FAILED", "error": "grund"}])
+    with pytest.raises(TerminalRunPodError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    gelesen = db_conn.execute(
+        "SELECT content FROM inputs WHERE sha256 = %s", (sha,)
+    ).fetchone()
+    assert gelesen is not None
+    assert bytes(gelesen[0]) == b"bild"
+
+
+async def test_wiederholbarer_fehler_laesst_die_eingabe_liegen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Wird der Job neu vorgelegt, ohne dass ein Ergebnis geschrieben wurde, muss
+    der naechste Lauf seine Eingabe noch finden."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"bild", name="a.png", typ=DocumentType.PNG
+    )
+    runpod = FalscherRunPod([{"id": "j", "status": "TIMED_OUT"}])
+    with pytest.raises(TransientRunPodError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert db_conn.execute(
+        "SELECT 1 FROM inputs WHERE sha256 = %s", (sha,)
+    ).fetchone() is not None
 
 
 async def test_nicht_pdf_laeuft_als_ein_teilstueck(
@@ -1087,11 +1222,11 @@ async def test_eingabeprobleme_enden_input_error_nicht_failed(
     # Und es wurde NICHTS abgesendet.
     assert runpod.abgesendet == []
 
-    # 2. Quelldatei zwischen Einreihen und Verarbeiten geloescht.
-    sha_weg, pfad = _anlegen(
+    # 2. Zur Zeile gibt es keine Eingabe (beschaedigter Bestand).
+    sha_weg, _ = _anlegen(
         db_conn, tmp_path, b"gleich weg", name="w.png", typ=DocumentType.PNG
     )
-    pfad.unlink()
+    db_conn.execute("DELETE FROM inputs WHERE sha256 = %s", (sha_weg,))
     runpod2 = FalscherRunPod([_fertige_antwort()])
     with pytest.raises(CorruptDocumentError):
         await process_document(

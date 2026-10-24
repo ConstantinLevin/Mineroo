@@ -33,7 +33,6 @@ Normalweg ist der lokale.
 from __future__ import annotations
 
 import io
-from pathlib import Path
 from types import TracebackType
 
 import pypdfium2
@@ -82,25 +81,24 @@ class PdfReader:
         processes instead of threads"), nicht ein Thread.
     """
 
-    def __init__(self, path: Path) -> None:
-        """Oeffnet das PDF.
+    def __init__(self, data: bytes) -> None:
+        """Oeffnet das PDF aus seinen Bytes.
 
         Args:
-            path: Vorhandene Datei, die bereits als PDF erkannt wurde
-                (`mime.sniff_path`). Dieses Modul prueft den Typ NICHT erneut —
+            data: Die Bytes eines PDF, das bereits als PDF erkannt wurde
+                (`mime.sniff_bytes`). Dieses Modul prueft den Typ NICHT erneut —
                 die Typerkennung hat genau einen Eigentuemer, und der heisst
-                `mime`.
+                `mime`. Es muss `bytes` sein: pypdfium2 nimmt ein `memoryview`
+                nicht an.
 
         Raises:
-            CorruptDocumentError: Die Datei laesst sich nicht als PDF oeffnen —
-                sei sie beschaedigt, verschluesselt oder passwortgeschuetzt.
+            CorruptDocumentError: Die Bytes lassen sich nicht als PDF oeffnen —
+                sei es beschaedigt, verschluesselt oder passwortgeschuetzt.
                 Alle drei Faelle sind fuer uns dasselbe: nicht verarbeitbar,
                 endgueltig, ohne RunPod-Kontakt.
-            OSError: Nicht lesbar. Nicht eingepackt, siehe `mime.sniff_path`.
         """
-        self._path = path
         try:
-            self._doc = pypdfium2.PdfDocument(path)
+            self._doc = pypdfium2.PdfDocument(data)
         except pypdfium2.PdfiumError as fehler:
             # Beschaedigt, verschluesselt und passwortgeschuetzt sind fuer uns
             # dasselbe: nicht verarbeitbar. Sie liessen sich in dieser Fassung
@@ -108,7 +106,7 @@ class PdfReader:
             # Fehlercode, der Grund steckt nur in der Meldung. Deshalb wandert
             # die Meldung mit, statt dass wir sie deuten.
             raise CorruptDocumentError(
-                f"{path.name} laesst sich nicht als PDF oeffnen: {fehler}"
+                f"Die Eingabe laesst sich nicht als PDF oeffnen: {fehler}"
             ) from fehler
 
     def __enter__(self) -> PdfReader:
@@ -212,7 +210,7 @@ class PdfReader:
                 neu.import_pages(self._doc, pages=seiten)
             except pypdfium2.PdfiumError as fehler:
                 raise CorruptDocumentError(
-                    f"{self._path.name}: Seiten {first_page} bis {last_page} "
+                    f"Seiten {first_page} bis {last_page} "
                     f"liessen sich nicht herausschneiden: {fehler}"
                 ) from fehler
 
@@ -222,7 +220,7 @@ class PdfReader:
             # wird laut statt spaeter still.
             if len(neu) != erwartet:
                 raise CorruptDocumentError(
-                    f"{self._path.name}: Der Ausschnitt der Seiten {first_page} "
+                    f"Der Ausschnitt der Seiten {first_page} "
                     f"bis {last_page} hat {len(neu)} statt {erwartet} Seiten. "
                     f"Wahrscheinlichste Ursache: eine beschaedigte Seite wurde "
                     f"beim Schneiden uebersprungen."

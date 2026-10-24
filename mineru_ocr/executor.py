@@ -34,7 +34,6 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, TypeVar
 
 from psycopg_pool import AsyncConnectionPool
@@ -47,7 +46,6 @@ from .errors import (
     InsufficientBalanceError,
     JobAufgegebenError,
     ResultLostError,
-    SourceChangedError,
     TerminalRunPodError,
     TransientRunPodError,
     UnsupportedTypeError,
@@ -128,10 +126,11 @@ async def process_document(
     1. Zeile laden. Ab hier wird sie bis zum Terminal-Schreiben NICHT mehr
        angefasst.
 
-    2. Datei von `source_path` lesen und den Hash gegenpruefen. Weicht er ab, ist
-       die Datei zwischen Einreihen und Verarbeiten ausgetauscht worden:
-       `input_error` samt Vermerk. Bezahlte Ergebnisse gehen dabei nicht
-       verloren, weil es an dieser Zeile noch keine gibt.
+    2. Eingabe aus `inputs` lesen, ueber den Hash, auf einer eigenen
+       kurzlebigen Verbindung, und den Hash gegenpruefen. Fehlt die Eingabe oder
+       weicht der Hash ab, ist der Bestand beschaedigt: `input_error` samt
+       Vermerk. Bezahlte Ergebnisse gehen dabei nicht verloren, weil es an
+       dieser Zeile noch keine gibt.
 
     3. Zerlegen, absenden, abholen — alles nur im Arbeitsspeicher. Fuer PDF ueber
        der Schwelle: `chunking.plan_chunks`, dann `chunking.iter_chunks` mit
@@ -296,38 +295,31 @@ async def process_document(
     begonnen = time.monotonic()
 
     try:
-        # --- 2.: Datei lesen und den Hash gegenpruefen -------------------
-        pfad = Path(zeile.source_path)
-        try:
-            rohbytes = pfad.read_bytes()
-        except OSError as fehler:
-            # Zwischen Einreihen und Verarbeiten geloescht, verschoben oder
-            # unlesbar geworden. Das ist ein EINGABE-Problem und kein bezahlter
-            # Fehlschlag — es passiert vor jedem Kontakt mit RunPod.
-            #
-            # Ohne diese Uebersetzung fiel ein `FileNotFoundError` durch die
-            # Regel „Unbekanntes ist endgueltig" auf `failed`, also in den
-            # Zustand, der laut `db.py` die Frage „wofuer haben wir bezahlt?"
-            # beantwortet. Bezahlt war hier nichts.
-            #
-            # `SourceChangedError` waere das falsche Etikett: Die Datei hat sich
-            # nicht geaendert, sie ist weg. Beide sind `InputError`, die
-            # Meldung soll aber sagen, was wirklich los ist.
+        # --- 2.: Eingabe lesen und den Hash gegenpruefen -----------------
+        # Aus `inputs`, ueber den Hash, auf einer EIGENEN kurzlebigen Verbindung
+        # (siehe `db.read_input_async`) — nicht aus dem Pool des Daemons und
+        # nicht von einem Pfad.
+        rohbytes = await db.read_input_async(settings.db_dsn, sha256)
+        if rohbytes is None:
+            # Eine Zeile ohne Endergebnis hat immer eine Eingabe (beides
+            # schreibt dieselbe Transaktion). Fehlt sie, ist der Bestand
+            # beschaedigt, und ein Wiederlauf fand dieselbe Luecke. Es ist ein
+            # EINGABE-Problem vor jedem Kontakt mit RunPod: bezahlt ist nichts.
             raise CorruptDocumentError(
-                f"Die Quelldatei unter {zeile.source_path} ist nicht lesbar: "
-                f"{type(fehler).__name__}: {fehler}. Sie wurde zwischen dem "
-                f"Einreihen und dem Verarbeiten geloescht, verschoben oder "
-                f"unzugaenglich gemacht. Es wurde nichts bezahlt."
-            ) from fehler
+                f"Zu {sha256} gibt es keine Eingabe in `inputs`, obwohl das "
+                f"Dokument noch kein Endergebnis hat. Der Bestand ist "
+                f"beschaedigt. Es wurde nichts bezahlt."
+            )
         tatsaechlich = hashlib.sha256(rohbytes).hexdigest()
         if tatsaechlich != sha256:
-            raise SourceChangedError(
-                f"Die Datei unter {zeile.source_path} traegt jetzt den Hash "
-                f"{tatsaechlich}, eingereiht wurde {sha256}. Sie ist zwischen "
-                f"Einreihen und Verarbeiten ausgetauscht worden. Es wird NICHT "
-                f"die neue Datei verarbeitet: Die Zeile gehoert zur alten, und "
-                f"das Ergebnis der neuen unter der alten Kennung abzulegen waere "
-                f"eine stille Verwechslung."
+            # Der Job liest genau die Bytes, aus denen der Hash gebildet wurde.
+            # Stimmt er nicht, ist die gespeicherte Eingabe beschaedigt. Es wird
+            # NICHT verarbeitet: das Ergebnis dieser Bytes unter dem Hash eines
+            # anderen Dokuments abzulegen waere eine stille Verwechslung.
+            raise CorruptDocumentError(
+                f"Die gespeicherte Eingabe zu {sha256} traegt den Hash "
+                f"{tatsaechlich}. Sie ist beschaedigt und wird nicht "
+                f"verarbeitet. Es wurde nichts bezahlt."
             )
 
         typ = DocumentType(_typ_aus_mime(zeile.mime))
@@ -353,7 +345,7 @@ async def process_document(
 
         # --- 3.: zerlegen, absenden, abholen ----------------------------
         if typ.is_pdf:
-            with PdfReader(pfad) as leser:
+            with PdfReader(rohbytes) as leser:
                 seiten = leser.page_count
                 if chunking.needs_chunking(
                     size_bytes=len(rohbytes),

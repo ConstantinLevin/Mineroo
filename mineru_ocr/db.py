@@ -92,6 +92,11 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE INDEX IF NOT EXISTS documents_status_idx ON documents (status);
 CREATE INDEX IF NOT EXISTS documents_source_path_idx ON documents (source_path);
+
+CREATE TABLE IF NOT EXISTS inputs (
+    sha256        text PRIMARY KEY,
+    content       bytea NOT NULL
+);
 """
 """Das vollstaendige Schema. Wortgleich zu Plan 4.1, mit zwei Zusaetzen.
 
@@ -465,35 +470,57 @@ def _datenbank_anlegen_falls_noetig(dsn: str) -> None:
         ) from fehler
 
 
+INPUT_SPALTEN: Final = frozenset({"sha256", "content"})
+"""Die Spalten von `inputs`. Die Tabelle hat keine Zeilenklasse (der Executor
+liest nur `content`), also steht die Erwartung hier, und `_schema_abgleichen`
+vergleicht gegen sie."""
+
+
 def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
-    """Prueft die Tabelle auf der Platte gegen die Felder von `DocumentRow`.
+    """Prueft die Tabellen auf der Platte gegen ihre Zeilenklassen.
 
     Die Antwort auf die einzige Doppelung dieses Moduls. Ein Migrationswerkzeug
     loeste sie auf, waere hier aber Ballast — dies ist ein Werkzeug fuer einen
     Menschen auf einer Maschine. Stattdessen wird die Doppelung LAUT.
+
+    Geprueft werden beide Tabellen, `documents` gegen die Felder von
+    `DocumentRow` und `inputs` gegen `INPUT_SPALTEN`; gemeldet wird alles auf
+    einmal, damit die Abhilfe nicht Tabelle fuer Tabelle gesucht werden muss.
     """
-    spalten = {
-        zeile[0]
-        for zeile in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'documents'"
-        ).fetchall()
-    }
     # `raw_loaded` ist ein Merkmal des gelesenen Objekts, keine Spalte — es sagt,
     # ob `raw` mitgelesen wurde, und das kann die Tabelle nicht wissen.
-    erwartet = {feld.name for feld in fields(DocumentRow)} - {"raw_loaded"}
-
-    fehlend = erwartet - spalten
-    ueberzaehlig = spalten - erwartet
-    if not fehlend and not ueberzaehlig:
+    erwartet = {
+        "documents": (
+            {feld.name for feld in fields(DocumentRow)} - {"raw_loaded"},
+            "DocumentRow",
+        ),
+        "inputs": (set(INPUT_SPALTEN), "INPUT_SPALTEN"),
+    }
+    abweichungen: list[str] = []
+    for tabelle, (soll, gegen) in erwartet.items():
+        ist = {
+            zeile[0]
+            for zeile in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = %s",
+                (tabelle,),
+            ).fetchall()
+        }
+        fehlend = soll - ist
+        ueberzaehlig = ist - soll
+        if fehlend or ueberzaehlig:
+            abweichungen.append(
+                f"Die Tabelle `{tabelle}` passt nicht zu {gegen}. "
+                f"Im Code, aber nicht in der Tabelle: {sorted(fehlend)}. "
+                f"In der Tabelle, aber nicht im Code: {sorted(ueberzaehlig)}."
+            )
+    if not abweichungen:
         return
     raise DatabaseError(
-        f"Die Tabelle `documents` passt nicht zu DocumentRow. "
-        f"In der Zeilenklasse, aber nicht in der Tabelle: {sorted(fehlend)}. "
-        f"In der Tabelle, aber nicht in der Zeilenklasse: {sorted(ueberzaehlig)}. "
-        f"Es gibt in diesem Werkzeug bewusst keine Migrationen — der Weg ist: "
-        f"Datenbank wegwerfen und neu anlegen (DROP DATABASE, dann `mineru-ocr "
-        f"setup`). Wenn darin bezahlte Ergebnisse stehen, vorher sichern."
+        " ".join(abweichungen)
+        + " Es gibt in diesem Werkzeug bewusst keine Migrationen — der Weg ist: "
+        "Datenbank wegwerfen und neu anlegen (DROP DATABASE, dann `mineru-ocr "
+        "setup`). Wenn darin bezahlte Ergebnisse stehen, vorher sichern."
     )
 
 
@@ -658,6 +685,80 @@ def insert_document(
     # bei `DO NOTHING` kommt nichts. Das ist die verlaessliche Unterscheidung;
     # `rowcount` haette sie auch, aber `RETURNING` sagt es an der Abfrage selbst.
     return ergebnis is not None
+
+
+def insert_input(
+    conn: psycopg.Connection[Any], *, sha256: str, content: bytes
+) -> bool:
+    """Legt die Eingabe eines Dokuments ab, falls es zu diesem Hash noch keine gibt.
+
+    Die Bytes liegen als `bytea` in `inputs`, bis das Dokument ein Endergebnis
+    hat: verlustfrei wie base64, aber ohne das zusaetzliche Drittel auf der
+    Platte (1,03-fach statt 1,37-fach). base64 war nur noetig, solange die Bytes
+    im JSON der Job-Argumente stehen sollten; der Job traegt nur noch den Hash.
+
+    Der Platzhalter ist `%b`, nicht `%s`: Er schickt den Wert im Binaerformat.
+    Ohne ihn ginge ein grosses PDF als escapter Text ueber die Leitung.
+
+    Args:
+        conn: Offene Verbindung, gehoert dem Aufrufer.
+        sha256: Roher Byte-Hash von `content`.
+        content: Die vollstaendigen Bytes der Eingabe.
+
+    Returns:
+        True, wenn die Eingabe neu abgelegt wurde; False, wenn es zu diesem Hash
+        schon eine gibt. Dann bleibt die vorhandene unberuehrt.
+
+    Kosten: keine.
+    """
+    ergebnis = conn.execute(
+        "INSERT INTO inputs (sha256, content) VALUES (%s, %b) "
+        "ON CONFLICT (sha256) DO NOTHING RETURNING sha256",
+        (sha256, content),
+    ).fetchone()
+    return ergebnis is not None
+
+
+async def read_input_async(dsn: str, sha256: str) -> bytes | None:
+    """Liest die Eingabe eines Dokuments auf einer EIGENEN, kurzlebigen Verbindung.
+
+    Warum nicht auf einer Verbindung aus dem Pool: libpq behaelt seine Puffer in
+    der Groesse des groessten je gelesenen Werts, bis die Verbindung schliesst
+    (gemessen: 64 MiB nach einem Wert von 50 MB). Im Pool des Daemons mit 24
+    Verbindungen bande das ein Gigabyte. Eine eigene Verbindung kostet rund 5 ms
+    und wird nach dem Lesen geschlossen.
+
+    Gelesen wird mit `binary=True`. Ohne geht der Wert als Hex ueber die Leitung,
+    doppelt so gross, und ab rund 536 MB scheitert der Server.
+
+    Returns:
+        Die Bytes — immer `bytes`, nie ein `memoryview`, denn pypdfium2 nimmt
+        ein `memoryview` nicht an. `None`, wenn es zu diesem Hash keine Eingabe
+        gibt; was das heisst, entscheidet der Aufrufer.
+
+    Raises:
+        DatabaseError: Die Instanz antwortet nicht. Wiederholbar.
+        ConfigurationError: Der Zugang taugt nicht.
+
+    Kosten: keine.
+    """
+    conn = await connect_async(dsn)
+    try:
+        try:
+            cur = await conn.execute(
+                "SELECT content FROM inputs WHERE sha256 = %s",
+                (sha256,),
+                binary=True,
+            )
+            zeile = await cur.fetchone()
+        except psycopg.Error as fehler:
+            raise _verbindungsfehler_uebersetzen(fehler, "Eingabe lesen") from fehler
+    finally:
+        await conn.close()
+    if zeile is None:
+        return None
+    inhalt = zeile[0]
+    return inhalt if type(inhalt) is bytes else bytes(inhalt)
 
 
 def get_document(conn: psycopg.Connection[Any], sha256: str) -> DocumentRow | None:
@@ -980,6 +1081,12 @@ async def write_terminal_async(
                 sha256,
             ),
         )
+        # Die Eingabe geht mit dem Endergebnis, in DERSELBEN Transaktion: Beides
+        # gilt oder beides nicht. Bei `failed` bleibt sie stehen, damit `retry`
+        # etwas zu lesen hat. Entfernt wird per `DELETE`; fuer den Platz ist das
+        # gleich wie ein Leeren des Felds, und Autovacuum gibt ihn frei.
+        if status is not DocumentStatus.FAILED:
+            await conn.execute("DELETE FROM inputs WHERE sha256 = %s", (sha256,))
         # Das Wecksignal gehoert in DIESELBE Transaktion: Wuerde es davor
         # abgesetzt, koennte ein Warter aufwachen und die Zeile noch alt
         # vorfinden; danach abgesetzt, faellt es bei einem Abbruch zwischen

@@ -353,7 +353,7 @@ def db_conn(_test_datenbank: str) -> Iterator[Any]:
 
     with connect(_test_datenbank) as conn:
         conn.execute(
-            "TRUNCATE documents, procrastinate_events, procrastinate_jobs, "
+            "TRUNCATE documents, inputs, procrastinate_events, procrastinate_jobs, "
             "procrastinate_periodic_defers, procrastinate_workers "
             "RESTART IDENTITY CASCADE"
         )

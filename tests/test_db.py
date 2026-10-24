@@ -26,7 +26,9 @@ from mineru_ocr.db import (
     derive_status,
     get_document,
     insert_document,
+    insert_input,
     list_documents,
+    read_input_async,
     setup,
     wait_for_terminal,
     worker_heartbeats,
@@ -258,6 +260,176 @@ def test_zweites_einfuegen_ist_ein_nichts_tun(
     )
     nachher = get_document(db_conn, HASH)
     assert nachher == vorher
+
+
+@pytest.mark.db
+def test_setup_legt_inputs_an(db_conn: psycopg.Connection[Any]) -> None:
+    """Die Eingabe hat eine eigene Tabelle: `sha256` als Schluessel, `content` als
+    `bytea` — nicht base64 in einer Textspalte."""
+    spalten = dict(
+        db_conn.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_name = 'inputs'"
+        ).fetchall()
+    )
+    assert spalten == {"sha256": "text", "content": "bytea"}
+    schluessel = db_conn.execute(
+        "SELECT a.attname FROM pg_index i "
+        "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+        "WHERE i.indrelid = 'inputs'::regclass AND i.indisprimary"
+    ).fetchall()
+    assert [zeile[0] for zeile in schluessel] == ["sha256"]
+
+
+@pytest.mark.db
+def test_setup_meldet_abweichende_inputs_tabelle(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Der Abgleich kennt auch `inputs`: Eine Spalte zu viel wird mit Tabelle,
+    Spalte und Abhilfe gemeldet, und nichts wird veraendert."""
+    db_conn.execute("ALTER TABLE inputs ADD COLUMN erfundene_spalte text")
+    try:
+        with pytest.raises(Exception) as fehler:
+            setup(_test_datenbank)
+        text = str(fehler.value)
+        assert "inputs" in text
+        assert "erfundene_spalte" in text
+        assert "setup" in text
+        assert db_conn.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='inputs' AND column_name='erfundene_spalte'"
+        ).fetchone() is not None
+    finally:
+        db_conn.execute("ALTER TABLE inputs DROP COLUMN erfundene_spalte")
+
+
+@pytest.mark.db
+async def test_eingabe_wird_gespeichert_und_binaer_gelesen(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Die Bytes gehen verlustfrei hinein und als `bytes` wieder heraus.
+
+    Das Ergebnis muss `bytes` sein und nichts anderes: pypdfium2 nimmt ein
+    `memoryview` nicht an. Alle 256 Bytewerte, damit eine Kodierung (hex,
+    base64) an einem Wert auffaellt.
+    """
+    inhalt = bytes(range(256)) * 40
+    _einfuegen(db_conn)
+    assert insert_input(db_conn, sha256=HASH, content=inhalt) is True
+
+    gelesen = await read_input_async(_test_datenbank, HASH)
+    assert type(gelesen) is bytes
+    assert gelesen == inhalt
+
+
+@pytest.mark.db
+def test_zweite_eingabe_zum_selben_hash_ist_ein_nichts_tun(
+    db_conn: psycopg.Connection[Any],
+) -> None:
+    """Derselbe Hash ein zweites Mal ergibt False und aendert nichts."""
+    _einfuegen(db_conn)
+    assert insert_input(db_conn, sha256=HASH, content=b"erste") is True
+    assert insert_input(db_conn, sha256=HASH, content=b"zweite") is False
+    zeile = db_conn.execute(
+        "SELECT content FROM inputs WHERE sha256 = %s", (HASH,)
+    ).fetchone()
+    assert zeile is not None
+    assert bytes(zeile[0]) == b"erste"
+
+
+@pytest.mark.db
+async def test_fehlende_eingabe_liest_sich_als_none(_test_datenbank: str) -> None:
+    """Gibt es keine Eingabe zum Hash, ist die Antwort `None` — der Aufrufer
+    entscheidet, was das heisst."""
+    assert await read_input_async(_test_datenbank, "f" * 64) is None
+
+
+@pytest.mark.db
+async def test_lesen_der_eingabe_schliesst_die_eigene_verbindung(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Die Verbindung zum Lesen ist kurzlebig: Nach dem Aufruf ist sie zu.
+
+    libpq behaelt seine Puffer in der Groesse des groessten je gelesenen Werts,
+    bis die Verbindung schliesst. Gemessen wird deshalb an der Zahl der
+    Verbindungen der Datenbank, vor und nach dem Lesen.
+    """
+    _einfuegen(db_conn)
+    insert_input(db_conn, sha256=HASH, content=b"x" * 1_000_000)
+
+    def verbindungen() -> int:
+        zeile = db_conn.execute(
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND pid <> pg_backend_pid()"
+        ).fetchone()
+        assert zeile is not None
+        return int(zeile[0])
+
+    vorher = verbindungen()
+    await read_input_async(_test_datenbank, HASH)
+    assert verbindungen() == vorher
+
+
+@pytest.mark.db
+async def test_eingabe_wird_mit_dem_endergebnis_geloescht_ausser_bei_failed(
+    db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """Nach `done`, `empty` und `input_error` ist die Eingabe weg; nach `failed`
+    steht sie noch, damit `retry` etwas zu lesen hat."""
+    erwartet = {
+        DocumentStatus.DONE: False,
+        DocumentStatus.EMPTY: False,
+        DocumentStatus.INPUT_ERROR: False,
+        DocumentStatus.FAILED: True,
+    }
+    for nr, (status, bleibt) in enumerate(erwartet.items()):
+        sha = f"{nr:064d}"
+        _einfuegen(db_conn, sha)
+        insert_input(db_conn, sha256=sha, content=b"bytes")
+        await write_terminal_async(async_conn, sha256=sha, status=status, raw={})
+        steht = db_conn.execute(
+            "SELECT 1 FROM inputs WHERE sha256 = %s", (sha,)
+        ).fetchone()
+        assert (steht is not None) is bleibt, status
+
+
+@pytest.mark.db
+async def test_eingabe_und_ergebnis_gehen_in_einer_transaktion(
+    db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """Scheitert das Loeschen der Eingabe, gilt auch das Ergebnis nicht: Beides
+    gilt oder beides nicht. Ein Dokument ohne Eingabe UND ohne Ergebnis darf es
+    nicht geben, ebenso wenig eines mit Ergebnis, dessen Eingabe noch liegt.
+
+    Geprueft ohne dem Code zu glauben: Ein Ausloeser auf `inputs` laesst das
+    DELETE scheitern. Lagen beide Schritte in getrennten Transaktionen, stuende
+    das Ergebnis danach trotzdem da.
+    """
+    _einfuegen(db_conn)
+    insert_input(db_conn, sha256=HASH, content=b"bytes")
+    db_conn.execute(
+        "CREATE OR REPLACE FUNCTION _loeschen_verbieten() RETURNS trigger AS $$ "
+        "BEGIN RAISE EXCEPTION 'Loeschen verboten'; END; $$ LANGUAGE plpgsql"
+    )
+    db_conn.execute(
+        "CREATE OR REPLACE TRIGGER _loeschen_verbieten_trigger BEFORE DELETE ON inputs "
+        "FOR EACH ROW EXECUTE FUNCTION _loeschen_verbieten()"
+    )
+    try:
+        with pytest.raises(Exception, match="Loeschen verboten"):
+            await write_terminal_async(
+                async_conn, sha256=HASH, status=DocumentStatus.DONE, raw={"a": 1}
+            )
+    finally:
+        db_conn.execute("DROP TRIGGER IF EXISTS _loeschen_verbieten_trigger ON inputs")
+
+    zeile = get_document(db_conn, HASH)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.NEW
+    assert zeile.raw is None
+    assert db_conn.execute(
+        "SELECT 1 FROM inputs WHERE sha256 = %s", (HASH,)
+    ).fetchone() is not None
 
 
 @pytest.mark.db

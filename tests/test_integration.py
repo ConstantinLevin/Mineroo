@@ -12,6 +12,7 @@ und zurueckfindet.
 from __future__ import annotations
 
 import asyncio
+import base64
 import dataclasses
 import hashlib
 import time
@@ -103,12 +104,14 @@ class ProtokollRunPod:
     def __init__(self, verhalten: Any = None) -> None:
         self.verhalten = verhalten or (lambda nr: _fertig())
         self.aufrufe = 0
+        self.dateien: list[bytes] = []
         self.gestartet = asyncio.Event()
         self.freigabe: asyncio.Event | None = None
         self.abgebrochen: list[str] = []
 
-    async def submit(self, **_: Any) -> str:
+    async def submit(self, *, file_b64: str, **_: Any) -> str:
         self.aufrufe += 1
+        self.dateien.append(base64.b64decode(file_b64))
         return f"job-{self.aufrufe}"
 
     async def await_result(self, job_id: str) -> dict[str, Any]:
@@ -165,6 +168,7 @@ def _anlegen(conn: psycopg.Connection[Any], tmp_path: Path, name: str) -> str:
         page_count=None,
         endpoint_id="l79lebhinxaqjz",
     )
+    db.insert_input(conn, sha256=sha, content=inhalt)
     return sha
 
 
@@ -265,6 +269,42 @@ async def test_dokument_laeuft_vollstaendig_durch(
     assert len(jobs) == 1
     assert jobs[0].status == "succeeded"
     assert derive_status(zeile, jobs).phase is Phase.TERMINAL
+
+
+async def test_abgeschicktes_dokument_wird_aus_inputs_gelesen(
+    db_conn: psycopg.Connection[Any], int_settings: Settings
+) -> None:
+    """Abschicken legt die Eingabe in `inputs` an, und der Job liest sie von dort.
+
+    Der ganze Weg mit echtem Daemon und echtem Postgres: Die Bytes, die bei
+    RunPod ankommen, sind die abgeschickten; nach dem Ergebnis ist die Eingabe
+    geloescht; es liegt keine Spool-Datei und kein Pfad dazwischen.
+    """
+    from mineru_ocr.wrapper import OCRWrapper
+
+    tasks.configure(int_settings, for_worker=False)
+    inhalt = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"abgeschickt"
+    huelle = OCRWrapper.from_bytes(inhalt, "x.png", db_conn, int_settings)
+
+    zeile = db_conn.execute(
+        "SELECT content FROM inputs WHERE sha256 = %s", (huelle.sha256,)
+    ).fetchone()
+    assert zeile is not None and bytes(zeile[0]) == inhalt
+    tasks.defer_document(huelle.sha256)
+
+    async def fertig() -> bool:
+        gelesen = get_document(db_conn, huelle.sha256)
+        return gelesen is not None and gelesen.status.is_terminal
+
+    runpod = ProtokollRunPod()
+    await _daemon_laufen_lassen(int_settings, runpod, bis=fertig)
+
+    assert runpod.dateien == [inhalt]
+    gelesen = get_document(db_conn, huelle.sha256)
+    assert gelesen is not None and gelesen.status is DocumentStatus.DONE
+    assert db_conn.execute(
+        "SELECT 1 FROM inputs WHERE sha256 = %s", (huelle.sha256,)
+    ).fetchone() is None
 
 
 async def test_nicht_wiederholbarer_fehler_im_ersten_versuch(
