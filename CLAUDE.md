@@ -146,6 +146,22 @@ gar nichts, und es sieht aus wie ein Hänger. Das ist die häufigste Überraschu
 dieses Aufbaus — `preflight` sagt es einem ausdrücklich, statt es einen suchen zu
 lassen.
 
+**Abschicken hängt nicht vom Daemon ab und warnt nur.** `ocr_start` und
+`mineru-ocr ocr` reihen auch ohne laufenden Daemon ein; die Warnung steht im
+Logger `mineru_ocr.client`, die Kommandozeile schreibt sie auf stderr. Abgebrochen
+wird nichts, und weder Bibliothek noch Kommandozeile starten selbst einen Daemon —
+den startet der Betreiber. Es gibt keinen `strict`-Abbruch und keine
+`--strict`-Option am Kommando `ocr`; `strict` betrifft nur Konfigurations-
+Abweichungen im Preflight.
+
+Ein Daemon **läuft**, wenn ein Worker einen Herzschlag hat, der jünger ist als
+`config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS` (30 s, Procrastinates
+`stalled_worker_timeout`), gemessen an der Uhr der Datenbank
+(`db.worker_heartbeats`). Die Zeile eines abgestürzten Daemons bleibt bis zum
+nächsten Start stehen; ihr Alter ist das Merkmal, und abgeräumt wird sie dann von
+Procrastinate selbst. Die Lebendigkeit ist nur Auskunft für `status` und
+`preflight`.
+
 ### Welcher Prozess welche App hält
 
 Procrastinate wird so benutzt, wie es vorgesehen ist: **jeder Prozess baut seine

@@ -152,7 +152,11 @@ das Kommando enthält keine eigene Logik.
 **Der Daemon ist ein eigener Prozess.** `ocr_start` bzw. das Kommando `ocr` legt
 Jobs an und kehrt sofort zurück. Läuft kein `daemon`, passiert danach gar nichts
 — und es sieht aus wie ein Hänger. Deshalb sagt `preflight` es einem
-ausdrücklich, statt es einen suchen zu lassen.
+ausdrücklich, statt es einen suchen zu lassen. Abschicken reiht auch ohne
+laufenden Daemon ein und warnt nur (das Kommando `ocr` auf stderr); einen Daemon
+startet der Betreiber. Als laufend gilt ein Daemon, wenn ein Worker einen
+Herzschlag hat, der jünger ist als 30 Sekunden — gemessen an der Uhr der
+Datenbank, damit die Zeile eines abgestürzten Daemons nicht weiter „läuft" sagt.
 
 ---
 
