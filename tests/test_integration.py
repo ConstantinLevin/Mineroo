@@ -269,7 +269,7 @@ async def test_dokument_laeuft_vollstaendig_durch(
 
 
 async def test_abgeschicktes_dokument_wird_aus_inputs_gelesen(
-    db_conn: psycopg.Connection[Any], int_settings: Settings
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger
 ) -> None:
     """Abschicken legt die Eingabe in `inputs` an, und der Job liest sie von dort.
 
@@ -279,7 +279,6 @@ async def test_abgeschicktes_dokument_wird_aus_inputs_gelesen(
     """
     from mineru_ocr.wrapper import OCRWrapper
 
-    tasks.configure(int_settings, for_worker=False)
     inhalt = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"abgeschickt"
     huelle = OCRWrapper.from_bytes(inhalt, db_conn, int_settings)
 
@@ -287,7 +286,7 @@ async def test_abgeschicktes_dokument_wird_aus_inputs_gelesen(
         "SELECT content FROM inputs WHERE sha256 = %s", (huelle.sha256,)
     ).fetchone()
     assert zeile is not None and bytes(zeile[0]) == inhalt
-    tasks.defer_document(huelle.sha256)
+    assert erzeuger.einreihen(huelle.sha256) is True
 
     async def fertig() -> bool:
         gelesen = get_document(db_conn, huelle.sha256)
