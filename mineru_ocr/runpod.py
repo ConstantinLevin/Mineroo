@@ -91,6 +91,11 @@ Gemessen, nicht vermutet."""
 TERMINAL_STATUSES: Final = frozenset({"COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"})
 """Job-Zustaende, nach denen kein weiteres Abfragen mehr etwas aendert."""
 
+STARTED_STATUSES: Final = frozenset({"IN_PROGRESS", "RUNNING"})
+"""Job-Zustaende, in denen ein Worker den Job tatsaechlich bearbeitet. Erst ab
+hier laeuft das Zeitbudget (`Settings.job_timeout_seconds`): Warteschlange und
+Kaltstart gehoeren nicht dazu."""
+
 RUNNING_STATUSES: Final = frozenset({"IN_QUEUE", "IN_PROGRESS", "RUNNING"})
 """Job-Zustaende, bei denen weiter abgefragt wird. `RUNNING` steht hier, weil es
 im Betrieb beobachtet wurde, auch wenn die Dokumentation nur `IN_PROGRESS`
@@ -582,8 +587,9 @@ class RunPodClient:
             Der Rueckgabewert hat einen Status aus `TERMINAL_STATUSES`.
 
         Raises:
-            TransientRunPodError: `settings.job_timeout_seconds` ueberschritten.
-                Wiederholbar: Es kann an der Warteschlange gelegen haben.
+            TransientRunPodError: `settings.job_timeout_seconds` ab
+                `IN_PROGRESS` ueberschritten. Wiederholbar: Ein Worker kann
+                haengen.
             ResultLostError: siehe `status`. Ebenfalls wiederholbar — der Job
                 wird dann neu geschickt, nicht das Dokument aufgegeben.
             asyncio.CancelledError: Der Daemon faehrt herunter. Wird NICHT
@@ -593,17 +599,22 @@ class RunPodClient:
 
         Kosten: keine ueber die von `submit` hinaus.
         """
-        ende = time.monotonic() + self._settings.job_timeout_seconds
+        # `None` heisst: Das Zeitbudget laeuft (noch) nicht. Es beginnt, wenn
+        # RunPod den Job als `IN_PROGRESS` meldet, und beginnt neu, wenn der Job
+        # danach wieder in die Schlange geht. Warteschlange und Kaltstart zaehlen
+        # nicht: Mit `/cancel` bei Ablauf wuerde ein Job, der hinter einem
+        # grossen Lauf wartet, sonst immer wieder abgebrochen und neu bezahlt.
+        ende: float | None = None
         abstand = self._settings.poll_interval_seconds
         letzter_fehler: Exception | None = None
 
         while True:
-            if time.monotonic() >= ende:
+            if ende is not None and time.monotonic() >= ende:
                 raise TransientRunPodError(
                     f"Job {job_id} wurde in "
-                    f"{self._settings.job_timeout_seconds} Sekunden nicht "
-                    f"terminal. Wiederholbar: Es kann an der Warteschlange "
-                    f"gelegen haben. Letzter Fehler beim Abfragen: "
+                    f"{self._settings.job_timeout_seconds} Sekunden ab "
+                    f"IN_PROGRESS nicht terminal. Wiederholbar: Ein Worker kann "
+                    f"haengen. Letzter Fehler beim Abfragen: "
                     f"{letzter_fehler}"
                 )
 
@@ -628,6 +639,11 @@ class RunPodClient:
             zustand = antwort.get("status")
             if zustand in TERMINAL_STATUSES:
                 return antwort
+            if zustand in STARTED_STATUSES:
+                if ende is None:
+                    ende = time.monotonic() + self._settings.job_timeout_seconds
+            elif zustand == "IN_QUEUE":
+                ende = None
             if zustand not in RUNNING_STATUSES:
                 # Ein unbekannter Zustand wird NICHT als Fehler behandelt und
                 # NICHT als terminal: Beides koennte einen laufenden, bezahlten

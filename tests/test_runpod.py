@@ -447,10 +447,90 @@ async def test_zeitueberschreitung_ist_wiederholbar(
     knapp = dataclasses.replace(
         echte_settings, job_timeout_seconds=0.2, poll_interval_seconds=0.01
     )
-    client, _ = _client(knapp, Aufzeichnung(_antwort({"status": "IN_QUEUE"})))
+    client, _ = _client(knapp, Aufzeichnung(_antwort({"status": "IN_PROGRESS"})))
     with pytest.raises(TransientRunPodError) as fehler:
         await client.await_result("j")
     assert "Wiederholbar" in str(fehler.value)
+
+
+async def test_zeitbudget_laeuft_nicht_in_der_warteschlange(
+    echte_settings: Settings,
+) -> None:
+    """Warteschlange und Kaltstart zaehlen nicht zum Zeitbudget.
+
+    Mit `/cancel` bei Ablauf wuerde ein Job, der hinter einem grossen Lauf
+    wartet, sonst immer wieder abgebrochen und neu eingereiht — und jedes Mal
+    neu bezahlt. Hier steht der Job fuenfmal laenger in der Schlange, als das
+    Budget erlaubt, und kommt trotzdem durch.
+    """
+    knapp = dataclasses.replace(
+        echte_settings, job_timeout_seconds=0.2, poll_interval_seconds=0.01
+    )
+    client, transport = _client(
+        knapp,
+        Aufzeichnung(
+            [_antwort({"status": "IN_QUEUE"})] * 100
+            + [_antwort({"status": "IN_PROGRESS"})] * 3
+            + [_antwort({"status": "COMPLETED", "output": {"ok": True}})]
+        ),
+    )
+    antwort = await client.await_result("j")
+
+    assert antwort["status"] == "COMPLETED"
+    assert len(transport.anfragen) == 104
+    assert not any("/cancel/" in str(a.url) for a in transport.anfragen)
+
+
+async def test_zeitbudget_beginnt_bei_in_progress(
+    echte_settings: Settings,
+) -> None:
+    """Das Budget laeuft ab dem Moment, in dem RunPod `IN_PROGRESS` meldet.
+
+    Gemessen an der Dauer: zwanzig Abfragen in der Schlange sind mindestens
+    0,2 s Wartezeit, dann kommt das Budget von 0,2 s dazu. Zaehlte die
+    Schlange mit, kaeme die Ausnahme nach rund 0,2 s.
+    """
+    import time
+
+    knapp = dataclasses.replace(
+        echte_settings, job_timeout_seconds=0.2, poll_interval_seconds=0.01
+    )
+    client, _ = _client(
+        knapp,
+        Aufzeichnung(
+            [_antwort({"status": "IN_QUEUE"})] * 20
+            + [_antwort({"status": "IN_PROGRESS"})]
+        ),
+    )
+    begonnen = time.monotonic()
+    with pytest.raises(TransientRunPodError):
+        await client.await_result("j")
+    assert time.monotonic() - begonnen >= 0.38
+
+
+async def test_zeitbudget_beginnt_neu_wenn_der_job_zurueck_in_die_schlange_geht(
+    echte_settings: Settings,
+) -> None:
+    """Meldet RunPod nach `IN_PROGRESS` wieder `IN_QUEUE` (etwa weil ein Worker
+    wegbrach), zaehlt die Zeit in der Schlange wieder nicht mit.
+
+    Zaehlte das Budget vom ersten `IN_PROGRESS` an weiter, waere es nach 0,5 s
+    Gesamtdauer (0,1 laufend, 0,4 wartend) laengst um.
+    """
+    knapp = dataclasses.replace(
+        echte_settings, job_timeout_seconds=0.3, poll_interval_seconds=0.01
+    )
+    client, _ = _client(
+        knapp,
+        Aufzeichnung(
+            [_antwort({"status": "IN_PROGRESS"})] * 10
+            + [_antwort({"status": "IN_QUEUE"})] * 40
+            + [_antwort({"status": "IN_PROGRESS"})] * 5
+            + [_antwort({"status": "COMPLETED", "output": {"ok": True}})]
+        ),
+    )
+    antwort = await client.await_result("j")
+    assert antwort["status"] == "COMPLETED"
 
 
 async def test_abbruch_wird_durchgereicht(echte_settings: Settings) -> None:
