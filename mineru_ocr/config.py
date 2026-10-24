@@ -218,8 +218,10 @@ class Settings:
     max_pages_per_chunk: int = 20
     """Obergrenze fuer die Seitenzahl eines Chunks.
 
-    AM TARBALL NACHGEMESSEN am 09.08.2026, an den fuenf konservierten echten
-    Antworten unter `artifacts/2026-08-08-erster-tarball-lauf/`:
+    AM TARBALL NACHGEMESSEN am 09.08.2026, an den fuenf damals konservierten
+    echten Antworten unter `artifacts/2026-08-08-erster-tarball-lauf/` (vier
+    davon sind vor dem ersten Push entfernt worden, weil sie personenbezogene
+    Daten trugen, Mineroo#2; die Messung bleibt gueltig):
 
         41,5 KB je Seite — ein dichter Einzelseiter mit Tabelle und Bild
         29,5 KB je Seite — fuenf Seiten dichter Fliesstext mit Bildern

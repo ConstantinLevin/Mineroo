@@ -226,8 +226,8 @@ def test_rechenzentren_werden_gemeldet(
     `['NVIDIA RTX A5000', 'NVIDIA L4', 'NVIDIA GeForce RTX 3090', 'NVIDIA
     GeForce RTX 4090']` unter der Ueberschrift „EU fuer den Steuer-Bestand".
     Das sind GPU-Typen. Ausgerechnet die Pruefung, an der die Datenschutz-Frage
-    fuer einen personenbezogenen Steuerkorpus haengt, sah ein Feld an, das die
-    Frage nicht beantworten kann — und meldete `gemeldet`.
+    haengt, sah ein Feld an, das die Frage nicht beantworten kann — und meldete
+    `gemeldet`.
 
     Die Vorrichtung bildet den echten Schnappschuss ab (mit `gpuTypeIds`, ohne
     `dataCenterIds`). Der richtige Befund ist damit `nicht_pruefbar`, und dieser

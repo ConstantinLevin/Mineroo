@@ -1041,7 +1041,9 @@ def test_echte_tarball_antwort_wird_vollstaendig_ausgepackt(
     hergeleitet.
 
     Was die Messung umgeworfen hat, steht ausfuehrlich an `TARBALL_FIXTURE` in
-    `conftest.py`.
+    `conftest.py`. Die Aufnahme ist vor dem ersten Push entfernt (Mineroo#2);
+    der Test laeuft ausgesetzt, bis das Ticket zum MinerU-4-Vertrag eine neue
+    Aufnahme ablegt (siehe `echte_tarball_antwort`).
     """
     from mineru_ocr.assembly import unpack_response
 
@@ -1142,6 +1144,10 @@ def test_randbloecke_werden_nicht_doppelt_angehaengt(
     echte_mehrteilige_antworten: list[tuple[tuple[int, int], dict[str, Any]]],
 ) -> None:
     """`furniture=True` haengt nur an, was im Markdown WIRKLICH fehlt.
+
+    Die Aufnahmen sind vor dem ersten Push entfernt (Mineroo#2); der Test
+    laeuft ausgesetzt, bis das Ticket zum MinerU-4-Vertrag neue Aufnahmen
+    ablegt (siehe `echte_mehrteilige_antworten`).
 
     AM ECHTEN DOKUMENT GEMESSEN (08.08.2026, derselbe 12-Seiter): Die Engine
     filtert die Randklassen NICHT einheitlich. Die `header`-Bloecke (ein
@@ -1257,6 +1263,10 @@ def test_echte_tarball_antwort_traegt_zwei_content_list_generationen(
     echte_tarball_antwort: dict[str, Any],
 ) -> None:
     """DER DOPPELTREFFER IST ECHT — und er kam beim allerersten Lauf.
+
+    Die Aufnahme ist vor dem ersten Push entfernt (Mineroo#2); der Test laeuft
+    ausgesetzt, bis das Ticket zum MinerU-4-Vertrag eine neue Aufnahme ablegt
+    (siehe `echte_tarball_antwort`).
 
     Das Archiv enthaelt `doc_content_list.json` UND `doc_content_list_v2.json`,
     und beide treffen dasselbe Zuordnungsmuster (`_content_list` + `.json`). Vor

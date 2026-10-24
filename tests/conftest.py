@@ -30,7 +30,8 @@ FIXTURE_DIR = Path(__file__).resolve().parent.parent / "artifacts" / "2026-08-05
 Sie stammen aus Laeufen mit `transport: "inline"` und tragen deshalb den
 Antwort-Umschlag, `markdown`, `content_list` mit `page_idx` und `middle` — aber
 KEIN `tarball_b64`. Fuer den Tarball-Pfad, den der Betrieb faehrt, siehe
-`TARBALL_FIXTURE`.
+`LEERE_SEITE_FIXTURE` und `TARBALL_FIXTURE` (diese ist derzeit entfernt, ihre
+Tests laufen ausgesetzt).
 
 Eine Einschraenkung, die man kennen muss: ALLE SECHS SIND EINSEITIGE BILDER
 (`blackscholes__-01.png` bis `-12.png`), ihre `page_idx` sind durchweg 0. Fuer
@@ -220,6 +221,23 @@ falsch fragt — sie steht jetzt in `config.GUELTIGE_BACKENDS` und wird lokal
 geprueft, statt 177 Sekunden Kaltstart je Dokument zu kosten."""
 
 
+def _ohne_aufnahme_ueberspringen(was: str, pfade: list[Path]) -> None:
+    """Ueberspringt den anfordernden Test, wenn eine der Aufnahmen fehlt.
+
+    Die Aufnahmen, um die es geht, sind vor dem ersten Push entfernt worden,
+    weil sie personenbezogene Daten trugen (Mineroo#2). Der Grund steht in der
+    Ausgabe von `pytest -rs`, samt den fehlenden Dateinamen: Die Ersatzaufnahmen
+    muessen unter GENAU diesen Namen liegen, sonst bleibt der Test still
+    uebersprungen.
+    """
+    fehlend = [pfad.name for pfad in pfade if not pfad.exists()]
+    if fehlend:
+        pytest.skip(
+            f"{was} (personenbezogen, vor dem ersten Push entfernt, Mineroo#2); "
+            f"Ersatz kommt mit dem Ticket zum MinerU-4-Vertrag: {', '.join(fehlend)}"
+        )
+
+
 @pytest.fixture
 def echte_mehrteilige_antworten() -> list[tuple[tuple[int, int], dict[str, Any]]]:
     """Die drei echten Teilstueck-Antworten samt ihrem Seitenbereich.
@@ -227,13 +245,10 @@ def echte_mehrteilige_antworten() -> list[tuple[tuple[int, int], dict[str, Any]]
     Fehlen die Dateien (siehe `MEHRTEILIG_FIXTURE`), ist jeder Test, der diese
     Vorrichtung anfordert, uebersprungen — nicht bestanden und nicht gescheitert.
     """
-    fehlend = [pfad.name for _, pfad in MEHRTEILIG_FIXTURE if not pfad.exists()]
-    if fehlend:
-        pytest.skip(
-            "Aufnahmen der mehrteiligen Antwort fehlen (personenbezogen, vor dem "
-            "ersten Push entfernt, Mineroo#2); Ersatz kommt mit dem Ticket zum "
-            f"MinerU-4-Vertrag: {', '.join(fehlend)}"
-        )
+    _ohne_aufnahme_ueberspringen(
+        "Aufnahmen der mehrteiligen Antwort fehlen",
+        [pfad for _, pfad in MEHRTEILIG_FIXTURE],
+    )
     return [
         (bereich, json.loads(pfad.read_text()))
         for bereich, pfad in MEHRTEILIG_FIXTURE
@@ -264,12 +279,7 @@ def echte_tarball_antwort() -> dict[str, Any]:
     Fehlt die Datei (siehe `TARBALL_FIXTURE`), ist jeder Test, der diese
     Vorrichtung anfordert, uebersprungen — nicht bestanden und nicht gescheitert.
     """
-    if not TARBALL_FIXTURE.exists():
-        pytest.skip(
-            "Aufnahme der Tarball-Antwort fehlt (personenbezogen, vor dem ersten "
-            "Push entfernt, Mineroo#2); Ersatz kommt mit dem Ticket zum "
-            f"MinerU-4-Vertrag: {TARBALL_FIXTURE.name}"
-        )
+    _ohne_aufnahme_ueberspringen("Aufnahme der Tarball-Antwort fehlt", [TARBALL_FIXTURE])
     geladen: dict[str, Any] = json.loads(TARBALL_FIXTURE.read_text())
     return geladen
 

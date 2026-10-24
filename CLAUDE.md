@@ -212,8 +212,9 @@ also nicht den Produktionspfad. Alle sechs sind einseitige Bilder mit
 
 **`artifacts/2026-08-08-erster-tarball-lauf/` — Antworten mit `tarball_b64`,
 also der Produktionspfad.** Sie sind am 08./09.08.2026 in
-bezahlten Läufen aufgenommen worden und decken die Lagen ab, für die es vorher
-nichts gab:
+bezahlten Läufen aufgenommen worden und deckten die Lagen ab, für die es vorher
+nichts gab. Zwei davon sind vor dem ersten Push entfernt worden; im Repository
+liegen noch `leere_seite` und `fehlerantwort`:
 
 - `gute_nacht.tarball.response.json` — der gewöhnliche Erfolg, einseitig;
   **vor dem ersten Push entfernt**, weil der Tarball den Text einer privaten
@@ -221,8 +222,8 @@ nichts gab:
   (`test_echte_tarball_antwort_wird_vollstaendig_ausgepackt`,
   `…_traegt_zwei_content_list_generationen` in `tests/test_assembly.py`), sind
   **ausgesetzt**: Die Vorrichtung `echte_tarball_antwort` überspringt sie mit
-  Grund (`pytest -rs`), bis eine Ersatzaufnahme aus Material ohne Personenbezug
-  unter demselben Namen liegt.
+  Grund (`pytest -rs`), bis das Ticket zum MinerU-4-Vertrag eine Ersatzaufnahme
+  aus Material ohne Personenbezug unter demselben Namen ablegt.
 - `leere_seite.tarball.response.json` — die **leere Seite**. Sie hat das
   `empty`-Kriterium am echten Verhalten festgestellt und zwei Fehler ans Licht
   gebracht, die einander verdeckten.
@@ -239,11 +240,14 @@ nichts gab:
   ohne Personenbezug unter denselben Namen ablegt. Bis dahin läuft der
   Seitenversatz nur gegen erfundene Antworten.
 
-**Was weiterhin nur gegen erfundene Antworten läuft:** eine echte
+**Was nur gegen erfundene Antworten läuft:** eine echte
 **Namenskollision** zwischen Bildern zweier Teilstücke (`bild_namenskollisionen`
 in `assembly.assemble`). Die Namen sind Inhalts-Hashes, eine Kollision heißt also
 dasselbe Bild in zwei Stücken — möglich, aber in diesem Material nicht
-vorgekommen.
+vorgekommen. Bis die Ersatzaufnahmen liegen, außerdem alles, was die zwei
+entfernten Aufnahmen trugen: der gewöhnliche, nicht leere Tarball-Erfolg (Bilder,
+Layout-PDF, die zwei `content_list`-Generationen) und der Seitenversatz über
+mehrere Teilstücke.
 
 ---
 

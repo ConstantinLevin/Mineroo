@@ -28,9 +28,14 @@ Beleg, dass sie zu spät gefahren wurde. Die Vorgabe lautete: „es wird ja nich
 ohne interaktion gebaut es ist ja consigment gegen die api" (Plan 2.4).
 
 WAS OFFLINE ABGESICHERT IST, seit die Antworten dieser Läufe als Fixtures unter
-`artifacts/2026-08-08-erster-tarball-lauf/` liegen: der Tarball-Auspacker, der
-Seitenversatz über drei echte Teilstücke, das `empty`-Kriterium und die Form
-einer echten Fehlerantwort. Diese vier brauchen kein Geld mehr.
+`artifacts/2026-08-08-erster-tarball-lauf/` liegen: das `empty`-Kriterium und
+die Form einer echten Fehlerantwort. Diese zwei brauchen kein Geld mehr.
+
+Der Tarball-Auspacker und der Seitenversatz über drei echte Teilstücke waren
+ebenso abgesichert, bis Mineroo#2 die Aufnahmen dazu entfernte, weil sie
+personenbezogene Daten trugen. Ihre Tests laufen ausgesetzt (`pytest -rs`), bis
+Ersatzaufnahmen ohne Personenbezug unter denselben Namen liegen; bis dahin läuft
+dieser Weg offline nur gegen erfundene Antworten.
 """
 
 from __future__ import annotations
@@ -64,11 +69,14 @@ def test_pdf_mit_erzwungenem_schnitt() -> None:
     GEFAHREN am 08.08.2026: 12 Seiten, `max_pages_per_chunk=5`, drei Teilstuecke
     (0-4, 5-9, 10-11). Ergebnis 85 Bloecke, `page_idx` LUECKENLOS 0 bis 11.
 
-    Und die Rohdaten dazu am 09.08. als Fixture gesichert. Sie belegen die
+    Und die Rohdaten dazu am 09.08. als Fixture gesichert. Sie belegten die
     Annahme, auf der die ganze Rechnung ruht und die vorher nur am Quelltext
     behauptet war: Jedes Teilstueck traegt `page_idx` LOKAL ab 0 — gemessen
-    0-4, 0-4, 0-1. Der Weg ist damit OFFLINE abgesichert
+    0-4, 0-4, 0-1. Der Weg war damit OFFLINE abgesichert
     (`test_assembly.py::test_seitenversatz_gegen_ECHTE_mehrteilige_antworten`).
+    Seit Mineroo#2 die Aufnahmen entfernt hat, weil sie personenbezogene Daten
+    trugen, laeuft dieser Test ausgesetzt, bis Ersatzaufnahmen ohne
+    Personenbezug vorliegen.
     """
 
 

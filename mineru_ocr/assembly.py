@@ -78,7 +78,7 @@ nackten Markdown damit nachweislich schlechter als das, was heute schon auf den
 Records liegt."
 
 Die Liste ist damit keine Stilfrage, sondern die Stelle, an der ueber die
-Auffindbarkeit der Steuerakten entschieden wird."""
+Auffindbarkeit der Kennungen in Kopf- und Fusszeilen entschieden wird."""
 
 
 @dataclass(frozen=True)
@@ -804,7 +804,7 @@ Tabelleninhalt", und das sei am echten Material abgelesen. Beides stimmt nicht:
     Ein `table`-Block hat ueberhaupt kein `content`. Der GESAMTE Tabelleninhalt
     steht in `table_body`, als HTML. Gemessen etwa:
     `<table><tr><td>Current share price (S)</td><td>473p</td></tr>…</table>` —
-    also genau die Zahlen, um derentwillen ein Steuerdokument gelesen wird. Die
+    also genau die Zahlen, um derentwillen ein solches Dokument gelesen wird. Die
     frueherer Fassung lieferte fuer diesen Block die LEERE Zeichenkette.
 
     Ein `image`-Block traegt zwar `content`, aber es war in allen fuenf
@@ -1070,8 +1070,8 @@ def rendered_markdown(result: dict[str, Any]) -> str:
         `content` und bettet sie als `<details>`-Block hinter den Bildverweis —
         dokumentiertes Verhalten der multimodalen Ausgabe. Am 08.08.2026
         gemessen: zwei Mermaid-Flowcharts zu zwei Organigrammen, und eines davon
-        fuehrt einen Knoten zweimal mit demselben Anteil, erfuellt seine
-        eigene Logik also nicht.
+        fuehrt einen Knoten zweimal mit demselben Anteil, erfuellt seine eigene
+        Logik also nicht.
 
     Beides ist HIER nicht gefiltert, und das ist Absicht: Was davon unerwuenscht
     ist, weiss nur der Abnehmer. Wer auswaehlen will, hat die Bausteine — die
