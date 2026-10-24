@@ -453,6 +453,63 @@ async def test_zeitueberschreitung_ist_wiederholbar(
     assert "Wiederholbar" in str(fehler.value)
 
 
+async def test_aufgegebener_job_wird_vor_der_wiederholung_abgebrochen(
+    echte_settings: Settings,
+) -> None:
+    """Gibt das Paket einen Job nach Ablauf seines Zeitbudgets auf, geht
+    `/cancel` fuer GENAU diesen Job hinaus — und zwar bevor die Ausnahme den
+    Aufrufer erreicht, der wiederholt.
+
+    Sonst liefe der aufgegebene Job bei RunPod weiter und kostete Geld, waehrend
+    der neue Versuch dasselbe Teilstueck ein zweites Mal bezahlt.
+    """
+    knapp = dataclasses.replace(
+        echte_settings, job_timeout_seconds=0.1, poll_interval_seconds=0.01
+    )
+    client, transport = _client(
+        knapp, Aufzeichnung(_antwort({"status": "IN_PROGRESS"}))
+    )
+    with pytest.raises(TransientRunPodError):
+        await client.await_result("job-7")
+
+    abbrueche = [a for a in transport.anfragen if "/cancel/" in str(a.url)]
+    assert len(abbrueche) == 1
+    assert abbrueche[0].method == "POST"
+    assert str(abbrueche[0].url).endswith("/cancel/job-7")
+    # Der Abbruch ist die LETZTE Anfrage: nach ihm wird nichts mehr abgefragt.
+    assert transport.anfragen[-1] is abbrueche[0]
+    assert SCHLUESSEL not in str(abbrueche[0].url)
+
+
+async def test_misslungener_abbruch_verdeckt_die_zeitueberschreitung_nicht(
+    echte_settings: Settings,
+) -> None:
+    """Scheitert das `/cancel` selbst, kommt trotzdem die wiederholbare
+    Zeitueberschreitung heraus — mit dem Grund des Abbruchs in der Meldung.
+
+    Der Abbruch ist ein Versuch, Geld zu sparen. Wuerde sein Fehler den Grund
+    verdecken, ginge die Wiedervorlage verloren oder liefe unter einem falschen
+    Fehlertyp (ein 401 wuerde den Job endgueltig scheitern lassen).
+    """
+
+    def antwort(anfrage: httpx.Request) -> httpx.Response:
+        if "/cancel/" in str(anfrage.url):
+            return httpx.Response(401, text="kein Zugang")
+        return _antwort({"status": "IN_PROGRESS"})
+
+    knapp = dataclasses.replace(
+        echte_settings, job_timeout_seconds=0.1, poll_interval_seconds=0.01
+    )
+    client = RunPodClient(
+        knapp, http=httpx.AsyncClient(transport=httpx.MockTransport(antwort))
+    )
+    with pytest.raises(TransientRunPodError) as fehler:
+        await client.await_result("job-7")
+
+    assert "Wiederholbar" in str(fehler.value)
+    assert "abbrechen" in str(fehler.value)
+
+
 async def test_zeitbudget_laeuft_nicht_in_der_warteschlange(
     echte_settings: Settings,
 ) -> None:

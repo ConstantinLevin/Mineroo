@@ -554,6 +554,31 @@ class RunPodClient:
             f"Job {job_id} abbrechen",
         )
 
+    async def _abbrechen_versuchen(self, job_id: str) -> str:
+        """Bricht einen aufgegebenen Job ab, ohne je zu werfen, und sagt, was geschah.
+
+        Ein Abbruch ist ein Versuch, Geld zu sparen, und darf nie den Grund
+        verdecken, aus dem abgebrochen wird. Wuerde sein Fehler die
+        Zeitueberschreitung ersetzen, ginge die Wiedervorlage verloren oder liefe
+        unter einem falschen Fehlertyp: Ein 401 beim Abbruch liesse den Job
+        endgueltig scheitern, obwohl er nur zu lange lief.
+
+        Nur `Exception` wird gefangen. `asyncio.CancelledError` (der Daemon faehrt
+        herunter, waehrend der Abbruch laeuft) geht durch.
+
+        Returns:
+            Ein Satz fuer die Fehlermeldung: dass der Abbruch hinausging, oder
+            dass er misslang und der Job weiterlaufen und kosten kann.
+        """
+        try:
+            await self.cancel(job_id)
+        except Exception as fehler:  # noqa: BLE001
+            return (
+                f"Der Abbruch bei RunPod (/cancel) misslang ({type(fehler).__name__}: "
+                f"{fehler}); der Job kann weiterlaufen und weiter Geld kosten."
+            )
+        return "Der Job wurde bei RunPod abgebrochen (/cancel)."
+
     async def await_result(self, job_id: str) -> dict[str, Any]:
         """Fragt einen Job ab, bis er terminal ist, und gibt die letzte Antwort zurueck.
 
@@ -589,7 +614,9 @@ class RunPodClient:
         Raises:
             TransientRunPodError: `settings.job_timeout_seconds` ab
                 `IN_PROGRESS` ueberschritten. Wiederholbar: Ein Worker kann
-                haengen.
+                haengen. Vorher ging `/cancel` fuer genau diesen Job hinaus; ein
+                misslungener Abbruch steht in der Meldung und aendert nichts am
+                Fehlertyp.
             ResultLostError: siehe `status`. Ebenfalls wiederholbar — der Job
                 wird dann neu geschickt, nicht das Dokument aufgegeben.
             asyncio.CancelledError: Der Daemon faehrt herunter. Wird NICHT
@@ -610,11 +637,16 @@ class RunPodClient:
 
         while True:
             if ende is not None and time.monotonic() >= ende:
+                # Das Paket gibt den Job auf. Der Abbruch geht hinaus, BEVOR die
+                # Ausnahme den Aufrufer erreicht, der wiederholt: Sonst liefe der
+                # aufgegebene Job weiter und kostete Geld, waehrend der neue
+                # Versuch dasselbe Teilstueck ein zweites Mal bezahlt.
+                abbruch = await self._abbrechen_versuchen(job_id)
                 raise TransientRunPodError(
                     f"Job {job_id} wurde in "
                     f"{self._settings.job_timeout_seconds} Sekunden ab "
                     f"IN_PROGRESS nicht terminal. Wiederholbar: Ein Worker kann "
-                    f"haengen. Letzter Fehler beim Abfragen: "
+                    f"haengen. {abbruch} Letzter Fehler beim Abfragen: "
                     f"{letzter_fehler}"
                 )
 
