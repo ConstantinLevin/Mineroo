@@ -14,9 +14,11 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
+import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 import psycopg
 import pytest
 from procrastinate.jobs import Job
@@ -24,6 +26,7 @@ from procrastinate.jobs import Job
 from mineru_ocr import config, daemon, db, tasks
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, Phase, derive_status, get_document
+from mineru_ocr.runpod import RunPodClient
 
 pytestmark = pytest.mark.db
 
@@ -930,3 +933,173 @@ def test_zwei_prozess_rueckfall_ist_wirklich_vorbereitet(
     )
     assert len(einzeln) == 1
     assert einzeln[0]["queues"] == [config.QUEUE_MAINTENANCE]
+
+
+# --------------------------------------------------------------------------
+# Abbruch bei RunPod — aufgegebene und abgebrochene Jobs kosten nichts mehr
+# --------------------------------------------------------------------------
+
+
+class ErsatzRunPodHttp:
+    """RunPod als HTTP-Gegenstelle: Hier endet das Netz, nicht am Python-Objekt.
+
+    Anders als `ProtokollRunPod` ersetzt dieses Doppel nicht den ganzen Zugang,
+    sondern nur den Transport unter einem ECHTEN `RunPodClient`. Nur so laeuft die
+    Zeitbudget-Logik der Warteschleife mit und ist durch den echten Daemon
+    pruefbar. Es schreibt jede Anfrage mit; `verlauf` ist die Reihenfolge, in der
+    RunPod sie sah.
+    """
+
+    def __init__(self, status_je_abfrage: Any) -> None:
+        # Bekommt (Job-Kennung, laufende Nummer der Abfrage dieses Jobs,
+        # Sekunden seit der ersten Abfrage) und liefert die Statusantwort.
+        self._status = status_je_abfrage
+        self.verlauf: list[tuple[str, str]] = []
+        self._jobs = 0
+        self._abfragen: dict[str, int] = {}
+        self._erste_abfrage: dict[str, float] = {}
+
+    def __call__(self, anfrage: Any) -> Any:
+        pfad = anfrage.url.path
+        if anfrage.url.host == "api.runpod.io":
+            text = anfrage.content.decode()
+            if "imageName" in text:
+                return httpx.Response(200, json={"data": {"myself": {"endpoints": []}}})
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "myself": {
+                            "clientBalance": 5.0,
+                            "currentSpendPerHr": 0.0,
+                            "spendLimit": 80,
+                        }
+                    }
+                },
+            )
+        if pfad.endswith("/run"):
+            self._jobs += 1
+            kennung = f"job-{self._jobs}"
+            self.verlauf.append(("run", kennung))
+            return httpx.Response(200, json={"id": kennung, "status": "IN_QUEUE"})
+        if "/cancel/" in pfad:
+            kennung = pfad.rsplit("/", 1)[1]
+            self.verlauf.append(("cancel", kennung))
+            return httpx.Response(200, json={"id": kennung, "status": "CANCELLED"})
+        kennung = pfad.rsplit("/", 1)[1]
+        self.verlauf.append(("status", kennung))
+        nummer = self._abfragen.get(kennung, 0)
+        self._abfragen[kennung] = nummer + 1
+        erste = self._erste_abfrage.setdefault(kennung, time.monotonic())
+        antwort: dict[str, Any] = self._status(
+            kennung, nummer, time.monotonic() - erste
+        )
+        return httpx.Response(200, json=antwort)
+
+    def ereignisse(self, art: str) -> list[str]:
+        return [kennung for a, kennung in self.verlauf if a == art]
+
+
+def _runpod_ueber_http(
+    int_settings: Settings, gegenstelle: ErsatzRunPodHttp
+) -> Any:
+    echte = dataclasses.replace(
+        int_settings, api_key="erfundener-schluessel-nicht-echt", endpoint_id="l79lebhinxaqjz"
+    )
+    return RunPodClient(
+        echte,
+        http=httpx.AsyncClient(transport=httpx.MockTransport(gegenstelle)),
+    )
+
+
+async def test_herunterfahren_bricht_den_laufenden_runpod_job_ab(
+    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+) -> None:
+    """Faehrt der Daemon herunter, waehrend ein Job bei RunPod laeuft, geht
+    `/cancel` fuer genau diesen Job hinaus, bevor der Daemon zurueckkehrt.
+
+    Sonst liefe der Job bei RunPod weiter und kostete Geld, ohne dass ihn noch
+    jemand abholt. Der ECHTE Daemon laeuft, nur RunPod ist ersetzt.
+    """
+    tasks.configure(int_settings, for_worker=False)
+    sha = _anlegen(db_conn, tmp_path, "abbruch.png")
+    tasks.defer_document(sha)
+    gegenstelle = ErsatzRunPodHttp(lambda job, nr, sek: {"id": job, "status": "IN_PROGRESS"})
+    runpod = _runpod_ueber_http(int_settings, gegenstelle)
+
+    async def job_laeuft() -> bool:
+        return "job-1" in gegenstelle.ereignisse("status")
+
+    try:
+        await _daemon_laufen_lassen(int_settings, runpod, bis=job_laeuft)
+    finally:
+        await runpod.aclose()
+
+    assert gegenstelle.ereignisse("cancel") == ["job-1"]
+    # Der Abbruch kam NACH dem Absenden und nach mindestens einer Abfrage.
+    assert gegenstelle.verlauf.index(("cancel", "job-1")) > gegenstelle.verlauf.index(
+        ("run", "job-1")
+    )
+
+
+async def test_aufgegebener_job_wird_vor_der_wiederholung_abgebrochen_durch_den_daemon(
+    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+) -> None:
+    """Reisst ein Job sein Zeitbudget, geht `/cancel` fuer ihn hinaus, BEVOR der
+    zweite Versuch ein neues `/run` schickt."""
+    tasks.configure(int_settings, for_worker=False)
+    sha = _anlegen(db_conn, tmp_path, "budget.png")
+    tasks.defer_document(sha)
+    knapp = dataclasses.replace(int_settings, job_timeout_seconds=0.3)
+    gegenstelle = ErsatzRunPodHttp(lambda job, nr, sek: {"id": job, "status": "IN_PROGRESS"})
+    runpod = _runpod_ueber_http(knapp, gegenstelle)
+
+    async def zweiter_versuch_hat_gesendet() -> bool:
+        return len(gegenstelle.ereignisse("run")) >= 2
+
+    try:
+        await _daemon_laufen_lassen(int_settings, runpod, bis=zweiter_versuch_hat_gesendet)
+    finally:
+        await runpod.aclose()
+
+    verlauf = gegenstelle.verlauf
+    assert ("cancel", "job-1") in verlauf
+    assert verlauf.index(("cancel", "job-1")) < verlauf.index(("run", "job-2"))
+
+
+async def test_lange_in_der_warteschlange_ist_kein_grund_aufzugeben(
+    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+) -> None:
+    """Ein Job, der dreimal laenger in der Schlange steht, als das Zeitbudget
+    erlaubt, wird nicht abgebrochen und nicht neu abgesendet, sondern fertig.
+
+    Ohne das stuende der Job hinter einem grossen Lauf in einer Schleife aus
+    Abbruch und Neu-Einreihen, und jeder Durchgang kostete neu.
+    """
+    tasks.configure(int_settings, for_worker=False)
+    sha = _anlegen(db_conn, tmp_path, "schlange.png")
+    tasks.defer_document(sha)
+    knapp = dataclasses.replace(int_settings, job_timeout_seconds=0.3)
+
+    def status(job: str, nr: int, sekunden: float) -> dict[str, Any]:
+        if sekunden < 0.9:
+            return {"id": job, "status": "IN_QUEUE"}
+        return {**_fertig(), "id": job}
+
+    gegenstelle = ErsatzRunPodHttp(status)
+    runpod = _runpod_ueber_http(knapp, gegenstelle)
+
+    async def fertig() -> bool:
+        zeile = get_document(db_conn, sha)
+        return zeile is not None and zeile.status.is_terminal
+
+    try:
+        await _daemon_laufen_lassen(int_settings, runpod, bis=fertig)
+    finally:
+        await runpod.aclose()
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    assert gegenstelle.ereignisse("run") == ["job-1"]
+    assert gegenstelle.ereignisse("cancel") == []
