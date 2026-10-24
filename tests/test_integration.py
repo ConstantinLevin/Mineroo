@@ -15,15 +15,21 @@ import asyncio
 import dataclasses
 import hashlib
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import httpx
+import procrastinate
+import procrastinate.exceptions
 import psycopg
 import pytest
+from procrastinate import utils
 from procrastinate.jobs import Job
+from psycopg_pool import NullConnectionPool
 
 from mineru_ocr import config, daemon, db, tasks
+from mineru_ocr.client import OCRClient
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, Phase, derive_status, get_document
 from mineru_ocr.runpod import RunPodClient
@@ -55,6 +61,40 @@ def int_settings(settings: Settings, _test_datenbank: str) -> Settings:
         stalled_check_cron="* * * * *",
         ocr_concurrency=2,
     )
+
+
+@dataclasses.dataclass
+class Erzeuger:
+    """Die einreihende Seite: eine App wie die des Clients, auf einer Verbindung."""
+
+    app: procrastinate.App
+    conn: psycopg.Connection[Any]
+
+    def einreihen(self, sha: str) -> bool:
+        """Reiht ein Dokument ein, wie der Client es tut (`connection=`)."""
+        return tasks.enqueue_document(self.app, self.conn, sha)
+
+
+@pytest.fixture
+def erzeuger(
+    db_conn: psycopg.Connection[Any], int_settings: Settings
+) -> Iterator[Erzeuger]:
+    """Die App des Clients, gebaut und geoeffnet wie in `OCRClient.__enter__`.
+
+    Im Betrieb sind Daemon und Client ZWEI PROZESSE mit je eigener App. Im Test
+    teilen sie sich den Prozess, aber nicht die App: Der Daemon baut seine in
+    `daemon.run`, diese hier gehoert dem Test. Kein Zugang wird umgehaengt.
+    """
+    pool: NullConnectionPool[psycopg.Connection[Any]] = NullConnectionPool(
+        int_settings.db_dsn, max_size=1, num_workers=1, open=False
+    )
+    pool.open()
+    app = tasks.build_client_app(int_settings).open(pool)
+    try:
+        yield Erzeuger(app, db_conn)
+    finally:
+        app.close()
+        pool.close()
 
 
 class ProtokollRunPod:
@@ -191,13 +231,6 @@ async def _daemon_laufen_lassen(
                 await lauf
     finally:
         tasks.worker_context_resources = echte_mittel
-        # Den Produzenten-Zugang wiederherstellen. Im Betrieb sind Daemon und
-        # Produzent ZWEI PROZESSE mit je eigener App; im Test teilen sie sich
-        # die des Moduls, und `daemon.run` haengt dort einen asynchronen Zugang
-        # ein. Ohne diese Zeile fiele der naechste `defer_document` in genau die
-        # Fehlermeldung, die es dafuer gibt — richtig, aber hier nicht der
-        # gepruefte Sachverhalt.
-        tasks.configure(int_settings, for_worker=False)
 
 
 # --------------------------------------------------------------------------
@@ -206,16 +239,15 @@ async def _daemon_laufen_lassen(
 
 
 async def test_dokument_laeuft_vollstaendig_durch(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
 ) -> None:
     """Der Grundfall, der alle anderen traegt: einreihen, Daemon laeuft, fertig.
 
     Geprueft werden BEIDE Buecher — die Zeile steht auf `done`, der Job auf
     `succeeded`, und der abgeleitete Zustand sagt TERMINAL.
     """
-    tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "a.png")
-    assert tasks.defer_document(sha) is True
+    assert erzeuger.einreihen(sha) is True
 
     async def fertig() -> bool:
         zeile = get_document(db_conn, sha)
@@ -236,12 +268,11 @@ async def test_dokument_laeuft_vollstaendig_durch(
 
 
 async def test_nicht_wiederholbarer_fehler_im_ersten_versuch(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
 ) -> None:
     """(b) Zeile sofort `failed`, juengster Job `failed` — kein Retry-Karussell."""
-    tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "b.png")
-    tasks.defer_document(sha)
+    erzeuger.einreihen(sha)
 
     runpod = ProtokollRunPod(lambda nr: {"id": "j", "status": "FAILED"})
 
@@ -271,7 +302,7 @@ async def test_nicht_wiederholbarer_fehler_im_ersten_versuch(
 
 
 async def test_erschoepfte_versuche_enden_failed(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
 ) -> None:
     """(c) Nach den erlaubten voruebergehenden Fehlern: Zeile `failed`.
 
@@ -299,9 +330,8 @@ async def test_erschoepfte_versuche_enden_failed(
     BEZAHLTEN Teilstuecken, die ein Schreibvorgang von der Task-Ebene aus nicht
     haette.
     """
-    tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "c.png")
-    tasks.defer_document(sha)
+    erzeuger.einreihen(sha)
 
     # TIMED_OUT ist wiederholbar. Nach dem Budget muss Schluss sein.
     runpod = ProtokollRunPod(lambda nr: {"id": "j", "status": "TIMED_OUT"})
@@ -334,7 +364,7 @@ async def test_erschoepfte_versuche_enden_failed(
 
 
 async def test_absturz_mitten_im_dokument_heilt_durch_den_waechter(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
 ) -> None:
     """(a) Der Prozess stirbt HART mitten im Dokument — der Waechter legt neu vor.
 
@@ -357,9 +387,8 @@ async def test_absturz_mitten_im_dokument_heilt_durch_den_waechter(
     hinterlaesst: ein Job auf `doing`, dessen Worker-Zeile einen alten Herzschlag
     traegt. Genau das sieht der Waechter, und genau daran entscheidet er.
     """
-    tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "a.png")
-    tasks.defer_document(sha)
+    erzeuger.einreihen(sha)
 
     # Den Zustand nach einem harten Tod herstellen: Der Job ist `doing`, der
     # Worker, der ihn hielt, meldet sich seit zwei Minuten nicht mehr.
@@ -404,13 +433,12 @@ async def test_absturz_mitten_im_dokument_heilt_durch_den_waechter(
 
 
 async def test_doppeltes_einreihen_wird_abgefangen(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
 ) -> None:
     """(f) Das zweite Einreihen ergibt „laeuft schon" statt eines zweiten Jobs."""
-    tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "f.png")
-    assert tasks.defer_document(sha) is True
-    assert tasks.defer_document(sha) is False
+    assert erzeuger.einreihen(sha) is True
+    assert erzeuger.einreihen(sha) is False
     assert len(_jobs_zu(db_conn, sha)) == 1
 
 
@@ -418,6 +446,7 @@ async def test_retry_von_hand_verarbeitet_wirklich_neu(
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],
     int_settings: Settings,
+    erzeuger: Erzeuger,
     tmp_path: Path,
 ) -> None:
     """(g) `retry_job_by_id` setzt den Job auf `todo`, die Ereignis-Historie
@@ -427,9 +456,8 @@ async def test_retry_von_hand_verarbeitet_wirklich_neu(
     Genau diese letzte Zusicherung faengt einen Terminal-Guard, der faelschlich
     `failed` deckt. Ohne sie saehe ein Nichts-Tun wie ein Erfolg aus.
     """
-    tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "g.png")
-    tasks.defer_document(sha)
+    erzeuger.einreihen(sha)
 
     # Erster Durchlauf: endgueltiger Fehler.
     scheiternd = ProtokollRunPod(lambda nr: {"id": "j", "status": "FAILED"})
@@ -448,18 +476,14 @@ async def test_retry_von_hand_verarbeitet_wirklich_neu(
     assert ereignisse_vorher is not None
 
     # Retry von Hand — Procrastinates eigenes Bordmittel.
-    app = tasks.configure(int_settings, for_worker=True)
-    async with app.open_async():
-        from procrastinate import utils
-
-        kennung = jobs[-1].id
-        # `Job.id` ist als optional deklariert (ein noch nicht eingereihter Job
-        # hat keine). Ein aus der Datenbank gelesener hat immer eine — das wird
-        # hier festgestellt statt unterdrueckt.
-        assert kennung is not None
-        await app.job_manager.retry_job_by_id_async(
-            kennung, utils.utcnow(), jobs[-1].priority, jobs[-1].queue, jobs[-1].lock
-        )
+    kennung = jobs[-1].id
+    # `Job.id` ist als optional deklariert (ein noch nicht eingereihter Job
+    # hat keine). Ein aus der Datenbank gelesener hat immer eine — das wird
+    # hier festgestellt statt unterdrueckt.
+    assert kennung is not None
+    erzeuger.app.job_manager.retry_job_by_id(
+        kennung, utils.utcnow(), jobs[-1].priority, jobs[-1].queue, jobs[-1].lock
+    )
 
     nach_retry = _jobs_zu(db_conn, sha)
     assert nach_retry[-1].status == "todo"
@@ -494,7 +518,7 @@ async def test_retry_von_hand_verarbeitet_wirklich_neu(
 
 
 async def test_wartungs_queue_verhungert_nicht(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
 ) -> None:
     """(h) Alle OCR-Plaetze blockiert, der Waechter auf der Wartungs-Queue laeuft
     trotzdem.
@@ -511,10 +535,9 @@ async def test_wartungs_queue_verhungert_nicht(
     laeuft periodisch jede Minute — geprueft wird, dass ueberhaupt ein
     Wartungs-Job entsteht und durchlaeuft, waehrend die OCR-Queue steht.
     """
-    tasks.configure(int_settings, for_worker=False)
     for nr in range(int_settings.ocr_concurrency):
         sha = _anlegen(db_conn, tmp_path, f"h{nr}.png")
-        tasks.defer_document(sha)
+        erzeuger.einreihen(sha)
 
     haengend = ProtokollRunPod()
     haengend.freigabe = asyncio.Event()  # wird nie gesetzt: die Plaetze bleiben belegt
@@ -559,15 +582,14 @@ async def test_wartungs_queue_verhungert_nicht(
 
 
 async def test_abbruch_beim_herunterfahren_heilt_durch_neu_einreihen(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
 ) -> None:
     """(e) Job `aborted` (endgueltig, KEIN automatischer Retry — und
     `retry_job_by_id` nimmt `aborted` nicht an, Feature-Verifikation Punkt 19),
     Zeile bleibt `new`, abgeleiteter Zustand zeigt den beendeten Job; erneutes
     Einreihen laesst das Dokument durchlaufen und es endet `done`."""
-    tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "e.png")
-    tasks.defer_document(sha)
+    erzeuger.einreihen(sha)
 
     haengend = ProtokollRunPod()
     haengend.freigabe = asyncio.Event()
@@ -587,18 +609,13 @@ async def test_abbruch_beim_herunterfahren_heilt_durch_neu_einreihen(
     # Und `retry_job_by_id` nimmt einen `aborted`-Job NICHT an — der Heilungsweg
     # ist das erneute Einreihen.
     if jobs[-1].status == "aborted":
-        app = tasks.configure(int_settings, for_worker=True)
-        async with app.open_async():
-            from procrastinate import utils
-
-            kennung = jobs[-1].id
-            assert kennung is not None
-            with pytest.raises(Exception):
-                await app.job_manager.retry_job_by_id_async(kennung, utils.utcnow())
-        tasks.configure(int_settings, for_worker=False)
+        kennung = jobs[-1].id
+        assert kennung is not None
+        with pytest.raises(procrastinate.exceptions.ProcrastinateException):
+            erzeuger.app.job_manager.retry_job_by_id(kennung, utils.utcnow())
 
     # Erneutes Einreihen — und dann laeuft es durch.
-    tasks.defer_document(sha)
+    erzeuger.einreihen(sha)
     gelingend = ProtokollRunPod(lambda nr: _fertig("Nach dem Neustart"))
 
     async def fertig() -> bool:
@@ -616,6 +633,7 @@ async def test_duplikat_waehrend_der_verarbeitung_ist_ein_nichts_tun(
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],
     int_settings: Settings,
+    erzeuger: Erzeuger,
     tmp_path: Path,
 ) -> None:
     """(i) Ein waehrend `doing` nachgeschobenes Duplikat wird per `lock`
@@ -632,9 +650,8 @@ async def test_duplikat_waehrend_der_verarbeitung_ist_ein_nichts_tun(
     ein zweiter Job eingereiht. Weil die Zeile dann `done` ist, muss der zweite
     Job am Guard enden, ohne RunPod auch nur anzufassen.
     """
-    tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "i.png")
-    tasks.defer_document(sha)
+    erzeuger.einreihen(sha)
 
     erster = ProtokollRunPod()
 
@@ -646,7 +663,7 @@ async def test_duplikat_waehrend_der_verarbeitung_ist_ein_nichts_tun(
     assert erster.aufrufe == 1
 
     # Jetzt das Duplikat.
-    assert tasks.defer_document(sha) is True
+    assert erzeuger.einreihen(sha) is True
     zweiter = ProtokollRunPod()
 
     async def zweiter_job_fertig() -> bool:
@@ -663,7 +680,7 @@ async def test_duplikat_waehrend_der_verarbeitung_ist_ein_nichts_tun(
 
 
 async def test_jede_wiedervorlage_erhoeht_den_versuchszaehler(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
 ) -> None:
     """(j) Bestaetigt am laufenden System, was am SQL-Schema belegt ist
     (Feature-Verifikation Punkt 19): Jedes Zuruecksetzen auf `todo` — durch den
@@ -673,9 +690,8 @@ async def test_jede_wiedervorlage_erhoeht_den_versuchszaehler(
     Das Ergebnis steht als Kommentar an der Wiederholungs-Strategie, damit es
     niemand fuer einen Fehler haelt.
     """
-    tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "j.png")
-    tasks.defer_document(sha)
+    erzeuger.einreihen(sha)
 
     runpod = ProtokollRunPod(lambda nr: {"id": "j", "status": "TIMED_OUT"})
 
@@ -769,7 +785,7 @@ async def test_daemon_faehrt_sauber_herunter(
 
 
 async def test_ohne_daemon_passiert_nichts_und_das_wird_gesagt(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
 ) -> None:
     """Ohne laufenden Daemon stapeln sich Jobs, und der abgeleitete Zustand
     sagt es.
@@ -779,7 +795,6 @@ async def test_ohne_daemon_passiert_nichts_und_das_wird_gesagt(
     ausdruecklich zwischen „nie eingereiht" und „wartet" — und die
     Worker-Lebenszeichen sagen, ob ueberhaupt jemand da ist.
     """
-    tasks.configure(int_settings, for_worker=False)
     sha = _anlegen(db_conn, tmp_path, "leer.png")
 
     zeile = get_document(db_conn, sha)
@@ -787,10 +802,109 @@ async def test_ohne_daemon_passiert_nichts_und_das_wird_gesagt(
     # Vor dem Einreihen: registriert, nie eingereiht.
     assert derive_status(zeile, _jobs_zu(db_conn, sha)).phase is Phase.REGISTERED
 
-    tasks.defer_document(sha)
+    erzeuger.einreihen(sha)
     # Danach: wartet — und niemand arbeitet.
     assert derive_status(zeile, _jobs_zu(db_conn, sha)).phase is Phase.WAITING
     assert db.worker_heartbeats(db_conn) == []
+
+
+# --------------------------------------------------------------------------
+# Eine App je Prozess
+# --------------------------------------------------------------------------
+
+
+async def test_vom_client_eingereihter_job_wird_vom_daemon_abgearbeitet(
+    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+) -> None:
+    """Der ganze Weg ueber den echten `OCRClient`: Er reiht per Namen ein (eigene
+    App, eigene Verbindung), der Job liegt in der Queue, die der Daemon liest, und
+    der Daemon arbeitet ihn ab.
+
+    Beide Seiten sind hier zwei Apps im selben Prozess — im Betrieb sind es zwei
+    Prozesse. Gerade deshalb prueft der Test, dass sie sich nur ueber die
+    Datenbank finden: Name und Queue des Jobs muessen die sein, unter denen der
+    Daemon seinen Task angemeldet hat.
+    """
+    sha = _anlegen(db_conn, tmp_path, "client.png")
+    with OCRClient(
+        db_dsn=int_settings.db_dsn,
+        api_key="erfunden",
+        preflight=False,
+        strict=False,
+    ) as klient:
+        klient.ocr_start(klient.get(sha))
+
+        jobs = _jobs_zu(db_conn, sha)
+        assert len(jobs) == 1
+        assert jobs[0].queue == config.QUEUE_OCR
+        assert jobs[0].task_name == config.TASK_OCR_DOCUMENT
+
+        async def fertig() -> bool:
+            zeile = get_document(db_conn, sha)
+            return zeile is not None and zeile.status.is_terminal
+
+        await _daemon_laufen_lassen(int_settings, ProtokollRunPod(), bis=fertig)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    assert _jobs_zu(db_conn, sha)[0].status == "succeeded"
+
+
+async def test_daemon_prozess_haelt_genau_eine_app(
+    db_conn: psycopg.Connection[Any],
+    int_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Waehrend `daemon.run` laeuft, entsteht genau EINE Procrastinate-App.
+
+    Jede weitere App im Daemon-Prozess benennt Procrastinates eingebauten Task
+    `remove_old_jobs` um. Gezaehlt werden die Aufrufe des Konstruktors, nicht die
+    Tasks einer App: Eine zweite App ohne angemeldete Tasks fiele sonst durch.
+    """
+    gebaut: list[procrastinate.App] = []
+    echt = procrastinate.App.__init__
+
+    def zaehlend(self: procrastinate.App, *args: Any, **kwargs: Any) -> None:
+        gebaut.append(self)
+        echt(self, *args, **kwargs)
+
+    monkeypatch.setattr(procrastinate.App, "__init__", zaehlend)
+
+    async def daemon_lebt() -> bool:
+        return bool(db.worker_heartbeats(db_conn))
+
+    await _daemon_laufen_lassen(int_settings, ProtokollRunPod(), bis=daemon_lebt)
+
+    assert len(gebaut) == 1
+
+
+async def test_pool_des_daemons_ersetzt_eine_beendete_verbindung(
+    db_conn: psycopg.Connection[Any], int_settings: Settings
+) -> None:
+    """Nach einem Postgres-Neustart schreibt der Daemon nicht ueber eine tote
+    Verbindung: Der Pool prueft beim Ausleihen und ersetzt sie.
+
+    Der Neustart wird nachgestellt, indem der Server die Verbindung beendet, die
+    der Pool gerade verwahrt. Ohne die Pruefung gaebe der Pool genau diese
+    Verbindung heraus, und der erste Zugriff darauf scheiterte.
+    """
+    mittel = tasks.worker_context_resources(int_settings)
+    pool = mittel["pool"]
+    await pool.open(wait=True)
+    try:
+        async with pool.connection() as verbindung:
+            alt = verbindung.info.backend_pid
+        db_conn.execute("SELECT pg_terminate_backend(%s)", (alt,))
+        await asyncio.sleep(0.3)  # der Server braucht einen Augenblick
+
+        async with pool.connection() as verbindung:
+            zeile = await (await verbindung.execute("SELECT 1")).fetchone()
+            assert zeile == (1,)
+            assert verbindung.info.backend_pid != alt
+    finally:
+        await pool.close()
+        await mittel["runpod"].aclose()
 
 
 # --------------------------------------------------------------------------
@@ -851,6 +965,14 @@ async def test_gestorbener_worker_beendet_den_daemon_mit_fehler(
 
     Geprueft, indem `run_worker_async` beim zweiten Aufruf wirft; der erste
     Worker laeuft dann noch, der zweite nicht.
+
+    Der zweite stirbt ERST, wenn der erste angemeldet ist (sein Lebenszeichen
+    steht in der Datenbank). Stuerbe er im selben Augenblick, in dem der erste
+    seine allerersten Abfragen stellt, trafe das Abbrechen des ersten genau in die
+    Pruefung einer Pool-Verbindung — und die verschluckt psycopg_pool 3.3.0
+    (`CLIENT_EXCEPTIONS` enthaelt `CancelledError`): Der Worker liefe weiter, das
+    Herunterfahren haengte. Das ist ein Zeitfenster von Millisekunden und kein
+    Fall, den dieser Test prueft; siehe `tasks.worker_context_resources`.
     """
     from procrastinate import App
 
@@ -860,6 +982,8 @@ async def test_gestorbener_worker_beendet_den_daemon_mit_fehler(
     async def manchmal_kaputt(self: Any, **optionen: Any) -> None:
         zaehler["n"] += 1
         if zaehler["n"] == 2:
+            while not db.worker_heartbeats(db_conn):
+                await asyncio.sleep(0.02)
             raise RuntimeError("dieser Worker ist gestorben")
         await echt(self, **optionen)
 

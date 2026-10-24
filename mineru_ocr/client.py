@@ -24,9 +24,11 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Final, TypeVar
 
-import psycopg
+import procrastinate
 import procrastinate.exceptions
+import psycopg
 from procrastinate import utils
+from psycopg_pool import NullConnectionPool
 
 from . import db, tasks
 from .config import Settings
@@ -69,9 +71,10 @@ geprueft, weil ein Vergleich auf Gleichheit dort eine Zahl erfinden muesste."""
 def _synchron_ausfuehren(arbeit: Coroutine[Any, Any, T]) -> T:
     """Fuehrt eine Koroutine aus synchronem Code aus — auch aus einer Schleife.
 
-    Der Client ist synchron, mehrere seiner Auskuenfte kommen aber aus
-    asynchronen Quellen (RunPod, Procrastinates Job-Verwaltung). Der uebliche
-    Weg dafuer ist `asyncio.run`.
+    Der Client ist synchron, die Auskuenfte von RunPod kommen aber aus einer
+    asynchronen Quelle. Der uebliche Weg dafuer ist `asyncio.run`. (Procrastinates
+    Job-Verwaltung braucht diese Bruecke nicht: Der Client haelt dafuer eine
+    synchrone App.)
 
     DER FALL, DER DABEI BRICHT, und der beim Bauen aufgefallen ist: `asyncio.run`
     verweigert die Arbeit, wenn im selben Faden schon eine Ereignisschleife
@@ -167,6 +170,16 @@ class OCRClient:
     ausgegeben hat, halten diese Verbindung — sie nach dem Verlassen weiter zu
     benutzen ist ein Fehler.
 
+    Dazu haelt er seine EIGENE Procrastinate-App (`tasks.build_client_app`, mit
+    synchronem Zugang) und einen Pool, den er beim Betreten anlegt und beim
+    Verlassen schliesst — `app.close()` schliesst einen uebergebenen Pool nicht.
+    Der Pool ist ein `NullConnectionPool` ohne stehende Verbindungen: Zwischen
+    zwei Aufrufen haelt der Client keine Procrastinate-Verbindung. Das Einreihen
+    laeuft ueber seine eigene Verbindung (`connection=`), die Abfragen
+    (`list_jobs`, `retry_job_by_id`, `list_tasks`) ueber je eine kurzlebige aus
+    dem Pool. Je Agent bleiben so ein bis zwei Verbindungen: die des Clients und,
+    waehrend er wartet, die Warte-Verbindung.
+
     Nebenlaeufigkeit: Ein Client gehoert einem Aufrufer, synchron. Wer aus
     mehreren Programmteilen zugreift, nimmt mehrere Clients; die Datenbank
     darunter vertraegt beliebig viele.
@@ -209,17 +222,37 @@ class OCRClient:
         )
         self._preflight_gewuenscht = preflight
         self._conn: psycopg.Connection[Any] | None = None
+        self._app: procrastinate.App | None = None
+        self._pool: NullConnectionPool[psycopg.Connection[Any]] | None = None
         self._letzter_preflight: dict[str, Any] | None = None
 
     def __enter__(self) -> OCRClient:
-        """Oeffnet die Verbindung und fuehrt den Preflight aus."""
-        self._conn = db.connect(self._settings.db_dsn)
-        # Der Produzenten-Zugang: synchron, und er kann NUR einreihen. Ein
-        # Produzent, der versehentlich einen Worker startet, waere ein zweiter
-        # Exekutor, von dem niemand weiss.
-        tasks.configure(self._settings, for_worker=False)
-        if self._preflight_gewuenscht:
-            self._letzter_preflight = self.preflight()
+        """Oeffnet Verbindung, Pool und App und fuehrt den Preflight aus.
+
+        Scheitert eines davon, wird wieder zugemacht, was schon offen ist: Ein
+        `with` ruft `__exit__` nicht, wenn schon `__enter__` wirft.
+        """
+        try:
+            self._conn = db.connect(self._settings.db_dsn)
+            # Ein Pool OHNE stehende Verbindungen (`NullConnectionPool`,
+            # `max_size=1`, ein Hintergrund-Faden): Er hat nichts auf Vorrat und
+            # leiht fuer jede Abfrage eine kurzlebige Verbindung. Der Client legt
+            # ihn selbst an und schliesst ihn selbst, weil `app.close()` einen
+            # uebergebenen Pool nicht schliesst. `open=False` und dann `open()`:
+            # Im Konstruktor zu oeffnen ist in psycopg_pool 3.3.0 abgekuendigt.
+            pool: NullConnectionPool[psycopg.Connection[Any]] = NullConnectionPool(
+                self._settings.db_dsn, max_size=1, num_workers=1, open=False
+            )
+            pool.open()
+            self._pool = pool
+            # Die App des Clients: synchroner Zugang, keine angemeldeten Tasks.
+            # Sie gehoert diesem Client und wird nie umgehaengt.
+            self._app = tasks.build_client_app(self._settings).open(pool)
+            if self._preflight_gewuenscht:
+                self._letzter_preflight = self.preflight()
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
         return self
 
     def __exit__(
@@ -228,6 +261,15 @@ class OCRClient:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        # Erst die App, dann der Pool, zuletzt die Verbindung. `app.close()`
+        # laesst einen uebergebenen Pool offen; den schliesst der, der ihn
+        # angelegt hat.
+        if self._app is not None:
+            self._app.close()
+            self._app = None
+        if self._pool is not None:
+            self._pool.close()
+            self._pool = None
         if self._conn is not None:
             self._conn.close()
             self._conn = None
@@ -255,6 +297,20 @@ class OCRClient:
                 "Verbindung erst dort: `with OCRClient() as client: …`"
             )
         return self._conn
+
+    @property
+    def _procrastinate(self) -> procrastinate.App:
+        """Die App des Clients — fuer das Einreihen und die Job-Abfragen.
+
+        Raises:
+            ConfigurationError: Der Client ist nicht betreten worden.
+        """
+        if self._app is None:
+            raise ConfigurationError(
+                "Der Client ist nicht betreten worden. Er oeffnet seine "
+                "Procrastinate-App erst dort: `with OCRClient() as client: …`"
+            )
+        return self._app
 
     # ----------------------------------------------------------------------
     # Preflight
@@ -535,7 +591,7 @@ class OCRClient:
             # wuerde vollstaendig zurueckgerollt (Feature-Verifikation Punkt 9).
             # Bei dreissigtausend Dokumenten waere ein einziges bereits
             # wartendes genug, damit gar nichts passiert.
-            tasks.defer_document(huelle.sha256)
+            tasks.enqueue_document(self._procrastinate, self.conn, huelle.sha256)
         return target
 
     def wait(
@@ -675,71 +731,60 @@ class OCRClient:
         if not betroffene:
             return 0
 
-        app = tasks.configure(self._settings, for_worker=True)
-
-        async def vorlegen() -> int:
-            erledigt = 0
-            async with app.open_async():
-                for huelle in betroffene:
-                    jobs = sorted(
-                        await app.job_manager.list_jobs_async(
-                            queueing_lock=huelle.sha256
-                        ),
-                        key=lambda j: j.id or 0,
-                    )
-                    if not jobs:
-                        continue
-                    juengster = jobs[-1]
-                    if juengster.id is None:
-                        continue
-                    try:
-                        await app.job_manager.retry_job_by_id_async(
-                            juengster.id,
-                            utils.utcnow(),
-                            juengster.priority,
-                            juengster.queue,
-                            juengster.lock,
-                        )
-                    except procrastinate.exceptions.ProcrastinateException as fehler:
-                        # NUR Procrastinates eigene Ablehnung wird uebergangen.
-                        # Ein `aborted`-Job wird vom Werkzeug ABGEWIESEN (am
-                        # Objekt belegt, Feature-Verifikation Punkt 19). Sein
-                        # Heilungsweg ist `ocr_start`, nicht diese Methode —
-                        # also uebergehen und NICHT mitzaehlen, statt mit einer
-                        # Ausnahme den ganzen Stapel aufzuhalten.
-                        #
-                        # FRUEHER STAND HIER `except Exception` — und damit
-                        # verschwand JEDER Fehler in diesem `continue`: ein
-                        # Datenbank-Aussetzer, ein geloeschter Job, ein
-                        # Programmierfehler. Die Kommandozeile uebersetzt die
-                        # Differenz zwischen gefundenen und vorgelegten Jobs
-                        # anschliessend in „vermutlich abgebrochene Jobs
-                        # (`aborted`)". Ein Postgres-Aussetzer waehrend eines
-                        # Stapel-Retrys ueber 200 Dokumente erschien damit als
-                        # „0 von 200 wieder vorgelegt — vermutlich abgebrochen":
-                        # eine Fehldiagnose, die als plausible Auskunft auftritt
-                        # und die niemand als falsch erkennen kann.
-                        #
-                        # Alles, was NICHT von Procrastinate kommt, geht deshalb
-                        # jetzt nach oben. Ein lauter Abbruch mitten im Stapel
-                        # ist unangenehm; eine stille Falschmeldung ueber den
-                        # ganzen Stapel ist schlimmer.
-                        log.debug(
-                            "Job %s wurde nicht wieder vorgelegt (%s: %s) — "
-                            "vermutlich `aborted`.",
-                            juengster.id,
-                            type(fehler).__name__,
-                            fehler,
-                        )
-                        continue
-                    erledigt += 1
-            return erledigt
-
-        anzahl = _synchron_ausfuehren(vorlegen())
-        # Zurueck auf den Produzenten-Zugang: Der Client ist ein Produzent, und
-        # ein synchroner Zugang kann nur einreihen — das ist die Absicht.
-        tasks.configure(self._settings, for_worker=False)
-        return anzahl
+        app = self._procrastinate
+        erledigt = 0
+        for huelle in betroffene:
+            jobs = sorted(
+                app.job_manager.list_jobs(queueing_lock=huelle.sha256),
+                key=lambda j: j.id or 0,
+            )
+            if not jobs:
+                continue
+            juengster = jobs[-1]
+            if juengster.id is None:
+                continue
+            try:
+                app.job_manager.retry_job_by_id(
+                    juengster.id,
+                    utils.utcnow(),
+                    juengster.priority,
+                    juengster.queue,
+                    juengster.lock,
+                )
+            except procrastinate.exceptions.ProcrastinateException as fehler:
+                # NUR Procrastinates eigene Ablehnung wird uebergangen.
+                # Ein `aborted`-Job wird vom Werkzeug ABGEWIESEN (am
+                # Objekt belegt, Feature-Verifikation Punkt 19). Sein
+                # Heilungsweg ist `ocr_start`, nicht diese Methode —
+                # also uebergehen und NICHT mitzaehlen, statt mit einer
+                # Ausnahme den ganzen Stapel aufzuhalten.
+                #
+                # FRUEHER STAND HIER `except Exception` — und damit
+                # verschwand JEDER Fehler in diesem `continue`: ein
+                # Datenbank-Aussetzer, ein geloeschter Job, ein
+                # Programmierfehler. Die Kommandozeile uebersetzt die
+                # Differenz zwischen gefundenen und vorgelegten Jobs
+                # anschliessend in „vermutlich abgebrochene Jobs
+                # (`aborted`)". Ein Postgres-Aussetzer waehrend eines
+                # Stapel-Retrys ueber 200 Dokumente erschien damit als
+                # „0 von 200 wieder vorgelegt — vermutlich abgebrochen":
+                # eine Fehldiagnose, die als plausible Auskunft auftritt
+                # und die niemand als falsch erkennen kann.
+                #
+                # Alles, was NICHT von Procrastinate kommt, geht deshalb
+                # jetzt nach oben. Ein lauter Abbruch mitten im Stapel
+                # ist unangenehm; eine stille Falschmeldung ueber den
+                # ganzen Stapel ist schlimmer.
+                log.debug(
+                    "Job %s wurde nicht wieder vorgelegt (%s: %s) — "
+                    "vermutlich `aborted`.",
+                    juengster.id,
+                    type(fehler).__name__,
+                    fehler,
+                )
+                continue
+            erledigt += 1
+        return erledigt
 
     # ----------------------------------------------------------------------
     # Nachsehen
@@ -778,14 +823,7 @@ class OCRClient:
         """
         zeilen = db.counts_by_status(self.conn)
 
-        app = tasks.configure(self._settings, for_worker=True)
-
-        async def job_zahlen() -> list[dict[str, Any]]:
-            async with app.open_async():
-                return list(await app.job_manager.list_tasks_async())
-
-        aufgaben = _synchron_ausfuehren(job_zahlen())
-        tasks.configure(self._settings, for_worker=False)
+        aufgaben = self._procrastinate.job_manager.list_tasks()
 
         # ZWEI Abfragen, unabhaengig von der Bestandsgroesse: ein `GROUP BY
         # status` ueber `documents` und `list_tasks`, das fertige Zaehler je
@@ -836,16 +874,7 @@ class OCRClient:
         """
         zeile = self._zeile_finden(target)
 
-        app = tasks.configure(self._settings, for_worker=True)
-
-        async def jobs_holen() -> list[Any]:
-            async with app.open_async():
-                return list(
-                    await app.job_manager.list_jobs_async(queueing_lock=zeile.sha256)
-                )
-
-        jobs = _synchron_ausfuehren(jobs_holen())
-        tasks.configure(self._settings, for_worker=False)
+        jobs = self._procrastinate.job_manager.list_jobs(queueing_lock=zeile.sha256)
         return db.derive_status(zeile, jobs)
 
     def get(self, target: str | Path) -> OCRWrapper:

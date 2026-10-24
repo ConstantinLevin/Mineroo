@@ -92,6 +92,12 @@ async def run(
         Ein zweites Signal waehrend des Herunterfahrens bricht sofort ab. Wer
         zweimal Strg-C drueckt, meint es so.
 
+    Die App:
+        Der Daemon-Prozess haelt genau EINE App (`tasks.build_daemon_app`), mit
+        den angemeldeten Tasks und der Wiederholungs-Strategie, und oeffnet sie
+        mit seinem eigenen Pool. Eine weitere App baut er nicht: Jede weitere
+        benennt Procrastinates eingebauten Task `remove_old_jobs` um.
+
     Betriebsmittel:
         RunPod-Zugang und Verbindungspool werden EINMAL gebaut, von allen Tasks
         geteilt und beim Herunterfahren geschlossen — in dieser Reihenfolge:
@@ -113,7 +119,7 @@ async def run(
 
     Kosten: JA, mittelbar — er arbeitet die Warteschlange ab.
     """
-    app = tasks.configure(settings, for_worker=True)
+    app = tasks.build_daemon_app(settings)
     mittel = tasks.worker_context_resources(settings)
     pool = mittel["pool"]
     runpod = mittel["runpod"]

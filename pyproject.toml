@@ -13,12 +13,13 @@ requires-python = ">=3.12"
 # Pins, weil die Base geteilt ist und ein Pin dort andere Projekte brechen
 # wuerde; Obergrenzen bewusst keine, aber siehe den Kommentar an procrastinate.
 dependencies = [
-    # 3.9.0 ist die Fassung, gegen die die 19 Feature-Belege in
-    # plans/2026-08-06-procrastinate-feature-verifikation.md geprueft sind —
-    # zwei davon am Objekt (SQL-Schema und Quellcode). Bei einem Upgrade
-    # gehoert diese Datei erneut durchgegangen, besonders Punkt 12
-    # (undokumentierte Heartbeat-Tabelle) und Punkt 19 (retry_job_by_id).
-    "procrastinate>=3.9.0",
+    # 3.10.0 ist die Fassung, gegen die die Tests laufen. Die 19 Feature-Belege
+    # in plans/2026-08-06-procrastinate-feature-verifikation.md sind gegen 3.9.0
+    # geprueft (zwei davon am Objekt: SQL-Schema und Quellcode) und fuer 3.10.0
+    # im Nachtrag am Ende jener Datei durchgegangen. Bei einem Upgrade gehoert
+    # diese Datei erneut durchgegangen, besonders Punkt 12 (undokumentierte
+    # Heartbeat-Tabelle) und Punkt 19 (retry_job_by_id).
+    "procrastinate>=3.10.0",
     "psycopg[binary,pool]>=3.3.3",
     "httpx>=0.28.1",
     # pypdfium2 schneidet PDFs ohne Aufblaehen (gemessen 1,00x am 17-MB-

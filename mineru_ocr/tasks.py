@@ -1,13 +1,27 @@
-"""Die Procrastinate-Seite: App, Tasks, Wiederholungs-Strategie, Einreihen.
+"""Die Procrastinate-Seite: Apps, Tasks, Wiederholungs-Strategie, Einreihen.
 
-Dieses Modul wird von BEIDEN Prozessen importiert — vom Daemon, der die Tasks
-ausfuehrt, und von jedem Produzenten, der Jobs einreiht. Das ist keine Bequemlichkeit,
-sondern Notwendigkeit: Beide Seiten muessen dieselben Task-NAMEN kennen
+Jeder Prozess baut seine App EINMAL und behaelt sie; keine App liegt auf
+Modulebene, und nirgends wird ein Zugang zur Laufzeit umgehaengt. Wer welche App
+haelt:
+
+    Der Daemon haelt genau eine — `build_daemon_app`: asynchroner Zugang, die
+    angemeldeten Tasks samt Wiederholungs-Strategie, ein eigener Pool.
+
+    Der `OCRClient` haelt eine eigene — `build_client_app`: synchroner Zugang, KEINE
+    angemeldeten Tasks. Er reiht per NAMEN ein (`enqueue_document`) und fragt
+    die Job-Verwaltung ab.
+
+Beide Seiten muessen dieselben Task-NAMEN und dieselbe Queue kennen
 (Feature-Verifikation Punkt 13). Kennen sie sie nicht, passiert etwas
-Unangenehmeres als ein Fehler — es passiert NICHTS. Der Produzent reiht ein, der
-Daemon sieht nichts, und beide melden Erfolg. Deshalb stehen die Namen als
-Konstanten in `config.py` und werden hier ausdruecklich gesetzt, statt aus dem
-Modulpfad zu entstehen.
+Unangenehmeres als ein Fehler — es passiert NICHTS. Der Client reiht ein, der
+Daemon sieht nichts, und beide melden Erfolg. Deshalb stehen Namen und Queues als
+Konstanten in `config.py`; der Daemon meldet seine Tasks unter ihnen an, der
+Client reiht unter ihnen ein, und beide lesen dieselbe Konstante.
+
+Eine zweite App im selben Prozess ist erlaubt (die Tests tun es), kostet aber
+etwas: Procrastinates eingebauter Task `remove_old_jobs` wird bei jeder weiteren
+App umbenannt. Der Daemon-Prozess baut deshalb keine weitere; dieses Paket
+benutzt `remove_old_jobs` ohnehin nicht (`delete_jobs="never"`).
 
 Die Tasks hier sind duenn. Die Arbeit steht in `executor.py`, das nichts von
 Warteschlangen weiss; was hier hinzukommt, ist ausschliesslich die Anbindung.
@@ -18,58 +32,29 @@ from __future__ import annotations
 import math
 from typing import Any, Final
 
-import attr
 import procrastinate
-from procrastinate import RetryDecision, testing
+from procrastinate import RetryDecision
 from psycopg_pool import AsyncConnectionPool
 
 from . import config, executor
 from .config import Settings
-from .errors import ConfigurationError, TransientRunPodError, should_run_again
+from .errors import TransientRunPodError, should_run_again
 from .runpod import RunPodClient
 
-app = procrastinate.App(connector=testing.InMemoryConnector())
-"""Die App auf Modulebene — die von Procrastinate dokumentierte Form.
 
-Sie entsteht beim Import mit einem speicherinternen Zugang, der NICHTS mit einer
-Datenbank zu tun hat. Das ist kein Platzhalter aus Verlegenheit, sondern hat drei
-Gruende: Ein Import darf keine Verbindung aufbauen; die Zwei-Prozess-Lage
-braucht ohnehin zwei verschiedene Zugaenge (der Produzent einen synchronen, der
-nur einreihen darf, der Daemon einen asynchronen, weil nur damit ein Worker
-laeuft); und Procrastinates eigenes Testmuster tauscht den Zugang gegen genau
-diesen speicherinternen aus, was nur geht, wenn die App nicht schon am Import an
-einer echten Datenbank haengt.
+def build_daemon_app(settings: Settings) -> procrastinate.App:
+    """Baut die App des Daemons: asynchroner Zugang, Tasks angemeldet.
 
-`configure` haengt den richtigen Zugang ein. Wer das vergisst, schreibt seine
-Jobs in den Arbeitsspeicher und wundert sich, dass nichts passiert — deshalb
-prueft `defer_document` es und wirft.
-"""
+    Wird einmal je Daemon-Prozess gerufen. Die App ist danach NICHT geoeffnet —
+    das tut der Daemon mit `open_async(pool=…)` und seinem eigenen Pool; der Bau
+    selbst baut keine Verbindung auf, kann also auch laufen, wenn Postgres gerade
+    nicht erreichbar ist.
 
-_ZUGANG_BEIM_IMPORT = app.connector
-"""Der speicherinterne Zugang, mit dem die App entsteht — als IDENTITAET gemerkt.
-
-Wozu: `defer_document` soll den Fall abfangen, dass niemand `configure` gerufen
-hat. Zu pruefen, ob der Zugang ein `InMemoryConnector` IST, waere dafuer das
-falsche Merkmal — Procrastinates eigenes Testmuster haengt absichtlich einen
-solchen ein, und dieser Test wuerde dann jeden Test unmoeglich machen. Geprueft
-wird deshalb auf DIESES EINE Objekt: Ist es noch da, hat niemand konfiguriert.
-Ein eigens eingehaengter Zugang, auch ein speicherinterner, ist eine bewusste
-Entscheidung und geht durch."""
-
-
-def register_tasks(settings: Settings) -> None:
-    """Meldet die beiden Tasks an. Wird von `configure` gerufen, nicht von Hand.
-
-    Die Anmeldung steht als Funktion und nicht als Dekorator ueber den
-    Task-Funktionen, weil beide Tasks Werte aus `Settings` brauchen, die es beim
-    Import noch nicht gibt — die Wiederholungs-Strategie ihre Wartezeiten und ihr
-    Versuchsbudget, der Waechter seinen Zeitplan. Ein Dekorator liefe beim Import,
-    also vor `Settings.load`.
-
-    (Die Signatur stand in Phase A ohne Argument. Das konnte nicht stimmen: Der
-    Absatz darueber sagt, dass die Anmeldung Werte aus `Settings` braucht, und
-    ohne Argument haette sie sie sich nur aus einer globalen Einstellung holen
-    koennen — die es ausdruecklich nicht gibt.)
+    Die Anmeldung steht hier und nicht als Dekorator ueber den Task-Funktionen,
+    weil beide Tasks Werte aus `Settings` brauchen, die es beim Import noch nicht
+    gibt — die Wiederholungs-Strategie ihre Wartezeiten und ihr Versuchsbudget,
+    der Waechter seinen Zeitplan. Ein Dekorator liefe beim Import, also vor
+    `Settings.load`.
 
     Angemeldet wird:
 
@@ -82,74 +67,35 @@ def register_tasks(settings: Settings) -> None:
         `pass_context=True` und periodisch nach `settings.stalled_check_cron`.
 
     Der NAME wird ausdruecklich gesetzt und nicht aus dem Modulpfad abgeleitet.
-    Der Grund steht in `config.py`: Kennen Produzent und Daemon verschiedene
-    Namen, gibt es keinen Fehler und keine Meldung — die Jobs bleiben liegen.
+    Der Grund steht in `config.py`: Kennen Client und Daemon verschiedene Namen,
+    gibt es keinen Fehler und keine Meldung — die Jobs bleiben liegen.
 
     Zusicherung:
-        Mehrfach aufrufbar. Beim zweiten Aufruf werden die Tasks nicht erneut
-        angemeldet — wohl aber ihre EINSTELLUNGEN nachgezogen: die
-        Wiederholungs-Strategie und der Zeitplan des Waechters.
-
-        Warum das Nachziehen und nicht bloss ein Nichts-Tun: Genau daran ist es
-        beim Bauen gescheitert, und zwar still. `configure(settings)` sichert zu,
-        dass die uebergebene Einstellung gilt. Wer sie mit anderen Werten ein
-        zweites Mal ruft — kuerzere Wartezeiten, ein kleineres Versuchsbudget —
-        und dabei nur die Anmeldung ueberspringt, behaelt die Werte des ERSTEN
-        Aufrufs. Der Job wartete dann dreissig Sekunden statt der eingestellten
-        fuenfzig Millisekunden, und niemand sah, warum: Die Einstellung war ja
-        sichtbar gesetzt. Aufgefallen ist es erst daran, dass zwei
-        Integrationstests einzeln liefen und im vollstaendigen Lauf in den
-        Zeitablauf gerieten.
-
-        Baut keine Verbindung auf.
+        Jeder Aufruf liefert eine eigene, unabhaengige App mit den Werten der
+        uebergebenen Einstellung. Es gibt keinen Zustand ausserhalb der App; die
+        fruehere Fassung teilte sich eine App auf Modulebene und musste Strategie
+        und Zeitplan beim zweiten Aufruf nachziehen — daran ist es einmal still
+        gescheitert (der Job wartete dreissig Sekunden statt der eingestellten
+        fuenfzig Millisekunden).
 
     Kosten: keine.
     """
-    if config.TASK_OCR_DOCUMENT in app.tasks:
-        # Die Einstellungen nachziehen — siehe die Begruendung oben.
-        app.tasks[config.TASK_OCR_DOCUMENT].retry_strategy = OCRRetryStrategy(settings)
-
-        # Der Zeitplan des Waechters wird ERSETZT und nicht geaendert:
-        # `PeriodicTask.cron` ist schreibgeschuetzt (am Objekt festgestellt —
-        # ein Schreibversuch bricht zur Laufzeit ab). Ein neuer Eintrag an
-        # derselben Stelle im Verzeichnis erreicht dasselbe und geht mit der
-        # Bauart der fremden Klasse statt gegen sie.
-        for schluessel, eintrag in list(app.periodic_registry.periodic_tasks.items()):
-            if eintrag.task.name == config.TASK_RETRY_STALLED:
-                app.periodic_registry.periodic_tasks[schluessel] = attr.evolve(
-                    eintrag, cron=settings.stalled_check_cron
-                )
-        return
+    app = procrastinate.App(
+        connector=procrastinate.PsycopgConnector(conninfo=settings.db_dsn)
+    )
 
     # In Dekorator-Form aufgerufen und nicht mit der Funktion als erstem
     # Argument: `app.task` nimmt beides, aber das erste Argument NUR allein —
     # `task(func)` ohne weitere Angaben, oder `task(name=…, …)(func)`. Beides
     # zugleich gibt es nicht, und die Typpruefung sagt das auch.
-    # Die Unterdrueckung an der naechsten Zeile verdeckt KEINEN Fehler von uns,
-    # sondern haelt einen Widerspruch in Procrastinate selbst fest. Er ist am
-    # Objekt der installierten 3.9.0 geprueft, in beide Richtungen:
     #
-    #   Die Doku sagt: „class procrastinate.BaseRetryStrategy — If you want to
-    #   implement your own retry strategy, you can inherit from this class.
-    #   Child classes only need to implement get_retry_decision."
-    #
-    #   Die Typangabe sagt etwas Engeres: `RetryValue: TypeAlias = bool | int |
-    #   RetryStrategy` (procrastinate/retry.py) — `BaseRetryStrategy` steht dort
-    #   NICHT, obwohl `RetryStrategy` von ihr erbt.
-    #
-    #   Zur Laufzeit gilt die Doku: `get_retry_strategy` gibt alles, was nicht
-    #   falsch, `True` oder eine ganze Zahl ist, unveraendert zurueck (am
-    #   Quelltext gelesen). Eine eigene Strategie funktioniert also.
-    #
-    # Der Ausweg „von `RetryStrategy` erben statt von `BaseRetryStrategy`" waere
-    # schlechter: Diese Klasse bringt eigene Felder und eine eigene
-    # Entscheidungslogik mit, die wir vollstaendig ersetzen — wir erbten Ballast,
-    # um eine Typangabe zufriedenzustellen.
-    #
-    # Bei einem Procrastinate-Upgrade gehoert diese Zeile geprueft: Faellt die
-    # Unterdrueckung als „unbenutzt" auf, ist der Widerspruch behoben und sie
-    # kann weg. Genau diese Meldung gibt mypy von sich aus aus.
-    app.task(  # type: ignore[call-overload]
+    # Eine eigene Strategie ist die dokumentierte Form („class
+    # procrastinate.BaseRetryStrategy — If you want to implement your own retry
+    # strategy, you can inherit from this class"). Bis 3.9.0 kannte die
+    # Typangabe `RetryValue` die Basisklasse nicht, und hier stand eine
+    # Unterdrueckung; 3.10.0 hat sie behoben, die Unterdrueckung ist mit dem
+    # Upgrade entfallen.
+    app.task(
         name=config.TASK_OCR_DOCUMENT,
         queue=config.QUEUE_OCR,
         retry=OCRRetryStrategy(settings),
@@ -166,53 +112,32 @@ def register_tasks(settings: Settings) -> None:
     # `@app.periodic` wird in der Doku ueber `@app.task` gestapelt, und ohne den
     # Task darunter gaebe es nichts zu wiederholen.
     app.periodic(cron=settings.stalled_check_cron)(waechter)
+    return app
 
 
-def configure(settings: Settings, *, for_worker: bool) -> procrastinate.App:
-    """Haengt der App einen Zugang zur Datenbank an und gibt sie zurueck.
+def build_client_app(settings: Settings) -> procrastinate.App:
+    """Baut die App des `OCRClient`: synchroner Zugang, keine angemeldeten Tasks.
 
-    Args:
-        settings: Traegt die Verbindungszeichenkette.
-        for_worker: True fuer den Daemon — asynchroner Zugang, kann alles.
-            False fuer Produzenten — synchroner Zugang, kann NUR einreihen.
-            Jeder andere Vorgang laeuft mit einem synchronen Zugang in einen
-            Fehler, und das ist gut so: Ein Produzent, der versehentlich einen
-            Worker startet, waere ein zweiter Exekutor, von dem niemand weiss.
+    Der Client reiht per NAMEN ein (`enqueue_document`) und fragt die
+    Job-Verwaltung ab; die Task-Funktionen kennt er nicht und braucht sie nicht.
+    Ein synchroner Zugang kann nur einreihen und abfragen — ein Client, der
+    versehentlich einen Worker startet, waere ein zweiter Exekutor, von dem
+    niemand weiss; mit ihm scheitert das.
 
-    Returns:
-        Dieselbe App auf Modulebene, jetzt benutzbar.
+    Die App kommt UNGEOEFFNET zurueck. Der Client oeffnet sie mit einem Pool, den
+    er selbst anlegt und schliesst (`app.open(pool)`): Procrastinates
+    `app.close()` schliesst einen uebergebenen Pool nicht, und ein Pool mit
+    stehenden Verbindungen waere genau die Last, die der Client sparen soll — je
+    Agent eine Verbindung statt fuenf.
 
-    Zusicherung:
-        Mehrfach aufrufbar; der zuletzt eingehaengte Zugang gilt. Baut KEINE
-        Verbindung auf — das geschieht beim ersten Gebrauch. `configure` kann
-        deshalb auch dann laufen, wenn Postgres gerade nicht erreichbar ist.
+    Die App entsteht hier, in einem Modul des Pakets. Eine App im Hauptmodul
+    eines Skripts bekaeme einen Modulpfad, der nicht der importierbare ist.
 
     Kosten: keine.
     """
-    zugang: procrastinate.BaseConnector
-    if for_worker:
-        zugang = procrastinate.PsycopgConnector(conninfo=settings.db_dsn)
-    else:
-        zugang = procrastinate.SyncPsycopgConnector(conninfo=settings.db_dsn)
-
-    # BEIDE Felder, und das ist kein Abschreiben aus Vorsicht: Procrastinates
-    # eigenes `replace_connector` setzt genau diese zwei, und `job_manager` haelt
-    # eine EIGENE Referenz. Wer nur `app.connector` setzt, bekommt einen
-    # Zustand, den man nicht vermutet und schwer findet — das Einreihen liefe
-    # gegen die Datenbank, jede Abfrage ueber den `job_manager` aber weiter gegen
-    # den speicherinternen Zugang. Also: leere Job-Listen, obwohl Jobs da sind.
-    #
-    # Warum nicht `with_connector`: Das ist seit 2.14.0 abgekuendigt, und die
-    # Abkuendigung nennt selbst den Grund — es baut eine ZWEITE App, die
-    # dieselben Tasks referenziert, und die Tasks zeigen auf die erste zurueck.
-    # Warum nicht `replace_connector`: Das ist ein Kontext-Manager, der am Ende
-    # zuruecktauscht; er ist fuer den voruebergehenden Tausch im Test gedacht,
-    # nicht fuer die dauerhafte Einrichtung.
-    app.connector = zugang
-    app.job_manager.connector = zugang
-
-    register_tasks(settings)
-    return app
+    return procrastinate.App(
+        connector=procrastinate.SyncPsycopgConnector(conninfo=settings.db_dsn)
+    )
 
 
 def wird_erneut_vorgelegt(
@@ -482,8 +407,16 @@ async def retry_stalled(context: procrastinate.JobContext, timestamp: int) -> No
         await verwalter.retry_job(job)
 
 
-def defer_document(sha256: str) -> bool:
+def enqueue_document(
+    app: procrastinate.App, connection: Any, sha256: str
+) -> bool:
     """Reiht ein Dokument ein. EINZELN, nie im Stapel.
+
+    Eingereiht wird per NAMEN und mit ausdruecklicher Queue, beide aus denselben
+    Konstanten, unter denen der Daemon den Task anmeldet. Ohne `queue=` landete
+    der Job in `default`, die der Daemon nie liest. Die Verbindung ist die des
+    Aufrufers (`connection=`): Das Einreihen holt sich keine aus dem Pool, und
+    der Client bleibt bei der einen Verbindung, die er ohnehin haelt.
 
     Setzt beim Einreihen ZWEI Sperren, und beide werden gebraucht:
 
@@ -511,6 +444,10 @@ def defer_document(sha256: str) -> bool:
     Punkt 9). Einzelne Einreihungen sind billig; dieser Fehler waere es nicht.
 
     Args:
+        app: Die App des Clients (`build_client_app`), geoeffnet oder nicht — mit
+            `connection=` braucht das Einreihen keinen Pool.
+        connection: Die Verbindung des Aufrufers. Im Betrieb eine psycopg-
+            Verbindung mit `autocommit`, damit der Job sofort sichtbar ist.
         sha256: Welches Dokument.
 
     Returns:
@@ -526,59 +463,14 @@ def defer_document(sha256: str) -> bool:
 
     Kosten: keine unmittelbar — mittelbar loest der Job Verarbeitung aus.
     """
-    if app.connector is _ZUGANG_BEIM_IMPORT:
-        raise ConfigurationError(
-            "Es wurde eingereiht, ohne dass `configure` gelaufen ist. Der Job "
-            "waere in den Arbeitsspeicher dieses Prozesses gegangen und mit ihm "
-            "verschwunden — kein Fehler, keine Meldung, nur nichts. Erst "
-            "`tasks.configure(settings, for_worker=False)` rufen."
-        )
-
-    aufgabe = app.tasks[config.TASK_OCR_DOCUMENT]
-
-    def _einreihen() -> None:
-        aufgabe.configure(lock=sha256, queueing_lock=sha256).defer(sha256=sha256)
-
     try:
-        _einreihen()
-    except procrastinate.exceptions.AppNotOpen:
-        # Die App war noch nicht geoeffnet. Das ist eine Luecke zwischen zwei
-        # Zusicherungen, die beim Bauen aufgefallen ist: `configure` sichert
-        # ausdruecklich zu, KEINE Verbindung aufzubauen — damit es auch laufen
-        # kann, wenn Postgres gerade weg ist —, und `defer_document` ist die
-        # erste Stelle, die wirklich eine braucht.
-        #
-        # Nachgeholt wird es hier und nicht beim Aufrufer, und erst NACH dem
-        # ersten Versuch: So kostet der Normalfall (App laengst offen) keinen
-        # zusaetzlichen Aufruf, und der Sonderfall heilt sich selbst.
-        #
-        # Das Oeffnen ist mehrfach ausfuehrbar — der Konnektor legt den
-        # Verbindungspool nur an, wenn es noch keinen gibt (`if self._pool:
-        # return`, am Quelltext gelesen). Ihn stattdessen JE EINREIHUNG zu
-        # oeffnen und zu schliessen waeren dreissigtausend Pool-Aufbauten im
-        # Bestandslauf. Der Pool des Produzenten lebt danach fuer die Dauer des
-        # Prozesses; das ist das dokumentierte Grundmuster fuer den synchronen
-        # Produzenten und kein Leck.
-        try:
-            app.open()
-        except NotImplementedError as fehler:
-            # Der eingehaengte Zugang ist ein ASYNCHRONER, und der kennt kein
-            # synchrones Oeffnen. Das passiert, wenn im selben Prozess ein
-            # Daemon konfiguriert wurde — dort gehoert die App ihm, und er
-            # oeffnet sie mit `open_async`. Von aussen dazwischenzugreifen waere
-            # falsch, deshalb wird hier gesagt, was zu tun ist, statt zu raten.
-            raise ConfigurationError(
-                "Die App traegt einen asynchronen Zugang und ist nicht "
-                "geoeffnet. Aus synchronem Code laesst sie sich so nicht "
-                "oeffnen. Entweder `tasks.configure(settings, "
-                "for_worker=False)` fuer den Produzenten benutzen, oder die "
-                "App vom Besitzer oeffnen lassen "
-                "(`async with app.open_async(): …`)."
-            ) from fehler
-        try:
-            _einreihen()
-        except procrastinate.exceptions.AlreadyEnqueued:
-            return False
+        app.configure_task(
+            name=config.TASK_OCR_DOCUMENT,
+            queue=config.QUEUE_OCR,
+            lock=sha256,
+            queueing_lock=sha256,
+            connection=connection,
+        ).defer(sha256=sha256)
     except procrastinate.exceptions.AlreadyEnqueued:
         # „Laeuft schon" — der Normalfall beim erneuten Durchlaufen eines
         # Ordners und ausdruecklich kein Fehler. Genau darauf beruht Jurgens
@@ -650,5 +542,24 @@ def worker_context_resources(settings: Settings) -> dict[str, Any]:
             min_size=1,
             max_size=settings.ocr_concurrency,
             open=False,
+            # Prueft jede Verbindung beim Ausleihen. Einen UEBERGEBENEN Pool
+            # prueft Procrastinate nicht selbst (nur den, den es selbst anlegt);
+            # ohne diese Zeile schriebe der Daemon nach einem Postgres-Neustart
+            # ueber eine tote Verbindung — und zwar im Schreibvorgang, der das
+            # bezahlte Ergebnis ablegt.
+            #
+            # EINE EIGENHEIT, die man kennen muss (psycopg_pool 3.3.0,
+            # `pool_async.py`: `CLIENT_EXCEPTIONS = (Exception,
+            # asyncio.CancelledError)`): Trifft ein Abbruch einen Task WAEHREND
+            # der Pruefung, verschluckt der Pool ihn und versucht es erneut — der
+            # Task laeuft weiter, als waere nichts gewesen. Fuer den Daemon heisst
+            # das: Faellt SIGTERM in dieses Zeitfenster (Millisekunden, bei jeder
+            # Ausleihe), laeuft ein Worker weiter, und das Herunterfahren haengt,
+            # bis ein zweites Signal kommt (das bricht ausdruecklich sofort ab,
+            # siehe `daemon.run`). Procrastinates eigener Standard-Pool traegt
+            # dasselbe `check` und damit dieselbe Eigenheit. Belegt mit einem
+            # Task, der waehrend einer langsamen Pruefung abgebrochen wird: Er
+            # laeuft mit `check` normal zu Ende, ohne wird er abgebrochen.
+            check=AsyncConnectionPool.check_connection,
         ),
     }

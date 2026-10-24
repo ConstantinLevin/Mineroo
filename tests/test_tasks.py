@@ -1,9 +1,12 @@
 """Warteschlangen-Anbindung — offline, mit Procrastinates eigenem Testwerkzeug.
 
-Diese Tests brauchen KEINE Datenbank. Procrastinate bringt für genau diesen
-Zweck einen speicherinternen Zugang mit (`testing.InMemoryConnector`), und der
-Plan hatte ihn ausdrücklich in die kostenlose Offline-Stufe gelegt. Ohne diese
-Datei wäre die gesamte Anbindung nur mit laufender Instanz prüfbar.
+Diese Tests brauchen KEINE Datenbank. Der Daemon baut seine App mit
+`tasks.build_daemon_app`, der Client seine mit `tasks.build_client_app`; beide
+Bauer oeffnen nichts, und fuer das Einreihen setzt der Test Procrastinates
+speicherinternen Zugang (`testing.InMemoryConnector`) ein. Das Einreihen mit
+`connection=` prueft hier ein Zugang, der die uebergebene Verbindung MITSCHREIBT,
+denn der speicherinterne uebergeht sie; gegen echtes Postgres steht es in
+`test_integration.py`.
 """
 
 from __future__ import annotations
@@ -12,16 +15,17 @@ import dataclasses
 import inspect
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from typing import Any
 
 import procrastinate
 import pytest
 from procrastinate import testing
 from procrastinate.jobs import Job
+from psycopg_pool import AsyncConnectionPool
 
-from mineru_ocr import config, tasks
+from mineru_ocr import client, config, daemon, tasks
 from mineru_ocr.config import Settings
 from mineru_ocr.errors import (
-    ConfigurationError,
     CorruptDocumentError,
     InsufficientBalanceError,
     TerminalRunPodError,
@@ -31,18 +35,45 @@ from mineru_ocr.errors import (
 HASH = "a" * 64
 
 
-@pytest.fixture
-def app(settings: Settings) -> Iterator[procrastinate.App]:
-    """Die App mit einem EIGENEN speicherinternen Zugang.
+class MerkenderSpeicher(testing.InMemoryConnector):
+    """Der speicherinterne Zugang, der die uebergebene Verbindung festhaelt.
 
-    Procrastinates dokumentiertes Testmuster: `replace_connector` haengt einen
-    `InMemoryConnector` ein und tauscht ihn am Ende zurueck. Ein eigener und
-    nicht der Zugang vom Import — genau daran unterscheidet `defer_document`,
-    ob jemand `configure` gerufen hat.
+    Procrastinates `InMemoryConnector` nimmt `connection=` entgegen und tut
+    nichts damit. Fuer die Zusicherung „das Einreihen laeuft ueber die
+    Verbindung des Aufrufers" genuegt das nicht; dieser Zugang schreibt mit,
+    welche Verbindung ankam.
     """
-    speicher = testing.InMemoryConnector()
-    with tasks.app.replace_connector(speicher) as a:
-        tasks.register_tasks(settings)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.verbindungen: list[Any] = []
+
+    def execute_query_all_with_connection(
+        self, connection: Any, query: str, **arguments: Any
+    ) -> list[dict[str, Any]]:
+        self.verbindungen.append(connection)
+        return super().execute_query_all_with_connection(
+            connection, query, **arguments
+        )
+
+
+@pytest.fixture
+def app(settings: Settings) -> procrastinate.App:
+    """Die App des Daemons — frisch gebaut, ohne Zugang zu einer Datenbank."""
+    return tasks.build_daemon_app(settings)
+
+
+@pytest.fixture
+def einreihen_app(settings: Settings) -> Iterator[procrastinate.App]:
+    """Die App des Clients mit einem merkenden speicherinternen Zugang.
+
+    Procrastinates dokumentiertes Testmuster: `replace_connector` haengt den
+    speicherinternen Zugang ein und tauscht ihn am Ende zurueck. Nur der Test
+    tut das; im Betrieb wird nirgends ein Zugang umgeschaltet.
+    """
+    with tasks.build_client_app(settings).replace_connector(
+        MerkenderSpeicher()
+    ) as a:
         yield a
 
 
@@ -101,48 +132,97 @@ def test_waechter_ist_periodisch_und_gegen_sich_selbst_gesperrt(
     assert app.tasks[config.TASK_RETRY_STALLED].queueing_lock == "retry_stalled"
 
 
-def test_anmelden_ist_mehrfach_aufrufbar(
+def test_jeder_aufruf_baut_eine_eigene_app(settings: Settings) -> None:
+    """`build_daemon_app` hat keinen Zustand ausserhalb der App, die es liefert.
+
+    Zwei Aufrufe mit verschiedenen Einstellungen ergeben zwei unabhaengige Apps,
+    jede mit den Werten IHRER Einstellung. Die frueheren Fassungen teilten sich
+    eine App auf Modulebene und mussten die Strategie beim zweiten Aufruf
+    nachziehen — daran ist es einmal still gescheitert (der Job wartete dreissig
+    Sekunden statt der eingestellten fuenfzig Millisekunden).
+    """
+    knapp = dataclasses.replace(settings, max_attempts=1)
+    grosszuegig = dataclasses.replace(settings, max_attempts=9)
+    a = tasks.build_daemon_app(knapp)
+    b = tasks.build_daemon_app(grosszuegig)
+
+    assert a is not b
+    assert a.tasks[config.TASK_OCR_DOCUMENT] is not b.tasks[config.TASK_OCR_DOCUMENT]
+    fehler = TransientRunPodError("x")
+    assert (
+        a.tasks[config.TASK_OCR_DOCUMENT].retry_strategy.get_retry_decision(  # type: ignore[union-attr]
+            exception=fehler, job=_job()
+        )
+        is None
+    )
+    assert (
+        b.tasks[config.TASK_OCR_DOCUMENT].retry_strategy.get_retry_decision(  # type: ignore[union-attr]
+            exception=fehler, job=_job()
+        )
+        is not None
+    )
+
+
+def test_retry_strategie_und_zeitplan_haengen_an_der_app(
     app: procrastinate.App, settings: Settings
 ) -> None:
-    """Ein zweiter Aufruf ist ein Nichts-Tun, kein Fehler."""
-    vorher = len(app.tasks)
-    tasks.register_tasks(settings)
-    tasks.register_tasks(settings)
-    assert len(app.tasks) == vorher
+    """Die App des Daemons traegt die Wiederholungs-Strategie des Dokument-Tasks
+    und den Zeitplan des Waechters, beide aus der uebergebenen Einstellung."""
+    strategie = app.tasks[config.TASK_OCR_DOCUMENT].retry_strategy
+    assert isinstance(strategie, tasks.OCRRetryStrategy)
+
+    eintrag = next(
+        e
+        for e in app.periodic_registry.periodic_tasks.values()
+        if e.task.name == config.TASK_RETRY_STALLED
+    )
+    assert eintrag.cron == settings.stalled_check_cron
 
 
-def test_produzenten_zugang_kann_nur_einreihen(settings: Settings) -> None:
-    """Mit dem synchronen Zugang schlaegt jeder andere Vorgang fehl — ein
-    Produzent, der versehentlich einen Worker startet, waere ein zweiter Exekutor,
-    von dem niemand weiss.
+def test_daemon_app_traegt_den_asynchronen_zugang(app: procrastinate.App) -> None:
+    """Nur ein asynchroner Zugang kann einen Worker tragen. Der `job_manager`
+    haelt dabei keine eigene, abweichende Referenz."""
+    assert isinstance(app.connector, procrastinate.PsycopgConnector)
+    assert app.job_manager.connector is app.connector
 
-    Geprueft am TYP des eingehaengten Zugangs, ohne eine Verbindung zu
-    oeffnen: `configure` baut ausdruecklich keine auf, und ein Test, der eine
-    aufbaut, pruefte etwas anderes als die Zusicherung.
+
+def test_client_app_traegt_den_synchronen_zugang(settings: Settings) -> None:
+    """Der Client reiht ein und fragt ab — mit einem synchronen Zugang und ohne
+    angemeldete Tasks: Er reiht per Namen ein und kennt die Funktionen nicht."""
+    client_app = tasks.build_client_app(settings)
+    assert isinstance(client_app.connector, procrastinate.SyncPsycopgConnector)
+    assert client_app.job_manager.connector is client_app.connector
+    assert config.TASK_OCR_DOCUMENT not in client_app.tasks
+
+
+def test_es_gibt_weder_modulweite_app_noch_umschalten() -> None:
+    """Modulweite App, `configure`, `defer_document` und der Platzhalter-Zugang
+    sind weg, und nirgends im Paket wird ein Zugang zur Laufzeit getauscht.
+
+    Geprueft an den Namen und am Quelltext der drei Module, die mit
+    Procrastinate sprechen: Ein Zugang, der nachtraeglich umgehaengt wird, ist
+    genau das, was dieses Paket nicht mehr tut — jeder Prozess baut seine App
+    einmal und behaelt sie.
     """
-    urspruenglich = tasks.app.connector
-    try:
-        produzent = tasks.configure(settings, for_worker=False)
-        assert isinstance(produzent.connector, procrastinate.SyncPsycopgConnector)
+    for name in ("app", "configure", "defer_document", "register_tasks"):
+        assert not hasattr(tasks, name), name
+    assert not hasattr(tasks, "_ZUGANG_BEIM_IMPORT")
 
-        daemon = tasks.configure(settings, for_worker=True)
-        assert isinstance(daemon.connector, procrastinate.PsycopgConnector)
-
-        # UND der job_manager zeigt auf denselben Zugang. Wer nur
-        # `app.connector` setzt, bekommt leere Job-Listen, obwohl Jobs da sind.
-        assert daemon.job_manager.connector is daemon.connector
-    finally:
-        tasks.app.connector = urspruenglich
-        tasks.app.job_manager.connector = urspruenglich
+    for modul in (tasks, client, daemon):
+        quelle = inspect.getsource(modul)
+        assert "replace_connector" not in quelle, modul.__name__
+        assert "with_connector" not in quelle, modul.__name__
+        assert ".connector =" not in quelle, modul.__name__
+        assert "InMemoryConnector" not in quelle, modul.__name__
 
 
 # --- Einreihen ------------------------------------------------------------
 
 
-def test_einreihen_erzeugt_einen_job(app: procrastinate.App) -> None:
+def test_einreihen_erzeugt_einen_job(einreihen_app: procrastinate.App) -> None:
     """Der Normalfall: ein Job, mit dem Hash als einzigem Argument."""
-    assert tasks.defer_document(HASH) is True
-    jobs = list(app.connector.jobs.values())  # type: ignore[attr-defined]
+    assert tasks.enqueue_document(einreihen_app, object(), HASH) is True
+    jobs = list(einreihen_app.connector.jobs.values())  # type: ignore[attr-defined]
     assert len(jobs) == 1
     assert jobs[0]["task_name"] == config.TASK_OCR_DOCUMENT
     # Der Hash ist das EINZIGE Argument. Alles Weitere steht in der Zeile — ein
@@ -150,15 +230,50 @@ def test_einreihen_erzeugt_einen_job(app: procrastinate.App) -> None:
     assert jobs[0]["args"] == {"sha256": HASH}
 
 
-def test_zweites_einreihen_meldet_laeuft_schon(app: procrastinate.App) -> None:
+def test_job_landet_in_der_queue_die_der_daemon_liest(
+    einreihen_app: procrastinate.App, app: procrastinate.App
+) -> None:
+    """Name und Queue des eingereihten Jobs sind die, unter denen der Daemon den
+    Task angemeldet hat.
+
+    Ohne ausdrueckliche Queue landete der Job in `default`, die der Daemon nie
+    liest: kein Fehler, keine Meldung, die Jobs blieben einfach liegen. Verglichen
+    wird deshalb gegen die App des Daemons und nicht gegen dieselbe Konstante ein
+    zweites Mal.
+    """
+    tasks.enqueue_document(einreihen_app, object(), HASH)
+    job = next(iter(einreihen_app.connector.jobs.values()))  # type: ignore[attr-defined]
+
+    assert job["queue_name"] != "default"
+    aufgabe = app.tasks[job["task_name"]]
+    assert aufgabe.queue == job["queue_name"]
+    assert job["queue_name"] == config.QUEUE_OCR
+
+
+def test_einreihen_laeuft_ueber_die_uebergebene_verbindung(
+    einreihen_app: procrastinate.App,
+) -> None:
+    """Das Einreihen benutzt die Verbindung des Aufrufers und holt sich keine aus
+    dem Pool — so bleibt es bei der einen Verbindung je Client."""
+    verbindung = object()
+    tasks.enqueue_document(einreihen_app, verbindung, HASH)
+
+    speicher = einreihen_app.connector
+    assert isinstance(speicher, MerkenderSpeicher)
+    assert speicher.verbindungen == [verbindung]
+
+
+def test_zweites_einreihen_meldet_laeuft_schon(
+    einreihen_app: procrastinate.App,
+) -> None:
     """`AlreadyEnqueued` wird gefangen und zu False — der Normalfall beim
     wiederholten Durchlaufen eines Ordners, kein Fehler."""
-    assert tasks.defer_document(HASH) is True
-    assert tasks.defer_document(HASH) is False
-    assert len(app.connector.jobs) == 1  # type: ignore[attr-defined]
+    assert tasks.enqueue_document(einreihen_app, object(), HASH) is True
+    assert tasks.enqueue_document(einreihen_app, object(), HASH) is False
+    assert len(einreihen_app.connector.jobs) == 1  # type: ignore[attr-defined]
 
 
-def test_beide_sperren_werden_gesetzt(app: procrastinate.App) -> None:
+def test_beide_sperren_werden_gesetzt(einreihen_app: procrastinate.App) -> None:
     """`queueing_lock` UND `lock`, beide auf den Hash.
 
     Ohne den zweiten wuerde ein waehrend der Verarbeitung nachgeschobenes
@@ -166,8 +281,8 @@ def test_beide_sperren_werden_gesetzt(app: procrastinate.App) -> None:
     Der `queueing_lock` allein reicht nicht — er bindet nur den Zustand `todo`
     und ist frei, sobald der Job laeuft.
     """
-    tasks.defer_document(HASH)
-    job = next(iter(app.connector.jobs.values()))  # type: ignore[attr-defined]
+    tasks.enqueue_document(einreihen_app, object(), HASH)
+    job = next(iter(einreihen_app.connector.jobs.values()))  # type: ignore[attr-defined]
     assert job["queueing_lock"] == HASH
     assert job["lock"] == HASH
 
@@ -178,27 +293,11 @@ def test_kein_stapel_einreihen() -> None:
     bereits wartendes, damit gar nichts passiert.
 
     Geprueft am Quelltext: `batch_defer` darf im Modul nicht vorkommen. Der
-    Vorspann von `defer_document` erklaert, warum — und ein Test, der nur die
+    Vorspann von `enqueue_document` erklaert, warum — und ein Test, der nur die
     Wirkung prueft, saehe den Unterschied nicht.
     """
     quelle = inspect.getsource(tasks)
     assert "batch_defer" not in quelle.replace("`batch_defer`", "")
-
-
-def test_einreihen_ohne_konfigurierten_zugang_wirft() -> None:
-    """Wer `configure` vergisst, schreibt sonst in den Arbeitsspeicher und
-    wundert sich, dass nichts geschieht.
-
-    Kein Fehler, keine Meldung, nur nichts — die unangenehmste aller
-    Fehlerarten. Deshalb wird sie hier laut.
-    """
-    urspruenglich = tasks.app.connector
-    try:
-        tasks.app.connector = tasks._ZUGANG_BEIM_IMPORT
-        with pytest.raises(ConfigurationError, match="configure"):
-            tasks.defer_document(HASH)
-    finally:
-        tasks.app.connector = urspruenglich
 
 
 # --- Wiederholungs-Strategie ---------------------------------------------
@@ -347,3 +446,16 @@ def test_pool_ist_so_gross_wie_die_gleichzeitigkeit(settings: Settings) -> None:
     eng = dataclasses.replace(settings, ocr_concurrency=7)
     mittel = tasks.worker_context_resources(eng)
     assert mittel["pool"].max_size == 7
+
+
+def test_pool_prueft_verbindungen_beim_ausleihen(settings: Settings) -> None:
+    """Der Pool des Daemons prueft jede Verbindung, bevor er sie herausgibt.
+
+    Einen UEBERGEBENEN Pool prueft Procrastinate nicht selbst; ohne die Pruefung
+    schriebe der Daemon nach einem Postgres-Neustart ueber eine tote Verbindung —
+    und zwar mitten in dem Schreibvorgang, der das bezahlte Ergebnis ablegt. Das
+    Verhalten gegen eine wirklich beendete Verbindung steht in
+    `test_integration.py`.
+    """
+    mittel = tasks.worker_context_resources(settings)
+    assert mittel["pool"]._check is AsyncConnectionPool.check_connection

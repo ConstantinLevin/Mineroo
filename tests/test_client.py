@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import psycopg
 import pytest
+from psycopg_pool import NullConnectionPool
 
 from mineru_ocr import client as client_modul
+from mineru_ocr import config
 from mineru_ocr.client import HASH_FORM, OCRClient
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, write_terminal_async
@@ -577,3 +580,159 @@ def test_conn_vor_dem_betreten_wirft(_test_datenbank: str) -> None:
     klient = OCRClient(db_dsn=_test_datenbank, api_key="x", preflight=False)
     with pytest.raises(ConfigurationError, match="betreten"):
         klient.conn
+
+
+# --- Die Procrastinate-Anbindung des Clients -------------------------------
+
+
+def _verbindungen(conn: psycopg.Connection[Any]) -> int:
+    """Wie viele andere Verbindungen gerade an der Test-Datenbank haengen."""
+    zeile = conn.execute(
+        "SELECT count(*) FROM pg_stat_activity "
+        "WHERE datname = current_database() AND pid <> pg_backend_pid()"
+    ).fetchone()
+    assert zeile is not None
+    return int(zeile[0])
+
+
+def _verbindungen_erreichen(
+    conn: psycopg.Connection[Any], erwartet: int, *, sekunden: float = 3.0
+) -> bool:
+    """Wartet, bis die Zahl der Verbindungen `erwartet` ist.
+
+    Warten, weil Postgres das Ende einer Verbindung einen Augenblick nach dem
+    Schliessen auf der Client-Seite zeigt. Wer eine stehende Verbindung hat, wartet
+    die ganze Zeit vergeblich und bekommt False.
+    """
+    ende = time.monotonic() + sekunden
+    while time.monotonic() < ende:
+        if _verbindungen(conn) == erwartet:
+            return True
+        time.sleep(0.02)
+    return _verbindungen(conn) == erwartet
+
+
+def test_client_haelt_zwischen_aufrufen_keine_procrastinate_verbindung(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    tmp_path: Path,
+) -> None:
+    """Ein Client haelt EINE Verbindung — seine eigene —, keine fuer Procrastinate.
+
+    Je Agent eine Verbindung statt fuenf: Der Server reicht sonst neben dem Daemon
+    fuer hoechstens 14 Agenten. Gezaehlt wird von AUSSEN, an der Datenbank, und
+    nicht am Pool des Clients: Ein Pool mit stehenden Verbindungen faellt so auf,
+    auch wenn jemand ihn anders baut.
+
+    Die Ausgangszahl wird VOR dem Betreten genommen. Mit dem Betreten zaehlte ein
+    Pool mit stehenden Verbindungen schon in die Ausgangszahl, und der Test
+    bestuende zu Unrecht.
+    """
+    _worker_am_leben(db_conn)
+    vorher = _verbindungen(db_conn)
+
+    with OCRClient(
+        db_dsn=_test_datenbank, api_key="erfunden", preflight=False
+    ) as klient:
+        assert _verbindungen_erreichen(db_conn, vorher + 1), "nach dem Betreten"
+
+        huelle = _huelle(klient, tmp_path, "a.png")
+        klient.ocr_start(huelle)
+        klient.document(huelle.sha256)
+        klient.status()
+        assert _verbindungen_erreichen(db_conn, vorher + 1), "zwischen den Aufrufen"
+
+    assert _verbindungen_erreichen(db_conn, vorher), "nach dem Verlassen"
+
+
+def test_client_oeffnet_einen_pool_ohne_stehende_verbindungen(
+    offener_client: OCRClient,
+) -> None:
+    """Der Pool des Clients ist ein `NullConnectionPool` mit `max_size=1` und einem
+    einzigen Hintergrund-Faden — er legt keine Verbindung auf Vorrat an, und eine
+    Abfrage nach der anderen reicht."""
+    pool = offener_client._pool
+    assert isinstance(pool, NullConnectionPool)
+    assert pool.min_size == 0
+    assert pool.max_size == 1
+    assert pool.num_workers == 1
+    assert pool.closed is False
+
+
+def test_einreihen_holt_keine_verbindung_aus_dem_pool(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Das Einreihen laeuft ueber die Verbindung des Clients (`connection=`).
+
+    Der Pool wird fuer die Dauer des Einreihens gesperrt: Holte das Einreihen sich
+    eine Verbindung daraus, schluege der Test an. Das laesst sich nur gegen echtes
+    Postgres pruefen, weil Procrastinates `InMemoryConnector` `connection=`
+    uebergeht.
+    """
+    _worker_am_leben(db_conn)
+
+    def verboten(*_: Any, **__: Any) -> Any:
+        raise AssertionError("Das Einreihen darf keine Pool-Verbindung holen.")
+
+    monkeypatch.setattr(offener_client._pool, "connection", verboten)
+    monkeypatch.setattr(offener_client._pool, "getconn", verboten)
+
+    huelle = _huelle(offener_client, tmp_path, "a.png")
+    offener_client.ocr_start(huelle)
+
+    anzahl = db_conn.execute(
+        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s",
+        (huelle.sha256,),
+    ).fetchone()
+    assert anzahl is not None and anzahl[0] == 1
+
+
+def test_eingereihter_job_liegt_in_der_queue_des_daemons(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Task-Name und Queue des Jobs sind die Konstanten, unter denen der Daemon
+    seinen Task anmeldet. In `default` waere er unsichtbar: kein Fehler, keine
+    Meldung, der Job bliebe liegen."""
+    _worker_am_leben(db_conn)
+    huelle = _huelle(offener_client, tmp_path, "a.png")
+    offener_client.ocr_start(huelle)
+
+    zeile = db_conn.execute(
+        "SELECT task_name, queue_name, lock, queueing_lock FROM procrastinate_jobs"
+    ).fetchone()
+    assert zeile == (
+        config.TASK_OCR_DOCUMENT,
+        config.QUEUE_OCR,
+        huelle.sha256,
+        huelle.sha256,
+    )
+
+
+def _procrastinate_zustand(klient: OCRClient) -> tuple[object, object]:
+    """Pool und App des Clients. Eine Funktion und nicht das Attribut selbst,
+    damit die Typpruefung ein spaeteres Lesen nicht aus einem frueheren
+    `assert` ableitet."""
+    return (klient._pool, klient._app)
+
+
+def test_austritt_schliesst_pool_und_app(
+    _test_datenbank: str, runpod: RunPodAntworten
+) -> None:
+    """Der Client legt seinen Pool selbst an und schliesst ihn selbst:
+    `app.close()` schliesst einen uebergebenen Pool nicht."""
+    klient = OCRClient(db_dsn=_test_datenbank, api_key="erfunden", preflight=False)
+    assert _procrastinate_zustand(klient) == (None, None)
+
+    with klient:
+        pool = klient._pool
+        assert pool is not None
+        offen_beim_betreten = not pool.closed
+        assert klient._app is not None
+
+    assert offen_beim_betreten
+    assert pool.closed
+    assert _procrastinate_zustand(klient) == (None, None)
