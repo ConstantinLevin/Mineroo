@@ -140,6 +140,15 @@ def _worker_am_leben(conn: psycopg.Connection[Any]) -> None:
     conn.execute("INSERT INTO procrastinate_workers DEFAULT VALUES")
 
 
+def _worker_ist_abgestuerzt(conn: psycopg.Connection[Any]) -> None:
+    """Die Zeile, die ein abgestuerzter Daemon hinterlaesst: Sie bleibt bis zum
+    naechsten Start stehen, und ihr Alter ist das Merkmal."""
+    conn.execute(
+        "INSERT INTO procrastinate_workers (last_heartbeat) "
+        "VALUES (now() - interval '67 days')"
+    )
+
+
 # --- Preflight ------------------------------------------------------------
 
 
@@ -639,19 +648,127 @@ def test_toter_daemon_wird_erkannt(
     assert daemon["ist"] == 0
 
 
-def test_ocr_start_stirbt_bei_totem_daemon(
-    offener_client: OCRClient, tmp_path: Path
+def test_ocr_start_reiht_auch_ohne_daemon_ein_und_warnt(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Einreihen ohne laufenden Exekutor bricht ab, statt Jobs anzuhaeufen, die
-    niemand abholt.
+    """Abschicken haengt nicht vom Daemon ab: Es reiht ein und warnt.
 
-    Der Wunsch des Auftraggebers, woertlich: „ja natürlich der client soll dann
-    sterben und errorn". Und mit `strict=False` ist es eine Warnung — Jobs
-    anzuhaeufen ist zulaessig, der Daemon kann spaeter starten.
+    Der Auftraggeber hat erst verlangt, der Client solle ohne Exekutor „sterben
+    und errorn", und das spaeter selbst abgeloest: „das warten ist kuenstlich man
+    wartet auf die datenbank nicht direkt auf den worker der ist ja unabhaengig".
+    Der Daemon kann spaeter starten; die Jobs liegen bis dahin in der Datenbank.
     """
     huelle = _huelle(offener_client, tmp_path, "a.png")
-    with pytest.raises(ConfigurationError, match="kein Daemon"):
+    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
         offener_client.ocr_start(huelle)
+
+    anzahl = db_conn.execute(
+        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s",
+        (huelle.sha256,),
+    ).fetchone()
+    assert anzahl is not None and anzahl[0] == 1
+    assert any("kein Daemon" in eintrag.getMessage() for eintrag in caplog.records)
+
+
+def test_ocr_start_warnt_auch_bei_altem_herzschlag(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Eine stehengebliebene Worker-Zeile eines abgestuerzten Daemons gilt nicht
+    als laufender Daemon: Dieselbe Warnung, dasselbe Einreihen."""
+    _worker_ist_abgestuerzt(db_conn)
+    huelle = _huelle(offener_client, tmp_path, "a.png")
+    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
+        offener_client.ocr_start(huelle)
+
+    assert any("kein Daemon" in eintrag.getMessage() for eintrag in caplog.records)
+    anzahl = db_conn.execute(
+        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s",
+        (huelle.sha256,),
+    ).fetchone()
+    assert anzahl is not None and anzahl[0] == 1
+
+
+def test_ocr_start_warnt_je_daemonloser_phase_einmal(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Die Kommandozeile reiht Dokument fuer Dokument ein; bei dreissigtausend
+    Dokumenten ohne Daemon waeren dreissigtausend gleiche Zeilen auf stderr
+    keine Warnung mehr, sondern Laerm. Gewarnt wird einmal, solange kein Daemon
+    laeuft — und erneut, wenn nach einem laufenden wieder keiner da ist."""
+    huellen = [_huelle(offener_client, tmp_path, f"{nr}.png") for nr in range(3)]
+
+    def warnungen() -> int:
+        return len([e for e in caplog.records if e.name == "mineru_ocr.client"])
+
+    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
+        offener_client.ocr_start(huellen[0])
+        offener_client.ocr_start(huellen[1])
+        assert warnungen() == 1
+
+        # Ein Daemon kommt hoch ...
+        _worker_am_leben(db_conn)
+        offener_client.ocr_start(huellen[0])
+        assert warnungen() == 1
+
+        # ... und faellt wieder aus: Das ist eine neue Lage, und sie wird gesagt.
+        db_conn.execute("DELETE FROM procrastinate_workers")
+        offener_client.ocr_start(huellen[2])
+        assert warnungen() == 2
+
+
+def test_ocr_start_warnt_nicht_bei_laufendem_daemon(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _worker_am_leben(db_conn)
+    huelle = _huelle(offener_client, tmp_path, "a.png")
+    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
+        offener_client.ocr_start(huelle)
+
+    assert not [e for e in caplog.records if e.name == "mineru_ocr.client"]
+
+
+def test_preflight_meldet_den_daemon_nach_dem_alter_des_herzschlags(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Ein 67 Tage alter Herzschlag ist ein toter Daemon, ein frischer ein
+    lebender — im selben Befund, am selben Punkt."""
+    _worker_ist_abgestuerzt(db_conn)
+    with OCRClient(
+        db_dsn=_test_datenbank, api_key="erfunden", preflight=False, strict=False
+    ) as klient:
+        tot = [b for b in klient.preflight()["checks"] if b["punkt"] == "daemon"][0]
+    assert tot["bewertung"] == "warnung"
+    assert tot["ist"] == 0
+
+    _worker_am_leben(db_conn)
+    with OCRClient(
+        db_dsn=_test_datenbank, api_key="erfunden", preflight=False, strict=False
+    ) as klient:
+        lebt = [b for b in klient.preflight()["checks"] if b["punkt"] == "daemon"][0]
+    assert lebt["bewertung"] == "in_ordnung"
+    assert lebt["ist"] == 1
+
+
+def test_status_meldet_den_daemon_nach_dem_alter_des_herzschlags(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    _worker_ist_abgestuerzt(db_conn)
+    assert offener_client.status()["daemon_alive"] is False
+
+    _worker_am_leben(db_conn)
+    assert offener_client.status()["daemon_alive"] is True
 
 
 # --- Arbeit ---------------------------------------------------------------

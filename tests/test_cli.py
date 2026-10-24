@@ -403,49 +403,69 @@ def test_status_sagt_wenn_kein_daemon_laeuft(
     assert "mineru-ocr daemon" in ergebnis.output
 
 
-def test_ocr_ohne_daemon_legt_nichts_ab(
+def test_status_zaehlt_einen_alten_herzschlag_nicht_als_daemon(
+    cli: CliRunner, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Nach einem Absturz bleibt die Worker-Zeile stehen, und `status` darf sie
+    nicht fuer einen laufenden Daemon halten (eine 67 Tage alte tat es)."""
+    db_conn.execute("DELETE FROM procrastinate_workers")
+    db_conn.execute(
+        "INSERT INTO procrastinate_workers (last_heartbeat) "
+        "VALUES (now() - interval '67 days')"
+    )
+    ergebnis = cli.invoke(app, ["status"])
+    assert ergebnis.exit_code == 0
+    assert "LAEUFT NICHT" in ergebnis.output
+
+
+def test_ocr_reiht_auch_ohne_daemon_ein_und_warnt_auf_stderr(
     cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
 ) -> None:
-    """„Reiht NICHTS ein" heisst auch: Die Bytes liegen danach nicht in der
-    Datenbank. Seit sie dort liegen, muss die Pruefung VOR dem Ablegen stehen,
-    sonst bleibt ein ganzer Ordner Personendaten ohne Job in `inputs` zurueck."""
+    """Abschicken haengt nicht vom Daemon ab: Die Jobs liegen in der Datenbank,
+    bis einer startet. Die Warnung steht auf stderr, damit stdout (und `--json`)
+    sauber bleibt."""
     db_conn.execute("DELETE FROM procrastinate_workers")
+    for name in ("a.png", "b.png"):
+        (tmp_path / name).write_bytes(PNG_KOPF + name.encode())
+
+    ergebnis = cli.invoke(app, ["ocr", str(tmp_path), "--json"])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert json.loads(ergebnis.stdout)["queued"] == 2
+    assert "mineru-ocr daemon" in ergebnis.stderr
+    assert "kein Daemon" not in ergebnis.stdout
+    # Einmal, nicht je Dokument.
+    assert ergebnis.stderr.count("kein Daemon") == 1
+    anzahl = db_conn.execute("SELECT count(*) FROM procrastinate_jobs").fetchone()
+    assert anzahl is not None and anzahl[0] == 2
+
+
+def test_ocr_warnt_nicht_bei_laufendem_daemon(
+    cli: CliRunner, tmp_path: Path
+) -> None:
+    """Die `cli`-Vorrichtung legt ein frisches Lebenszeichen an."""
     datei = tmp_path / "a.png"
     datei.write_bytes(PNG_KOPF + b"a")
 
     ergebnis = cli.invoke(app, ["ocr", str(datei)])
 
-    assert ergebnis.exit_code == 1
-    for tabelle in ("documents", "inputs"):
-        zaehlung = db_conn.execute(f"SELECT count(*) FROM {tabelle}").fetchone()
-        assert zaehlung is not None and zaehlung[0] == 0, tabelle
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert "Daemon" not in ergebnis.stderr
 
 
-def test_ocr_ohne_daemon_legt_mit_no_strict_und_no_start_ab(
-    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
-) -> None:
-    """Die Vorpruefung gilt nur fuer die Voreinstellung (`start` und `strict`):
-    `--no-strict` reiht trotzdem ein, `--no-start` legt nur ab. Beides endet mit 0
-    und laesst die Bytes in `inputs`."""
-    db_conn.execute("DELETE FROM procrastinate_workers")
+def test_ocr_hat_keine_strict_option_mehr(cli: CliRunner, tmp_path: Path) -> None:
+    """Der Abbruch ohne Daemon ist abgeloest, und die Option, die ihn schaltete,
+    entfaellt mit ihm. `preflight` behaelt seine eigene `--strict`-Option: Sie
+    betrifft Konfigurations-Abweichungen und nicht den Daemon."""
+    datei = tmp_path / "a.png"
+    datei.write_bytes(PNG_KOPF + b"a")
 
-    def zaehlen(tabelle: str) -> int:
-        zaehlung = db_conn.execute(f"SELECT count(*) FROM {tabelle}").fetchone()
-        assert zaehlung is not None
-        return int(zaehlung[0])
-
-    # Die Job-Zahl ist der Gesamtstand: `--no-strict` bringt den ersten, `--no-start`
-    # keinen weiteren.
-    for nr, (schalter, jobs) in enumerate((("--no-strict", 1), ("--no-start", 1))):
-        datei = tmp_path / f"{nr}.png"
-        datei.write_bytes(PNG_KOPF + str(nr).encode())
-
+    for schalter in ("--strict", "--no-strict"):
         ergebnis = cli.invoke(app, ["ocr", str(datei), schalter])
+        assert ergebnis.exit_code == 2, (schalter, ergebnis.output)
 
-        assert ergebnis.exit_code == 0, (schalter, ergebnis.output)
-        assert zaehlen("inputs") == nr + 1, schalter
-        # `--no-strict` reiht trotzdem ein, `--no-start` legt nur ab.
-        assert zaehlen("procrastinate_jobs") == jobs, schalter
+    assert "strict" not in inspect.signature(cli_modul.ocr).parameters
+    assert "strict" in inspect.signature(cli_modul.preflight).parameters
 
 
 # --- Das Kommando, das Geld ausgibt --------------------------------------

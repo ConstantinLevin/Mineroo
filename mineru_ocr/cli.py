@@ -34,8 +34,11 @@ Sache waeren dieselbe Doppelung wie zwei Wahrheiten im Verhalten.
 
 from __future__ import annotations
 
+import contextlib
 import json as json_modul
+import logging
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -77,6 +80,27 @@ def _betriebsfehler(fehler: BaseException) -> None:
     """
     typer.echo(f"{type(fehler).__name__}: {fehler}", err=True)
     raise typer.Exit(code=1)
+
+
+@contextlib.contextmanager
+def _warnungen_auf_stderr() -> Iterator[None]:
+    """Leitet die Warnungen des Pakets (Logger `mineru_ocr`) auf stderr.
+
+    Die Bibliothek warnt ueber `logging` und kennt keinen Strom; die Kommandozeile
+    entscheidet, wohin das geht, und zwar auf die FEHLERausgabe wie
+    `_betriebsfehler`: Wer `--json` auswertet oder eine Ausgabe umleitet, hat die
+    Warnung nicht in seinen Daten. Der Handler entsteht erst im Aufruf und nicht
+    beim Import, weil er den Strom FESTHAELT, auf den `sys.stderr` gerade zeigt.
+    """
+    logger = logging.getLogger("mineru_ocr")
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
 
 
 @app.command()
@@ -137,7 +161,6 @@ def ocr(
     paths: Annotated[list[Path], typer.Argument(help="Dateien oder Verzeichnisse.")],
     glob: Annotated[str, typer.Option(help="Welche Dateien in Verzeichnissen.")] = "**/*",
     start: Annotated[bool, typer.Option(help="Direkt einreihen (Voreinstellung) oder nur registrieren.")] = True,
-    strict: Annotated[bool, typer.Option(help="Ohne laufenden Daemon abbrechen (Voreinstellung) oder trotzdem einreihen.")] = True,
     json_out: Annotated[bool, typer.Option("--json", help="Maschinenlesbar ausgeben.")] = False,
 ) -> None:
     """Registriert Dokumente und reiht sie ein. Blockiert nicht.
@@ -153,24 +176,18 @@ def ocr(
     Wiederholtes Aufrufen auf demselben Verzeichnis ist der vorgesehene Gebrauch,
     kein Missbrauch: Fertiges wird nicht angefasst, nur Fehlendes laeuft.
 
-    OHNE LAUFENDEN DAEMON bricht das Kommando ab und reiht NICHTS ein — das ist
-    die Voreinstellung und eine ausdrueckliche Festlegung („ja natürlich der
-    client soll dann sterben und errorn"). Mit `--no-strict` wird trotzdem
-    eingereiht; die Jobs bleiben dann liegen, bis ein Daemon startet. Der
-    Schalter fehlte, obwohl der Client den Unterschied kennt — der zweite Weg war
-    ueber die Kommandozeile schlicht nicht erreichbar.
+    OHNE LAUFENDEN DAEMON wird trotzdem eingereiht: Abschicken haengt nicht vom
+    Daemon ab, die Jobs liegen in der Datenbank, bis einer startet. Das Kommando
+    warnt dann auf stderr (einmal) und beendet mit 0. Den Daemon startet der
+    Betreiber (`mineru-ocr daemon`), das Kommando tut es nicht. Frueher brach es
+    hier ab und kannte dafuer `--strict`; beides entfaellt, siehe
+    `OCRClient.ocr_start`.
 
     Gibt aus, wie viele Dokumente neu, wie viele bereits vorhanden, wie viele
     uebersprungen und wie viele eingereiht wurden.
     """
     try:
-        with OCRClient(preflight=False, strict=strict) as klient:
-            if start and strict:
-                # VOR dem Ablegen: Die Bytes liegen ab dem Bauen der Huellen in
-                # der Datenbank. Bricht das Kommando erst beim Einreihen ab,
-                # blieben die Dokumente dort liegen, obwohl es „reiht NICHTS ein"
-                # sagt.
-                klient.check_daemon()
+        with _warnungen_auf_stderr(), OCRClient(preflight=False) as klient:
             huellen: list[OCRWrapper] = []
             uebersprungen: dict[str, int] = {}
 

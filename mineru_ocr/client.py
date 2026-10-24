@@ -32,7 +32,7 @@ from procrastinate import utils
 from psycopg_pool import NullConnectionPool
 
 from . import db, tasks
-from .config import MASKE, Settings, ist_geheimnisname
+from .config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS, MASKE, Settings, ist_geheimnisname
 from .db import DerivedStatus, DocumentStatus
 from .errors import ConfigDriftError, ConfigurationError, DocumentNotFound
 from .runpod import RunPodClient
@@ -41,10 +41,10 @@ from .wrapper import OCRMegaWrapper, OCRWrapper
 log = logging.getLogger("mineru_ocr.client")
 """Der Logger dieses Moduls.
 
-Er steht hier, weil `ocr_start` eine Warnung ueber den fehlenden Daemon BAUTE
-und dann wegwarf: Bei `strict` wurde sie geworfen, sonst verfiel sie
-ersatzlos — `client.py` kannte `logging` nicht. Der Docstring sagte „aber es
-soll gesagt sein", und gesagt wurde nichts."""
+Er steht hier, weil `ocr_start` ohne laufenden Daemon warnt, statt abzubrechen.
+Fruehere Fassungen bauten die Warnung und warfen sie weg — `client.py` kannte
+`logging` nicht, und gesagt wurde nichts. Die Kommandozeile haengt an diesen
+Logger einen Handler auf stderr (`cli.ocr`)."""
 
 T = TypeVar("T")
 
@@ -232,6 +232,7 @@ class OCRClient:
         self._app: procrastinate.App | None = None
         self._pool: NullConnectionPool[psycopg.Connection[Any]] | None = None
         self._letzter_preflight: dict[str, Any] | None = None
+        self._ohne_daemon_gewarnt = False
 
     def __enter__(self) -> OCRClient:
         """Oeffnet Verbindung, Pool und App und fuehrt den Preflight aus.
@@ -347,7 +348,10 @@ class OCRClient:
             * Der Kontostand gegen `min_balance`.
             * Ob ein Daemon lebt — ueber Procrastinates Worker-Lebenszeichen. Das
               ist eine undokumentierte Flaeche, eingesperrt in
-              `db.worker_heartbeats`; siehe die Warnung dort.
+              `db.worker_heartbeats`; siehe die Warnung dort. Ein Daemon lebt,
+              wenn ein Worker einen Herzschlag hat, der juenger ist als
+              `config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS`, gemessen an der Uhr der
+              Datenbank; die Zeile eines abgestuerzten Daemons zaehlt nicht.
 
         Returns:
             Ein Befund je Pruefpunkt mit Soll, Ist und Bewertung (in Ordnung,
@@ -549,7 +553,8 @@ class OCRClient:
         else:
             merken(
                 "daemon",
-                "mindestens einer",
+                f"mindestens einer mit Herzschlag juenger als "
+                f"{DAEMON_HEARTBEAT_MAX_AGE_SECONDS:g} s",
                 len(lebenszeichen),
                 "in_ordnung" if lebenszeichen else "warnung",
             )
@@ -568,32 +573,6 @@ class OCRClient:
     # ----------------------------------------------------------------------
     # Arbeit
     # ----------------------------------------------------------------------
-
-    def check_daemon(self) -> None:
-        """Sagt, ob ein Daemon laeuft: mit `strict` per Ausnahme, sonst per Warnung.
-
-        Eigene Methode, weil die Kommandozeile sie VOR dem Ablegen der Eingaben
-        braucht. Seit die Bytes in `inputs` liegen, hinterlaesst ein Abbruch erst in
-        `ocr_start` die ganzen Dokumente in der Datenbank, obwohl das Kommando
-        „reiht nichts ein" sagt.
-
-        Raises:
-            ConfigurationError: Kein Daemon erreichbar UND `strict`.
-
-        Kosten: keine.
-        """
-        if not db.worker_heartbeats(self.conn):
-            meldung = (
-                "Es laeuft kein Daemon. Starten mit `mineru-ocr daemon`."
-            )
-            if self._settings.strict:
-                raise ConfigurationError(meldung)
-            log.warning(
-                "%s Die Jobs werden eingereiht und bleiben liegen, bis einer "
-                "startet — das ist ohne `strict` zulaessig, aber es soll gesagt "
-                "sein.",
-                meldung,
-            )
 
     def ocr_start(self, target: OCRWrapper | OCRMegaWrapper) -> OCRWrapper | OCRMegaWrapper:
         """Reiht alles ein, was noch kein Endergebnis hat. Blockiert nicht.
@@ -628,38 +607,39 @@ class OCRClient:
             Laeuft ein Dokument schon, ist das kein Fehler, sondern der Normalfall
             beim wiederholten Durchlaufen eines Ordners.
 
-        Verhalten bei fehlendem Daemon — die beiden Faelle sauber getrennt:
+        Verhalten bei fehlendem Daemon: Abschicken haengt nicht vom Daemon ab.
+        Es reiht auch dann ein und WARNT (Logger `mineru_ocr.client`, Stufe
+        WARNING; einmal je daemonloser Phase und nicht je Aufruf); abgebrochen
+        wird nichts. Ein Daemon gilt als laufend, wenn ein
+        Worker einen Herzschlag hat, der juenger ist als
+        `config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS`, gemessen an der Uhr der
+        Datenbank — die stehengebliebene Zeile eines abgestuerzten Daemons zaehlt
+        nicht. Die Jobs liegen bis zum Start eines Daemons in der Datenbank; ihn
+        startet der Betreiber, weder Bibliothek noch Kommandozeile tun es.
 
-            Mit `strict` (der VOREINSTELLUNG) wird geworfen, BEVOR etwas
-            eingereiht ist. Das ist eine ausdrueckliche Festlegung des
-            Auftraggebers und keine Ableitung: „ja natürlich der client soll
-            dann sterben und errorn". Praktische Folge, die man kennen muss:
-            `mineru-ocr ocr ~/Scans` schlaegt ohne laufenden Daemon mit
-            Exit-Code 1 fehl und reiht NICHTS ein. Das ist gewollt.
-
-            Ohne `strict` wird eingereiht und die Lage protokolliert. Jobs
-            anzuhaeufen, die niemand abholt, ist dann zulaessig — der Daemon
-            kann spaeter starten.
-
-            HIER STAND FRUEHER EIN WIDERSPRUCH, und zwar zwei Zeilen
-            auseinander: „Jobs anzuhaeufen, die niemand abholt, ist zulaessig"
-            unmittelbar ueber einem Wurf, der genau das verhinderte. Der Satz
-            beschrieb den `strict=False`-Fall und las sich wie eine Aussage ueber
-            beide. Aufgeloest ist er, indem die Faelle getrennt benannt sind —
-            NICHT, indem der Wurf entfernt wird. Der Wurf ist die Entscheidung,
-            der Satz war die ungenaue Beschreibung.
-
-            Und die Warnung im nicht-strengen Fall wird jetzt wirklich
-            ausgegeben. Sie wurde vorher gebaut und weggeworfen: `client.py`
-            kannte `logging` nicht, also verfiel sie ersatzlos, waehrend der
-            Docstring „aber es soll gesagt sein" versprach.
-
-        Raises:
-            ConfigurationError: Kein Daemon erreichbar UND `strict`.
+        Das war frueher anders: Unter `strict` brach das Abschicken ab, mit der
+        Begruendung einer fruehen Festlegung des Eigentuemers („ja natürlich der
+        client soll dann sterben und errorn"). Sein spaeterer Satz loest sie ab:
+        „das warten ist künstlich man wartet auf die datenbank nicht direkt auf
+        den worker der ist ja unabhängig". Eingereihte Arbeit wartet auf die
+        Datenbank und nicht auf den Worker; ein fehlender Daemon verzoegert sie,
+        verliert sie aber nicht. Die Lebendigkeit ist nur Auskunft — `status` und
+        `preflight` melden sie, die Warnung hier sagt sie beim Abschicken.
 
         Kosten: keine unmittelbar. Mittelbar: alles, was der Daemon danach tut.
         """
-        self.check_daemon()
+        if db.worker_heartbeats(self.conn):
+            self._ohne_daemon_gewarnt = False
+        elif not self._ohne_daemon_gewarnt:
+            # Einmal je daemonloser Phase: Die Kommandozeile reiht Dokument fuer
+            # Dokument ein, und dreissigtausend gleiche Zeilen waeren Laerm.
+            self._ohne_daemon_gewarnt = True
+            log.warning(
+                "Es laeuft kein Daemon (kein Worker-Herzschlag juenger als %g s). "
+                "Die Jobs werden eingereiht und bleiben liegen, bis einer startet: "
+                "`mineru-ocr daemon`.",
+                DAEMON_HEARTBEAT_MAX_AGE_SECONDS,
+            )
 
         huellen = [target] if isinstance(target, OCRWrapper) else list(target)
         for huelle in huellen:
