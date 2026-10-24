@@ -28,14 +28,15 @@ Beleg, dass sie zu spät gefahren wurde. Die Vorgabe lautete: „es wird ja nich
 ohne interaktion gebaut es ist ja consigment gegen die api" (Plan 2.4).
 
 WAS OFFLINE ABGESICHERT IST, seit die Antworten dieser Läufe als Fixtures unter
-`artifacts/2026-08-08-erster-tarball-lauf/` liegen: das `empty`-Kriterium und
-die Form einer echten Fehlerantwort. Diese zwei brauchen kein Geld mehr.
+`artifacts/2026-08-08-erster-tarball-lauf/` liegen: das `empty`-Kriterium samt
+dem Tarball-Auspacker an einer leeren Antwort und die Form einer echten
+Fehlerantwort. Diese zwei brauchen kein Geld mehr.
 
-Der Tarball-Auspacker und der Seitenversatz ueber drei echte Teilstuecke waren
-ebenso abgesichert, bis Mineroo#2 die Aufnahmen dazu entfernte, weil sie
-personenbezogene Daten trugen. Ihre Tests laufen ausgesetzt (`pytest -rs`), bis
-Ersatzaufnahmen ohne Personenbezug unter denselben Namen liegen; bis dahin laeuft
-dieser Weg offline nur gegen erfundene Antworten.
+Der Tarball-Auspacker an einer nicht leeren Antwort und der Seitenversatz ueber
+drei echte Teilstuecke waren ebenso abgesichert, bis Mineroo#2 die Aufnahmen dazu
+entfernte, weil sie personenbezogene Daten trugen. Ihre Tests laufen ausgesetzt
+(`pytest -rs`), bis Ersatzaufnahmen ohne Personenbezug unter denselben Namen
+liegen; bis dahin laufen diese Wege offline nur gegen erfundene Antworten.
 """
 
 from __future__ import annotations
