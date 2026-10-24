@@ -248,6 +248,113 @@ def test_leerer_apikey_wirft(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
         Settings.load()
 
 
+# --- Die Sollwerte des Endpoints ------------------------------------------
+
+
+def test_sollwerte_haben_die_festgelegten_voreinstellungen() -> None:
+    """Vorerst gelten die Werte, wie sie am Endpoint gesetzt sind (Mineroo#3):
+    `workersMin` 0, `workersMax` 10, `idleTimeout` 60, `executionTimeoutMs`
+    600000. Den Image-Tag kennt erst der Betreiber; ohne Angabe gibt es keinen."""
+    einstellung = _einstellung()
+    assert einstellung.workers_min == 0
+    assert einstellung.workers_max == 10
+    assert einstellung.idle_timeout == 60
+    assert einstellung.execution_timeout_ms == 600000
+    assert einstellung.expected_image_tag is None
+
+
+def test_zulaessige_rechenzentren_sind_nur_ewr() -> None:
+    """Die Voreinstellung der zulaessigen Rechenzentren liegt im EWR: EU-Staaten
+    plus Island und Norwegen, denn dort gilt die DSGVO."""
+    erlaubt = _einstellung().allowed_data_centers
+    assert erlaubt, "eine leere Liste liesse nichts zu"
+    assert all(
+        name.startswith(("EU-", "EUR-IS-", "EUR-NO-")) for name in erlaubt
+    ), erlaubt
+    assert "EU-RO-1" in erlaubt
+    assert "US-CA-2" not in erlaubt
+
+
+def test_voreingestellte_endpoint_variablen() -> None:
+    """Geprueft werden Modellquelle, Parallelitaet und GPU-Speicheranteil. Fuer
+    den Speicheranteil gibt es noch keinen gemessenen Wert: Ohne Sollwert (`None`)
+    steht er in der Liste, damit der Preflight ihn berichtet statt ihn zu
+    vergessen."""
+    env = _einstellung().endpoint_env
+    assert env["MINERU_MODEL_SOURCE"] == "local"
+    assert env["MINERU_MAX_CONCURRENCY"] == "1"
+    assert env["MINERU_VIRTUAL_VRAM_SIZE"] is None
+
+
+def test_sollwerte_kommen_aus_der_datei(tmp_path: Path) -> None:
+    datei = tmp_path / "config.toml"
+    datei.write_text(
+        "expected_image_tag = \"abc123\"\n"
+        "workers_min = 1\n"
+        "workers_max = 4\n"
+        "idle_timeout = 90\n"
+        "execution_timeout_ms = 900000\n"
+        "allowed_data_centers = [\"EU-NL-1\", \"EUR-NO-1\"]\n"
+        "[endpoint_env]\n"
+        "MINERU_MAX_CONCURRENCY = \"2\"\n"
+        "MINERU_VIRTUAL_VRAM_SIZE = \"12\"\n"
+        "NEUE_VARIABLE = \"x\"\n"
+    )
+    e = _einstellung(config_path=datei)
+    assert e.expected_image_tag == "abc123"
+    assert (e.workers_min, e.workers_max) == (1, 4)
+    assert (e.idle_timeout, e.execution_timeout_ms) == (90, 900000)
+    assert e.allowed_data_centers == ("EU-NL-1", "EUR-NO-1")
+    # Die Tabelle ueberschreibt je Schluessel; was sie nicht nennt, bleibt.
+    assert e.endpoint_env["MINERU_MAX_CONCURRENCY"] == "2"
+    assert e.endpoint_env["MINERU_VIRTUAL_VRAM_SIZE"] == "12"
+    assert e.endpoint_env["NEUE_VARIABLE"] == "x"
+    assert e.endpoint_env["MINERU_MODEL_SOURCE"] == "local"
+
+
+def test_sollwerte_kommen_aus_der_umgebung() -> None:
+    e = _einstellung(
+        environ={
+            "MINERU_OCR_EXPECTED_IMAGE_TAG": "xyz",
+            "MINERU_OCR_WORKERS_MAX": "3",
+            "MINERU_OCR_IDLE_TIMEOUT": "120",
+            "MINERU_OCR_ALLOWED_DATA_CENTERS": "EU-CZ-1, EU-SE-1",
+        }
+    )
+    assert e.expected_image_tag == "xyz"
+    assert e.workers_max == 3
+    assert e.idle_timeout == 120
+    assert e.allowed_data_centers == ("EU-CZ-1", "EU-SE-1")
+
+
+def test_umgebung_schlaegt_datei_bei_den_sollwerten(tmp_path: Path) -> None:
+    datei = tmp_path / "config.toml"
+    datei.write_text("idle_timeout = 90\n")
+    e = _einstellung(
+        config_path=datei, environ={"MINERU_OCR_IDLE_TIMEOUT": "30"}
+    )
+    assert e.idle_timeout == 30
+
+
+def test_zahl_in_der_umgebung_muss_eine_zahl_sein() -> None:
+    with pytest.raises(ConfigurationError, match="MINERU_OCR_IDLE_TIMEOUT"):
+        _einstellung(environ={"MINERU_OCR_IDLE_TIMEOUT": "sechzig"})
+
+
+def test_zahl_in_der_datei_muss_eine_zahl_sein(tmp_path: Path) -> None:
+    datei = tmp_path / "config.toml"
+    datei.write_text('idle_timeout = "sechzig"\n')
+    with pytest.raises(ConfigurationError, match="idle_timeout"):
+        _einstellung(config_path=datei)
+
+
+def test_rechenzentren_in_der_datei_sind_eine_liste_von_namen(tmp_path: Path) -> None:
+    datei = tmp_path / "config.toml"
+    datei.write_text('allowed_data_centers = "EU-RO-1"\n')
+    with pytest.raises(ConfigurationError, match="allowed_data_centers"):
+        _einstellung(config_path=datei)
+
+
 # --- Keine Seiteneffekte --------------------------------------------------
 
 

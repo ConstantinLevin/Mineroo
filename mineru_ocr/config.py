@@ -35,11 +35,60 @@ eine: `endpoint_id` ↔ `MINERU_OCR_ENDPOINT_ID`."""
 ENV_CONFIG_PATH: Final = "MINERU_OCR_CONFIG"
 """Umgebungsvariable, die auf eine andere Konfigurationsdatei zeigt."""
 
-DATEI_SCHLUESSEL: Final = frozenset({"endpoint_id", "db_dsn"})
+ZAHL_SCHLUESSEL: Final = (
+    "workers_min",
+    "workers_max",
+    "idle_timeout",
+    "execution_timeout_ms",
+)
+"""Die Sollwerte des Endpoints, die Ganzzahlen sind."""
+
+DATEI_SCHLUESSEL: Final = frozenset(
+    {
+        "endpoint_id",
+        "db_dsn",
+        "expected_image_tag",
+        "allowed_data_centers",
+        "endpoint_env",
+        *ZAHL_SCHLUESSEL,
+    }
+)
 """Die Schluessel, die die Konfigurationsdatei kennt. Ein anderer ist ein Fehler
 und kein stilles Ignorieren: Ein Tippfehler im Namen waere sonst ein Wert, der da
 steht und nirgends wirkt. Der API-Schluessel gehoert ausdruecklich NICHT hierher;
 er bleibt in `~/.runpod/config.toml`."""
+
+EWR_RECHENZENTREN: Final = (
+    "EU-CZ-1",
+    "EU-FR-1",
+    "EU-NL-1",
+    "EU-RO-1",
+    "EU-SE-1",
+    "EUR-IS-1",
+    "EUR-IS-2",
+    "EUR-NO-1",
+)
+"""Die Rechenzentren im EWR, in denen die DSGVO gilt: EU-Staaten plus Island und
+Norwegen (`EUR-IS-*`, `EUR-NO-*`). Die Kennungen sind der RunPod-Dokumentation
+vom 25.10.2026 entnommen (Seiten zu Global Networking, S3-API und SDK-
+Parametern), nicht am Konto abgefragt; sie kann veralten, wenn RunPod
+Rechenzentren hinzufuegt. Deshalb ist sie ein Sollwert der Konfiguration
+(`allowed_data_centers`) und keine Mauer im Code: Wer ein neues EWR-Rechenzentrum
+zulaesst, tut das in seiner Konfiguration."""
+
+DEFAULT_ENDPOINT_ENV: Final[Mapping[str, str | None]] = {
+    "MINERU_MODEL_SOURCE": "local",
+    "MINERU_MAX_CONCURRENCY": "1",
+    "MINERU_VIRTUAL_VRAM_SIZE": None,
+}
+"""Die Endpoint-Variablen, auf die es ankommt, mit ihrem Sollwert.
+
+`MINERU_MODEL_SOURCE=local`: Der Worker laedt seine Modelle offline aus dem Image
+und holt nichts von Dritten. `MINERU_MAX_CONCURRENCY=1`: ein Teilstueck je Worker
+zugleich, siehe `ocr_concurrency`. `MINERU_VIRTUAL_VRAM_SIZE` ist MinerUs Weg, den
+GPU-Speicheranteil von vLLM einzustellen; ihr Wert kommt aus der Messung, die
+noch aussteht. `None` heisst: Sollwert noch offen — der Preflight berichtet dann
+den Ist-Wert und bewertet ihn als nicht pruefbar, statt ihn zu uebergehen."""
 
 RUNPOD_CONFIG_PATH: Final = Path.home() / ".runpod" / "config.toml"
 """Der im Projekt bewaehrte Ort des API-Schluessels, Feld `apikey`. Wird
@@ -124,20 +173,106 @@ def _konfigurationsdatei(pfad: Path, *, ausdruecklich: bool) -> dict[str, Any]:
     return daten
 
 
-def _wert(name: str, umgebung: Mapping[str, str], datei: Mapping[str, Any]) -> Any | None:
-    """Der Wert eines Schluessels aus Umgebung, sonst Datei; `None`, wenn keiner.
+def _wert(
+    name: str, umgebung: Mapping[str, str], datei: Mapping[str, Any], pfad: Path
+) -> tuple[Any, str] | None:
+    """Der Wert eines Schluessels samt seiner Herkunft; `None`, wenn keiner.
+
+    Zuerst die Umgebung, dann die Datei. Die Herkunft („MINERU_OCR_IDLE_TIMEOUT"
+    oder „idle_timeout in <pfad>") gehoert in jede Fehlermeldung zum Wert: Wer
+    einen falschen Wert hat, soll wissen, wo er ihn suchen muss.
 
     Eine leere oder nur aus Leerraum bestehende Angabe gilt als nicht gesetzt: Eine
     leere Umgebungsvariable ist fast immer ein Rest aus einem Skript und kein
     Wunsch, den Wert auf „nichts" zu setzen.
     """
-    aus_umgebung = umgebung.get(ENV_PREFIX + name.upper())
+    schluessel = ENV_PREFIX + name.upper()
+    aus_umgebung = umgebung.get(schluessel)
     if aus_umgebung is not None and aus_umgebung.strip():
-        return aus_umgebung
+        return aus_umgebung, schluessel
     aus_datei = datei.get(name)
-    if isinstance(aus_datei, str) and not aus_datei.strip():
+    if aus_datei is None or (isinstance(aus_datei, str) and not aus_datei.strip()):
         return None
-    return aus_datei
+    return aus_datei, f"{name} in {pfad}"
+
+
+def _zeichenkette(name: str, wert: Any, herkunft: str) -> str:
+    if not isinstance(wert, str):
+        raise ConfigurationError(
+            f"{herkunft}: `{name}` muss ein Text sein, ist aber {wert!r}."
+        )
+    return wert
+
+
+def _zahl(name: str, wert: Any, herkunft: str) -> int:
+    """Eine Ganzzahl aus Umgebung (Text) oder Datei (Zahl)."""
+    if isinstance(wert, str):
+        try:
+            return int(wert)
+        except ValueError:
+            pass
+    elif isinstance(wert, int) and not isinstance(wert, bool):
+        return wert
+    raise ConfigurationError(
+        f"{herkunft}: `{name}` muss eine ganze Zahl sein, ist aber {wert!r}."
+    )
+
+
+def _namen(name: str, wert: Any, herkunft: str) -> tuple[str, ...]:
+    """Eine Liste von Namen: in der Umgebung durch Kommas getrennt, in der Datei
+    eine Liste. Leer ist ein Fehler — eine leere Liste liesse nichts zu."""
+    if isinstance(wert, str) and herkunft.startswith(ENV_PREFIX):
+        namen = [teil.strip() for teil in wert.split(",") if teil.strip()]
+    elif isinstance(wert, list) and all(isinstance(n, str) for n in wert):
+        namen = [n.strip() for n in wert if n.strip()]
+    else:
+        raise ConfigurationError(
+            f"{herkunft}: `{name}` muss eine Liste von Namen sein, ist aber {wert!r}."
+        )
+    if not namen:
+        raise ConfigurationError(f"{herkunft}: `{name}` ist leer.")
+    return tuple(namen)
+
+
+def _sollwerte(
+    umgebung: Mapping[str, str], datei: Mapping[str, Any], pfad: Path
+) -> dict[str, Any]:
+    """Die Sollwerte des Endpoints, die irgendwo eingestellt sind.
+
+    Nur was eingestellt ist, kommt in das Ergebnis; alles andere behaelt seine
+    Feld-Voreinstellung. Die Endpoint-Variablen stehen nur in der Datei (als
+    Tabelle `[endpoint_env]`) und ueberschreiben die Voreinstellung je
+    Schluessel: Was die Tabelle nicht nennt, bleibt.
+    """
+    ergebnis: dict[str, Any] = {}
+    for name in ZAHL_SCHLUESSEL:
+        gefunden = _wert(name, umgebung, datei, pfad)
+        if gefunden is not None:
+            ergebnis[name] = _zahl(name, *gefunden)
+    gefunden = _wert("expected_image_tag", umgebung, datei, pfad)
+    if gefunden is not None:
+        ergebnis["expected_image_tag"] = _zeichenkette("expected_image_tag", *gefunden)
+    gefunden = _wert("allowed_data_centers", umgebung, datei, pfad)
+    if gefunden is not None:
+        ergebnis["allowed_data_centers"] = _namen("allowed_data_centers", *gefunden)
+
+    tabelle = datei.get("endpoint_env")
+    if tabelle is not None:
+        herkunft = f"endpoint_env in {pfad}"
+        if not isinstance(tabelle, dict):
+            raise ConfigurationError(
+                f"{herkunft}: muss eine Tabelle `[endpoint_env]` sein, ist aber {tabelle!r}."
+            )
+        env: dict[str, str | None] = dict(DEFAULT_ENDPOINT_ENV)
+        for variable, soll in tabelle.items():
+            if isinstance(soll, bool) or not isinstance(soll, (str, int)):
+                raise ConfigurationError(
+                    f"{herkunft}: Der Sollwert von `{variable}` muss ein Text oder "
+                    f"eine Zahl sein, ist aber {soll!r}."
+                )
+            env[variable] = str(soll)
+        ergebnis["endpoint_env"] = env
+    return ergebnis
 
 
 def _fehlt(name: str, config_path: Path) -> str:
@@ -461,6 +596,39 @@ class Settings:
     ist keine Messung, sondern die Abwaegung zwischen „merkt das Aufladen schnell"
     und „belaestigt die API nicht ohne Not"."""
 
+    # -- Sollwerte des Endpoints (gegen sie vergleicht der Preflight) ---------
+
+    expected_image_tag: str | None = None
+    """Der Tag, den das Template-Image und das Image jedes Workers tragen sollen.
+    Der Betreiber stellt ihn nach jedem Build ein; vorher kennt ihn niemand,
+    deshalb gibt es keine Voreinstellung — der Preflight meldet dann „nicht
+    pruefbar", statt irgendeinen Tag fuer richtig zu halten."""
+
+    workers_min: int = 0
+    """`workersMin`: Skalierung auf null, damit ein ruhender Endpoint nichts kostet."""
+
+    workers_max: int = 10
+    """`workersMax`: die Kontogrenze. Steht es darunter, laeuft der Lauf langsamer,
+    als er koennte; darueber akzeptiert RunPod den Wert nicht."""
+
+    idle_timeout: int = 60
+    """`idleTimeout` in Sekunden: wie lange ein Worker nach seinem letzten Job warm
+    bleibt und bezahlt wird. Vorerst 60, wie am Endpoint gesetzt; den endgueltigen
+    Wert setzt der Eigentuemer aus der gemessenen Kaltstartzeit."""
+
+    execution_timeout_ms: int = 600000
+    """`executionTimeoutMs`: wie lange ein Job laufen darf. Vorerst 600000, wie am
+    Endpoint gesetzt; er folgt der Messung zur Teilstueck-Groesse."""
+
+    allowed_data_centers: tuple[str, ...] = EWR_RECHENZENTREN
+    """Die Rechenzentren, in denen der Endpoint rechnen darf. Der Preflight
+    verlangt, dass ALLE Rechenzentren des Endpoints in dieser Liste liegen."""
+
+    endpoint_env: Mapping[str, str | None] = dataclasses.field(
+        default_factory=lambda: dict(DEFAULT_ENDPOINT_ENV)
+    )
+    """Endpoint-Variable → Sollwert, siehe `DEFAULT_ENDPOINT_ENV`."""
+
     # -- Betrieb -----------------------------------------------------------
 
     strict: bool = True
@@ -614,20 +782,25 @@ class Settings:
             config_path = Path(umgebung.get(ENV_CONFIG_PATH) or DEFAULT_CONFIG_PATH)
         datei = _konfigurationsdatei(config_path, ausdruecklich=ausdruecklich)
 
-        endpoint = endpoint_id if endpoint_id is not None else _wert(
-            "endpoint_id", umgebung, datei
-        )
+        endpoint = endpoint_id
         if endpoint is None:
-            raise ConfigurationError(_fehlt("endpoint_id", config_path))
-        dsn = db_dsn if db_dsn is not None else _wert("db_dsn", umgebung, datei)
+            gefunden = _wert("endpoint_id", umgebung, datei, config_path)
+            if gefunden is None:
+                raise ConfigurationError(_fehlt("endpoint_id", config_path))
+            endpoint = _zeichenkette("endpoint_id", *gefunden)
+        dsn = db_dsn
         if dsn is None:
-            raise ConfigurationError(_fehlt("db_dsn", config_path))
+            gefunden = _wert("db_dsn", umgebung, datei, config_path)
+            if gefunden is None:
+                raise ConfigurationError(_fehlt("db_dsn", config_path))
+            dsn = _zeichenkette("db_dsn", *gefunden)
 
         einstellung = cls(
             db_dsn=dsn,
             endpoint_id=endpoint,
             api_key=api_key if api_key is not None else _schluessel_aus_datei(),
             strict=strict,
+            **_sollwerte(umgebung, datei, config_path),
         )
 
         # Die drei uebrigen ueberschreiben ihre Feld-Voreinstellung nur, wenn sie
