@@ -812,7 +812,9 @@ def test_kein_kommando_veraendert_bezahlte_ressourcen() -> None:
 
     quelle = inspect.getsource(modul)
     # Die einzige veraendernde HTTP-Methode, die vorkommen darf, ist das POST
-    # auf `/run` und auf GraphQL — beides Lesen bzw. das bewusste Einreichen.
+    # auf `/run`, auf `/cancel/<job-id>` und auf GraphQL — Einreichen und
+    # Abbrechen eines eigenen Jobs sowie Lesen, nie ein Eingriff in Endpoint,
+    # Template oder Worker.
     for verboten in ["PATCH", "DELETE", "PUT", "workersMax=", "saveEndpoint", "mutation"]:
         assert verboten not in quelle, verboten
 

@@ -184,7 +184,12 @@ Jede steht wegen eines bezahlten Fehlers, nicht wegen einer Vorliebe.
   (gemessen 1,00×). Die Begründung steht im Kommentar an der Abhängigkeit.
 - **Niemals `/runsync`.** Der Endpoint ist warteschlangenbasiert; `/runsync`
   wartet 60 Sekunden, ein Kaltstart dauert rund 8,5 Minuten. Abgesendet wird über
-  `/run`, abgefragt über `/status/<job-id>`.
+  `/run`, abgefragt über `/status/<job-id>`, abgebrochen über
+  `/cancel/<job-id>`. Abgebrochen wird ein Job, den das Paket nach Ablauf seines
+  Zeitbudgets aufgibt, und einer, dessen Warten der Daemon beim Herunterfahren
+  abbricht — sonst läuft er bei RunPod weiter und kostet. Das Zeitbudget
+  (`job_timeout_seconds`) läuft ab `IN_PROGRESS`; Warteschlange und Kaltstart
+  zählen nicht, und die Zeit in der Warteschlange hat keine Obergrenze.
 - **Der API-Schlüssel steht nur im `Authorization`-Header**, nie in einer URL,
   und wird nie ausgegeben. Er liegt in `~/.runpod/config.toml` im Feld `apikey`.
 - **PDFium ist nicht threadsicher.** `asyncio.to_thread` um `pdf.py` herum ist

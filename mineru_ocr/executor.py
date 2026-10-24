@@ -256,8 +256,9 @@ async def process_document(
             wenn dies geworfen wird.
         InputError: Endgueltig ohne RunPod-Kontakt. Die Zeile steht bereits auf
             `input_error`.
-        asyncio.CancelledError: Der Daemon faehrt herunter. Wird NICHT gefangen.
-            Der Job endet dann `aborted`, die Zeile bleibt `new`, und das
+        asyncio.CancelledError: Der Daemon faehrt herunter. Wird weitergeworfen,
+            nicht verschluckt; vorher geht `/cancel` fuer den RunPod-Job hinaus,
+            auf den gerade gewartet wird. Der Job endet dann `aborted`, die Zeile bleibt `new`, und das
             Dokument laeuft beim naechsten Einreihen von vorn. Es gibt fuer
             `aborted` ausdruecklich kein Retry-Bordmittel (Feature-Verifikation
             Punkt 19) — das erneute Einreihen IST der Heilungsweg.
