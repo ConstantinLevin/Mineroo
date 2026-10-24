@@ -140,9 +140,9 @@ def _anlegen(
     """Legt Zeile und Eingabe an und gibt Hash und einen Pfad zurueck, den es
     NICHT gibt.
 
-    Der Pfad existiert nur, weil die Zeile noch eine Spalte dafuer hat. Auf der
-    Platte liegt nichts: Liest der Job die Eingabe von dort statt aus `inputs`,
-    findet er nichts, und der Test faellt.
+    Der Pfad ist ein Merkzeichen fuer Tests: Auf der Platte liegt nichts. Liest
+    der Job die Eingabe von dort statt aus `inputs`, findet er nichts, und der
+    Test faellt.
     """
     pfad = tmp_path / name
     sha = hashlib.sha256(inhalt).hexdigest()
@@ -312,6 +312,34 @@ async def test_eingabe_mit_falschem_hash_wird_erkannt(
     assert zeile.status is DocumentStatus.INPUT_ERROR
     assert zeile.error is not None
     assert any(v["kind"] == "gescheitert" for v in zeile.notes)
+
+
+async def test_kaputte_pdf_endet_input_error_auch_bei_leerem_konto(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Eine PDF, die sich nicht oeffnen laesst, endet `input_error`, ohne auf Geld
+    zu warten.
+
+    Das Einreihen oeffnet keine PDF mehr, die Pruefung geschieht erst im Job. Stuende
+    die Kontostandsabfrage davor, haette eine kaputte PDF bei leerem Konto einen
+    Platz des Daemons belegt, bis wieder Geld da ist, obwohl RunPod nie gefragt wird.
+    """
+    sha, _ = _anlegen(db_conn, tmp_path, b"%PDF-1.7\nkeine PDF, nur ein Kopf")
+
+    runpod = FalscherRunPod([_fertige_antwort()], kontostand=0.0)
+    with pytest.raises(CorruptDocumentError):
+        await asyncio.wait_for(
+            process_document(sha, settings=exec_settings, runpod=runpod, pool=pool),
+            timeout=5,
+        )
+
+    assert runpod.abgesendet == []
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
 
 
 async def test_job_bestimmt_die_seitenzahl_und_schreibt_sie_mit_dem_ergebnis(
@@ -1234,8 +1262,8 @@ async def test_eingabeprobleme_enden_input_error_nicht_failed(
     ueber die Regel „Unbekanntes ist endgueltig":
 
         eine MIME-Zeichenkette, zu der es keinen bekannten Typ gibt,
-        und eine Quelldatei, die zwischen Einreihen und Verarbeiten
-        verschwindet.
+        und eine Eingabe, die in `inputs` fehlt, obwohl das Dokument noch
+        kein Endergebnis hat.
 
     Bezahlt ist in beiden Faellen nichts. Und der Unterschied ist nicht bloss
     Etikett: `input_error` steht im Terminal-Guard und wird nicht wieder

@@ -342,15 +342,19 @@ async def process_document(
                 }
             )
 
-        # Vorsorglich, VOR dem ersten bezahlten Aufruf. Bei leerem Konto liefe
-        # man sonst in eine Wand aus 402-Antworten.
-        await wait_for_balance(runpod, settings)
-
         # --- 3.: zerlegen, absenden, abholen ----------------------------
+        # Zuerst wird geprueft, was ohne RunPod pruefbar ist (PDF oeffnen, Groesse
+        # gegen die Anfragegrenze), und erst DANN auf Geld gewartet: Das Einreihen
+        # oeffnet keine PDF mehr, also faellt eine kaputte erst hier auf, und sie
+        # darf bei leerem Konto nicht einen Platz des Daemons belegen, bis wieder
+        # Geld da ist, obwohl RunPod nie gefragt wird.
         if typ.is_pdf:
             with PdfReader(rohbytes) as leser:
                 seiten = leser.page_count
                 seitenzahl = seiten
+                # Vorsorglich, VOR dem ersten bezahlten Aufruf. Bei leerem Konto
+                # liefe man sonst in eine Wand aus 402-Antworten.
+                await wait_for_balance(runpod, settings)
                 if chunking.needs_chunking(
                     size_bytes=len(rohbytes),
                     page_count=seiten,
@@ -384,6 +388,7 @@ async def process_document(
             chunking.check_fits_unsplit(
                 size_bytes=len(rohbytes), doc_type=typ, settings=settings
             )
+            await wait_for_balance(runpod, settings)
             await _stuecke_verarbeiten(
                 [(chunking.Chunk(first_page=0, last_page=0), rohbytes)],
                 settings=settings,
