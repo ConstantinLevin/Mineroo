@@ -1,0 +1,7 @@
+{
+  "mode": "auto",
+  "claude": { "model": "claude-opus-5-5", "effort": "high" },
+  "codex": { "model": null, "effort": "high" },
+  "cursor": { "model": null },
+  "omp": { "model": null, "effort": "high" }
+}

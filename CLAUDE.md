@@ -246,3 +246,23 @@ vorgekommen.
 früheren Produktionsläufe, mit fest verdrahteten Pfaden und mehreren benannten
 Fehlern. Sie sind **Vorlagen und Messlatte, keine Bausteine** — `mineru_ocr` wird
 an ihnen gemessen, nicht aus ihnen gepatcht.
+
+---
+
+## Agent skills
+
+### Issue tracker
+
+Die Engineering-Skills führen Issues als GitHub Issues in `ConstantinLevin/Mineroo`, angesprochen über `gh`. Siehe `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Die sieben Standard-Labels, jedes heißt wie seine Rolle (`bug`, `enhancement`, `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). Siehe `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: ein `GLOSSARY.md` an der Wurzel, ADRs in `docs/adr/`, sobald die erste geschrieben ist. Siehe `docs/agents/domain.md`.
+
+### External peers
+
+Modus `auto`: Claude-Peer auf `claude-opus-5-5` mit Effort `high`, Codex-Peer mit Standardmodell und Effort `high`. Siehe `docs/agents/cross-model.json`.
