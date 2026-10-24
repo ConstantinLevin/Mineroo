@@ -2,10 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Diese Datei gilt für das Verzeichnis `AgentRuns/NewOrderDevon`. Die
-Wurzel-`CLAUDE.md` unter `/Users/jurgen/` gilt weiter und steht darüber — dort
-stehen Aufgabenverfolgung (beads), Session-Abschluss und Arbeitsweise. Hier steht
-ausschließlich, was für diesen Code gilt und was man nicht durch Hinsehen findet.
+Diese Datei gilt für Mineroo, den allgemeinen MinerU-Wrapper für OCR auf Abruf
+(das Paket `mineru_ocr`). Aufgaben sind GitHub-Issues: `ConstantinLevin/Mineroo`
+für das Paket, der Fork `ConstantinLevin/mineru-runpod` für den Worker (siehe
+„Agent skills" unten und `docs/agents/`). Hier steht ausschließlich, was für
+diesen Code gilt und was man nicht durch Hinsehen findet.
 
 Die Projektsprache ist Deutsch: Docstrings, Kommentare, Pläne und Dokumentation
 sind durchweg deutsch, ebenso die internen Bezeichner (`_stuecke_verarbeiten`,
@@ -46,6 +47,12 @@ Es gibt keinen Build-Schritt und keinen Linter außer mypy. `pyproject.toml`
 beschreibt ein installierbares Paket samt Kommando `mineru-ocr`, aber gearbeitet
 wird aus dem Verzeichnis heraus.
 
+**Testausgabe immer vollständig in eine Datei schreiben, bevor gefiltert wird.**
+Also `python3 -m pytest -q > /pfad/zur/ausgabe.txt 2>&1`, dann die Datei lesen
+oder gezielt mit `grep` durchsuchen. Der Lauf selbst geht nie durch einen Filter:
+Ein gefilterter Lauf zeigt nur, was der Filter durchlässt, und ein zweiter Lauf,
+um „den Rest" zu sehen, kostet die Zeit nochmals und kann anders ausgehen.
+
 ### Die zwei Kennzeichnungen — und warum ein grüner Lauf trügen kann
 
 `pyproject.toml` definiert zwei pytest-Marker, und beide ändern, was ein
@@ -58,6 +65,11 @@ bestandener Lauf überhaupt beweist:
   über den Code. Die Kehrseite: Ein „alles grün" ohne laufende Instanz hat die
   gesamte Datenbankseite nie ausgeführt. Wer die Zahl der übersprungenen Tests
   nicht ansieht, hält einen halben Lauf für einen ganzen.
+  `psql` liegt unter `/Applications/Postgres.app/Contents/Versions/latest/bin/psql`,
+  nicht im `PATH`. Die Datenbank `mineru_ocr` enthält echte personenbezogene Daten
+  und wird nur lesend geöffnet, mit
+  `PGOPTIONS='-c default_transaction_read_only=on'`; Tests laufen ausschließlich
+  gegen `mineru_ocr_test`.
 - **`live`** spricht den echten RunPod-Endpoint an und **kostet Geld**. Diese
   Tests laufen nur nach ausdrücklicher Zustimmung des Benutzers, nie beiläufig
   und nie „zur Sicherheit".
@@ -180,8 +192,9 @@ Jede steht wegen eines bezahlten Fehlers, nicht wegen einer Vorliebe.
   `pdf.py` bewusst dokumentiert und kein Versehen.
 - **`procrastinate.App.schema_manager.apply_schema()` ist nicht idempotent.**
   `db.setup` prüft deshalb erst auf die Existenz von `procrastinate_jobs`.
-- **Der Steuerkorpus ist personenbezogen.** Was an RunPod geht, geht in ein
-  EU-Rechenzentrum; der `s3`-Transport ist nicht die Voreinstellung.
+- **Was an RunPod geht, geht in ein EU-Rechenzentrum.** Ein allgemeiner Wrapper
+  weiß nicht, ob die Daten personenbezogen sind, und muss deshalb vom Schlimmsten
+  ausgehen. Der `s3`-Transport ist nicht die Voreinstellung.
 
 ---
 
@@ -210,12 +223,14 @@ nichts gab:
   Workers. Nebenbei hat sie die Liste der gültigen Backend-Namen geliefert, die
   jetzt in `config.GUELTIGE_BACKENDS` steht.
 - `mehrteilig_0_seiten_0-4` / `_1_seiten_5-9` / `_2_seiten_10-11` — **ein**
-  zwölfseitiges Dokument über drei Teilstücke. Damit läuft der Seitenversatz —
-  die fehleranfälligste Rechnung des Pakets — gegen echtes Material: Jedes
-  Teilstück trägt `page_idx` lokal ab 0, nach dem Zusammensetzen sind es 85
-  Blöcke mit `page_idx` lückenlos 0 bis 11. Die drei Stücke tragen außerdem 1,
-  2 und 0 Bilder, womit auch die Bild-Vereinigung über Stücke hinweg an echtem
-  Material hängt.
+  zwölfseitiges Dokument über drei Teilstücke, **vor dem ersten Push entfernt**,
+  weil es den Inhalt eines Steuerdokuments mit personenbezogenen Daten trug
+  (Mineroo#2). Die zwei Tests, die es lasen (Seitenversatz über drei Teilstücke
+  und Randblöcke in `tests/test_assembly.py`), sind **ausgesetzt**: Die
+  Vorrichtung `echte_mehrteilige_antworten` überspringt sie mit Grund
+  (`pytest -rs`), bis das Ticket zum MinerU-4-Vertrag neue Aufnahmen aus Material
+  ohne Personenbezug unter denselben Namen ablegt. Bis dahin läuft der
+  Seitenversatz nur gegen erfundene Antworten.
 
 **Was weiterhin nur gegen erfundene Antworten läuft:** eine echte
 **Namenskollision** zwischen Bildern zweier Teilstücke (`bild_namenskollisionen`
@@ -227,14 +242,24 @@ vorgekommen.
 
 ## Wo die Wahrheit steht
 
+- **Die Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1)** —
+  der Umbau auf MinerU 4 und den neuen Endpoint, mit den Entscheidungen des
+  Eigentümers. **Wo sie den August-Plan ablöst, gilt sie.** Was sie ablöst, steht
+  dort unter „Was sich daran ändert", dazu alles, was der Umzug auf MinerU 4
+  ändert (Backend, Ausgabedateien, Antwortformat).
 - **`plans/2026-08-05-ocr-service-plan.md`** — der Entwurf mit allen Begründungen.
-  Maßgeblich für „warum ist das so gebaut".
+  Maßgeblich für „warum ist das so gebaut", soweit die Spec nichts ändert.
 - **`plans/2026-08-06-procrastinate-feature-verifikation.md`** — 19 einzeln
   belegte Procrastinate-Stützen, zwei davon am Objekt geprüft (SQL-Schema,
   Quellcode). **Vor jedem Procrastinate-Upgrade durchzugehen**, besonders Punkt 12
   (undokumentierte Heartbeat-Tabelle) und Punkt 19 (`retry_job_by_id`).
 - **`docs/README.md`** — der Einstieg mit null Vorkontext, dazu die 20
   übertragbaren Lehren des Projekts und die Pflegeregeln des Dokumentensatzes.
+  Dieses Dokument und die drei Fachdokumente darunter sind **Geschichte**: Sie
+  beschreiben den Stand bis MinerU 3.4 und den alten Endpoint, tragen oben einen
+  Hinweis dazu und werden nicht umgeschrieben. Aktuell gelten `README.md` und die
+  Spec. Die Bead-IDs (`jurgen-…`) darin verweisen auf das frühere
+  Aufgabensystem.
 - **`docs/MinerU-RunPod-Betriebshandbuch.md`** — Betrieb der Engine,
   Job-Contract, Lifecycle, Abrechnung. Abschnitt 17 ist eine Tabelle
   „Nachprüf-Orte": Behauptung → wo man den echten Zustand prüft.
