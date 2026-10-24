@@ -145,7 +145,16 @@ MEHRTEILIG_FIXTURE: Final = [
     ),
 ]
 """Drei ECHTE Tarball-Antworten EINES Dokuments — die drei Teilstuecke eines
-12-seitigen Steuerdokuments, aufgenommen am 09.08.2026.
+12-seitigen Dokuments, aufgenommen am 09.08.2026.
+
+AUSGESETZT, SOLANGE DIE DATEIEN FEHLEN: Die Aufnahmen trugen den Inhalt eines
+Steuerdokuments mit personenbezogenen Daten und sind vor dem ersten Push aus
+dem Repository genommen worden (Mineroo#2). Die Tests, die sie lesen, werden
+uebersprungen — mit diesem Grund in der Ausgabe von `pytest -rs` — bis neue
+Aufnahmen aus Material ohne Personenbezug unter denselben Namen liegen (Ticket
+zum MinerU-4-Vertrag, Spec Mineroo#1, Abschnitt „Testing Decisions"). Die
+Zahlen und Zusicherungen unten beschreiben die entfernten Aufnahmen; die neuen
+bekommen neue Zahlen.
 
 DIE LUECKE, DIE SIE SCHLIESST, war die groesste des Testmaterials und stand
 lange ausdruecklich benannt hier: Fuer die Mehr-Teilstueck-Lage gab es kein
@@ -204,7 +213,18 @@ geprueft, statt 177 Sekunden Kaltstart je Dokument zu kosten."""
 
 @pytest.fixture
 def echte_mehrteilige_antworten() -> list[tuple[tuple[int, int], dict[str, Any]]]:
-    """Die drei echten Teilstueck-Antworten samt ihrem Seitenbereich."""
+    """Die drei echten Teilstueck-Antworten samt ihrem Seitenbereich.
+
+    Fehlen die Dateien (siehe `MEHRTEILIG_FIXTURE`), ist jeder Test, der diese
+    Vorrichtung anfordert, uebersprungen — nicht bestanden und nicht gescheitert.
+    """
+    fehlend = [pfad.name for _, pfad in MEHRTEILIG_FIXTURE if not pfad.exists()]
+    if fehlend:
+        pytest.skip(
+            "Aufnahmen der mehrteiligen Antwort fehlen (personenbezogen, vor dem "
+            "ersten Push entfernt, Mineroo#2); Ersatz kommt mit dem Ticket zum "
+            f"MinerU-4-Vertrag: {', '.join(fehlend)}"
+        )
     return [
         (bereich, json.loads(pfad.read_text()))
         for bereich, pfad in MEHRTEILIG_FIXTURE

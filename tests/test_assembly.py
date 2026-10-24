@@ -1141,9 +1141,9 @@ def test_randbloecke_werden_nicht_doppelt_angehaengt(
     """`furniture=True` haengt nur an, was im Markdown WIRKLICH fehlt.
 
     AM ECHTEN DOKUMENT GEMESSEN (08.08.2026, derselbe 12-Seiter): Die Engine
-    filtert die Randklassen NICHT einheitlich. Die `header`-Bloecke („Kanzlei")
-    stehen im Markdown; die `footer`-Bloecke („Kanzlei
-    Wirtschaftspruefungsgesellschaft") fehlen dort auf allen elf Seiten.
+    filtert die Randklassen NICHT einheitlich. Die `header`-Bloecke (ein
+    Kurzname) stehen im Markdown; die `footer`-Bloecke (derselbe Name mit
+    Rechtsform und Berufsbezeichnung) fehlen dort auf allen elf Seiten.
 
     Die Voreinstellung `furniture=True` ist damit richtig — allein wegen der
     Fusszeilen. Sie hat aber JEDEN Randblock angehaengt, auch die schon

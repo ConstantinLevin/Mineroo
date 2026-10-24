@@ -1173,9 +1173,9 @@ def rendered_markdown(result: dict[str, Any]) -> str:
             continue
         # WAS SCHON IM MARKDOWN STEHT, WIRD NICHT ANGEHAENGT. Die Engine
         # filtert die Randklassen NICHT einheitlich — am 08.08.2026 an einem
-        # echten 12-Seiter gemessen: Die `header`-Bloecke („Kanzlei") stehen im
-        # Markdown, die `footer`-Bloecke („Kanzlei
-        # Wirtschaftspruefungsgesellschaft") auf allen elf Seiten nicht.
+        # echten 12-Seiter gemessen: Die `header`-Bloecke (ein Kurzname) stehen
+        # im Markdown, die `footer`-Bloecke (derselbe Name mit Rechtsform und
+        # Berufsbezeichnung) auf allen elf Seiten nicht.
         #
         # Ohne diese Pruefung wurde jeder Randblock angehaengt, auch der schon
         # vorhandene: Der Kopf jeder Seite erschien zweimal. Fuer den Zweck —
