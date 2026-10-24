@@ -1194,3 +1194,74 @@ def test_austritt_schliesst_pool_und_app(
     assert offen_beim_betreten
     assert pool.closed
     assert _procrastinate_zustand(klient) == (None, None)
+
+
+def test_image_mit_digest_wird_nach_seinem_tag_beurteilt(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`repo:tag@sha256:…` hat den Tag `tag`; der Digest ist nicht der Tag. Ein
+    Image nur mit Digest hat keinen Tag und ist nicht pruefbar."""
+    _worker_am_leben(db_conn)
+    monkeypatch.setenv("MINERU_OCR_EXPECTED_IMAGE_TAG", "neu12345")
+    digest = "@sha256:" + "ab" * 32
+
+    runpod.marke = "registry.runpod.net/k-r-dockerfile:neu12345" + digest
+    runpod.endpoint = _guter_endpoint(
+        workers=[_worker("w1", image="registry.runpod.net/k-r-dockerfile:neu12345" + digest)]
+    )
+    befund = _pruefen(_test_datenbank)
+    assert _befund(befund, "image_tag")["bewertung"] == "in_ordnung"
+    assert _befund(befund, "worker_image")["bewertung"] == "in_ordnung"
+
+    runpod.endpoint = _guter_endpoint(
+        workers=[_worker("w1", image="registry.runpod.net/k-r-dockerfile" + digest)]
+    )
+    punkt = _befund(_pruefen(_test_datenbank), "worker_image")
+    assert punkt["bewertung"] == "nicht_pruefbar"
+    assert punkt["ist"] == {"w1": None}
+
+
+def test_template_image_ohne_tag_ist_nicht_pruefbar(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wie beim Worker: Ein Image, aus dem sich kein Tag lesen laesst, ist weder
+    richtig noch falsch."""
+    _worker_am_leben(db_conn)
+    monkeypatch.setenv("MINERU_OCR_EXPECTED_IMAGE_TAG", "neu12345")
+    runpod.marke = "registry.runpod.net:5000/k-r"
+    punkt = _befund(_pruefen(_test_datenbank), "image_tag")
+    assert punkt["bewertung"] == "nicht_pruefbar"
+
+
+def test_konfigurierte_geheimnisvariable_wird_nicht_im_klartext_gezeigt(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Wer eine Variable wie `RUNPOD_AI_API_KEY` in `[endpoint_env]` nennt, will
+    sie geprueft haben und nicht ausgegeben: Weder der Befund noch die Meldung
+    des Abbruchs zeigt ihren Wert, weder Soll noch Ist."""
+    datei = tmp_path / "config.toml"
+    datei.write_text('[endpoint_env]\nRUNPOD_AI_API_KEY = "soll-nicht-ausgeben"\n')
+    monkeypatch.setenv("MINERU_OCR_CONFIG", str(datei))
+    _worker_am_leben(db_conn)
+    runpod.endpoint = _guter_endpoint(workers=[_worker("w1")])
+
+    befund = _pruefen(_test_datenbank)
+    punkt = _befund(befund, "env:RUNPOD_AI_API_KEY")
+    assert punkt["bewertung"] == "abweichung"
+    assert GEHEIMNIS not in repr(befund)
+    assert "soll-nicht-ausgeben" not in repr(befund)
+
+    with pytest.raises(ConfigDriftError) as fehler:
+        _pruefen(_test_datenbank, strict=True)
+    assert GEHEIMNIS not in str(fehler.value)
+    assert "soll-nicht-ausgeben" not in str(fehler.value)

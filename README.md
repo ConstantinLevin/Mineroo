@@ -89,6 +89,10 @@ Jeder Schlüssel außer der Tabelle hat eine Umgebungsvariable, zum Beispiel
 `MINERU_OCR_IDLE_TIMEOUT`; die Rechenzentren stehen dort durch Kommas getrennt in
 `MINERU_OCR_ALLOWED_DATA_CENTERS`.
 
+Der Preflight zeigt die Werte der Variablen aus `[endpoint_env]`. Heißt eine
+`KEY`, `SECRET`, `TOKEN`, `PASSW…` oder `CREDENTIAL` im Namen, wird sie verglichen
+und als `***` gezeigt.
+
 **Der RunPod-Schlüssel bleibt in `~/.runpod/config.toml`**, Feld `apikey`, und
 steht nie in dieser Konfiguration. „Nur EU" heißt EWR — EU-Staaten plus Island und
 Norwegen, denn dort gilt die DSGVO —, und die zulässige Liste ist der Sollwert

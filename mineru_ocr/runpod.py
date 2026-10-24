@@ -848,12 +848,13 @@ class RunPodClient:
             Die rohen Angaben, darunter `workersMin`, `workersMax`,
             `idleTimeout`, `executionTimeoutMs`, die Rechenzentren und die
             Template-Kennung. Der Preflight vergleicht das gegen die Sollwerte
-            des Betriebshandbuchs.
+            der Konfiguration (`Settings`).
 
             Die Rechenzentren sind dabei kein Nebenwert: Ein allgemeiner Wrapper
             weiss nicht, ob die Daten personenbezogen sind, und soll deshalb in
-            der EU verarbeiten lassen. Der Preflight MELDET die
-            Konfiguration mit, statt ein Flag danach zu richten — die Entscheidung
+            der EU verarbeiten lassen. Der Preflight vergleicht sie mit
+            der zulaessigen Liste der Konfiguration (EWR) und MELDET eine
+            Abweichung, statt ein Flag danach zu richten — die Entscheidung
             gehoert dem Menschen (Plan 2.4, kein `pii`-Flag im Client).
 
         Kosten: keine. Liest, veraendert nie.

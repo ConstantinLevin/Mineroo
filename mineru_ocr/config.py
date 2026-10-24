@@ -197,11 +197,17 @@ def _wert(
 
 
 def _zeichenkette(name: str, wert: Any, herkunft: str) -> str:
+    """Ein Text ohne Leerraum am Rand.
+
+    Der Fehler nennt den Typ und nie den Wert: Eine Tabelle statt des DSN-Textes
+    kann ein Passwort tragen, und die Meldung geht in die Ausgabe.
+    """
     if not isinstance(wert, str):
         raise ConfigurationError(
-            f"{herkunft}: `{name}` muss ein Text sein, ist aber {wert!r}."
+            f"{herkunft}: `{name}` muss ein Text sein, ist aber vom Typ "
+            f"{type(wert).__name__}."
         )
-    return wert
+    return wert.strip()
 
 
 def _zahl(name: str, wert: Any, herkunft: str) -> int:
@@ -777,9 +783,11 @@ class Settings:
         Absicht: Eine Einstellung zu bilden muss auch offline gehen.
         """
         umgebung = os.environ if environ is None else environ
-        ausdruecklich = config_path is not None or ENV_CONFIG_PATH in umgebung
+        # Eine leere `MINERU_OCR_CONFIG` nennt keine Datei (wie in `_wert`).
+        aus_umgebung = umgebung.get(ENV_CONFIG_PATH, "").strip()
+        ausdruecklich = config_path is not None or bool(aus_umgebung)
         if config_path is None:
-            config_path = Path(umgebung.get(ENV_CONFIG_PATH) or DEFAULT_CONFIG_PATH)
+            config_path = Path(aus_umgebung or DEFAULT_CONFIG_PATH)
         datei = _konfigurationsdatei(config_path, ausdruecklich=ausdruecklich)
 
         endpoint = endpoint_id

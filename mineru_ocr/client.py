@@ -32,7 +32,7 @@ from procrastinate import utils
 from psycopg_pool import NullConnectionPool
 
 from . import db, tasks
-from .config import Settings
+from .config import MASKE, Settings
 from .db import DerivedStatus, DocumentStatus
 from .errors import ConfigDriftError, ConfigurationError, DocumentNotFound
 from .runpod import RunPodClient
@@ -120,16 +120,22 @@ nicht fuehrt. Ein eigener Text und nicht `None`: `None` heisst dort „die Varia
 fehlt in der Umgebung", und das ist etwas anderes."""
 
 
+_GEHEIMNIS_NAME: Final = re.compile(r"KEY|SECRET|TOKEN|PASSW|CREDENTIAL", re.IGNORECASE)
+"""Namen von Variablen, deren Wert nie im Befund steht, auch wenn der Betreiber
+sie in `[endpoint_env]` nennt."""
+
+
 def _tag_von(image: Any) -> str | None:
     """Der Tag eines Image-Namens, `None` ohne einen.
 
     Gesucht wird nur im letzten Pfadteil (`registry:5000/repo` hat Port und keinen
-    Tag) und nach dem letzten Doppelpunkt. Ein fuehrender Doppelpunkt (`:abc`)
+    Tag) und nach dem letzten Doppelpunkt, ohne einen angehaengten Digest. Ein fuehrender Doppelpunkt (`:abc`)
     zaehlt: so steht der Tag manchmal an der Zeile, ohne den Repository-Namen.
     """
     if not isinstance(image, str):
         return None
-    name = image.rsplit("/", 1)[-1]
+    # Ein Digest (`repo:tag@sha256:…`) ist kein Tag: erst er, dann der Tag.
+    name = image.rsplit("/", 1)[-1].partition("@")[0]
     if ":" not in name:
         return None
     return name.rpartition(":")[2] or None
@@ -460,6 +466,14 @@ class OCRClient:
                     bewertung = "nicht_pruefbar"
                 else:
                     bewertung = _gesamtbewertung(zustaende, "abweichung")
+                if _GEHEIMNIS_NAME.search(variable):
+                    # Verglichen wurde der Wert; gezeigt wird er nicht. Wer ein
+                    # Geheimnis in `[endpoint_env]` nennt, will es geprueft haben.
+                    env_soll = MASKE if env_soll is not None else None
+                    ist_je_worker = {
+                        k: v if v is None or v == OHNE_ANGABE else MASKE
+                        for k, v in ist_je_worker.items()
+                    }
                 merken(f"env:{variable}", env_soll, ist_je_worker, bewertung)
 
             # Das Image jedes Workers gegen den erwarteten Tag. Das Template kann
@@ -501,14 +515,15 @@ class OCRClient:
             # keines kannte. Dasselbe gilt, solange kein Tag erwartet wird: Was
             # man nicht vergleichen kann, ist nicht in Ordnung.
             erwartet = einstellung.expected_image_tag
-            if not marke or erwartet is None:
+            tag = _tag_von(marke)
+            if tag is None or erwartet is None:
                 merken("image_tag", erwartet, marke, "nicht_pruefbar")
             else:
                 merken(
                     "image_tag",
                     erwartet,
                     marke,
-                    "in_ordnung" if _tag_von(marke) == erwartet else "warnung",
+                    "in_ordnung" if tag == erwartet else "warnung",
                 )
 
         # --- Kontostand -------------------------------------------------

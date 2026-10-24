@@ -258,3 +258,30 @@ def test_fehlende_konfiguration_endet_mit_meldung_statt_traceback(tmp_path: Path
     assert lauf.returncode == 1, lauf.stderr
     assert "MINERU_OCR_ENDPOINT_ID" in lauf.stderr
     assert "Traceback" not in lauf.stderr
+
+
+def test_fehlende_konfiguration_endet_bei_daemon_mit_meldung_statt_traceback(
+    tmp_path: Path,
+) -> None:
+    """Dasselbe fuer `daemon`: Der Konfigurationsfehler kommt vor allem anderen
+    und endet mit Meldung und Exit-Code 1."""
+    umgebung = {
+        name: wert
+        for name, wert in os.environ.items()
+        if not name.startswith("MINERU_OCR_")
+    }
+    umgebung["HOME"] = str(tmp_path)
+    umgebung["NO_COLOR"] = "1"
+
+    lauf = subprocess.run(
+        [sys.executable, "-m", "mineru_ocr.cli", "daemon", "--dsn", "host=egal"],
+        cwd=WURZEL,
+        env=umgebung,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert lauf.returncode == 1, lauf.stderr
+    assert "MINERU_OCR_ENDPOINT_ID" in lauf.stderr
+    assert "Traceback" not in lauf.stderr

@@ -507,3 +507,49 @@ def test_keepalive_deckt_die_gleichzeitigkeit() -> None:
     sonst baut ein Teil der Dokumente bei jeder Abfrage die Verbindung neu auf."""
     einstellung = _einstellung()
     assert einstellung.http_max_keepalive >= einstellung.ocr_concurrency
+
+
+def test_leere_konfigurationsvariable_gilt_als_nicht_gesetzt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ein leeres `MINERU_OCR_CONFIG` ist wie jede leere Variable ein Rest aus
+    einem Skript: Es nennt keine Datei, also gilt die Standarddatei, und deren
+    Fehlen ist kein Fehler."""
+    monkeypatch.setattr("mineru_ocr.config.DEFAULT_CONFIG_PATH", tmp_path / "gibtes.nicht")
+    for leer in ("", "   "):
+        einstellung = Settings.load(
+            api_key=GEHEIM,
+            environ={
+                "MINERU_OCR_CONFIG": leer,
+                "MINERU_OCR_ENDPOINT_ID": ENDPUNKT,
+                "MINERU_OCR_DB_DSN": DSN,
+            },
+        )
+        assert einstellung.endpoint_id == ENDPUNKT
+
+
+def test_text_einstellungen_werden_von_leerraum_befreit() -> None:
+    """Ein Leerzeichen am Rand eines Tags oder einer Kennung ist nie gemeint; es
+    liesse den Tag nie zu einem echten passen und stuende in der URL."""
+    einstellung = _einstellung(
+        environ={
+            "MINERU_OCR_ENDPOINT_ID": "  testendpunkt\n",
+            "MINERU_OCR_EXPECTED_IMAGE_TAG": " abc ",
+        },
+        endpoint_id=None,
+    )
+    assert einstellung.endpoint_id == "testendpunkt"
+    assert einstellung.expected_image_tag == "abc"
+
+
+def test_typfehler_bei_einem_text_nennt_den_wert_nicht(tmp_path: Path) -> None:
+    """Eine Tabelle statt des DSN-Textes kann ein Passwort tragen. Die Meldung
+    nennt Schluessel, Herkunft und Typ, nie den Wert."""
+    datei = tmp_path / "config.toml"
+    datei.write_text('[db_dsn]\nhost = "h"\npassword = "NICHT-AUSGEBEN"\n')
+    with pytest.raises(ConfigurationError) as fehler:
+        _einstellung(config_path=datei, db_dsn=None)
+    meldung = str(fehler.value)
+    assert "db_dsn" in meldung
+    assert str(datei) in meldung
+    assert "NICHT-AUSGEBEN" not in meldung
