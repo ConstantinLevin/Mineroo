@@ -37,7 +37,6 @@ from . import assembly, db, mime
 from .config import Settings
 from .db import DocumentRow, DocumentStatus
 from .errors import DocumentNotFound, IncompleteResultError, UnsupportedTypeError
-from .pdf import PdfReader
 
 F = TypeVar("F")
 """Der erwartete Typ eines Feldes im gespeicherten Ergebnis (`OCRWrapper._feld`)
@@ -52,7 +51,6 @@ def _anlegen(
     source_path: str,
     source_name: str,
     mime: str,
-    page_count: int | None,
     endpoint_id: str,
 ) -> bool:
     """Legt Zeile und Eingabe an — in EINER Transaktion, und nur neu.
@@ -74,7 +72,6 @@ def _anlegen(
             source_name=source_name,
             size_bytes=len(data),
             mime=mime,
-            page_count=page_count,
             endpoint_id=endpoint_id,
         )
         if angelegt:
@@ -147,11 +144,6 @@ class OCRWrapper:
         sha256 = hashlib.sha256(data).hexdigest()
 
         typ = mime.sniff_bytes(data)
-        seiten: int | None = None
-        if typ.is_pdf:
-            with PdfReader(data) as leser:
-                seiten = leser.page_count
-
         pfad = str(path.resolve())
         angelegt = _anlegen(
             conn,
@@ -160,7 +152,6 @@ class OCRWrapper:
             source_path=pfad,
             source_name=path.name,
             mime=typ.mime,
-            page_count=seiten,
             endpoint_id=settings.endpoint_id,
         )
         zeile = db.get_document(conn, sha256)
@@ -293,11 +284,6 @@ class OCRWrapper:
             # und spart bei einem zweiten Durchlauf das Schreiben ganz.
             ziel.write_bytes(data)
 
-        seiten: int | None = None
-        if typ.is_pdf:
-            with PdfReader(data) as leser:
-                seiten = leser.page_count
-
         _anlegen(
             conn,
             data=data,
@@ -305,7 +291,6 @@ class OCRWrapper:
             source_path=str(ziel),
             source_name=name,
             mime=typ.mime,
-            page_count=seiten,
             endpoint_id=settings.endpoint_id,
         )
         zeile = db.get_document(conn, sha256)

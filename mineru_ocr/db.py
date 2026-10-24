@@ -634,7 +634,6 @@ def insert_document(
     source_name: str,
     size_bytes: int,
     mime: str,
-    page_count: int | None,
     endpoint_id: str,
 ) -> bool:
     """Legt eine Zeile an, falls es sie noch nicht gibt.
@@ -652,7 +651,6 @@ def insert_document(
         source_name: Anzeigename, ueblicherweise der Dateiname.
         size_bytes: Rohe Groesse.
         mime: Die MIME-Zeichenkette aus `mime.DocumentType`.
-        page_count: Seitenzahl bei PDF, sonst None.
         endpoint_id: Fuer welchen Endpoint die Zeile gilt.
 
     Returns:
@@ -672,14 +670,13 @@ def insert_document(
     ergebnis = conn.execute(
         """
         INSERT INTO documents (
-            sha256, source_path, source_name, size_bytes, mime, page_count,
-            endpoint_id
+            sha256, source_path, source_name, size_bytes, mime, endpoint_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (sha256) DO NOTHING
         RETURNING sha256
         """,
-        (sha256, source_path, source_name, size_bytes, mime, page_count, endpoint_id),
+        (sha256, source_path, source_name, size_bytes, mime, endpoint_id),
     ).fetchone()
     # `RETURNING` liefert nur dann eine Zeile, wenn wirklich eingefuegt wurde —
     # bei `DO NOTHING` kommt nichts. Das ist die verlaessliche Unterscheidung;
@@ -923,6 +920,7 @@ async def write_terminal_async(
     image_tag_at_submit: str | None = None,
     error: str | None = None,
     notes: Sequence[dict[str, Any]] | None = None,
+    page_count: int | None = None,
 ) -> None:
     """Schreibt das Endergebnis eines Durchlaufs und weckt alle Warter.
 
@@ -950,6 +948,8 @@ async def write_terminal_async(
         error: Kurzform bei `failed`/`input_error`, sonst None.
         notes: Anzuhaengende Ereignisse. None haengt nichts an; die Liste wird
             ANGEHAENGT, nie ersetzt.
+        page_count: Die Seitenzahl, die der Job aus den Bytes bestimmt hat (nur
+            bei PDF). None laesst eine vorhandene Angabe stehen.
 
     Zusicherung:
         Nach der Rueckkehr ist die Zeile endgueltig und ein `NOTIFY` auf dem
@@ -1068,6 +1068,7 @@ async def write_terminal_async(
                    raw = %s,
                    error = %s,
                    image_tag_at_submit = COALESCE(%s, image_tag_at_submit),
+                   page_count = COALESCE(%s, page_count),
                    notes = notes || %s::jsonb,
                    updated_at = now()
              WHERE sha256 = %s
@@ -1077,6 +1078,7 @@ async def write_terminal_async(
                 Jsonb(raw),
                 error,
                 image_tag_at_submit,
+                page_count,
                 Jsonb(list(notes) if notes else []),
                 sha256,
             ),

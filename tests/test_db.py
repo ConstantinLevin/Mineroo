@@ -81,7 +81,6 @@ def _einfuegen(conn: psycopg.Connection[Any], sha: str = HASH) -> None:
         source_name=f"{sha}.pdf",
         size_bytes=123,
         mime="application/pdf",
-        page_count=3,
         endpoint_id="l79lebhinxaqjz",
     )
 
@@ -242,7 +241,6 @@ def test_zweites_einfuegen_ist_ein_nichts_tun(
         source_name="erste.pdf",
         size_bytes=111,
         mime="application/pdf",
-        page_count=1,
         endpoint_id="e1",
     )
     vorher = get_document(db_conn, HASH)
@@ -255,7 +253,6 @@ def test_zweites_einfuegen_ist_ein_nichts_tun(
         source_name="zweite.pdf",
         size_bytes=999,
         mime="image/png",
-        page_count=None,
         endpoint_id="e2",
     )
     nachher = get_document(db_conn, HASH)

@@ -146,8 +146,8 @@ def test_kein_metadaten_normalisierter_hash(
     )
     assert ohne.sha256 != mit.sha256
     assert len(list_documents(db_conn)) == 2
-    # Und beide sind als PDF erkannt, mit derselben Seitenzahl.
-    assert ohne.page_count == mit.page_count == 2
+    # Beide sind als PDF erkannt. Die Seitenzahl kennt erst der Job.
+    assert ohne.mime == mit.mime == "application/pdf"
 
 
 def test_nicht_unterstuetzter_typ_wirft_sofort(
@@ -159,6 +159,25 @@ def test_nicht_unterstuetzter_typ_wirft_sofort(
     with pytest.raises(UnsupportedTypeError):
         OCRWrapper.from_path(pfad, db_conn, settings)
     assert list_documents(db_conn) == []
+
+
+def test_einreihen_oeffnet_keine_pdf(
+    db_conn: psycopg.Connection[Any], settings: Settings, tmp_path: Path
+) -> None:
+    """Eine kaputte PDF bricht das Einreihen nicht ab: Sie wird abgelegt, ohne
+    Seitenzahl, und endet im Job als `input_error`.
+
+    Der Beweis, dass nichts geoeffnet wurde: Bytes, die nach PDF aussehen und
+    sich nicht oeffnen lassen, kommen durch.
+    """
+    kaputt = b"%PDF-1.7\nund dann nur noch Unsinn\n"
+    aus_datei = OCRWrapper.from_path(_datei(tmp_path, "k.pdf", kaputt), db_conn, settings)
+    aus_bytes = OCRWrapper.from_bytes(kaputt + b"2", "k2.pdf", db_conn, settings)
+    gut = OCRWrapper.from_bytes(_pdf(4), "g.pdf", db_conn, settings)
+
+    for huelle in (aus_datei, aus_bytes, gut):
+        assert huelle.status is DocumentStatus.NEW
+        assert huelle.page_count is None
 
 
 def _eingabe(conn: psycopg.Connection[Any], sha256: str) -> bytes | None:

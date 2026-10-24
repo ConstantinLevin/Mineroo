@@ -292,6 +292,9 @@ async def process_document(
     unverwertbar: list[dict[str, Any]] = []
     vermerke: list[dict[str, Any]] = []
     image_tag: str | None = None
+    # Die Seitenzahl bestimmt der Job aus den Bytes; sie geht mit dem Endergebnis
+    # in die Zeile, auch bei `failed`, sobald sie bekannt ist.
+    seitenzahl: int | None = None
     begonnen = time.monotonic()
 
     try:
@@ -347,6 +350,7 @@ async def process_document(
         if typ.is_pdf:
             with PdfReader(rohbytes) as leser:
                 seiten = leser.page_count
+                seitenzahl = seiten
                 if chunking.needs_chunking(
                     size_bytes=len(rohbytes),
                     page_count=seiten,
@@ -418,6 +422,7 @@ async def process_document(
                 raw=ergebnis,
                 image_tag_at_submit=image_tag,
                 notes=vermerke,
+                page_count=seitenzahl,
             )
 
     except Exception as fehler:
@@ -496,6 +501,7 @@ async def process_document(
                 image_tag_at_submit=image_tag,
                 error=f"{type(fehler).__name__}: {fehler}",
                 notes=vermerke,
+                page_count=seitenzahl,
             )
         raise
 

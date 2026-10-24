@@ -165,7 +165,6 @@ def _anlegen(conn: psycopg.Connection[Any], tmp_path: Path, name: str) -> str:
         source_name=name,
         size_bytes=len(inhalt),
         mime="image/png",
-        page_count=None,
         endpoint_id="l79lebhinxaqjz",
     )
     db.insert_input(conn, sha256=sha, content=inhalt)

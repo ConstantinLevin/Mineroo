@@ -136,7 +136,6 @@ def _anlegen(
     *,
     name: str = "x.pdf",
     typ: DocumentType = DocumentType.PDF,
-    seiten: int | None = None,
 ) -> tuple[str, Path]:
     """Legt Zeile und Eingabe an und gibt Hash und einen Pfad zurueck, den es
     NICHT gibt.
@@ -154,7 +153,6 @@ def _anlegen(
         source_name=name,
         size_bytes=len(inhalt),
         mime=typ.mime,
-        page_count=seiten,
         endpoint_id="l79lebhinxaqjz",
     )
     insert_input(conn, sha256=sha, content=inhalt)
@@ -318,6 +316,50 @@ async def test_eingabe_mit_falschem_hash_wird_erkannt(
     assert any(v["kind"] == "gescheitert" for v in zeile.notes)
 
 
+async def test_job_bestimmt_die_seitenzahl_und_schreibt_sie_mit_dem_ergebnis(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Die Zeile kommt ohne Seitenzahl in die Welt; der Job zaehlt sie aus den
+    Bytes und schreibt sie mit dem Endergebnis."""
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(3))
+    vorher = get_document(db_conn, sha)
+    assert vorher is not None and vorher.page_count is None
+
+    await process_document(
+        sha,
+        settings=exec_settings,
+        runpod=FalscherRunPod([_fertige_antwort()]),
+        pool=pool,
+    )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    assert zeile.page_count == 3
+
+
+async def test_seitenzahl_steht_auch_bei_failed(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Scheitert das Dokument nach dem Oeffnen, ist die Seitenzahl bekannt und
+    wird mitgeschrieben."""
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(2))
+    runpod = FalscherRunPod([{"id": "j", "status": "FAILED", "error": "grund"}])
+    with pytest.raises(TerminalRunPodError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.page_count == 2
+
+
 @pytest.mark.parametrize(
     "antwort, erwartet",
     [
@@ -454,7 +496,7 @@ async def test_kleines_pdf_geht_ungeschnitten_hinaus(
     Stelle, an der jede Umformung ein Risiko ist.
     """
     inhalt = _pdf(3)
-    sha, _ = _anlegen(db_conn, tmp_path, inhalt, seiten=3)
+    sha, _ = _anlegen(db_conn, tmp_path, inhalt)
     runpod = FalscherRunPod([_fertige_antwort()])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
@@ -472,7 +514,7 @@ async def test_grosses_pdf_wird_geschnitten(
     Dokument vollstaendig ab."""
     eng = dataclasses.replace(exec_settings, max_pages_per_chunk=2)
     inhalt = _pdf(5)
-    sha, _ = _anlegen(db_conn, tmp_path, inhalt, seiten=5)
+    sha, _ = _anlegen(db_conn, tmp_path, inhalt)
     runpod = FalscherRunPod([_fertige_antwort("Stueck")])
     await process_document(sha, settings=eng, runpod=runpod, pool=pool)
 
@@ -502,7 +544,7 @@ async def test_hoechstens_ein_ergebnis_offen(
     waere die alte Bauart und wuerde hier auffallen.
     """
     eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
-    sha, _ = _anlegen(db_conn, tmp_path, _pdf(4), seiten=4)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(4))
     runpod = FalscherRunPod([_fertige_antwort()])
     await process_document(sha, settings=eng, runpod=runpod, pool=pool)
 
@@ -601,7 +643,7 @@ async def test_genau_ein_schreibvorgang(
     den man prueft.
     """
     eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
-    sha, _ = _anlegen(db_conn, tmp_path, _pdf(3), seiten=3)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(3))
     vorher = get_document(db_conn, sha)
     assert vorher is not None
     assert vorher.updated_at == vorher.created_at
@@ -650,7 +692,7 @@ async def test_ergebnis_ist_zusammengesetzt(
     des Originals, Bilder vereinigt. Am Ergebnis ist nicht ablesbar, ob
     geschnitten wurde."""
     eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
-    sha, _ = _anlegen(db_conn, tmp_path, _pdf(3), seiten=3)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(3))
 
     # Drei Teilstuecke, jedes mit teilstueck-lokalem page_idx 0.
     runpod = FalscherRunPod(
@@ -785,7 +827,7 @@ async def test_endgueltiger_fehler_schreibt_vor_dem_werfen(
     zweite scheiterte — im `raw` steht trotzdem, was das erste lieferte.
     """
     eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
-    sha, _ = _anlegen(db_conn, tmp_path, _pdf(2), seiten=2)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(2))
 
     runpod = FalscherRunPod(
         [
@@ -905,7 +947,7 @@ async def test_402_beim_absenden_pausiert_statt_zu_werfen(
     dass das erste Teilstueck erhalten bleibt.
     """
     eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
-    sha, _ = _anlegen(db_conn, tmp_path, _pdf(2), seiten=2)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(2))
 
     class KontoLeertSich(FalscherRunPod):
         def __init__(self) -> None:
