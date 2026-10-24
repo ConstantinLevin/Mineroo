@@ -757,9 +757,22 @@ async def _stuecke_verarbeiten(
             # kostet nichts; ein neues Absenden kostete das Teilstueck erneut.
             return await runpod.await_result(job)
 
-        antwort = await _mit_kontopause(
-            abholen, runpod=runpod, settings=settings, schritt="Abholen"
-        )
+        try:
+            antwort = await _mit_kontopause(
+                abholen, runpod=runpod, settings=settings, schritt="Abholen"
+            )
+        except asyncio.CancelledError:
+            # Der Daemon faehrt herunter (oder jemand bricht ab), waehrend der Job
+            # bei RunPod laeuft. Ohne diesen Zweig liefe er dort weiter und
+            # kostete Geld, ohne dass ihn noch jemand abholt. Der Abbruch geht
+            # hinaus und wird dann WEITERGEWORFEN: Ob der Job neu eingereiht wird
+            # und was im letzten Versuch geschieht, entscheidet die Warteschlange
+            # (Ticket „Kein Job endet ohne Ergebnis"), nicht dieser Zweig.
+            #
+            # Ein zweites Signal (Strg-C zweimal) unterbricht auch diesen Abbruch;
+            # wer zweimal drueckt, meint es so (siehe `daemon.run`).
+            await _abbruch_hinausschicken(runpod, job)
+            raise
         try:
             # BEIDE Schritte im selben Schutz: das Bewerten des Endzustands und
             # das Auspacken. Der erste stand frueher davor, und damit ueberlebte
@@ -802,6 +815,27 @@ async def _stuecke_verarbeiten(
                 }
             )
             raise
+
+
+async def _abbruch_hinausschicken(runpod: RunPodAccess, job: str) -> None:
+    """Schickt RunPods Abbruch fuer `job`, ohne je zu werfen.
+
+    Der Aufrufer steckt mitten in einem `CancelledError`, den er weiterwerfen
+    muss. Wuerde der Fehler des Abbruchs ihn ersetzen, verbuchte Procrastinate den
+    Job als gescheitert statt als abgebrochen. Ein misslungener Abbruch wird
+    deshalb nur ins Log geschrieben — mit dem Hinweis, dass der Job weiterlaufen
+    und Geld kosten kann.
+    """
+    try:
+        await runpod.cancel(job)
+    except Exception as fehler:  # noqa: BLE001
+        log.warning(
+            "Abbruch von Job %s bei RunPod misslang (%s: %s); der Job kann "
+            "weiterlaufen und weiter Geld kosten.",
+            job,
+            type(fehler).__name__,
+            fehler,
+        )
 
 
 _KONTOPAUSEN_JE_SCHRITT = 3

@@ -62,6 +62,7 @@ class ProtokollRunPod:
         self.aufrufe = 0
         self.gestartet = asyncio.Event()
         self.freigabe: asyncio.Event | None = None
+        self.abgebrochen: list[str] = []
 
     async def submit(self, **_: Any) -> str:
         self.aufrufe += 1
@@ -72,6 +73,10 @@ class ProtokollRunPod:
         if self.freigabe is not None:
             await self.freigabe.wait()
         return self.verhalten(self.aufrufe)
+
+    async def cancel(self, job_id: str) -> dict[str, Any]:
+        self.abgebrochen.append(job_id)
+        return {"id": job_id, "status": "CANCELLED"}
 
     async def image_tag(self) -> str | None:
         return ":17d4955b2"

@@ -57,6 +57,7 @@ class FalscherRunPod:
         self.kontostand = kontostand
         self.abgesendet: list[str] = []
         self.abgeholt: list[str] = []
+        self.abgebrochen: list[str] = []
         self.verlauf: list[str] = []
         self._nummer = 0
 
@@ -74,6 +75,11 @@ class FalscherRunPod:
         nummer = min(self._nummer, len(self.antworten) - 1)
         self._nummer += 1
         return self.antworten[nummer]
+
+    async def cancel(self, job_id: str) -> dict[str, Any]:
+        self.abgebrochen.append(job_id)
+        self.verlauf.append(f"abbrechen:{job_id}")
+        return {"id": job_id, "status": "CANCELLED"}
 
     async def image_tag(self) -> str | None:
         return self.marke
@@ -1243,3 +1249,93 @@ async def test_abbruch_wird_durchgereicht(
     zeile = get_document(db_conn, sha)
     assert zeile is not None
     assert zeile.status is DocumentStatus.NEW
+
+
+async def test_abbruch_beim_warten_bricht_den_runpod_job_ab(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Bricht der Daemon beim Herunterfahren die Arbeit ab, geht `/cancel` fuer
+    den RunPod-Job hinaus, auf den gerade gewartet wurde — und der Abbruch wird
+    weitergeworfen, nicht verschluckt.
+
+    Sonst liefe der Job bei RunPod weiter und kostete Geld, ohne dass ihn noch
+    jemand abholt. Die Zeile bleibt `new`; ob und wie neu eingereiht wird, regelt
+    die Warteschlange und nicht dieser Zweig.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+
+    class Abbrechend(FalscherRunPod):
+        async def await_result(self, job_id: str) -> dict[str, Any]:
+            raise asyncio.CancelledError()
+
+    runpod = Abbrechend([_fertige_antwort()])
+    with pytest.raises(asyncio.CancelledError):
+        await process_document(
+            sha, settings=exec_settings, runpod=runpod, pool=pool
+        )
+
+    assert runpod.abgebrochen == ["job-0"]
+    # Erst abgesendet, dann abgebrochen, in dieser Reihenfolge.
+    assert runpod.verlauf == ["submit:job-0", "abbrechen:job-0"]
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.NEW
+
+
+async def test_misslungener_abbruch_verdeckt_das_herunterfahren_nicht(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Scheitert das `/cancel` beim Herunterfahren, endet die Arbeit trotzdem mit
+    `CancelledError`.
+
+    Kaeme stattdessen der Fehler des Abbruchs heraus, verbuchte Procrastinate den
+    Job als gescheitert statt als abgebrochen, und jedes Strg-C bei erreichbarem
+    Netz-Problem machte reihenweise `failed`.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+
+    class Kaputt(FalscherRunPod):
+        async def await_result(self, job_id: str) -> dict[str, Any]:
+            raise asyncio.CancelledError()
+
+        async def cancel(self, job_id: str) -> dict[str, Any]:
+            raise TransientRunPodError("Netz weg")
+
+    with pytest.raises(asyncio.CancelledError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=Kaputt([_fertige_antwort()]),
+            pool=pool,
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.NEW
+
+
+async def test_erfolgreicher_job_wird_nicht_abgebrochen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ein Job, der sein Ergebnis geliefert hat, bekommt kein `/cancel`."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+    runpod = FalscherRunPod([_fertige_antwort()])
+    await process_document(
+        sha, settings=exec_settings, runpod=runpod, pool=pool
+    )
+    assert runpod.abgebrochen == []

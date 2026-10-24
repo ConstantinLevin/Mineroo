@@ -106,14 +106,14 @@ laufender Job abgebrochen."""
 class RunPodAccess(Protocol):
     """Was der Executor von RunPod braucht — und mehr nicht.
 
-    Vier Methoden, nicht neun. Der Executor sendet ab, wartet ab, liest den
-    Kontostand und die Herkunft; die Endpoint-Konfiguration und die Worker-Liste
+    Fuenf Methoden, nicht zehn. Der Executor sendet ab, wartet ab, bricht einen
+    Job ab, liest den Kontostand und die Herkunft; die Endpoint-Konfiguration und die Worker-Liste
     braucht er nie, die sind Sache des Preflight.
 
     Warum das als Protokoll ausgeschrieben steht und nicht einfach `RunPodClient`
     ueberall als Typ verwendet wird: Der Executor soll ohne Netz durchspielbar
     sein — das ist sein Existenzgrund und der Grund, warum er nichts von
-    Procrastinate weiss. Ein Test-Doppel, das genau diese vier Methoden bietet,
+    Procrastinate weiss. Ein Test-Doppel, das genau diese fuenf Methoden bietet,
     ist dann kein Notbehelf, der die Typpruefung an neunzehn Stellen abschalten
     muss, sondern ein vollwertiger Zugang. Und die Liste sagt zugleich, was der
     Executor NICHT tut: Er hat keinen Weg, eine bezahlte Ressource zu veraendern,
@@ -134,6 +134,8 @@ class RunPodAccess(Protocol):
     ) -> str: ...
 
     async def await_result(self, job_id: str) -> dict[str, Any]: ...
+
+    async def cancel(self, job_id: str) -> dict[str, Any]: ...
 
     async def balance(self) -> float: ...
 
