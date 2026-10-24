@@ -57,18 +57,6 @@ annehmen, aber dann sind Hash und Pfad ohnehin dasselbe Dokument oder es gibt
 keins. Dieselbe Regel gilt in `get`, `document` und `wait` — sie steht deshalb
 EINMAL hier und nicht dreimal verstreut."""
 
-ENDPOINT_SOLL: Final[dict[str, Any]] = {
-    "workersMin": 0,
-    "idleTimeout": 60,
-    "executionTimeoutMs": 600000,
-}
-"""Die Sollwerte des Betriebshandbuchs, gegen die der Preflight vergleicht.
-
-`workersMax` fehlt hier mit Absicht: Dafuer gilt keine feste Zahl, sondern
-„mindestens eins" — steht es auf null, kann nichts laufen. Das wird eigens
-geprueft, weil ein Vergleich auf Gleichheit dort eine Zahl erfinden muesste."""
-
-
 def _synchron_ausfuehren(arbeit: Coroutine[Any, Any, T]) -> T:
     """Fuehrt eine Koroutine aus synchronem Code aus — auch aus einer Schleife.
 
@@ -126,41 +114,55 @@ def _runpod_fragen(
     return _synchron_ausfuehren(lauf())
 
 
-def _umgebung_ohne_geheimnisse(umgebung: Any) -> dict[str, Any]:
-    """Reduziert die Worker-Umgebung auf das, was der Preflight fragen wollte.
+OHNE_ANGABE: Final = "(nicht angegeben)"
+"""Was im Befund fuer einen Worker steht, dessen Umgebung die Endpoint-Antwort
+nicht fuehrt. Ein eigener Text und nicht `None`: `None` heisst dort „die Variable
+fehlt in der Umgebung", und das ist etwas anderes."""
 
-    WARUM ES DIESE FUNKTION GIBT: Der Preflight gab die vollstaendige Umgebung
-    des Workers aus — und die traegt `RUNPOD_AI_API_KEY` und
-    `RUNPOD_ENDPOINT_SECRET` im Klartext. Am 08.08.2026 stand beides in der
-    Konsolenausgabe eines gewoehnlichen `mineru-ocr preflight`. Von dort wandert
-    es in den Scrollback, in jedes Log, in jedes Kopieren-und-Einfuegen.
 
-    Das verletzt die harte Regel des Projekts — der Schluessel steht nur im
-    `Authorization`-Header und wird nie ausgegeben. `Settings.__repr__` maskiert
-    eigens dafuer; der Preflight ging daran vorbei, indem er eine FREMDE
-    Umgebung roh durchreichte. Die Regel gilt aber der Sache und nicht der
-    Herkunft: Ein Geheimnis der Gegenseite ist genauso wenig auszugeben wie das
-    eigene.
+def _tag_von(image: Any) -> str | None:
+    """Der Tag eines Image-Namens, `None` ohne einen.
 
-    Was uebrig bleibt, ist genau das, wonach die Pruefung laut ihrem eigenen
-    `soll` fragt („MINERU_MAX_CONCURRENCY vorhanden") und was zur Diagnose
-    taugt: die `MINERU_*`-Variablen, also die, die dieses Projekt selbst setzt
-    und die keine Zugangsdaten tragen. Alles Uebrige wird gezaehlt statt
-    gezeigt — die Zahl beantwortet „ist da ueberhaupt eine Umgebung", ohne
-    etwas preiszugeben.
-
-    Es wird bewusst NICHT nach Schluesselnamen gefiltert („alles ausser KEY,
-    SECRET, TOKEN"): Eine solche Liste ist immer unvollstaendig, und die naechste
-    Variable mit einem Namen, an den niemand gedacht hat, stuende wieder im
-    Klartext. Erlaubt wird, was bekannt harmlos ist, statt zu verbieten, was
-    bekannt gefaehrlich ist.
+    Gesucht wird nur im letzten Pfadteil (`registry:5000/repo` hat Port und keinen
+    Tag) und nach dem letzten Doppelpunkt. Ein fuehrender Doppelpunkt (`:abc`)
+    zaehlt: so steht der Tag manchmal an der Zeile, ohne den Repository-Namen.
     """
-    if not isinstance(umgebung, dict):
-        return {"nicht_lesbar": type(umgebung).__name__}
-    eigene = {
-        name: wert for name, wert in umgebung.items() if str(name).startswith("MINERU_")
-    }
-    return {**eigene, "weitere_variablen": len(umgebung) - len(eigene)}
+    if not isinstance(image, str):
+        return None
+    name = image.rsplit("/", 1)[-1]
+    if ":" not in name:
+        return None
+    return name.rpartition(":")[2] or None
+
+
+def _gesamtbewertung(zustaende: list[str], falsch: str) -> str:
+    """Faltet die Zustaende der einzelnen Worker zu EINER Bewertung.
+
+    `falsch` gewinnt vor allem, `unbekannt` vor `in_ordnung`: Ein einziger
+    abweichender Worker macht den Befund zur Abweichung, ein einziger, an dem sich
+    nichts feststellen laesst, nimmt ihm das „in Ordnung" — sonst bescheinigte der
+    Preflight etwas, das er nur an einem Teil der Worker gesehen hat. Ohne Worker
+    ist nichts zu pruefen: „nicht pruefbar", ausdruecklich nicht „in Ordnung".
+    """
+    if "falsch" in zustaende:
+        return falsch
+    if not zustaende or "unbekannt" in zustaende:
+        return "nicht_pruefbar"
+    return "in_ordnung"
+
+
+def _worker_kennungen(arbeiter: list[Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Die Worker der Endpoint-Antwort mit einer Kennung je Worker.
+
+    ALLE, die die Antwort fuehrt — auch die beendeten: Sie tragen die Umgebung und
+    das Image der zuletzt gelaufenen Worker, und genau die sind es, an denen sich
+    eine falsche Einstellung zeigt, wenn gerade keiner laeuft.
+    """
+    ergebnis: list[tuple[str, dict[str, Any]]] = []
+    for nummer, eintrag in enumerate(arbeiter):
+        if isinstance(eintrag, dict):
+            ergebnis.append((str(eintrag.get("id") or f"#{nummer}"), eintrag))
+    return ergebnis
 
 
 class OCRClient:
@@ -322,19 +324,22 @@ class OCRClient:
 
         Geprueft wird:
             * Der Endpoint existiert.
-            * Soll gegen Ist bei `workersMax >= 1`, `workersMin == 0`,
-              `idleTimeout == 60`, `executionTimeoutMs == 600000`.
-              Die Umgebungsvariablen des Workers sind nur pruefbar, wenn gerade
-              ein Worker laeuft; sonst lautet das Ergebnis „nicht pruefbar" und
+            * Soll gegen Ist bei `workersMin`, `idleTimeout`, `executionTimeoutMs`
+              und `workersMax`. Die Sollwerte kommen aus der Konfiguration
+              (`Settings`), nicht aus dem Code.
+            * Die Endpoint-Variablen, auf die es ankommt (Modellquelle,
+              `MINERU_MAX_CONCURRENCY`, GPU-Speicheranteil), nach ihrem WERT, an
+              der Umgebung, die die Endpoint-Antwort fuer die zuletzt gelaufenen
+              Worker fuehrt — auch fuer beendete — und an jedem davon. Gibt es
+              keinen Worker, lautet das Ergebnis „nicht pruefbar" und
               ausdruecklich NICHT „in Ordnung". Der Unterschied ist der ganze
               Wert dieser Pruefung.
-            * Das Worker-Image. Ein alter Bezeichner ist eine WARNUNG, kein
-              Abbruch — auch mit altem Image kann man arbeiten, man sollte es nur
-              wissen.
-            * Die Rechenzentren, schlicht gemeldet. Was an RunPod geht, soll in ein
-              EU-Rechenzentrum; der Client richtet kein Verhalten danach, weil das
-              eine Entscheidung des Menschen ist und kein Schalter im Programm
-              (Plan 2.4, kein `pii`-Flag).
+            * Das Template-Image und das Image jedes Workers gegen den erwarteten
+              Tag. Ein anderer Tag ist eine WARNUNG, kein Abbruch — auch mit
+              einem anderen Image kann man arbeiten, man sollte es nur wissen.
+            * Die Rechenzentren: alle muessen in der zulaessigen Liste (EWR)
+              liegen. Nennt die Antwort keine, ist es „nicht pruefbar".
+            * FlashBoot, nur berichtet.
             * Der Kontostand gegen `min_balance`.
             * Ob ein Daemon lebt — ueber Procrastinates Worker-Lebenszeichen. Das
               ist eine undokumentierte Flaeche, eingesperrt in
@@ -364,6 +369,8 @@ class OCRClient:
                 {"punkt": punkt, "soll": soll, "ist": ist, "bewertung": bewertung}
             )
 
+        einstellung = self._settings
+
         # --- Endpoint und seine Konfiguration ---------------------------
         try:
             konfiguration = _runpod_fragen(self._settings, lambda z: z.endpoint())
@@ -373,87 +380,133 @@ class OCRClient:
         else:
             merken("endpoint", "erreichbar", konfiguration.get("id"), "in_ordnung")
 
-            for feld, soll in ENDPOINT_SOLL.items():
+            sollwerte = (
+                ("workersMin", einstellung.workers_min),
+                ("idleTimeout", einstellung.idle_timeout),
+                ("executionTimeoutMs", einstellung.execution_timeout_ms),
+                ("workersMax", einstellung.workers_max),
+            )
+            for feld, soll in sollwerte:
                 ist = konfiguration.get(feld)
                 merken(
                     feld, soll, ist, "in_ordnung" if ist == soll else "abweichung"
                 )
 
-            hoechstzahl = konfiguration.get("workersMax")
+            # FlashBoot wird nur berichtet: Es gibt keinen Sollwert, an dem es
+            # falsch sein koennte, aber es bestimmt die Kaltstartzeit und gehoert
+            # deshalb in jeden Bericht.
+            flashboot = konfiguration.get("flashboot")
             merken(
-                "workersMax",
-                ">= 1",
-                hoechstzahl,
-                "in_ordnung"
-                if isinstance(hoechstzahl, int) and hoechstzahl >= 1
-                else "abweichung",
+                "flashboot",
+                None,
+                flashboot,
+                "gemeldet" if isinstance(flashboot, bool) else "nicht_pruefbar",
             )
 
-            # Die Umgebungsvariablen des Workers sind NUR pruefbar, wenn gerade
-            # einer laeuft. Sonst lautet das Ergebnis „nicht pruefbar" und
-            # ausdruecklich NICHT „in Ordnung" — der Unterschied ist der ganze
-            # Wert dieser Pruefung.
-            laufende = konfiguration.get("workers") or []
-            umgebungen = [
-                w.get("env") for w in laufende if isinstance(w, dict) and w.get("env")
-            ]
-            merken(
-                "worker_env",
-                "MINERU_MAX_CONCURRENCY vorhanden",
-                _umgebung_ohne_geheimnisse(umgebungen[0]) if umgebungen else None,
-                "in_ordnung" if umgebungen else "nicht_pruefbar",
-            )
-
-            # Die Rechenzentren werden schlicht GEMELDET. Was an RunPod geht,
-            # soll in ein EU-Rechenzentrum; der Client richtet kein Verhalten
-            # danach, weil das eine Entscheidung des Menschen ist und kein
-            # Schalter im Programm (Plan 2.4, kein `pii`-Flag).
+            # Die Rechenzentren muessen ALLE in der zulaessigen Liste liegen
+            # (EWR, ein Sollwert der Konfiguration). Eines ausserhalb ist eine
+            # Abweichung, auch wenn die uebrigen stimmen: Daran haengt, ob
+            # personenbezogene Daten die EU verlassen koennen.
             #
             # AUSSCHLIESSLICH `dataCenterIds`, und KEIN Rueckfall auf
             # `gpuTypeIds`. Der Rueckfall stand hier und hat am 08.08.2026 im
             # echten Lauf genau das getan, wovor er schuetzen sollte: Er meldete
-            # `['NVIDIA RTX A5000', 'NVIDIA L4', 'NVIDIA GeForce RTX 3090',
-            # 'NVIDIA GeForce RTX 4090']` unter der Ueberschrift „EU fuer den
-            # Steuer-Bestand". Das sind GPU-Typen. Die Zeile sah aus, als haette
-            # sie die Datenschutz-Frage beantwortet, und hatte ein Feld
-            # angesehen, das sie gar nicht beantworten kann.
+            # GPU-Typen unter der Ueberschrift „EU fuer den Steuer-Bestand". Die
+            # Zeile sah aus, als haette sie die Datenschutz-Frage beantwortet, und
+            # hatte ein Feld angesehen, das sie gar nicht beantworten kann.
             #
-            # Fehlt `dataCenterIds`, lautet die Antwort „nicht pruefbar" — die
-            # Frage bleibt dann sichtbar offen, statt falsch beantwortet zu sein.
+            # Nennt die Antwort keine, lautet das Ergebnis „nicht pruefbar" — die
+            # Frage bleibt sichtbar offen, statt falsch beantwortet zu sein.
+            zulaessig = list(einstellung.allowed_data_centers)
             rechenzentren = konfiguration.get("dataCenterIds")
+            if isinstance(rechenzentren, list) and rechenzentren:
+                bewertung = (
+                    "in_ordnung"
+                    if all(name in zulaessig for name in rechenzentren)
+                    else "abweichung"
+                )
+            else:
+                bewertung = "nicht_pruefbar"
+                rechenzentren = None
+            merken("datacenters", zulaessig, rechenzentren, bewertung)
+
+            # Was TATSAECHLICH laeuft, steht an den Workern der Antwort.
+            arbeiter = _worker_kennungen(konfiguration.get("workers") or [])
+
+            # Die Endpoint-Variablen, auf die es ankommt, nach WERT. Gezeigt wird
+            # nur der Wert der geprueften Variablen: Die Umgebung eines echten
+            # Workers traegt `RUNPOD_AI_API_KEY` und `RUNPOD_ENDPOINT_SECRET` im
+            # Klartext (am 08.08.2026 standen beide in der Konsolenausgabe eines
+            # gewoehnlichen Preflights). Erlaubt wird, was bekannt harmlos ist —
+            # die konfigurierten Variablen —, statt zu verbieten, was bekannt
+            # gefaehrlich ist: Eine solche Liste ist immer unvollstaendig.
+            for variable, env_soll in einstellung.endpoint_env.items():
+                ist_je_worker: dict[str, Any] = {}
+                zustaende: list[str] = []
+                for kennung, eintrag in arbeiter:
+                    umgebung = eintrag.get("env")
+                    if not isinstance(umgebung, dict):
+                        ist_je_worker[kennung] = OHNE_ANGABE
+                        zustaende.append("unbekannt")
+                        continue
+                    wert = umgebung.get(variable)
+                    ist_je_worker[kennung] = wert
+                    zustaende.append("ok" if env_soll is not None and wert == env_soll else "falsch")
+                if env_soll is None:
+                    # Noch kein Sollwert (z. B. der GPU-Speicheranteil vor der
+                    # Messung): berichten, nicht bewerten.
+                    bewertung = "nicht_pruefbar"
+                else:
+                    bewertung = _gesamtbewertung(zustaende, "abweichung")
+                merken(f"env:{variable}", env_soll, ist_je_worker, bewertung)
+
+            # Das Image jedes Workers gegen den erwarteten Tag. Das Template kann
+            # stimmen und ein Worker trotzdem noch das alte Image fahren, weil er
+            # vor dem Build gestartet wurde.
+            erwartet = einstellung.expected_image_tag
+            tags: dict[str, Any] = {}
+            zustaende = []
+            for kennung, eintrag in arbeiter:
+                tag = _tag_von(eintrag.get("imageName"))
+                tags[kennung] = tag
+                if tag is None:
+                    zustaende.append("unbekannt")
+                else:
+                    zustaende.append("ok" if tag == erwartet else "falsch")
             merken(
-                "datacenters",
-                "EU-Rechenzentren (Entscheidung des Menschen)",
-                rechenzentren,
-                "gemeldet" if rechenzentren else "nicht_pruefbar",
+                "worker_image",
+                erwartet,
+                tags,
+                "nicht_pruefbar"
+                if erwartet is None
+                else _gesamtbewertung(zustaende, "warnung"),
             )
 
-        # --- Das Worker-Image: Warnung, kein Abbruch --------------------
+        # --- Das Template-Image: Warnung, kein Abbruch ------------------
         try:
             marke = _runpod_fragen(self._settings, lambda z: z.image_tag())
         except Exception as fehler:  # noqa: BLE001
             merken("image_tag", "lesbar", f"{type(fehler).__name__}", "nicht_pruefbar")
         else:
-            # Ein alter Bezeichner ist eine WARNUNG und kein Abbruch: Auch mit
-            # altem Image kann man arbeiten, man sollte es nur wissen.
+            # Ein anderer Tag ist eine WARNUNG und kein Abbruch: Auch mit einem
+            # anderen Image kann man arbeiten, man sollte es nur wissen.
             #
-            # UND EIN UNBEKANNTER IST „NICHT PRUEFBAR", nicht „in Ordnung".
-            # `image_tag()` gibt vertragsgemaess `None` zurueck, wenn das
-            # Template den Bezeichner nicht ausweist — ein gueltiges Ergebnis.
-            # `None` ist falsy, und die frueherer Fassung fiel damit auf
-            # „in_ordnung": Sie bescheinigte ein aktuelles Image genau dann, wenn
-            # sie ueberhaupt keines kannte. Das verletzt den Grundsatz, den der
-            # Docstring dieser Funktion selbst aufstellt — „sonst lautet das
-            # Ergebnis ‚nicht pruefbar‘ und ausdruecklich NICHT ‚in Ordnung‘. Der
-            # Unterschied ist der ganze Wert dieser Pruefung."
-            if not marke:
-                merken("image_tag", "aktuelles Worker-Image", marke, "nicht_pruefbar")
+            # UND EIN UNBEKANNTER ODER UNERWARTETER IST „NICHT PRUEFBAR", nicht
+            # „in Ordnung". `image_tag()` gibt vertragsgemaess `None` zurueck,
+            # wenn das Template den Bezeichner nicht ausweist — ein gueltiges
+            # Ergebnis. Die frueherer Fassung fiel damit auf „in_ordnung": Sie
+            # bescheinigte ein aktuelles Image genau dann, wenn sie ueberhaupt
+            # keines kannte. Dasselbe gilt, solange kein Tag erwartet wird: Was
+            # man nicht vergleichen kann, ist nicht in Ordnung.
+            erwartet = einstellung.expected_image_tag
+            if not marke or erwartet is None:
+                merken("image_tag", erwartet, marke, "nicht_pruefbar")
             else:
                 merken(
                     "image_tag",
-                    "aktuelles Worker-Image",
+                    erwartet,
                     marke,
-                    "warnung" if ":17d4955b2" in marke else "in_ordnung",
+                    "in_ordnung" if _tag_von(marke) == erwartet else "warnung",
                 )
 
         # --- Kontostand -------------------------------------------------

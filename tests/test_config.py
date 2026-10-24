@@ -355,6 +355,63 @@ def test_rechenzentren_in_der_datei_sind_eine_liste_von_namen(tmp_path: Path) ->
         _einstellung(config_path=datei)
 
 
+def test_leere_umgebungsvariable_gilt_als_nicht_gesetzt(tmp_path: Path) -> None:
+    """Ein Rest `MINERU_OCR_IDLE_TIMEOUT=` aus einem Skript soll die Datei nicht
+    ueberstimmen — und auch nicht als Zahl scheitern."""
+    datei = tmp_path / "config.toml"
+    datei.write_text("idle_timeout = 90\n")
+    e = _einstellung(config_path=datei, environ={"MINERU_OCR_IDLE_TIMEOUT": "  "})
+    assert e.idle_timeout == 90
+
+
+def test_wahrheitswert_ist_keine_zahl(tmp_path: Path) -> None:
+    """`idle_timeout = true` ist in Python eine Ganzzahl und waere eine Sekunde."""
+    datei = tmp_path / "config.toml"
+    datei.write_text("idle_timeout = true\n")
+    with pytest.raises(ConfigurationError, match="idle_timeout"):
+        _einstellung(config_path=datei)
+
+
+def test_leere_rechenzentrumsliste_wirft(tmp_path: Path) -> None:
+    """Eine leere Liste liesse kein einziges Rechenzentrum zu."""
+    datei = tmp_path / "config.toml"
+    datei.write_text("allowed_data_centers = []\n")
+    with pytest.raises(ConfigurationError, match="allowed_data_centers"):
+        _einstellung(config_path=datei)
+    with pytest.raises(ConfigurationError, match="MINERU_OCR_ALLOWED_DATA_CENTERS"):
+        _einstellung(environ={"MINERU_OCR_ALLOWED_DATA_CENTERS": " , "})
+
+
+def test_fehlende_datei_aus_der_umgebung_wirft(tmp_path: Path) -> None:
+    """Auch ein falsch getippter `MINERU_OCR_CONFIG` darf nicht still zur
+    Standarddatei werden."""
+    fehlt = tmp_path / "fehlt.toml"
+    umgebung = {
+        "MINERU_OCR_CONFIG": str(fehlt),
+        # Endpoint und Datenbank sind eingestellt: Allein die fehlende Datei darf
+        # den Fehler ausloesen, nicht der fehlende Endpoint.
+        "MINERU_OCR_ENDPOINT_ID": ENDPUNKT,
+        "MINERU_OCR_DB_DSN": DSN,
+    }
+    with pytest.raises(ConfigurationError, match=str(fehlt)):
+        Settings.load(api_key=GEHEIM, environ=umgebung)
+
+
+def test_sollwerte_der_variablen_duerfen_zahlen_sein(tmp_path: Path) -> None:
+    """`MINERU_MAX_CONCURRENCY = 2` ohne Anfuehrungszeichen ist gemeint wie
+    `"2"`: Der Worker fuehrt Umgebungsvariablen immer als Text."""
+    datei = tmp_path / "config.toml"
+    datei.write_text("[endpoint_env]\nMINERU_MAX_CONCURRENCY = 2\n")
+    assert _einstellung(config_path=datei).endpoint_env["MINERU_MAX_CONCURRENCY"] == "2"
+
+
+def test_sollwert_einer_variable_darf_kein_wahrheitswert_sein(tmp_path: Path) -> None:
+    datei = tmp_path / "config.toml"
+    datei.write_text("[endpoint_env]\nMINERU_MAX_CONCURRENCY = true\n")
+    with pytest.raises(ConfigurationError, match="MINERU_MAX_CONCURRENCY"):
+        _einstellung(config_path=datei)
+
+
 # --- Keine Seiteneffekte --------------------------------------------------
 
 

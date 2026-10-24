@@ -163,101 +163,444 @@ def test_preflight_mutiert_nichts(
     assert befund["drift"] == 0
 
 
-def test_nicht_pruefbar_ist_nicht_in_ordnung(
-    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
-) -> None:
-    """Laeuft kein Worker, sind dessen Umgebungsvariablen NICHT pruefbar — und
-    der Befund sagt das, statt stillschweigend „in Ordnung" zu melden. Genau
-    darin liegt der Wert dieser Pruefung."""
-    _worker_am_leben(db_conn)
+GEHEIMNIS = "geheim-nicht-ausgeben"
+"""Steht in der Umgebung jedes Test-Workers wie `RUNPOD_AI_API_KEY` in der echten:
+Der Befund darf es nie zeigen."""
+
+
+def _worker(
+    kennung: str,
+    *,
+    image: str | None = ":neu12345",
+    env: dict[str, str] | None = None,
+    status: str = "RUNNING",
+) -> dict[str, Any]:
+    """Ein Worker in der Form des konservierten Schnappschusses: `id`,
+    `imageName`, `desiredStatus` und eine `env`, die auch Geheimnisse traegt."""
+    umgebung = {
+        "MINERU_MODEL_SOURCE": "local",
+        "MINERU_MAX_CONCURRENCY": "1",
+        "RUNPOD_AI_API_KEY": GEHEIMNIS,
+    }
+    umgebung.update(env or {})
+    eintrag: dict[str, Any] = {
+        "id": kennung,
+        "desiredStatus": status,
+        "env": umgebung,
+    }
+    if image is not None:
+        eintrag["imageName"] = image
+    return eintrag
+
+
+def _pruefen(
+    dsn: str, *, strict: bool = False
+) -> dict[str, Any]:
     with OCRClient(
-        db_dsn=_test_datenbank, api_key="erfunden", preflight=False
+        db_dsn=dsn, api_key="erfunden", preflight=False, strict=strict
     ) as klient:
-        befund = klient.preflight()
-
-    umgebung = [b for b in befund["checks"] if b["punkt"] == "worker_env"][0]
-    assert umgebung["bewertung"] == "nicht_pruefbar"
-    assert umgebung["bewertung"] != "in_ordnung"
+        return klient.preflight()
 
 
-def test_laufender_worker_macht_die_umgebung_pruefbar(
+def _befund(befund: dict[str, Any], punkt: str) -> dict[str, Any]:
+    treffer: list[dict[str, Any]] = [
+        b for b in befund["checks"] if b["punkt"] == punkt
+    ]
+    assert treffer, (
+        f"Der Preflight meldet keinen Punkt {punkt!r}; er meldet "
+        f"{[b['punkt'] for b in befund['checks']]}"
+    )
+    return treffer[0]
+
+
+def test_ohne_worker_ist_das_laufende_nicht_pruefbar(
     _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
 ) -> None:
-    """Die Gegenprobe: Mit einem laufenden Worker IST sie pruefbar."""
+    """Laeuft und lief kein Worker, sind Umgebung und Worker-Image NICHT pruefbar —
+    und der Befund sagt das, statt „in Ordnung" zu melden. Genau darin liegt der
+    Wert dieser Pruefung."""
+    _worker_am_leben(db_conn)
+    befund = _pruefen(_test_datenbank)
+
+    for punkt in ("env:MINERU_MAX_CONCURRENCY", "env:MINERU_MODEL_SOURCE", "worker_image"):
+        assert _befund(befund, punkt)["bewertung"] == "nicht_pruefbar", punkt
+
+
+def test_passende_umgebung_ist_in_ordnung(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Die Gegenprobe: Mit einem Worker, dessen Variablen den Sollwerten
+    entsprechen, sind sie in Ordnung."""
+    _worker_am_leben(db_conn)
+    runpod.endpoint = _guter_endpoint(workers=[_worker("w1")])
+    befund = _pruefen(_test_datenbank)
+
+    modell = _befund(befund, "env:MINERU_MODEL_SOURCE")
+    assert modell["bewertung"] == "in_ordnung"
+    assert modell["soll"] == "local"
+    assert modell["ist"] == {"w1": "local"}
+    assert _befund(befund, "env:MINERU_MAX_CONCURRENCY")["bewertung"] == "in_ordnung"
+    # Ohne eingestellten Tag ist das Image kein Vergleich wert, auch mit Workern.
+    assert _befund(befund, "worker_image")["bewertung"] == "nicht_pruefbar"
+
+
+def test_umgebung_wird_nach_wert_geprueft_nicht_nach_vorhandensein(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Die Variable ist da, aber mit dem falschen Wert: Abweichung. Vorher hiess
+    das „MINERU_MAX_CONCURRENCY vorhanden" und war in Ordnung."""
     _worker_am_leben(db_conn)
     runpod.endpoint = _guter_endpoint(
-        workers=[{"id": "wrk", "env": {"MINERU_MAX_CONCURRENCY": "1"}}]
+        workers=[_worker("w1", env={"MINERU_MAX_CONCURRENCY": "4"})]
     )
-    with OCRClient(
-        db_dsn=_test_datenbank, api_key="erfunden", preflight=False
-    ) as klient:
-        befund = klient.preflight()
+    befund = _pruefen(_test_datenbank)
+    assert _befund(befund, "env:MINERU_MAX_CONCURRENCY")["bewertung"] == "abweichung"
+    assert befund["drift"] == 1
 
-    umgebung = [b for b in befund["checks"] if b["punkt"] == "worker_env"][0]
-    assert umgebung["bewertung"] == "in_ordnung"
+    with pytest.raises(ConfigDriftError):
+        _pruefen(_test_datenbank, strict=True)
 
 
-def test_altes_image_ist_warnung_kein_abbruch(
+def test_fehlende_variable_ist_eine_abweichung(
     _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
 ) -> None:
-    """Mit altem Image kann man arbeiten, man soll es nur wissen."""
+    """Eine Variable, die der Worker gar nicht traegt, ist nicht „nicht pruefbar":
+    Die Umgebung ist bekannt, die Variable fehlt in ihr."""
     _worker_am_leben(db_conn)
-    runpod.marke = "registry.runpod.net/…-dockerfile:17d4955b2"
-    with OCRClient(
-        db_dsn=_test_datenbank, api_key="erfunden", preflight=False, strict=True
-    ) as klient:
-        befund = klient.preflight()  # wirft NICHT
+    arbeiter = _worker("w1")
+    del arbeiter["env"]["MINERU_MODEL_SOURCE"]
+    runpod.endpoint = _guter_endpoint(workers=[arbeiter])
+    befund = _pruefen(_test_datenbank)
 
-    marke = [b for b in befund["checks"] if b["punkt"] == "image_tag"][0]
-    assert marke["bewertung"] == "warnung"
+    modell = _befund(befund, "env:MINERU_MODEL_SOURCE")
+    assert modell["bewertung"] == "abweichung"
+    assert modell["ist"] == {"w1": None}
+
+
+def test_jeder_worker_wird_geprueft_auch_beendete(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Die Antwort fuehrt die Umgebung der zuletzt gelaufenen Worker, auch der
+    beendeten. Geprueft wird an JEDEM, nicht nur am ersten: Der erste ist
+    richtig, der zweite (beendet) falsch — das ist eine Abweichung."""
+    _worker_am_leben(db_conn)
+    runpod.endpoint = _guter_endpoint(
+        workers=[
+            _worker("w1"),
+            _worker("w2", env={"MINERU_MODEL_SOURCE": "huggingface"}, status="EXITED"),
+        ]
+    )
+    befund = _pruefen(_test_datenbank)
+
+    modell = _befund(befund, "env:MINERU_MODEL_SOURCE")
+    assert modell["bewertung"] == "abweichung"
+    assert modell["ist"] == {"w1": "local", "w2": "huggingface"}
+
+
+def test_worker_ohne_umgebung_macht_den_befund_unsicher(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Fuehrt die Antwort fuer einen Worker keine Umgebung, ist an ihm nichts
+    festzustellen. Die uebrigen sind in Ordnung — gesamt kann der Befund dann
+    aber nicht „in Ordnung" lauten."""
+    _worker_am_leben(db_conn)
+    ohne = _worker("w2")
+    del ohne["env"]
+    runpod.endpoint = _guter_endpoint(workers=[_worker("w1"), ohne])
+    befund = _pruefen(_test_datenbank)
+
+    assert _befund(befund, "env:MINERU_MAX_CONCURRENCY")["bewertung"] == "nicht_pruefbar"
+
+
+def test_offener_sollwert_wird_berichtet_aber_nicht_bewertet(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Fuer den GPU-Speicheranteil gibt es noch keinen gemessenen Sollwert. Der
+    Ist-Wert steht trotzdem im Befund; bewertet wird er nicht."""
+    _worker_am_leben(db_conn)
+    runpod.endpoint = _guter_endpoint(
+        workers=[_worker("w1", env={"MINERU_VIRTUAL_VRAM_SIZE": "12"})]
+    )
+    befund = _pruefen(_test_datenbank)
+
+    vram = _befund(befund, "env:MINERU_VIRTUAL_VRAM_SIZE")
+    assert vram["bewertung"] == "nicht_pruefbar"
+    assert vram["soll"] is None
+    assert vram["ist"] == {"w1": "12"}
+
+
+def test_sollwert_der_umgebungsvariable_kommt_aus_der_konfiguration(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Der Sollwert des GPU-Speicheranteils steht in der Konfigurationsdatei; was
+    der Worker abweichend fuehrt, ist eine Abweichung."""
+    datei = tmp_path / "config.toml"
+    datei.write_text('[endpoint_env]\nMINERU_VIRTUAL_VRAM_SIZE = "12"\n')
+    monkeypatch.setenv("MINERU_OCR_CONFIG", str(datei))
+    _worker_am_leben(db_conn)
+
+    runpod.endpoint = _guter_endpoint(
+        workers=[_worker("w1", env={"MINERU_VIRTUAL_VRAM_SIZE": "12"})]
+    )
+    assert (
+        _befund(_pruefen(_test_datenbank), "env:MINERU_VIRTUAL_VRAM_SIZE")["bewertung"]
+        == "in_ordnung"
+    )
+
+    runpod.endpoint = _guter_endpoint(
+        workers=[_worker("w1", env={"MINERU_VIRTUAL_VRAM_SIZE": "6"})]
+    )
+    assert (
+        _befund(_pruefen(_test_datenbank), "env:MINERU_VIRTUAL_VRAM_SIZE")["bewertung"]
+        == "abweichung"
+    )
+
+
+def test_geheimnisse_der_worker_bleiben_aus_dem_befund(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Die Umgebung eines echten Workers traegt `RUNPOD_AI_API_KEY` im Klartext
+    (am 08.08.2026 stand er in der Konsolenausgabe). Gezeigt werden nur die
+    geprueften Variablen."""
+    _worker_am_leben(db_conn)
+    runpod.endpoint = _guter_endpoint(workers=[_worker("w1")])
+    befund = _pruefen(_test_datenbank)
+
+    assert GEHEIMNIS not in repr(befund)
+    assert "RUNPOD_AI_API_KEY" not in repr(befund)
+
+
+def test_template_image_wird_gegen_den_erwarteten_tag_geprueft(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Der erwartete Tag ist eine Einstellung. Ein anderer ist eine Warnung —
+    mit anderem Image kann man arbeiten, man soll es nur wissen — und kein
+    Abbruch."""
+    _worker_am_leben(db_conn)
+    monkeypatch.setenv("MINERU_OCR_EXPECTED_IMAGE_TAG", "neu12345")
+
+    runpod.marke = "registry.runpod.net/konto-repo-dockerfile:neu12345"
+    befund = _pruefen(_test_datenbank, strict=True)
+    assert _befund(befund, "image_tag")["bewertung"] == "in_ordnung"
+    assert _befund(befund, "image_tag")["soll"] == "neu12345"
+
+    runpod.marke = "registry.runpod.net/konto-repo-dockerfile:17d4955b2"
+    befund = _pruefen(_test_datenbank, strict=True)  # wirft NICHT
+    assert _befund(befund, "image_tag")["bewertung"] == "warnung"
     assert befund["drift"] == 0
 
 
-def test_rechenzentren_werden_gemeldet(
+def test_ohne_erwarteten_tag_ist_das_image_nicht_pruefbar(
     _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
 ) -> None:
-    """Die Rechenzentren werden berichtet, wenn der Endpoint sie ausweist — und
-    sonst gilt die Frage als OFFEN, nicht als beantwortet.
+    """Kein Tag eingestellt: Das Image wird berichtet, aber nicht fuer richtig
+    gehalten. Dasselbe gilt, wenn das Template keinen Tag ausweist."""
+    _worker_am_leben(db_conn)
+    befund = _pruefen(_test_datenbank)
+    assert _befund(befund, "image_tag")["bewertung"] == "nicht_pruefbar"
+    assert _befund(befund, "image_tag")["ist"] == ":neu12345"
 
-    Der Client richtet kein Verhalten danach; das ist eine Entscheidung des
-    Menschen und kein Schalter im Programm. Umso wichtiger ist, dass die Zeile
-    nicht so aussieht, als haette sie etwas festgestellt.
 
-    WAS HIER FRUEHER STAND UND WARUM ES FALSCH WAR: Die Pruefung las
-    `dataCenterIds` ODER, ersatzweise, `gpuTypeIds`. Der echte Endpoint weist
-    keine `dataCenterIds` aus — im Lauf am 08.08.2026 meldete die Zeile deshalb
-    `['NVIDIA RTX A5000', 'NVIDIA L4', 'NVIDIA GeForce RTX 3090', 'NVIDIA
-    GeForce RTX 4090']` unter der Ueberschrift „EU fuer den Steuer-Bestand".
-    Das sind GPU-Typen. Ausgerechnet die Pruefung, an der die Datenschutz-Frage
-    haengt, sah ein Feld an, das die Frage nicht beantworten kann — und meldete
-    `gemeldet`.
+def test_unbekanntes_template_image_ist_nicht_pruefbar(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _worker_am_leben(db_conn)
+    monkeypatch.setenv("MINERU_OCR_EXPECTED_IMAGE_TAG", "neu12345")
+    runpod.marke = None
+    befund = _pruefen(_test_datenbank)
+    assert _befund(befund, "image_tag")["bewertung"] == "nicht_pruefbar"
 
-    Die Vorrichtung bildet den echten Schnappschuss ab (mit `gpuTypeIds`, ohne
-    `dataCenterIds`). Der richtige Befund ist damit `nicht_pruefbar`, und dieser
-    Test schreibt genau das fest.
+
+def test_image_jedes_workers_wird_gegen_den_erwarteten_tag_geprueft(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Das Template kann stimmen und ein Worker trotzdem noch das alte Image
+    fahren (er wurde vor dem Build gestartet). Das steht im Befund, mit
+    Kennung."""
+    _worker_am_leben(db_conn)
+    monkeypatch.setenv("MINERU_OCR_EXPECTED_IMAGE_TAG", "neu12345")
+
+    runpod.endpoint = _guter_endpoint(
+        workers=[
+            _worker("w1", image="registry.runpod.net/k-r-dockerfile:neu12345"),
+            _worker("w2", image="registry.runpod.net/k-r-dockerfile:17d4955b2", status="EXITED"),
+        ]
+    )
+    befund = _pruefen(_test_datenbank, strict=True)  # warnung, kein Abbruch
+
+    punkt = _befund(befund, "worker_image")
+    assert punkt["bewertung"] == "warnung"
+    assert punkt["ist"] == {"w1": "neu12345", "w2": "17d4955b2"}
+
+    runpod.endpoint = _guter_endpoint(
+        workers=[_worker("w1", image="registry.runpod.net/k-r-dockerfile:neu12345")]
+    )
+    assert _befund(_pruefen(_test_datenbank), "worker_image")["bewertung"] == "in_ordnung"
+
+
+def test_worker_ohne_image_angabe_ist_nicht_pruefbar(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _worker_am_leben(db_conn)
+    monkeypatch.setenv("MINERU_OCR_EXPECTED_IMAGE_TAG", "neu12345")
+    runpod.endpoint = _guter_endpoint(workers=[_worker("w1", image=None)])
+    assert _befund(_pruefen(_test_datenbank), "worker_image")["bewertung"] == "nicht_pruefbar"
+
+
+def test_rechenzentren_muessen_alle_in_der_zulaessigen_liste_liegen(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Nennt die Endpoint-Antwort Rechenzentren, muessen ALLE zulaessig sein (EWR).
+    Eines ausserhalb ist eine Abweichung, auch wenn die uebrigen stimmen — daran
+    haengt, ob personenbezogene Daten die EU verlassen koennen."""
+    _worker_am_leben(db_conn)
+
+    runpod.endpoint = _guter_endpoint(dataCenterIds=["EU-RO-1", "EUR-IS-1"])
+    befund = _pruefen(_test_datenbank, strict=True)
+    zentren = _befund(befund, "datacenters")
+    assert zentren["bewertung"] == "in_ordnung"
+    assert zentren["ist"] == ["EU-RO-1", "EUR-IS-1"]
+    assert "EU-RO-1" in zentren["soll"]
+
+    runpod.endpoint = _guter_endpoint(dataCenterIds=["EU-RO-1", "US-CA-2"])
+    befund = _pruefen(_test_datenbank)
+    assert _befund(befund, "datacenters")["bewertung"] == "abweichung"
+    with pytest.raises(ConfigDriftError):
+        _pruefen(_test_datenbank, strict=True)
+
+
+def test_rechenzentren_sind_ohne_angabe_der_antwort_nicht_pruefbar(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Die Frage bleibt OFFEN, wenn die Antwort keine Rechenzentren nennt — die
+    Aufnahme vom 05.08.2026 hat kein `dataCenterIds`.
+
+    WAS FRUEHER AN DIESER STELLE FALSCH WAR: Die Pruefung las `dataCenterIds`
+    ODER, ersatzweise, `gpuTypeIds` und meldete GPU-Typen
+    (`['NVIDIA RTX A5000', …]`) unter der Ueberschrift „EU". Die Vorrichtung
+    bildet den echten Schnappschuss ab (mit `gpuTypeIds`, ohne
+    `dataCenterIds`); der richtige Befund ist `nicht_pruefbar`.
     """
     _worker_am_leben(db_conn)
-    with OCRClient(
-        db_dsn=_test_datenbank, api_key="erfunden", preflight=False
-    ) as klient:
-        befund = klient.preflight()
+    befund = _pruefen(_test_datenbank, strict=True)
+    zentren = _befund(befund, "datacenters")
+    assert zentren["bewertung"] == "nicht_pruefbar"
+    assert zentren["ist"] is None
 
-    rechenzentren = [b for b in befund["checks"] if b["punkt"] == "datacenters"][0]
-    assert "EU" in rechenzentren["soll"]
-    # Der Endpoint weist keine Rechenzentren aus -> die Frage bleibt offen.
-    assert rechenzentren["bewertung"] == "nicht_pruefbar"
-    assert rechenzentren["ist"] is None
 
-    # Und wenn er sie ausweist, werden sie gemeldet — und zwar SIE, nicht die
-    # GPU-Typen.
-    runpod.endpoint = _guter_endpoint(dataCenterIds=["EU-RO-1", "EUR-IS-1"])
-    with OCRClient(
-        db_dsn=_test_datenbank, api_key="erfunden", preflight=False
-    ) as klient:
-        befund = klient.preflight()
-    rechenzentren = [b for b in befund["checks"] if b["punkt"] == "datacenters"][0]
-    assert rechenzentren["bewertung"] == "gemeldet"
-    assert rechenzentren["ist"] == ["EU-RO-1", "EUR-IS-1"]
+def test_image_ohne_tag_ist_nicht_pruefbar_auch_mit_registry_port(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`registry:5000/repo` hat einen Port und keinen Tag; die Zahl nach dem
+    Doppelpunkt ist nicht der Tag."""
+    _worker_am_leben(db_conn)
+    monkeypatch.setenv("MINERU_OCR_EXPECTED_IMAGE_TAG", "5000/k-r")
+    runpod.endpoint = _guter_endpoint(
+        workers=[_worker("w1", image="registry.runpod.net:5000/k-r")]
+    )
+    punkt = _befund(_pruefen(_test_datenbank), "worker_image")
+    assert punkt["bewertung"] == "nicht_pruefbar"
+    assert punkt["ist"] == {"w1": None}
+
+
+def test_image_mit_leerem_tag_ist_nicht_pruefbar(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`repo:` hat einen Doppelpunkt und keinen Tag — das ist kein Tag, der
+    verglichen werden koennte."""
+    _worker_am_leben(db_conn)
+    monkeypatch.setenv("MINERU_OCR_EXPECTED_IMAGE_TAG", "neu12345")
+    runpod.endpoint = _guter_endpoint(workers=[_worker("w1", image="registry.runpod.net/k-r:")])
+    punkt = _befund(_pruefen(_test_datenbank), "worker_image")
+    assert punkt["bewertung"] == "nicht_pruefbar"
+    assert punkt["ist"] == {"w1": None}
+
+
+def test_leere_rechenzentrumsliste_ist_nicht_pruefbar(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Eine leere Liste ist keine Aussage — „alle liegen in der Liste" waere
+    ueber nichts trivial wahr."""
+    _worker_am_leben(db_conn)
+    runpod.endpoint = _guter_endpoint(dataCenterIds=[])
+    assert _befund(_pruefen(_test_datenbank), "datacenters")["bewertung"] == "nicht_pruefbar"
+
+
+def test_flashboot_wird_berichtet(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    _worker_am_leben(db_conn)
+
+    runpod.endpoint = _guter_endpoint(flashboot=True)
+    einmal = _befund(_pruefen(_test_datenbank), "flashboot")
+    assert (einmal["ist"], einmal["bewertung"]) == (True, "gemeldet")
+
+    runpod.endpoint = _guter_endpoint(flashboot=False)
+    aus = _befund(_pruefen(_test_datenbank), "flashboot")
+    assert (aus["ist"], aus["bewertung"]) == (False, "gemeldet")
+
+    runpod.endpoint = _guter_endpoint()
+    unbekannt = _befund(_pruefen(_test_datenbank), "flashboot")
+    assert unbekannt["bewertung"] == "nicht_pruefbar"
+
+
+def test_sollwerte_des_endpoints_kommen_aus_der_konfiguration(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    runpod: RunPodAntworten,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`idleTimeout`, `executionTimeoutMs`, `workersMin` und `workersMax` werden
+    gegen die eingestellten Werte verglichen, nicht gegen feste Zahlen."""
+    _worker_am_leben(db_conn)
+    monkeypatch.setenv("MINERU_OCR_IDLE_TIMEOUT", "120")
+    monkeypatch.setenv("MINERU_OCR_EXECUTION_TIMEOUT_MS", "900000")
+    monkeypatch.setenv("MINERU_OCR_WORKERS_MIN", "1")
+    monkeypatch.setenv("MINERU_OCR_WORKERS_MAX", "4")
+
+    # Der Endpoint hat noch die alten Werte: vier Abweichungen.
+    befund = _pruefen(_test_datenbank)
+    assert befund["drift"] == 4
+    assert _befund(befund, "idleTimeout")["soll"] == 120
+    assert _befund(befund, "workersMax")["soll"] == 4
+
+    runpod.endpoint = _guter_endpoint(
+        idleTimeout=120, executionTimeoutMs=900000, workersMin=1, workersMax=4
+    )
+    assert _pruefen(_test_datenbank)["drift"] == 0
+
+
+def test_workers_max_wird_auf_den_sollwert_geprueft(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Vorher galt nur „mindestens eins". Jetzt ist es die Kontogrenze, 10."""
+    _worker_am_leben(db_conn)
+    runpod.endpoint = _guter_endpoint(workersMax=5)
+    maximum = _befund(_pruefen(_test_datenbank), "workersMax")
+    assert maximum["soll"] == 10
+    assert maximum["bewertung"] == "abweichung"
 
 
 def test_abweichung_bricht_nur_mit_strict_ab(
