@@ -44,11 +44,9 @@ class PdfReader:
     """Ein einmal geoeffnetes PDF, aus dem mehrfach Seitenbereiche geschnitten werden.
 
     Warum eine Klasse und nicht eine Funktion pro Schnitt: Ein Dokument mit
-    120 Seiten wird in sechs Chunks geschnitten. Sechsmal dieselbe Datei zu oeffnen
-    und zu parsen ist verschwendete Arbeit, und schlimmer: Zwischen zwei Oeffnungen
-    koennte sich die Datei aendern, und dann stammten die Chunks aus zwei
-    verschiedenen Dokumenten. Einmal oeffnen heisst, dass alle Chunks garantiert
-    aus DEMSELBEN Zustand der Datei stammen.
+    120 Seiten wird in sechs Chunks geschnitten. Sechsmal dieselben Bytes zu
+    parsen ist verschwendete Arbeit. Einmal oeffnen heisst ausserdem, dass alle
+    Chunks aus DEMSELBEN geparsten Dokument stammen.
 
     Besitz und Lebensdauer: Der Aufrufer besitzt den Reader und schliesst ihn.
     Als Kontext-Manager benutzen; die zugrundeliegenden Ressourcen werden beim

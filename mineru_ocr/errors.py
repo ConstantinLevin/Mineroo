@@ -48,7 +48,7 @@ class ConfigurationError(MineruOcrError):
     """Die lokale Einrichtung stimmt nicht — ohne Zutun des Menschen geht nichts.
 
     Faelle: kein API-Schluessel an der erwarteten Stelle, keine Datenbank
-    erreichbar, Spool-Verzeichnis nicht anlegbar. Immer endgueltig, immer VOR
+    erreichbar. Immer endgueltig, immer VOR
     jedem RunPod-Kontakt, nie ein Grund fuer einen Retry.
     """
 
@@ -111,8 +111,11 @@ class CorruptDocumentError(InputError):
 class TooLargeError(InputError):
     """Die Datei passt nicht unter die Payload-Grenze und laesst sich nicht zerlegen.
 
-    Zwei Faelle: eine einzelne PDF-Seite ueber der Grenze, und eine Nicht-PDF-Datei
-    ueber der Grenze (DOCX, TIFF — nicht seitenweise zerlegbar). Beides ist laut
+    Drei Faelle: eine einzelne PDF-Seite ueber der Grenze, eine Nicht-PDF-Datei
+    ueber der Grenze (DOCX, TIFF — nicht seitenweise zerlegbar), und beim
+    Abschicken eine Eingabe ueber `db.MAX_INPUT_BYTES`, die sich nicht in
+    `inputs` ablegen laesst (dann entsteht keine Zeile; `OCRMegaWrapper.from_dir`
+    zaehlt sie als uebersprungen). Die ersten beiden sind laut
     Festlegung des Auftraggebers vorerst ein Fehler MIT Hinweis, kein stiller
     Rettungsversuch: „error fuers erste aber so dass man einen hinweis bekommt es
     nachtraeglich aufzuruesten und es auch als TODO reintun" (Plan 2.4).

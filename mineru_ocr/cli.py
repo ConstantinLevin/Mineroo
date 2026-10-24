@@ -162,6 +162,12 @@ def ocr(
     """
     try:
         with OCRClient(preflight=False, strict=strict) as klient:
+            if start and strict:
+                # VOR dem Ablegen: Die Bytes liegen ab dem Bauen der Huellen in
+                # der Datenbank. Bricht das Kommando erst beim Einreihen ab,
+                # blieben die Dokumente dort liegen, obwohl es „reiht NICHTS ein"
+                # sagt.
+                klient.check_daemon()
             huellen: list[OCRWrapper] = []
             uebersprungen: dict[str, int] = {}
 

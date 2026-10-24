@@ -314,6 +314,41 @@ def test_setup_meldet_abweichende_inputs_tabelle(
 
 
 @pytest.mark.db
+def test_setup_meldet_eine_inputs_tabelle_ohne_primaerschluessel(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Richtige Spaltennamen genuegen nicht: Ohne Primaerschluessel auf `sha256`
+    scheitert `ON CONFLICT (sha256)` beim ersten Abschicken, und `setup` haette
+    vorher Erfolg gemeldet."""
+    db_conn.execute("ALTER TABLE inputs DROP CONSTRAINT inputs_pkey")
+    try:
+        with pytest.raises(Exception) as fehler:
+            setup(_test_datenbank)
+        text = str(fehler.value)
+        assert "inputs" in text
+        assert "Primaerschluessel" in text
+        assert "setup" in text
+    finally:
+        db_conn.execute("ALTER TABLE inputs ADD PRIMARY KEY (sha256)")
+
+
+@pytest.mark.db
+def test_setup_meldet_eine_inputs_tabelle_mit_falschem_spaltentyp(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """`content text` statt `bytea` passt in den Namen und nicht in die Form."""
+    db_conn.execute("ALTER TABLE inputs ALTER COLUMN content TYPE text USING ''")
+    try:
+        with pytest.raises(Exception) as fehler:
+            setup(_test_datenbank)
+        assert "bytea" in str(fehler.value)
+    finally:
+        db_conn.execute(
+            "ALTER TABLE inputs ALTER COLUMN content TYPE bytea USING ''::bytea"
+        )
+
+
+@pytest.mark.db
 async def test_eingabe_wird_gespeichert_und_binaer_gelesen(
     db_conn: psycopg.Connection[Any], _test_datenbank: str
 ) -> None:
@@ -354,30 +389,86 @@ async def test_fehlende_eingabe_liest_sich_als_none(_test_datenbank: str) -> Non
     assert await read_input_async(_test_datenbank, "f" * 64) is None
 
 
+class _Beobachter:
+    """Eine Verbindung, die mitschreibt, WIE gelesen und OB geschlossen wurde.
+
+    Am Ergebnis allein sieht man beides nicht: `bytes` kommen auch im Textformat
+    heraus (nur doppelt so gross ueber die Leitung), und eine nicht geschlossene
+    Verbindung faellt erst im Gigabyte auf. Gezaehlt wird nicht an
+    `pg_stat_activity`, denn ein Backend lebt nach dem Schliessen noch einen
+    Augenblick.
+    """
+
+    def __init__(self, echte: psycopg.AsyncConnection[Any], *, fehler: bool) -> None:
+        self._echte = echte
+        self._fehler = fehler
+        self.binary: object = "nie gefragt"
+        self.geschlossen = False
+
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:
+        self.binary = kwargs.get("binary")
+        if self._fehler:
+            raise psycopg.OperationalError("Verbindung weg")
+        return await self._echte.execute(*args, **kwargs)
+
+    async def close(self) -> None:
+        self.geschlossen = True
+        await self._echte.close()
+
+
+def _beobachten(monkeypatch: pytest.MonkeyPatch, *, fehler: bool) -> list[_Beobachter]:
+    """Ersetzt `connect_async` im Modul durch eine, die jede Verbindung beobachtet."""
+    from mineru_ocr import db
+
+    echtes_verbinden = db.connect_async
+    beobachter: list[_Beobachter] = []
+
+    async def verbinden(dsn: str) -> Any:
+        b = _Beobachter(await echtes_verbinden(dsn), fehler=fehler)
+        beobachter.append(b)
+        return b
+
+    monkeypatch.setattr(db, "connect_async", verbinden)
+    return beobachter
+
+
 @pytest.mark.db
-async def test_lesen_der_eingabe_schliesst_die_eigene_verbindung(
-    db_conn: psycopg.Connection[Any], _test_datenbank: str
+async def test_lesen_der_eingabe_ist_binaer_und_schliesst_die_eigene_verbindung(
+    db_conn: psycopg.Connection[Any],
+    _test_datenbank: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Die Verbindung zum Lesen ist kurzlebig: Nach dem Aufruf ist sie zu.
+    """Der Job liest mit `binary=True` auf einer eigenen Verbindung, die danach zu ist.
 
     libpq behaelt seine Puffer in der Groesse des groessten je gelesenen Werts,
-    bis die Verbindung schliesst. Gemessen wird deshalb an der Zahl der
-    Verbindungen der Datenbank, vor und nach dem Lesen.
+    bis die Verbindung schliesst; ohne `binary=True` ginge der Wert als Hex ueber
+    die Leitung, doppelt so gross.
     """
     _einfuegen(db_conn)
     insert_input(db_conn, sha256=HASH, content=b"x" * 1_000_000)
+    beobachter = _beobachten(monkeypatch, fehler=False)
 
-    def verbindungen() -> int:
-        zeile = db_conn.execute(
-            "SELECT count(*) FROM pg_stat_activity "
-            "WHERE datname = current_database() AND pid <> pg_backend_pid()"
-        ).fetchone()
-        assert zeile is not None
-        return int(zeile[0])
-
-    vorher = verbindungen()
     await read_input_async(_test_datenbank, HASH)
-    assert verbindungen() == vorher
+
+    assert len(beobachter) == 1
+    assert beobachter[0].binary is True
+    assert beobachter[0].geschlossen
+
+
+@pytest.mark.db
+async def test_lesefehler_der_eingabe_wird_uebersetzt_und_schliesst_trotzdem(
+    _test_datenbank: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ein Fehler der Instanz beim Lesen wird `DatabaseError` (wiederholbar), und die
+    Verbindung ist auch dann zu."""
+    from mineru_ocr.errors import DatabaseError
+
+    beobachter = _beobachten(monkeypatch, fehler=True)
+
+    with pytest.raises(DatabaseError, match="Eingabe lesen"):
+        await read_input_async(_test_datenbank, HASH)
+
+    assert beobachter[0].geschlossen
 
 
 @pytest.mark.db

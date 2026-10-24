@@ -474,6 +474,14 @@ INPUT_SPALTEN: Final = frozenset({"sha256", "content"})
 liest nur `content`), also steht die Erwartung hier, und `_schema_abgleichen`
 vergleicht gegen sie."""
 
+MAX_INPUT_BYTES: Final = 1_000_000_000
+"""Die groesste Eingabe, die sich ablegen laesst. Postgres begrenzt ein Feld und
+eine Nachricht auf knapp 1 GiB: Gemessen gingen 1.070.000.008 Byte noch hinein,
+1.101.004.808 nicht (der Server meldet dann „invalid message length" und trennt
+die Verbindung). Die Grenze liegt darunter, damit die Ablehnung eine Meldung ist
+und kein Verbindungsabbruch. Sie gilt fuer jede Eingabe, auch fuer PDFs, die der
+Job danach in Stuecke schneidet."""
+
 
 def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
     """Prueft die Tabellen auf der Platte gegen ihre Zeilenklassen.
@@ -513,6 +521,37 @@ def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
                 f"Im Code, aber nicht in der Tabelle: {sorted(fehlend)}. "
                 f"In der Tabelle, aber nicht im Code: {sorted(ueberzaehlig)}."
             )
+        elif tabelle == "inputs":
+            # Die Namen stimmen; ob die Form stimmt, sagen sie nicht. Ohne
+            # Primaerschluessel scheitert `ON CONFLICT (sha256)` beim ersten
+            # Abschicken, und `setup` haette vorher Erfolg gemeldet.
+            form = {
+                name: (typ, nullable)
+                for name, typ, nullable in conn.execute(
+                    "SELECT column_name, data_type, is_nullable "
+                    "FROM information_schema.columns WHERE table_name = 'inputs'"
+                ).fetchall()
+            }
+            schluessel = {
+                zeile[0]
+                for zeile in conn.execute(
+                    "SELECT a.attname FROM pg_index i "
+                    "JOIN pg_attribute a ON a.attrelid = i.indrelid "
+                    "AND a.attnum = ANY (i.indkey) "
+                    "WHERE i.indrelid = 'inputs'::regclass AND i.indisprimary"
+                ).fetchall()
+            }
+            if (
+                form.get("sha256", ("", ""))[0] != "text"
+                or form.get("content") != ("bytea", "NO")
+                or schluessel != {"sha256"}
+            ):
+                abweichungen.append(
+                    "Die Tabelle `inputs` hat die erwarteten Spalten, aber nicht "
+                    "ihre Form: erwartet `sha256 text PRIMARY KEY` und "
+                    "`content bytea NOT NULL`, gefunden "
+                    f"{form} mit Primaerschluessel {sorted(schluessel)}."
+                )
     if not abweichungen:
         return
     raise DatabaseError(
@@ -902,8 +941,11 @@ async def write_terminal_async(
 
     Das ist der EINZIGE Schreibvorgang an einer Zeile zwischen ihrer Anlage und
     ihrem Endzustand. Er umfasst `raw`, `status`, `error`, angehaengte `notes`,
-    `updated_at` und das Wecksignal in EINER Transaktion — es gibt keinen
-    Zwischenzustand, in dem `raw` geschrieben ist und der Status noch `new` sagt.
+    `page_count`, `updated_at`, das Loeschen der Eingabe aus `inputs` (ausser bei
+    `failed`, damit `retry` etwas zu lesen hat) und das Wecksignal in EINER
+    Transaktion — es gibt keinen Zwischenzustand, in dem `raw` geschrieben ist
+    und der Status noch `new` sagt, und keinen, in dem das Ergebnis steht und die
+    Eingabe noch da ist.
 
     Args:
         conn: Offene asynchrone Verbindung, gehoert dem Aufrufer.

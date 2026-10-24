@@ -403,6 +403,24 @@ def test_status_sagt_wenn_kein_daemon_laeuft(
     assert "mineru-ocr daemon" in ergebnis.output
 
 
+def test_ocr_ohne_daemon_legt_nichts_ab(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """„Reiht NICHTS ein" heisst auch: Die Bytes liegen danach nicht in der
+    Datenbank. Seit sie dort liegen, muss die Pruefung VOR dem Ablegen stehen,
+    sonst bleibt ein ganzer Ordner Personendaten ohne Job in `inputs` zurueck."""
+    db_conn.execute("DELETE FROM procrastinate_workers")
+    datei = tmp_path / "a.png"
+    datei.write_bytes(PNG_KOPF + b"a")
+
+    ergebnis = cli.invoke(app, ["ocr", str(datei)])
+
+    assert ergebnis.exit_code == 1
+    for tabelle in ("documents", "inputs"):
+        zaehlung = db_conn.execute(f"SELECT count(*) FROM {tabelle}").fetchone()
+        assert zaehlung is not None and zaehlung[0] == 0, tabelle
+
+
 # --- Das Kommando, das Geld ausgibt --------------------------------------
 
 

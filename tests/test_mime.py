@@ -207,7 +207,7 @@ def test_die_tabelle_ist_festgeschrieben() -> None:
 
 
 def test_endungen_sind_eindeutig() -> None:
-    """Keine zwei Typen teilen sich eine Endung — sonst waere der Spool-Pfad
-    nicht mehr umkehrbar."""
+    """Keine zwei Typen teilen sich eine Endung — sonst waere sie kein Merkmal
+    des Typs mehr."""
     endungen = [typ.suffix for typ in DocumentType]
     assert len(endungen) == len(set(endungen))

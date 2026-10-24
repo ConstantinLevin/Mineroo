@@ -17,9 +17,10 @@ import psycopg
 import pypdfium2
 import pytest
 
+from mineru_ocr import db
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, list_documents, write_terminal_async
-from mineru_ocr.errors import IncompleteResultError, UnsupportedTypeError
+from mineru_ocr.errors import IncompleteResultError, TooLargeError, UnsupportedTypeError
 from mineru_ocr.wrapper import OCRMegaWrapper, OCRWrapper
 
 pytestmark = pytest.mark.db
@@ -232,7 +233,91 @@ def test_nicht_unterstuetzter_typ_hinterlaesst_keine_eingabe(
     assert zaehlung is not None and zaehlung[0] == 0
 
 
+def test_unterstuetzter_typ_wird_abgewiesen_ohne_die_datei_zu_lesen(
+    db_conn: psycopg.Connection[Any],
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Eine grosse Datei fremden Typs im Ordner darf nicht erst ganz in den
+    Speicher, um dann abgewiesen zu werden; die Meldung nennt ausserdem ihren
+    Namen, sonst weiss man bei mehreren Dateien nicht, welche gemeint ist."""
+    pfad = _datei(tmp_path, "film.mov", b"\x00\x00\x00\x14ftypqt  " + b"x" * 100)
+
+    def nie(self: Path) -> bytes:
+        raise AssertionError("die Datei wurde ganz gelesen")
+
+    monkeypatch.setattr(Path, "read_bytes", nie)
+    with pytest.raises(UnsupportedTypeError, match="film.mov"):
+        OCRWrapper.from_path(pfad, db_conn, settings)
+
+
+def test_zu_grosse_eingabe_wird_mit_meldung_abgewiesen_und_nicht_abgelegt(
+    db_conn: psycopg.Connection[Any],
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ueber `db.MAX_INPUT_BYTES` gibt es `TooLargeError` statt eines
+    Verbindungsabbruchs beim Ablegen; die Datei wird dabei nicht gelesen, und
+    es bleibt nichts liegen."""
+    monkeypatch.setattr(db, "MAX_INPUT_BYTES", 50)
+    inhalt = PNG_KOPF + b"x" * 100
+    pfad = _datei(tmp_path, "gross.png", inhalt)
+
+    def nie(self: Path) -> bytes:
+        raise AssertionError("die Datei wurde gelesen")
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "read_bytes", nie)
+        with pytest.raises(TooLargeError, match="gross.png"):
+            OCRWrapper.from_path(pfad, db_conn, settings)
+    with pytest.raises(TooLargeError):
+        OCRWrapper.from_bytes(inhalt, db_conn, settings)
+
+    assert list_documents(db_conn) == []
+    zaehlung = db_conn.execute("SELECT count(*) FROM inputs").fetchone()
+    assert zaehlung is not None and zaehlung[0] == 0
+
+
+def test_zeile_und_eingabe_entstehen_zusammen_oder_gar_nicht(
+    db_conn: psycopg.Connection[Any],
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scheitert das Ablegen der Eingabe, bleibt auch die Zeile nicht stehen: eine
+    Zeile `new` ohne Eingabe koennte kein Job lesen."""
+
+    def scheitert(*_: Any, **__: Any) -> bool:
+        raise psycopg.OperationalError("Verbindung weg")
+
+    monkeypatch.setattr(db, "insert_input", scheitert)
+    with pytest.raises(psycopg.OperationalError):
+        OCRWrapper.from_bytes(PNG_KOPF + b"atomar", db_conn, settings)
+
+    assert list_documents(db_conn) == []
+
+
 # --- Der Ordner-Fall ------------------------------------------------------
+
+
+def test_from_dir_ueberspringt_zu_grosse_dateien_und_reiht_den_rest_ein(
+    db_conn: psycopg.Connection[Any],
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Eine Datei ueber der Grenze bricht den Ordner nicht ab: Sie wird gezaehlt,
+    die uebrigen laufen weiter."""
+    monkeypatch.setattr(db, "MAX_INPUT_BYTES", 50)
+    ordner = tmp_path / "bestand"
+    _datei(ordner, "a_gross.png", PNG_KOPF + b"x" * 100)
+    _datei(ordner, "b_klein.png", PNG_KOPF)
+
+    mega = OCRMegaWrapper.from_dir(ordner, db_conn, settings)
+
+    assert len(mega) == 1
+    assert mega.stats()["skipped"] == {"zu_gross": 1}
 
 
 def test_from_dir_ueberspringt_und_zaehlt(
@@ -645,8 +730,7 @@ async def test_rendered_markdown_ist_das_ganze_dokument(
 def test_to_dict_traegt_kein_raw(
     db_conn: psycopg.Connection[Any], settings: Settings, tmp_path: Path
 ) -> None:
-    """Bis zu einem Megabyte je Seite haben in einer Statusausgabe nichts zu
-    suchen."""
+    """Rund 0,1 MB je Seite haben in einer Statusausgabe nichts zu suchen."""
     pfad = _datei(tmp_path, "d.png", PNG_KOPF + b"d")
     huelle = OCRWrapper.from_path(pfad, db_conn, settings)
     abbildung = huelle.to_dict()

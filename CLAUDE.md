@@ -183,6 +183,11 @@ bleibt sie stehen, damit `retry` etwas zu lesen hat. „Offen" ist ein Dokument
 also bis zum Löschen an zwei Stellen ablesbar, an der Zeile `new` und an der
 Eingabe; dass die Zeile erst am Ende des Jobs entsteht, ist ein eigenes Ticket.
 
+Eine Eingabe über `db.MAX_INPUT_BYTES` (1 GB, Postgres begrenzt ein Feld auf knapp
+1 GiB) weist das Abschicken mit `TooLargeError` ab, bevor die Datei gelesen wird;
+`OCRMegaWrapper.from_dir` zählt sie als `zu_gross`. Das gilt auch für PDFs, die
+der Job später in Stücke schneiden würde.
+
 ### Drei Antworten auf einen Fehlschlag — an genau einer Stelle entschieden
 
 `errors.classify_failure` bildet jede Ausnahme auf `FailureKind` ab

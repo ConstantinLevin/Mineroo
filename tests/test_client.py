@@ -406,6 +406,17 @@ def test_wait_auf_unbekannten_hash_wirft_sofort(offener_client: OCRClient) -> No
         offener_client.wait("f" * 64, timeout=30.0)
 
 
+def test_ziel_ohne_hash_und_ohne_datei_ist_unbekannt(
+    offener_client: OCRClient, tmp_path: Path
+) -> None:
+    """Ein Pfad, den es nicht gibt, ist kein Hash und keine Datei, die sich hashen
+    liesse: `DocumentNotFound` mit dieser Auskunft statt eines `FileNotFoundError`."""
+    with pytest.raises(DocumentNotFound, match="weder ein sha256 noch"):
+        offener_client.get(str(tmp_path / "gibt-es-nicht.png"))
+    with pytest.raises(DocumentNotFound, match="weder ein sha256 noch"):
+        offener_client.get(str(tmp_path))
+
+
 async def test_get_braucht_keinen_pfad(
     offener_client: OCRClient,
     async_conn: psycopg.AsyncConnection[Any],

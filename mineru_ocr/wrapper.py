@@ -34,11 +34,34 @@ import psycopg
 from . import assembly, db, mime
 from .config import Settings
 from .db import DocumentRow, DocumentStatus
-from .errors import DocumentNotFound, IncompleteResultError, UnsupportedTypeError
+from .errors import (
+    DocumentNotFound,
+    IncompleteResultError,
+    TooLargeError,
+    UnsupportedTypeError,
+)
 
 F = TypeVar("F")
 """Der erwartete Typ eines Feldes im gespeicherten Ergebnis (`OCRWrapper._feld`)
 — `str` fuer `markdown`, `list` fuer `content_list`, `dict` fuer `images`."""
+
+
+def _groesse_pruefen(groesse: int, was: str) -> None:
+    """Weist eine Eingabe ab, die nicht in `inputs` passt — mit einer Meldung.
+
+    Ohne diese Pruefung scheitert das Ablegen ab etwa 1 GiB mit einem
+    Verbindungsabbruch des Servers, und in einem Ordnerlauf bricht das das ganze
+    Einreihen ab.
+
+    Raises:
+        TooLargeError: `groesse` liegt ueber `db.MAX_INPUT_BYTES`.
+    """
+    if groesse > db.MAX_INPUT_BYTES:
+        raise TooLargeError(
+            f"{was}: {groesse} Byte sind mehr, als sich ablegen laesst "
+            f"({db.MAX_INPUT_BYTES} Byte). Die Eingabe liegt als `bytea` in der "
+            f"Datenbank, und Postgres begrenzt ein Feld auf knapp 1 GiB."
+        )
 
 
 def _anlegen(
@@ -46,7 +69,7 @@ def _anlegen(
     *,
     data: bytes,
     sha256: str,
-    mime: str,
+    mime_type: str,
     endpoint_id: str,
 ) -> bool:
     """Legt Zeile und Eingabe an — in EINER Transaktion, und nur neu.
@@ -65,7 +88,7 @@ def _anlegen(
             conn,
             sha256=sha256,
             size_bytes=len(data),
-            mime=mime,
+            mime=mime_type,
             endpoint_id=endpoint_id,
         )
         if angelegt:
@@ -92,19 +115,25 @@ class OCRWrapper:
     ) -> OCRWrapper:
         """Baut eine Huelle aus einer Datei: lesen, dann wie `from_bytes`.
 
-        Die Datei wird einmal ganz gelesen; Hash, Typ und die abgelegte Eingabe
-        stammen aus denselben Bytes. Der Pfad geht nirgends hin — weder in die
-        Datenbank noch in den Job. Er ist nach dem Lesen vergessen.
+        Vor dem Lesen werden Typ (am Anfang der Datei, bei einem ZIP am
+        Verzeichnis) und Groesse geprueft: Eine grosse Datei, die ohnehin
+        abgewiesen wird, kommt so nie ganz in den Speicher. Danach wird die Datei
+        einmal ganz gelesen; Hash, Typ und die abgelegte Eingabe stammen aus
+        denselben Bytes. Der Pfad geht nirgends hin — weder in die Datenbank noch
+        in den Job. Er ist nach dem Lesen vergessen.
 
         Raises:
             UnsupportedTypeError: Der Typ wird nicht unterstuetzt. SOFORT beim
                 Bauen, nicht erst beim Verarbeiten — „es wird immer ein objekt der
                 klasse OCRWRAPPER zurückgegeben […] rejected falls nicht
-                unterstüzter type" (Plan 2.1).
+                unterstüzter type" (Plan 2.1). Die Meldung nennt den Dateinamen.
+            TooLargeError: Die Datei passt nicht in `inputs` (`db.MAX_INPUT_BYTES`).
             OSError: Nicht lesbar.
 
         Kosten: keine.
         """
+        mime.sniff_path(path)
+        _groesse_pruefen(path.stat().st_size, path.name)
         return cls.from_bytes(path.read_bytes(), conn, settings)
 
     @classmethod
@@ -162,17 +191,19 @@ class OCRWrapper:
 
         Raises:
             UnsupportedTypeError: Der Typ wird nicht unterstuetzt.
+            TooLargeError: Die Bytes passen nicht in `inputs` (`db.MAX_INPUT_BYTES`).
 
         Kosten: keine.
         """
         typ = mime.sniff_bytes(data)
+        _groesse_pruefen(len(data), "die Bytes")
         sha256 = hashlib.sha256(data).hexdigest()
 
         _anlegen(
             conn,
             data=data,
             sha256=sha256,
-            mime=typ.mime,
+            mime_type=typ.mime,
             endpoint_id=settings.endpoint_id,
         )
         zeile = db.get_document(conn, sha256)
@@ -434,7 +465,7 @@ class OCRWrapper:
         """Alles ueber dieses Dokument als einfache Abbildung — ohne `raw`.
 
         Fuer die Ausgabe mit `--json`. `raw` fehlt bewusst: Es waere je Dokument
-        bis zu einem Megabyte je Seite, und keine Statusausgabe braucht es. Wer
+        gross (rund 0,1 MB je Seite), und keine Statusausgabe braucht es. Wer
         es will, nimmt `raw`.
         """
         return {
@@ -605,6 +636,10 @@ class OCRMegaWrapper:
                 sammlung._uebersprungen["nicht_unterstuetzter_typ"] = (
                     sammlung._uebersprungen.get("nicht_unterstuetzter_typ", 0) + 1
                 )
+            except TooLargeError:
+                sammlung._uebersprungen["zu_gross"] = (
+                    sammlung._uebersprungen.get("zu_gross", 0) + 1
+                )
             except OSError:
                 sammlung._uebersprungen["nicht_lesbar"] = (
                     sammlung._uebersprungen.get("nicht_lesbar", 0) + 1
@@ -697,7 +732,11 @@ class OCRMegaWrapper:
 
     def stats(self) -> dict[str, Any]:
         """Zahlen ueber die ganze Sammlung: Zustaende, Bytes, Seiten, Fehler,
-        Leere und die beim Einlesen uebersprungenen Dateien nach Grund."""
+        Leere und die beim Einlesen uebersprungenen Dateien nach Grund.
+
+        `pages` zaehlt nur Dokumente, deren Seitenzahl bekannt ist: Das Einreihen
+        oeffnet keine PDF, die Seitenzahl kommt erst mit dem Endergebnis des Jobs.
+        Offene Dokumente tragen also nichts bei."""
         zaehlung = self.status_counts()
         return {
             "documents": len(self._huellen),

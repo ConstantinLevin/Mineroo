@@ -503,6 +503,32 @@ class OCRClient:
     # Arbeit
     # ----------------------------------------------------------------------
 
+    def check_daemon(self) -> None:
+        """Sagt, ob ein Daemon laeuft: mit `strict` per Ausnahme, sonst per Warnung.
+
+        Eigene Methode, weil die Kommandozeile sie VOR dem Ablegen der Eingaben
+        braucht. Seit die Bytes in `inputs` liegen, hinterlaesst ein Abbruch erst in
+        `ocr_start` die ganzen Dokumente in der Datenbank, obwohl das Kommando
+        „reiht nichts ein" sagt.
+
+        Raises:
+            ConfigurationError: Kein Daemon erreichbar UND `strict`.
+
+        Kosten: keine.
+        """
+        if not db.worker_heartbeats(self.conn):
+            meldung = (
+                "Es laeuft kein Daemon. Starten mit `mineru-ocr daemon`."
+            )
+            if self._settings.strict:
+                raise ConfigurationError(meldung)
+            log.warning(
+                "%s Die Jobs werden eingereiht und bleiben liegen, bis einer "
+                "startet — das ist ohne `strict` zulaessig, aber es soll gesagt "
+                "sein.",
+                meldung,
+            )
+
     def ocr_start(self, target: OCRWrapper | OCRMegaWrapper) -> OCRWrapper | OCRMegaWrapper:
         """Reiht alles ein, was noch kein Endergebnis hat. Blockiert nicht.
 
@@ -567,18 +593,7 @@ class OCRClient:
 
         Kosten: keine unmittelbar. Mittelbar: alles, was der Daemon danach tut.
         """
-        if not db.worker_heartbeats(self.conn):
-            meldung = (
-                "Es laeuft kein Daemon. Starten mit `mineru-ocr daemon`."
-            )
-            if self._settings.strict:
-                raise ConfigurationError(meldung)
-            log.warning(
-                "%s Die Jobs werden eingereiht und bleiben liegen, bis einer "
-                "startet — das ist ohne `strict` zulaessig, aber es soll gesagt "
-                "sein.",
-                meldung,
-            )
+        self.check_daemon()
 
         huellen = [target] if isinstance(target, OCRWrapper) else list(target)
         for huelle in huellen:

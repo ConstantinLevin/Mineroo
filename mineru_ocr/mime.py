@@ -214,7 +214,8 @@ def sniff_path(path: Path) -> DocumentType:
 def sniff_bytes(data: bytes) -> DocumentType:
     """Bestimmt den Typ eines Byte-Puffers im Speicher.
 
-    Fuer den Weg ueber `OCRWrapper.from_bytes`, bei dem es keine Datei gibt. Verhaelt sich sonst genau wie `sniff_path`.
+    Fuer den Weg ueber `OCRWrapper.from_bytes`, bei dem es keine Datei gibt.
+    Verhaelt sich sonst genau wie `sniff_path`.
 
     Args:
         data: Die VOLLSTAENDIGEN Bytes. Nicht nur der Anfang: Bei einem ZIP
