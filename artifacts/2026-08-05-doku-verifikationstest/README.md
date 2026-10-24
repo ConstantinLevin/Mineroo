@@ -27,9 +27,12 @@ trägt. Sechs Seiten Black-Scholes-Kursmaterial (kein PII), gefahren mit
   `flashboot: false`, Image-Tag `:17d4955b2`, `costPerHr: 0.49` an allen
   Worker-Einträgen, `RUNPOD_GPU_SIZE: "AMPERE_24,ADA_24"`.
   **Redigiert:** Die Worker-Env-Felder `RUNPOD_AI_API_KEY` und
-  `RUNPOD_ENDPOINT_SECRET` sind durch `REDACTED` ersetzt; sonst unverändert.
+  `RUNPOD_ENDPOINT_SECRET` sind durch `REDACTED` ersetzt, die Benutzer-ID des
+  Kontos (`userId`, `consumerUserId`) durch `user_REDACTED` (Mineroo#2, vor dem
+  ersten Push); sonst unverändert.
 - **`user-snapshot.json`** — `runpodctl user` nach dem Test
-  (Balance 5,1889, `currentSpendPerHr` 0). Zusammen mit den im
+  (Balance 5,1889, `currentSpendPerHr` 0; E-Mail und Benutzer-ID sind durch
+  Platzhalter ersetzt, `konto@example.invalid` und `user_REDACTED`). Zusammen mit den im
   Chronik-Eintrag genannten Transkript-Werten (5,4642 vor / 5,2518
   unmittelbar nach dem Lauf) der Beleg für das Nachbuchungs-Verhalten der
   Abrechnung.
