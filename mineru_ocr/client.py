@@ -202,9 +202,11 @@ class OCRClient:
         """Baut den Client. Die Angaben gehen an `Settings.load`.
 
         Args:
-            db_dsn: Voreinstellung siehe `Settings.load`.
+            db_dsn: Fehlt die Angabe, gilt die Konfiguration (siehe
+                `Settings.load`): Umgebung, dann Datei. Eine Voreinstellung im
+                Code gibt es nicht.
             endpoint_id: dito.
-            api_key: dito.
+            api_key: Fehlt die Angabe, gilt `~/.runpod/config.toml`.
             preflight: Ob beim Betreten geprueft wird. True ist die
                 Voreinstellung, weil die haeufigste Betriebs-Ueberraschung dieser
                 Architektur „es passiert nichts" bei totem Daemon ist — und der

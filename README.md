@@ -26,33 +26,92 @@ nicht stattgefunden; er kostet Geld und ist eine Entscheidung des Eigentümers.
 **Der Interpreter ist die Miniconda-Base, und es gibt keine virtuellen
 Umgebungen.** Das ist die Umgebung dieses Rechners, keine Vorliebe des Projekts:
 Wer hier ein venv anlegt, arbeitet an einer Installation vorbei, in der alle
-Abhängigkeiten schon liegen. Es gibt keinen Build-Schritt. Gearbeitet wird aus dem
-Verzeichnis heraus:
+Abhängigkeiten schon liegen.
+
+### Der installierte Befehl
+
+`mineru-ocr` ist ein installierter Befehl, kein Pfad. `pyproject.toml` definiert
+ihn unter `[project.scripts]`; installiert wird er einmal, aus dem Haupt-Checkout,
+in die Miniconda-Base, in der seine Abhängigkeiten schon liegen:
 
 ```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m mineru_ocr.cli --help
+/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pip install --no-deps --no-build-isolation -e .
 ```
 
-Vorausgesetzt werden eine laufende **Postgres-Instanz auf Port 5437** und ein
-RunPod-API-Schlüssel in `~/.runpod/config.toml` im Feld `apikey`.
+`--no-deps` und `--no-build-isolation` sind der Grund, warum das die geteilte Base
+nicht verändert: Es wird nur dieses Paket eingetragen — keine Abhängigkeit
+installiert, aktualisiert oder entfernt, und kein Build-Werkzeug nachgeladen
+(`setuptools` liegt in der Base). Die Installation ist „editierbar": Sie zeigt auf
+den Checkout, aus dem sie gemacht wurde, und folgt dessen Änderungen. Deshalb
+nicht aus einem Arbeitsbaum installieren, der wieder verschwindet.
 
-Das Paket ist installierbar — `pyproject.toml` definiert unter `[project.scripts]`
-das Kommando `mineru-ocr` —, aber nicht installiert, und die Miniconda-Base ist
-mit anderen Projekten geteilt. Wer `pip install -e .` fährt, entscheidet damit
-über eine gemeinsam benutzte Umgebung; unten steht deshalb überall die
-Modul-Form. Nach einer Installation tritt schlicht `mineru-ocr` an ihre Stelle.
+Ohne Installation geht dasselbe aus dem Verzeichnis heraus als
+`/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m mineru_ocr.cli …`; es gibt
+keinen Build-Schritt.
+
+### Konfiguration
+
+Endpoint, Datenbank und die Sollwerte des Preflights stehen **nicht im Code**,
+sondern in einer Konfiguration. Es gibt für Endpoint und Datenbank keine
+Voreinstellung: Wer sie nirgends einstellt, bekommt beim ersten Aufruf eine
+Meldung, die alle Stellen nennt.
+
+Quellen, vom Stärksten: ausdrückliche Angabe (Argument oder Option) →
+Umgebungsvariable `MINERU_OCR_<NAME>` → Konfigurationsdatei → Voreinstellung. Die
+Datei ist TOML und liegt unter `~/.mineru_ocr/config.toml`; `MINERU_OCR_CONFIG`
+zeigt auf eine andere. Fehlt die Standarddatei, ist das kein Fehler; eine
+ausdrücklich genannte, die fehlt, schon. Ein Schlüssel, den die Datei nicht
+kennt, ist ein Fehler und kein stilles Ignorieren.
+
+```toml
+# ~/.mineru_ocr/config.toml
+endpoint_id = "<RunPod-Endpoint-Kennung>"
+db_dsn = "host=localhost port=5437 dbname=mineru_ocr user=<benutzer>"
+
+# Sollwerte, gegen die `preflight` vergleicht (Voreinstellung in Klammern):
+expected_image_tag = "<Tag des gebauten Images>"   # (keiner: dann "nicht prüfbar")
+workers_min = 0                                      # (0)
+workers_max = 10                                     # (10, die Kontogrenze)
+idle_timeout = 60                                    # (60, Sekunden)
+execution_timeout_ms = 600000                        # (600000)
+allowed_data_centers = ["EU-RO-1", "EUR-IS-1"]       # (alle EWR-Rechenzentren)
+
+# Endpoint-Variablen, die der Preflight nach Wert prüft; was die Tabelle nicht
+# nennt, behält seinen Sollwert:
+[endpoint_env]
+MINERU_MODEL_SOURCE = "local"                        # (local)
+MINERU_MAX_CONCURRENCY = "1"                         # (1)
+MINERU_VIRTUAL_VRAM_SIZE = "<Wert aus der Messung>"  # (offen: nur berichtet)
+```
+
+Jeder Schlüssel außer der Tabelle hat eine Umgebungsvariable, zum Beispiel
+`MINERU_OCR_ENDPOINT_ID`, `MINERU_OCR_DB_DSN`, `MINERU_OCR_EXPECTED_IMAGE_TAG`,
+`MINERU_OCR_IDLE_TIMEOUT`; die Rechenzentren stehen dort durch Kommas getrennt in
+`MINERU_OCR_ALLOWED_DATA_CENTERS`.
+
+**Der RunPod-Schlüssel bleibt in `~/.runpod/config.toml`**, Feld `apikey`, und
+steht nie in dieser Konfiguration. „Nur EU" heißt EWR — EU-Staaten plus Island und
+Norwegen, denn dort gilt die DSGVO —, und die zulässige Liste ist der Sollwert
+`allowed_data_centers`.
 
 ### Der übliche Ablauf
 
-Kurzschreibweise: `PY=/opt/homebrew/Caskroom/miniconda/base/bin/python3`
-
 ```bash
-$PY -m mineru_ocr.cli preflight     # prueft Endpoint, Konto und Daemon. VERAENDERT NICHTS.
-$PY -m mineru_ocr.cli setup         # legt Datenbank und Schema an. Mehrfach aufrufbar.
-$PY -m mineru_ocr.cli daemon        # in einem EIGENEN Fenster: hier laeuft der Exekutor
-$PY -m mineru_ocr.cli ocr ~/Scans   # einreihen — kehrt sofort zurueck
-$PY -m mineru_ocr.cli status
+mineru-ocr preflight     # prueft Endpoint, Konto und Daemon. VERAENDERT NICHTS.
+mineru-ocr setup         # legt Datenbank und Schema an. Mehrfach aufrufbar.
+mineru-ocr daemon        # in einem EIGENEN Fenster: hier laeuft der Exekutor
+mineru-ocr ocr ~/Scans   # einreihen — kehrt sofort zurueck
+mineru-ocr status
 ```
+
+Der Preflight berichtet nur und verändert nichts; das Paket legt keine bezahlte
+Ressource an und ändert keine. Er prüft, was **tatsächlich läuft**: das Image des
+Templates und jedes Workers gegen `expected_image_tag`, die Endpoint-Variablen
+nach Wert an der Umgebung aller zuletzt gelaufenen Worker (auch der beendeten),
+dass alle Rechenzentren in der zulässigen Liste liegen, und die Sollwerte des
+Endpoints. FlashBoot wird berichtet. Was sich nicht feststellen lässt — kein
+Worker, keine Rechenzentren in der Antwort, kein erwarteter Tag —, heißt „nicht
+prüfbar" und ausdrücklich nicht „in Ordnung".
 
 Neun Kommandos gibt es: `setup`, `daemon`, `ocr`, `status`, `show`, `wait`,
 `markdown`, `retry`, `preflight`. Die Exit-Codes sind belegt (0/1/2/3).

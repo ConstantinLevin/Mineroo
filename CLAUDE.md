@@ -44,8 +44,10 @@ Abdeckung, falls gebraucht:
 ```
 
 Es gibt keinen Build-Schritt und keinen Linter außer mypy. `pyproject.toml`
-beschreibt ein installierbares Paket samt Kommando `mineru-ocr`, aber gearbeitet
-wird aus dem Verzeichnis heraus.
+definiert das Kommando `mineru-ocr` unter `[project.scripts]`; es ist als Befehl in
+die Miniconda-Base installiert, in der seine Abhängigkeiten liegen (siehe „Das
+Kommando selbst“). Gearbeitet und getestet wird trotzdem aus dem Verzeichnis
+heraus.
 
 **Testausgabe immer vollständig in eine Datei schreiben, bevor gefiltert wird.**
 Also `python3 -m pytest -q > /pfad/zur/ausgabe.txt 2>&1`, dann die Datei lesen
@@ -86,8 +88,51 @@ mineru-ocr ocr ~/Scans  # einreihen
 mineru-ocr status
 ```
 
-`preflight` verändert nichts und darf jederzeit laufen. Die Exit-Codes sind
-belegt (0/1/2/3) und werden von `cli.py` bewusst gesetzt.
+**Installation.** `mineru-ocr` ist ein installierter Befehl, kein Pfad. Er wird
+einmal aus dem Haupt-Checkout installiert, in die Miniconda-Base, **ohne dabei ein
+Paket der Base zu ändern**, das andere Projekte mitbenutzen:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pip install --no-deps --no-build-isolation -e .
+```
+
+`--no-deps` trägt nur dieses Paket ein und installiert, aktualisiert oder entfernt
+nichts anderes; `--no-build-isolation` nimmt das in der Base liegende `setuptools`,
+statt Build-Werkzeug nachzuladen. Die Installation ist editierbar und zeigt auf den
+Checkout, aus dem sie gemacht wurde: nicht aus einem Arbeitsbaum, der wieder
+verschwindet (ein Worktree eines Laufs).
+
+`preflight` verändert nichts und darf jederzeit laufen. Er prüft, was tatsächlich
+läuft: das Image von Template und Workern gegen den erwarteten Tag, die
+Endpoint-Variablen nach Wert an der Umgebung aller zuletzt gelaufenen Worker (auch
+der beendeten), dass alle Rechenzentren in der zulässigen Liste liegen, und die
+Sollwerte des Endpoints; FlashBoot wird berichtet. Was sich nicht feststellen lässt,
+heißt „nicht prüfbar“, nie „in Ordnung“. Die Exit-Codes sind belegt (0/1/2/3) und
+werden von `cli.py` bewusst gesetzt.
+
+### Konfiguration — Endpoint, Datenbank und Sollwerte stehen nicht im Code
+
+`config.Settings.load` liest sie aus (stärkste Quelle zuerst) ausdrücklicher
+Angabe → Umgebungsvariable `MINERU_OCR_<NAME>` → TOML-Datei
+`~/.mineru_ocr/config.toml` (`MINERU_OCR_CONFIG` oder `config_path` nennen eine
+andere) → Feld-Voreinstellung. Für `endpoint_id` und `db_dsn` gibt es **keine**
+Voreinstellung; fehlen sie, wirft `load` eine `ConfigurationError`, die alle Stellen
+nennt. Die Sollwerte des Preflights (`expected_image_tag`, `workers_min`,
+`workers_max`, `idle_timeout`, `execution_timeout_ms`, `allowed_data_centers`, die
+Tabelle `[endpoint_env]`) sind Felder von `Settings` mit den Voreinstellungen aus
+Mineroo#3 (0, 10, 60, 600000). Ein unbekannter Schlüssel in der Datei, eine
+ausdrücklich genannte, aber fehlende Datei und ein Wert vom falschen Typ sind
+Fehler: ein Tippfehler im Namen wäre sonst ein Wert, der da steht und nirgends
+wirkt. Der RunPod-Schlüssel bleibt in `~/.runpod/config.toml` und gehört nie in
+diese Datei. Das Beispiel steht in `README.md`.
+
+**Die Tests sind von der Konfiguration des Entwicklers abgeschirmt:** Eine
+`autouse`-Vorrichtung in `tests/conftest.py` räumt jede `MINERU_OCR_*`-Variable,
+biegt die Standarddatei auf einen nicht vorhandenen Pfad um und stellt Endpoint und
+Datenbank auf Testwerte (die Testdatenbank). Ein Test, der die Quellen selbst
+prüft, übergibt `environ=` und `config_path=` ausdrücklich. Der Sollwert des
+GPU-Speicheranteils (`MINERU_VIRTUAL_VRAM_SIZE`) ist bis zur Messung offen: Der
+Preflight berichtet den Ist-Wert und bewertet ihn als „nicht prüfbar“.
 
 ---
 
@@ -273,7 +318,10 @@ Jede steht wegen eines bezahlten Fehlers, nicht wegen einer Vorliebe.
   `db.setup` prüft deshalb erst auf die Existenz von `procrastinate_jobs`.
 - **Was an RunPod geht, geht in ein EU-Rechenzentrum.** Ein allgemeiner Wrapper
   weiß nicht, ob die Daten personenbezogen sind, und muss deshalb vom Schlimmsten
-  ausgehen. Der `s3`-Transport ist nicht die Voreinstellung.
+  ausgehen. „EU“ heißt EWR — EU-Staaten plus Island und Norwegen, denn dort gilt
+  die DSGVO —; die zulässige Liste ist der Sollwert `allowed_data_centers` der
+  Konfiguration, den der Preflight prüft. Der `s3`-Transport ist nicht die
+  Voreinstellung.
 
 ---
 

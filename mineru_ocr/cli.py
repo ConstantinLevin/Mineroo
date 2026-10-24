@@ -81,7 +81,7 @@ def _betriebsfehler(fehler: BaseException) -> None:
 
 @app.command()
 def setup(
-    dsn: Annotated[str | None, typer.Option(help="Verbindung; sonst die Voreinstellung.")] = None,
+    dsn: Annotated[str | None, typer.Option(help="Verbindung; sonst die Konfiguration (MINERU_OCR_DB_DSN, config.toml).")] = None,
 ) -> None:
     """Legt Datenbank und Schema an. Mehrfach aufrufbar, veraendert nie Daten.
 
@@ -99,7 +99,7 @@ def setup(
 
 @app.command()
 def daemon(
-    dsn: Annotated[str | None, typer.Option(help="Verbindung; sonst die Voreinstellung.")] = None,
+    dsn: Annotated[str | None, typer.Option(help="Verbindung; sonst die Konfiguration (MINERU_OCR_DB_DSN, config.toml).")] = None,
     concurrency: Annotated[int | None, typer.Option(help="Gleichzeitig betreute Dokumente; sonst 24.")] = None,
     queues: Annotated[list[str] | None, typer.Option(help="Nur diese Queues bedienen (Rueckfall auf zwei Prozesse).")] = None,
 ) -> None:
