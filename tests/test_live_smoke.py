@@ -191,16 +191,15 @@ def test_ergebnis_mit_eigenen_augen() -> None:
     Steht als Name in der Liste, damit der Schritt nicht ausfaellt. Ein Modell,
     das Zahlen erfindet, faellt keinem Gleichheitsvergleich auf.
 
-    GEFAHREN am 08.08.2026 am 12-seitigen Steuerdokument. Der Text ist echte
-    deutsche Rechtsprosa, mit korrekten Paragraphen (`§ 6b EStG`), dem
-    EuGH-Aktenzeichen `Rs. C-591/13`, Datum und Kanzlei.
+    GEFAHREN am 08.08.2026 an einem 12-seitigen Dokument mit deutscher
+    Rechtsprosa und zwei Organigramm-Bildern.
 
     UND GENAU DIESER SCHRITT HAT GEFUNDEN, was kein Vergleich gefunden haette:
     Fuer die zwei Organigramm-Bilder hat das Modell Mermaid-Flowcharts ERZEUGT
-    und in dasselbe Feld gelegt wie transkribierten Text. Eines fuehrt einen Knoten
-    zweimal mit demselben Anteil — eine Struktur, die ihre eigene Logik
+    und in dasselbe Feld gelegt wie transkribierten Text. Eines fuehrte einen
+    Knoten zweimal mit demselben Anteil — eine Struktur, die ihre eigene Logik
     nicht erfuellt. Bead jurgen-092; die Entscheidung, ob erzeugte Deutungen in
-    den Steuerindex duerfen, ist offen.
+    einen Index duerfen, ist offen.
     """
 
 

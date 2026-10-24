@@ -715,8 +715,9 @@ class RunPodClient:
             Template-Kennung. Der Preflight vergleicht das gegen die Sollwerte
             des Betriebshandbuchs.
 
-            Die Rechenzentren sind dabei kein Nebenwert: Der Steuer-Bestand darf
-            nur in der EU verarbeitet werden. Der Preflight MELDET die
+            Die Rechenzentren sind dabei kein Nebenwert: Ein allgemeiner Wrapper
+            weiss nicht, ob die Daten personenbezogen sind, und soll deshalb in
+            der EU verarbeiten lassen. Der Preflight MELDET die
             Konfiguration mit, statt ein Flag danach zu richten — die Entscheidung
             gehoert dem Menschen (Plan 2.4, kein `pii`-Flag im Client).
 

@@ -121,7 +121,7 @@ benutzt:
 Ausdruecklich OHNE Normalisierung der Metadaten: Ein Normalisierungsfehler wuerde
 falsche Treffer bei der Dubletten-Erkennung erzeugen — „gilt als fertig, wurde
 nie erkannt" —, und das ist der unsichtbarste aller Fehler. Die eigentliche
-Dubletten-Erkennung ist ohnehin im DEVONthink-Vorlauf erledigt.
+Dubletten-Erkennung ist Sache des Aufrufers.
 
 `source_path` zeigt auf das Original; bei Byte-Eingaben auf die Spool-Datei.
 Liegt dieselbe Datei unter zwei Pfaden, gewinnt der zuerst gesehene, und der

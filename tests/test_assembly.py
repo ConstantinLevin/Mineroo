@@ -1093,9 +1093,12 @@ def test_seitenversatz_gegen_ECHTE_mehrteilige_antworten(
     erfundene Antworten — also gegen genau die Vorstellung, die er richtig
     umsetzen soll.
 
-    Diese drei Antworten sind die echten Teilstuecke EINES Dokuments: ein
-    12-seitiges Steuerdokument, in drei Stuecke zu 5, 5 und 2 Seiten geschnitten
-    und einzeln durch den echten Endpoint geschickt.
+    Diese drei Antworten waren die echten Teilstuecke EINES Dokuments: ein
+    12-seitiges Dokument, in drei Stuecke zu 5, 5 und 2 Seiten geschnitten und
+    einzeln durch den echten Endpoint geschickt. Die Aufnahmen sind vor dem
+    ersten Push entfernt (Mineroo#2); der Test laeuft ausgesetzt, bis das
+    Ticket zum MinerU-4-Vertrag neue Aufnahmen ablegt (siehe
+    `echte_mehrteilige_antworten`).
 
     WAS SIE BEWEISEN: Jedes Teilstueck traegt `page_idx` LOKAL, beginnend bei 0.
     Das ist die Annahme, auf der die ganze Korrektur ruht — sie stand als „am

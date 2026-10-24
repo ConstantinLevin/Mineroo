@@ -274,8 +274,8 @@ class OCRClient:
             * Das Worker-Image. Ein alter Bezeichner ist eine WARNUNG, kein
               Abbruch — auch mit altem Image kann man arbeiten, man sollte es nur
               wissen.
-            * Die Rechenzentren, schlicht gemeldet. Fuer den Steuer-Bestand gilt
-              die EU-Pflicht; der Client richtet kein Verhalten danach, weil das
+            * Die Rechenzentren, schlicht gemeldet. Was an RunPod geht, soll in ein
+              EU-Rechenzentrum; der Client richtet kein Verhalten danach, weil das
               eine Entscheidung des Menschen ist und kein Schalter im Programm
               (Plan 2.4, kein `pii`-Flag).
             * Der Kontostand gegen `min_balance`.
@@ -347,10 +347,10 @@ class OCRClient:
                 "in_ordnung" if umgebungen else "nicht_pruefbar",
             )
 
-            # Die Rechenzentren werden schlicht GEMELDET. Fuer den
-            # Steuer-Bestand gilt die EU-Pflicht; der Client richtet kein
-            # Verhalten danach, weil das eine Entscheidung des Menschen ist und
-            # kein Schalter im Programm (Plan 2.4, kein `pii`-Flag).
+            # Die Rechenzentren werden schlicht GEMELDET. Was an RunPod geht,
+            # soll in ein EU-Rechenzentrum; der Client richtet kein Verhalten
+            # danach, weil das eine Entscheidung des Menschen ist und kein
+            # Schalter im Programm (Plan 2.4, kein `pii`-Flag).
             #
             # AUSSCHLIESSLICH `dataCenterIds`, und KEIN Rueckfall auf
             # `gpuTypeIds`. Der Rueckfall stand hier und hat am 08.08.2026 im
@@ -366,7 +366,7 @@ class OCRClient:
             rechenzentren = konfiguration.get("dataCenterIds")
             merken(
                 "datacenters",
-                "EU fuer den Steuer-Bestand (Entscheidung des Menschen)",
+                "EU-Rechenzentren (Entscheidung des Menschen)",
                 rechenzentren,
                 "gemeldet" if rechenzentren else "nicht_pruefbar",
             )

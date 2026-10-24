@@ -2,7 +2,7 @@
 
 Dies ist der einzige Prozess, der mit RunPod spricht, und der einzige mit
 Nebenlaeufigkeit. Alles andere — Fassade, Kommandozeile, spaeterer
-Rueckschreibeweg nach DEVONthink — legt Zeilen an und liest. Damit ist jede
+Rueckschreibeweg zum Aufrufer — legt Zeilen an und liest. Damit ist jede
 Komponente einzeln startbar und tot-startbar, und der Zustand liegt zu jedem
 Zeitpunkt vollstaendig an einem Ort, den man mit gewoehnlichem SQL ansehen kann.
 

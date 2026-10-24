@@ -210,8 +210,8 @@ eigenen Konstante.
 also nicht den Produktionspfad. Alle sechs sind einseitige Bilder mit
 `page_idx == 0`.
 
-**`artifacts/2026-08-08-erster-tarball-lauf/` — sechs Antworten mit
-`tarball_b64`, also der Produktionspfad.** Sie sind am 08./09.08.2026 in
+**`artifacts/2026-08-08-erster-tarball-lauf/` — Antworten mit `tarball_b64`,
+also der Produktionspfad.** Sie sind am 08./09.08.2026 in
 bezahlten Läufen aufgenommen worden und decken die Lagen ab, für die es vorher
 nichts gab:
 
