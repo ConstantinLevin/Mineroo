@@ -44,8 +44,6 @@ def _zeile(status: DocumentStatus = DocumentStatus.NEW) -> DocumentRow:
     jetzt = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
     return DocumentRow(
         sha256=HASH,
-        source_path="/tmp/x.pdf",
-        source_name="x.pdf",
         size_bytes=1,
         mime="application/pdf",
         page_count=1,
@@ -77,8 +75,6 @@ def _einfuegen(conn: psycopg.Connection[Any], sha: str = HASH) -> None:
     insert_document(
         conn,
         sha256=sha,
-        source_path=f"/tmp/{sha}.pdf",
-        source_name=f"{sha}.pdf",
         size_bytes=123,
         mime="application/pdf",
         endpoint_id="l79lebhinxaqjz",
@@ -237,8 +233,6 @@ def test_zweites_einfuegen_ist_ein_nichts_tun(
     assert insert_document(
         db_conn,
         sha256=HASH,
-        source_path="/tmp/erste.pdf",
-        source_name="erste.pdf",
         size_bytes=111,
         mime="application/pdf",
         endpoint_id="e1",
@@ -249,14 +243,33 @@ def test_zweites_einfuegen_ist_ein_nichts_tun(
     assert not insert_document(
         db_conn,
         sha256=HASH,
-        source_path="/tmp/zweite.pdf",
-        source_name="zweite.pdf",
         size_bytes=999,
         mime="image/png",
         endpoint_id="e2",
     )
     nachher = get_document(db_conn, HASH)
     assert nachher == vorher
+
+
+@pytest.mark.db
+def test_documents_kennt_keine_pfade(db_conn: psycopg.Connection[Any]) -> None:
+    """Pfad und Name stehen nicht in der Datenbank — weder als Spalte noch als
+    Index."""
+    spalten = {
+        zeile[0]
+        for zeile in db_conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'documents'"
+        ).fetchall()
+    }
+    assert not {"source_path", "source_name"} & spalten
+    indizes = [
+        zeile[0]
+        for zeile in db_conn.execute(
+            "SELECT indexname FROM pg_indexes WHERE tablename = 'documents'"
+        ).fetchall()
+    ]
+    assert not [name for name in indizes if "source" in name]
 
 
 @pytest.mark.db

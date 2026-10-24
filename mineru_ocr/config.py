@@ -28,9 +28,6 @@ DEFAULT_DB_DSN: Final = "host=localhost port=5437 dbname=mineru_ocr user=jurgen"
 DEFAULT_ENDPOINT_ID: Final = "l79lebhinxaqjz"
 """Der zweifach in Produktion bewaehrte queue-basierte Endpoint."""
 
-DEFAULT_SPOOL_DIR: Final = Path.home() / ".mineru_ocr" / "spool"
-"""Ablage fuer Byte-Eingaben ohne eigenen Pfad."""
-
 RUNPOD_CONFIG_PATH: Final = Path.home() / ".runpod" / "config.toml"
 """Der im Projekt bewaehrte Ort des API-Schluessels, Feld `apikey`. Wird
 gelesen, nie geschrieben."""
@@ -180,12 +177,6 @@ class Settings:
     """RunPod-API-Schluessel. Gehoert NIE in eine URL und NIE in eine Ausgabe;
     er reist ausschliesslich im Authorization-Header als Bearer-Token
     (Plan 8, Regel 12). `__repr__` dieser Klasse maskiert ihn (siehe unten)."""
-
-    spool_dir: Path
-    """Ablage fuer Eingaben, die als reine Bytes hereinkamen und keinen Pfad
-    haben. Voreinstellung `~/.mineru_ocr/spool/`. Wird NIE automatisch geleert:
-    `documents.source_path` zeigt dorthin, und ein Aufraeumen wuerde die
-    Nachvollziehbarkeit eines fertigen Dokuments zerstoeren."""
 
     # -- Job-Contract ------------------------------------------------------
 
@@ -468,7 +459,6 @@ class Settings:
         db_dsn: str | None = None,
         endpoint_id: str | None = None,
         api_key: str | None = None,
-        spool_dir: Path | None = None,
         strict: bool = True,
         backend: str | None = None,
         min_balance_start_usd: float | None = None,
@@ -491,7 +481,6 @@ class Settings:
                 `host=localhost port=5437 dbname=mineru_ocr user=jurgen`.
             endpoint_id: Voreinstellung `l79lebhinxaqjz`.
             api_key: Voreinstellung siehe oben.
-            spool_dir: Voreinstellung `~/.mineru_ocr/spool/`.
             strict: Ob Konfigurations-Abweichungen im Preflight abbrechen.
             backend: Voreinstellung `vlm-auto-engine`. Steht hier, weil
                 `OCRClient` es als Konstruktor-Parameter anbietet — ein
@@ -507,9 +496,8 @@ class Settings:
 
         Zusicherung:
             Wirft, statt mit einer halben Einstellung weiterzulaufen. Legt NICHTS
-            an — insbesondere wird `spool_dir` hier weder erzeugt noch geprueft
-            (das tut, wer ihn zuerst braucht); `load` ist frei von Seiteneffekten
-            ausser dem Lesen der Schluesseldatei.
+            an; `load` ist frei von Seiteneffekten ausser dem Lesen der
+            Schluesseldatei.
 
         Raises:
             ConfigurationError: Kein API-Schluessel auffindbar, oder
@@ -525,7 +513,6 @@ class Settings:
             db_dsn=db_dsn if db_dsn is not None else DEFAULT_DB_DSN,
             endpoint_id=endpoint_id if endpoint_id is not None else DEFAULT_ENDPOINT_ID,
             api_key=api_key if api_key is not None else _schluessel_aus_datei(),
-            spool_dir=spool_dir if spool_dir is not None else DEFAULT_SPOOL_DIR,
             strict=strict,
         )
 

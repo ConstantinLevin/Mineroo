@@ -24,7 +24,6 @@ from mineru_ocr.errors import (
     JobAufgegebenError,
     MineruOcrError,
     ResultLostError,
-    SourceChangedError,
     TerminalOverwriteError,
     TerminalRunPodError,
     TooLargeError,
@@ -78,7 +77,6 @@ def test_eingabefehler_ist_endgueltig() -> None:
         UnsupportedTypeError("kein PDF"),
         CorruptDocumentError("kaputt"),
         TooLargeError("zu gross"),
-        SourceChangedError("getauscht"),
     ):
         assert classify_failure(fehler) is FailureKind.TERMINAL, type(fehler)
 
@@ -163,7 +161,7 @@ def test_klassifikation_ist_total() -> None:
     ist.
     """
     klassen = _alle_unterklassen(MineruOcrError)
-    assert len(klassen) >= 17, f"Erwartet mindestens 17 Klassen, gefunden {len(klassen)}"
+    assert len(klassen) >= 16, f"Erwartet mindestens 16 Klassen, gefunden {len(klassen)}"
     for klasse in klassen:
         antwort = classify_failure(klasse("Probe"))
         assert isinstance(antwort, FailureKind), klasse

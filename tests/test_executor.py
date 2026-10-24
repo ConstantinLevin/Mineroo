@@ -149,8 +149,6 @@ def _anlegen(
     insert_document(
         conn,
         sha256=sha,
-        source_path=str(pfad),
-        source_name=name,
         size_bytes=len(inhalt),
         mime=typ.mime,
         endpoint_id="l79lebhinxaqjz",

@@ -24,10 +24,8 @@ from __future__ import annotations
 
 import base64
 import binascii
-import builtins
 import hashlib
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -46,10 +44,8 @@ F = TypeVar("F")
 def _anlegen(
     conn: psycopg.Connection[Any],
     *,
-    data: builtins.bytes,
+    data: bytes,
     sha256: str,
-    source_path: str,
-    source_name: str,
     mime: str,
     endpoint_id: str,
 ) -> bool:
@@ -68,8 +64,6 @@ def _anlegen(
         angelegt = db.insert_document(
             conn,
             sha256=sha256,
-            source_path=source_path,
-            source_name=source_name,
             size_bytes=len(data),
             mime=mime,
             endpoint_id=endpoint_id,
@@ -96,128 +90,32 @@ class OCRWrapper:
     def from_path(
         cls, path: Path, conn: psycopg.Connection[Any], settings: Settings
     ) -> OCRWrapper:
-        """Baut eine Huelle aus einer Datei und legt die Zeile an, falls sie fehlt.
+        """Baut eine Huelle aus einer Datei: lesen, dann wie `from_bytes`.
 
-        Der Ablauf: Datei stroemend hashen mit `hashlib.file_digest(f, "sha256")`
-        — Standardbibliothek seit 3.11, benutzt einen wiederverwendeten Puffer
-        statt bei jedem Block ein neues Byte-Objekt anzulegen, und hat fuer
-        `io.BytesIO` einen Weg ganz ohne Kopie (den `from_bytes` trifft). Von Hand
-        zu schleifen waere langsamer und haette denselben Zweck. Dann: Typ an den
-        Magic Bytes bestimmen und bei einem nicht unterstuetzten SOFORT werfen;
-        bei PDF die Seitenzahl feststellen; Zeile anlegen oder die vorhandene
-        uebernehmen.
-
-        `settings` wird gebraucht, weil `db.insert_document` den `endpoint_id`
-        verlangt und `from_bytes` das Spool-Verzeichnis. Sie wird uebergeben und
-        nicht aus einer globalen Stelle geholt — es gibt keine, und das ist eine
-        ausdrueckliche Regel (`config.py`).
-
-        „Uebernehmen" ist dabei der wichtigere Fall und die Umsetzung von Jurgens
-        Nichts-Tun-Regel: Gibt es die Zeile schon und ist sie fertig, ist diese
-        Huelle sofort fertig. Es wird nichts neu verarbeitet und nichts erneut
-        bezahlt.
-
-        Args:
-            path: Vorhandene, lesbare Datei.
-            conn: Offene Verbindung, gehoert dem Aufrufer.
-
-        Returns:
-            Die Huelle, entweder zu einer neuen oder zu einer uebernommenen Zeile.
+        Die Datei wird einmal ganz gelesen; Hash, Typ und die abgelegte Eingabe
+        stammen aus denselben Bytes. Der Pfad geht nirgends hin — weder in die
+        Datenbank noch in den Job. Er ist nach dem Lesen vergessen.
 
         Raises:
             UnsupportedTypeError: Der Typ wird nicht unterstuetzt. SOFORT beim
                 Bauen, nicht erst beim Verarbeiten — „es wird immer ein objekt der
                 klasse OCRWRAPPER zurückgegeben […] rejected falls nicht
-                unterstüzter type" (Plan 2.1). Wer eine Datei uebergibt, die nicht
-                geht, soll es an der Uebergabestelle erfahren.
-            CorruptDocumentError: Ein PDF, dessen Seitenzahl sich nicht
-                feststellen laesst.
+                unterstüzter type" (Plan 2.1).
             OSError: Nicht lesbar.
 
         Kosten: keine.
         """
-        # Einmal lesen: Hash, Typ und die abgelegte Eingabe stammen aus
-        # DENSELBEN Bytes. Zweimal zu lesen (erst hashen, dann ablegen) liesse
-        # eine Datei, die sich dazwischen aendert, unter dem falschen Hash
-        # landen.
-        data = path.read_bytes()
-        sha256 = hashlib.sha256(data).hexdigest()
-
-        typ = mime.sniff_bytes(data)
-        pfad = str(path.resolve())
-        angelegt = _anlegen(
-            conn,
-            data=data,
-            sha256=sha256,
-            source_path=pfad,
-            source_name=path.name,
-            mime=typ.mime,
-            endpoint_id=settings.endpoint_id,
-        )
-        zeile = db.get_document(conn, sha256)
-        if zeile is None:  # pragma: no cover — direkt nach dem Anlegen unmoeglich
-            raise DocumentNotFound(
-                f"Die Zeile zu {sha256} war unmittelbar nach dem Anlegen nicht "
-                f"lesbar. Das deutet auf eine abgebrochene Transaktion beim "
-                f"Aufrufer hin."
-            )
-
-        # DERSELBE INHALT UNTER EINEM ZWEITEN PFAD. Die bestehende Zeile wird
-        # nicht angetastet — der zuerst gesehene `source_path` gewinnt, das ist
-        # die Zusicherung von `insert_document`. Aber der zweite Pfad wird
-        # VERMERKT, und genau das fehlte: Das Schema sichert es zu („der zweite
-        # wird als Eintrag in `notes` vermerkt statt die Zeile zu ueberschreiben"),
-        # und `append_note_async` hatte im ganzen Paket keinen Aufrufer.
-        #
-        # Am 08.08.2026 am echten Datensatz belegt: Zwei Kopien derselben Dateien
-        # unter einem anderen Verzeichnis wurden korrekt als „bereits fertig"
-        # erkannt und NICHT neu bezahlt — hinterliessen aber keine Spur. Wer
-        # spaeter unter dem zweiten Pfad sucht, findet nichts und haelt die Datei
-        # fuer nie verarbeitet.
-        #
-        # Nur bei einem NOCH NICHT BEKANNTEN Pfad. Verglichen wird gegen den
-        # Gewinner-Pfad UND gegen die schon vermerkten — nicht nur gegen den
-        # Gewinner. Der Unterschied ist der wiederholte Ordner-Durchlauf, also
-        # der Normalfall dieses Aufbaus: Der zweite Pfad ist vom Gewinner
-        # dauerhaft verschieden, und eine Pruefung allein gegen den Gewinner
-        # haenge bei jedem Durchlauf einen weiteren identischen Vermerk an.
-        # `notes` waere nach einer Woche eine Liste aus derselben Zeile.
-        bekannte_pfade = {zeile.source_path} | {
-            v.get("pfad") for v in zeile.notes if v.get("kind") == "zweiter_pfad"
-        }
-        if not angelegt and pfad not in bekannte_pfade:
-            db.append_note(
-                conn,
-                sha256,
-                {
-                    "kind": "zweiter_pfad",
-                    "at": datetime.now(UTC).isoformat(),
-                    "pfad": pfad,
-                    "name": path.name,
-                    "hinweis": (
-                        "Dieselbe Datei (gleicher sha256) wurde unter einem "
-                        "zweiten Pfad gefunden. Verarbeitet wird die Zeile des "
-                        "zuerst gesehenen Pfads; hier steht der zweite, damit er "
-                        "auffindbar bleibt."
-                    ),
-                },
-            )
-            zeile = db.get_document(conn, sha256) or zeile
-
-        return cls.from_row(zeile, conn)
+        return cls.from_bytes(path.read_bytes(), conn, settings)
 
     @classmethod
     def from_row(cls, row: DocumentRow, conn: psycopg.Connection[Any]) -> OCRWrapper:
         """Baut eine Huelle um eine bereits gelesene Zeile. Kein Dateizugriff.
 
         Der Weg von einem Hash zu einem Ergebnis, und ohne ihn faellt die halbe
-        Bedienung aus: `mineru-ocr markdown <hash>` hat nur den Hash, keinen Pfad
-        — es gibt nichts zu hashen und nichts zu erkennen, die Zeile steht ja
-        schon da. Ohne diesen Konstruktor muesste sich die Kommandozeile ihre
-        eigene Fassung der Getter bauen, und damit gaebe es zwei.
-
-        Beruehrt die Datei am `source_path` NICHT — sie kann laengst weg sein, und
-        das fertige Ergebnis ist trotzdem da.
+        Bedienung aus: `mineru-ocr markdown <hash>` hat nur den Hash — es gibt
+        nichts zu hashen und nichts zu erkennen, die Zeile steht ja schon da. Ohne
+        diesen Konstruktor muesste sich die Kommandozeile ihre eigene Fassung der
+        Getter bauen, und damit gaebe es zwei.
 
         Args:
             row: Eine vollstaendig gelesene Zeile (`db.get_document`), nicht eine
@@ -235,67 +133,55 @@ class OCRWrapper:
     @classmethod
     def from_bytes(
         cls,
-        data: builtins.bytes,
-        name: str,
+        data: bytes,
         conn: psycopg.Connection[Any],
         settings: Settings,
     ) -> OCRWrapper:
-        """Baut eine Huelle aus Bytes im Speicher, ueber eine Spool-Datei.
+        """Baut eine Huelle aus Bytes und legt Zeile und Eingabe an, falls sie fehlen.
 
-        Die Bytes werden nach `<spool_dir>/<sha256><endung>` geschrieben, und ab
-        da geht es weiter wie bei `from_path`. Warum ueberhaupt eine Datei: Die
-        Zeile speichert einen PFAD, keine Bytes, und der Verarbeitungsweg liest
-        von diesem Pfad. Bytes, die nirgends liegen, koennte ein Daemon in einem
-        anderen Prozess nicht finden.
+        Der Ablauf: Hash der Bytes bilden; Typ am Inhalt bestimmen und bei einem
+        nicht unterstuetzten SOFORT werfen, ohne etwas anzulegen; Zeile und
+        Eingabe in `inputs` in einer Transaktion anlegen. Es wird keine Datei
+        geschrieben und kein PDF geoeffnet: Die Seitenzahl bestimmt der Job.
 
-        Die Spool-Datei wird NIE automatisch geloescht. `source_path` zeigt
-        dorthin; sie zu loeschen hiesse, die Herkunft eines fertigen Ergebnisses
-        zu vernichten.
+        „Uebernehmen" ist dabei der wichtigere Fall und die Umsetzung von Jurgens
+        Nichts-Tun-Regel: Gibt es die Zeile schon und ist sie fertig, ist diese
+        Huelle sofort fertig. Es wird nichts neu verarbeitet, nichts erneut
+        bezahlt, und die Eingabe kommt nicht zurueck.
+
+        `settings` wird gebraucht, weil `db.insert_document` den `endpoint_id`
+        verlangt. Sie wird uebergeben und nicht aus einer globalen Stelle geholt —
+        es gibt keine, und das ist eine ausdrueckliche Regel (`config.py`).
 
         Args:
             data: Die vollstaendigen Bytes.
-            name: Anzeigename fuer `source_name`.
-            conn: Offene Verbindung.
+            conn: Offene Verbindung, gehoert dem Aufrufer.
 
         Returns:
-            Die Huelle.
-
-        Zusicherung:
-            Gibt es die Spool-Datei schon (gleicher Hash), wird sie NICHT erneut
-            geschrieben. Derselbe Inhalt ergibt denselben Pfad — das ist der
-            zweite Nutzen der Hash-Identitaet.
+            Die Huelle, entweder zu einer neuen oder zu einer uebernommenen Zeile.
 
         Raises:
-            UnsupportedTypeError, OSError: wie bei `from_path`.
+            UnsupportedTypeError: Der Typ wird nicht unterstuetzt.
 
         Kosten: keine.
         """
-        # Der Typ wird VOR dem Schreiben bestimmt: Ein nicht unterstuetzter darf
-        # keine Spool-Datei hinterlassen, die dann fuer immer herumliegt — das
-        # Verzeichnis wird ausdruecklich nie automatisch geleert.
         typ = mime.sniff_bytes(data)
         sha256 = hashlib.sha256(data).hexdigest()
-
-        settings.spool_dir.mkdir(parents=True, exist_ok=True)
-        ziel = settings.spool_dir / f"{sha256}{typ.suffix}"
-        if not ziel.exists():
-            # Derselbe Inhalt ergibt denselben Pfad. Ist er schon da, wird NICHT
-            # erneut geschrieben — das haelt die Aenderungszeit der Datei stabil
-            # und spart bei einem zweiten Durchlauf das Schreiben ganz.
-            ziel.write_bytes(data)
 
         _anlegen(
             conn,
             data=data,
             sha256=sha256,
-            source_path=str(ziel),
-            source_name=name,
             mime=typ.mime,
             endpoint_id=settings.endpoint_id,
         )
         zeile = db.get_document(conn, sha256)
-        if zeile is None:  # pragma: no cover
-            raise DocumentNotFound(f"Zeile zu {sha256} nicht lesbar.")
+        if zeile is None:  # pragma: no cover — direkt nach dem Anlegen unmoeglich
+            raise DocumentNotFound(
+                f"Die Zeile zu {sha256} war unmittelbar nach dem Anlegen nicht "
+                f"lesbar. Das deutet auf eine abgebrochene Transaktion beim "
+                f"Aufrufer hin."
+            )
         return cls.from_row(zeile, conn)
 
     # -- Angaben aus der Zeile --------------------------------------------
@@ -308,14 +194,6 @@ class OCRWrapper:
     @property
     def sha256(self) -> str:
         return self.row.sha256
-
-    @property
-    def source_path(self) -> Path:
-        return Path(self.row.source_path)
-
-    @property
-    def source_name(self) -> str:
-        return self.row.source_name
 
     @property
     def size_bytes(self) -> int:
@@ -347,27 +225,6 @@ class OCRWrapper:
         und „hat geklappt" unterscheiden muss, sieht auf `status`.
         """
         return self.row.status in (DocumentStatus.DONE, DocumentStatus.EMPTY)
-
-    @property
-    def bytes(self) -> builtins.bytes:
-        """Die Eingabe-Bytes, bei Bedarf frisch vom Pfad gelesen.
-
-        Der Name stammt aus dem Plan (7) und bleibt. Er verdeckt innerhalb dieser
-        Klasse allerdings den eingebauten Typ `bytes` — deshalb steht in den
-        Annotationen dieser Klasse `builtins.bytes`, wo der TYP gemeint ist. Ohne
-        das zeigte `dict[str, bytes]` bei `images` auf diese Eigenschaft statt auf
-        den Bytetyp; mypy hat genau das gefunden, bevor eine Zeile lief.
-
-        Traege und ungespeichert, genau wie im Braindump verlangt: „pfad (damit
-        die inputbytes nicht alle im ram liegen werden sie wenn gebraucht vom
-        pfad kurz gelesen)".
-
-        Raises:
-            OSError: Die Datei ist weg oder nicht lesbar. Das ist kein Fehler
-                dieses Pakets, sondern eine Auskunft ueber das Dateisystem, und
-                wird deshalb nicht eingepackt.
-        """
-        return Path(self.row.source_path).read_bytes()
 
     # -- Ergebnis, jedes Mal frisch aus dem Rohbestand --------------------
 
@@ -417,7 +274,7 @@ class OCRWrapper:
         return name in self._ergebnis()
 
     @property
-    def images(self) -> dict[str, builtins.bytes]:
+    def images(self) -> dict[str, bytes]:
         """Die Bilder des Dokuments.
 
         Aus Base64 zurueckgewandelt: In der Datenbank liegen sie als
@@ -442,9 +299,9 @@ class OCRWrapper:
                 Namen — wer ihn hat, findet das Bild in `raw` wieder.
         """
         roh = self._feld("images", dict)
-        bilder: dict[str, builtins.bytes] = {}
+        bilder: dict[str, bytes] = {}
         for name, wert in roh.items():
-            if isinstance(wert, builtins.bytes):
+            if isinstance(wert, bytes):
                 bilder[name] = wert
                 continue
             if not isinstance(wert, str):
@@ -582,8 +439,6 @@ class OCRWrapper:
         """
         return {
             "sha256": self.row.sha256,
-            "source_path": self.row.source_path,
-            "source_name": self.row.source_name,
             "size_bytes": self.row.size_bytes,
             "mime": self.row.mime,
             "page_count": self.row.page_count,
@@ -599,8 +454,8 @@ class OCRWrapper:
 
     def __repr__(self) -> str:
         return (
-            f"OCRWrapper({self.row.source_name!r}, status={self.row.status.value!r}, "
-            f"sha256={self.row.sha256!r})"
+            f"OCRWrapper(sha256={self.row.sha256!r}, "
+            f"status={self.row.status.value!r})"
         )
 
     # -- Das Innere -------------------------------------------------------
@@ -641,7 +496,7 @@ class OCRWrapper:
 
         if not self.success:
             raise IncompleteResultError(
-                f"{self.row.source_name} steht auf {self.row.status.value!r} und "
+                f"{self.row.sha256} steht auf {self.row.status.value!r} und "
                 f"hat kein vollstaendiges Ergebnis. Was bis dahin ankam — auch "
                 f"bei einem gescheiterten Dokument — steht in `.raw`; dort wirft "
                 f"nichts."
@@ -707,7 +562,7 @@ class OCRMegaWrapper:
         Args:
             directory: Vorhandenes Verzeichnis.
             conn: Offene Verbindung.
-            settings: Fuer `endpoint_id` und das Spool-Verzeichnis.
+            settings: Fuer `endpoint_id`.
             glob: Welche Dateien betrachtet werden. Voreinstellung: rekursiv alle.
             progress: Wird je fertig verarbeiteter Datei mit dem laufenden Zaehler
                 und der Gesamtzahl gerufen. None heisst: keine Meldung.
@@ -871,7 +726,7 @@ class OCRMegaWrapper:
 
         Args:
             verbose: False gibt die Zusammenfassung. True zaehlt zusaetzlich jedes
-                gescheiterte Dokument einzeln auf, mit Pfad und Fehlertext.
+                gescheiterte Dokument einzeln auf, mit Hash und Fehlertext.
         """
         zahlen = self.stats()
         zeilen = [
@@ -897,7 +752,7 @@ class OCRMegaWrapper:
                 f"Aufgaben-Eintrag anlegen:"
             )
             for huelle in aufruestbar:
-                zeilen.append(f"  {huelle.source_path}")
+                zeilen.append(f"  {huelle.sha256}")
 
         if verbose:
             gescheitert = self.failed
@@ -905,7 +760,7 @@ class OCRMegaWrapper:
                 zeilen.append("Gescheitert im Einzelnen:")
                 for huelle in gescheitert:
                     zeilen.append(
-                        f"  {huelle.source_path}  [{huelle.status.value}]  "
+                        f"  {huelle.sha256}  [{huelle.status.value}]  "
                         f"{huelle.row.error}"
                     )
         return "\n".join(zeilen)

@@ -131,17 +131,6 @@ class TooLargeError(InputError):
     """
 
 
-class SourceChangedError(InputError):
-    """Die Datei auf der Platte ist nicht mehr die, fuer die die Zeile angelegt wurde.
-
-    Geprueft wird durch erneutes Hashen beim Verarbeiten (Plan 5.1, Schritt 2).
-    Der Fall ist selten und harmlos, solange man ihn bemerkt: Zwischen Einreihen
-    und Verarbeiten koennen Stunden liegen. Ihn NICHT zu bemerken waere der
-    unsichtbarste Fehler ueberhaupt — das Ergebnis eines anderen Dokuments unter
-    dem Hash des urspruenglichen abgelegt.
-    """
-
-
 # --------------------------------------------------------------------------
 # RunPod-Seite
 # --------------------------------------------------------------------------

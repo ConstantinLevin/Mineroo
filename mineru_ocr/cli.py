@@ -282,8 +282,7 @@ def show(
         _betriebsfehler(fehler)
 
     zeilen = [
-        f"{angaben['source_name']}  ({angaben['sha256']})",
-        f"  Pfad:      {angaben['source_path']}",
+        f"{angaben['sha256']}",
         f"  Typ:       {angaben['mime']}  {angaben['size_bytes']} Byte"
         + (f"  {angaben['page_count']} Seiten" if angaben["page_count"] else ""),
         f"  Zustand:   {angaben['status']}   Phase: {angaben['phase']}",
@@ -316,7 +315,7 @@ def wait(
     except MineruOcrError as fehler:
         _betriebsfehler(fehler)
 
-    typer.echo(f"{huelle.source_name}: {huelle.status.value}")
+    typer.echo(f"{huelle.sha256}: {huelle.status.value}")
     if not huelle.success:
         # Ein eigener Code, weil das weder ein Erfolg noch ein Fehler DES
         # WERKZEUGS ist: Das Werkzeug hat einwandfrei gearbeitet, das Ergebnis
@@ -353,7 +352,7 @@ def markdown(
             huelle = klient.get(target)
             if not huelle.success:
                 typer.echo(
-                    f"{huelle.source_name} steht auf {huelle.status.value} — "
+                    f"{huelle.sha256} steht auf {huelle.status.value} — "
                     f"es gibt keinen vollstaendigen Text. Was ankam, zeigt "
                     f"`mineru-ocr show {target}`.",
                     err=True,

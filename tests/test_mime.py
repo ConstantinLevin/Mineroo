@@ -189,11 +189,10 @@ def test_jeder_typ_hat_mime_und_endung() -> None:
 def test_die_tabelle_ist_festgeschrieben() -> None:
     """Die Werte sind dauerhaft und werden hier woertlich festgehalten.
 
-    Sie landen unveraenderlich in `documents.mime` und im Namen der Spool-Datei,
-    und `from_bytes` sichert zu, dass derselbe Inhalt denselben Pfad ergibt. Wer
-    `.jpg` spaeter zu `.jpeg` aendert, laesst alle bestehenden `source_path`-Werte
-    ins Leere zeigen — dieser Test macht die Aenderung sichtbar, statt sie
-    durchrutschen zu lassen.
+    Die MIME-Zeichenkette landet unveraenderlich in `documents.mime`, und der Job
+    findet ueber sie den Typ zur Zeile wieder. Wer sie spaeter aendert, laesst
+    alle bestehenden Zeilen ins Leere zeigen — dieser Test macht die Aenderung
+    sichtbar, statt sie durchrutschen zu lassen.
     """
     assert (DocumentType.PDF.mime, DocumentType.PDF.suffix) == ("application/pdf", ".pdf")
     assert (DocumentType.PNG.mime, DocumentType.PNG.suffix) == ("image/png", ".png")

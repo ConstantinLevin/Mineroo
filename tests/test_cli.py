@@ -364,7 +364,7 @@ async def test_hash_und_pfad_werden_gleich_aufgeloest(
     )
 
     ueber_hash = cli.invoke(app, ["markdown", huelle.sha256])
-    ueber_pfad = cli.invoke(app, ["markdown", str(huelle.source_path)])
+    ueber_pfad = cli.invoke(app, ["markdown", str(tmp_path / "beide.png")])
     assert ueber_hash.exit_code == ueber_pfad.exit_code == 0
     assert ueber_hash.stdout == ueber_pfad.stdout
     assert "derselbe Text" in ueber_hash.stdout
@@ -382,7 +382,7 @@ def test_show_zeigt_den_juengsten_job(
     oder ob sein juengster Job endete, ohne etwas zu schreiben.
     """
     huelle = _anlegen(db_conn, tmp_path, "wartend.png", _test_datenbank)
-    cli.invoke(app, ["ocr", str(huelle.source_path)])
+    cli.invoke(app, ["ocr", str(tmp_path / "wartend.png")])
 
     ergebnis = cli.invoke(app, ["show", huelle.sha256, "--json"])
     assert ergebnis.exit_code == 0, ergebnis.output
@@ -422,7 +422,7 @@ async def test_retry_fragt_vor_dem_geldausgeben(
     — kein halber Lauf, keine Teilmenge.
     """
     huelle = _anlegen(db_conn, tmp_path, "teuer.png", _test_datenbank)
-    cli.invoke(app, ["ocr", str(huelle.source_path)])
+    cli.invoke(app, ["ocr", str(tmp_path / "teuer.png")])
     db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
     await write_terminal_async(
         async_conn, sha256=huelle.sha256, status=DocumentStatus.FAILED, raw={}
@@ -460,7 +460,7 @@ async def test_retry_mit_yes_fragt_nicht(
     schon beantwortet.
     """
     huelle = _anlegen(db_conn, tmp_path, "skript.png", _test_datenbank)
-    cli.invoke(app, ["ocr", str(huelle.source_path)])
+    cli.invoke(app, ["ocr", str(tmp_path / "skript.png")])
     db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
     await write_terminal_async(
         async_conn, sha256=huelle.sha256, status=DocumentStatus.FAILED, raw={}

@@ -10,7 +10,6 @@ import pytest
 from mineru_ocr.config import (
     DEFAULT_DB_DSN,
     DEFAULT_ENDPOINT_ID,
-    DEFAULT_SPOOL_DIR,
     MASKE,
     Settings,
 )
@@ -76,7 +75,6 @@ def test_uebergabe_schlaegt_voreinstellung() -> None:
     voreingestellt = _einstellung()
     assert voreingestellt.db_dsn == DEFAULT_DB_DSN
     assert voreingestellt.endpoint_id == DEFAULT_ENDPOINT_ID
-    assert voreingestellt.spool_dir == DEFAULT_SPOOL_DIR
 
     eigen = _einstellung(db_dsn="host=anders", endpoint_id="xyz")
     assert eigen.db_dsn == "host=anders"
@@ -147,13 +145,12 @@ def test_leerer_apikey_wirft(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
 # --- Keine Seiteneffekte --------------------------------------------------
 
 
-def test_load_legt_nichts_an(tmp_path: Path) -> None:
-    """`load` erzeugt das Spool-Verzeichnis nicht — eine Einstellung zu bilden
-    muss auch offline und ohne Schreibrechte gehen."""
-    ziel = tmp_path / "gibtesnicht" / "spool"
-    einstellung = _einstellung(spool_dir=ziel)
-    assert einstellung.spool_dir == ziel
-    assert not ziel.exists()
+def test_einstellung_kennt_kein_spool_verzeichnis() -> None:
+    """Die Eingabe liegt in `inputs`, nicht in einem Ordner: Es gibt keine
+    Einstellung dafuer, und `load` nimmt keine an."""
+    assert "spool_dir" not in {feld.name for feld in dataclasses.fields(Settings)}
+    with pytest.raises(TypeError):
+        Settings.load(api_key=GEHEIM, spool_dir="/tmp/irgendwo")  # type: ignore[call-arg]
 
 
 def test_load_fragt_weder_datenbank_noch_endpoint() -> None:

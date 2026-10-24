@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import hashlib
 import logging
 import re
 from collections.abc import Awaitable, Callable, Coroutine
@@ -636,7 +637,7 @@ class OCRClient:
             return target
         return OCRWrapper.from_row(zeile, self.conn)
 
-    def ocr(self, data: bytes | OCRWrapper, name: str | None = None) -> OCRWrapper:
+    def ocr(self, data: bytes | OCRWrapper) -> OCRWrapper:
         """Ein Einzelstueck aus Bytes: einreihen und warten.
 
         Ist die Huelle bereits fertig, ist der Aufruf ein Nichts-Tun und kehrt
@@ -645,7 +646,6 @@ class OCRClient:
 
         Args:
             data: Bytes oder eine bestehende Huelle.
-            name: Anzeigename, noetig bei Bytes.
 
         Returns:
             Die fertige Huelle.
@@ -655,13 +655,7 @@ class OCRClient:
         if isinstance(data, OCRWrapper):
             huelle = data
         else:
-            if name is None:
-                raise ValueError(
-                    "Bei Bytes wird ein Anzeigename gebraucht — er landet in "
-                    "`source_name` und ist spaeter das Einzige, woran ein Mensch "
-                    "das Dokument erkennt."
-                )
-            huelle = OCRWrapper.from_bytes(data, name, self.conn, self._settings)
+            huelle = OCRWrapper.from_bytes(data, self.conn, self._settings)
 
         if huelle.status.is_terminal:
             # „wenn ocrwrapper bereits OCR'd ist dann ist es eine noop"
@@ -911,11 +905,21 @@ class OCRClient:
         auseinander.
         """
         text = str(target)
-        zeile = (
-            db.get_document(self.conn, text)
-            if HASH_FORM.match(text)
-            else db.get_document_by_path(self.conn, str(Path(text).resolve()))
-        )
+        if HASH_FORM.match(text):
+            sha256 = text
+        else:
+            # Ein Pfad: Die Datenbank kennt keine Pfade, also wird die Datei
+            # gehasht und ueber den Hash gesucht. Gibt es sie nicht, gibt es
+            # auch kein Dokument dazu, das sich so finden liesse.
+            pfad = Path(text)
+            if not pfad.is_file():
+                raise DocumentNotFound(
+                    f"Kein Dokument zu {text!r}: Es ist weder ein sha256 noch "
+                    f"eine lesbare Datei."
+                )
+            with pfad.open("rb") as datei:
+                sha256 = hashlib.file_digest(datei, "sha256").hexdigest()
+        zeile = db.get_document(self.conn, sha256)
         if zeile is None:
             raise DocumentNotFound(
                 f"Kein Dokument zu {text!r}. Angenommen werden ein sha256 "

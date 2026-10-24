@@ -8,6 +8,7 @@ war gemessen, was ausgedacht war, und ungemessen, was bestellt war.
 
 from __future__ import annotations
 
+import hashlib
 import io
 from pathlib import Path
 from typing import Any
@@ -68,40 +69,22 @@ def _datei(tmp_path: Path, name: str, inhalt: bytes) -> Path:
 def test_gleicher_inhalt_gleiche_zeile(
     db_conn: psycopg.Connection[Any], settings: Settings, tmp_path: Path
 ) -> None:
-    """Dieselbe Datei unter zwei Pfaden ergibt EINE Zeile — der rohe Byte-Hash
-    ist die Identitaet. Und der zweite Pfad wird VERMERKT.
+    """Derselbe Inhalt ergibt EINE Zeile — der rohe Byte-Hash ist die Identitaet,
+    gleich ob aus zwei Dateien oder aus Bytes.
 
-    Der zweite Teil fehlte lange, obwohl das Schema ihn zusichert („der zweite
-    wird als Eintrag in `notes` vermerkt statt die Zeile zu ueberschreiben"):
-    `append_note_async` hatte im ganzen Paket keinen Aufrufer, und es gab keine
-    synchrone Fassung fuer den einzigen Ort, an dem sie gebraucht wird.
-
-    Am 08.08.2026 am echten Datensatz belegt: Zwei Kopien bereits verarbeiteter
-    Dateien in einem anderen Verzeichnis wurden korrekt als „bereits fertig"
-    erkannt und NICHT neu bezahlt — hinterliessen aber keine Spur. Wer spaeter
-    unter dem zweiten Pfad sucht, findet nichts und haelt die Datei fuer nie
-    verarbeitet.
+    Wo die Bytes herkamen, merkt sich nichts: Die Datenbank kennt keine Pfade,
+    also gibt es auch keinen Vermerk ueber einen zweiten.
     """
     inhalt = PNG_KOPF + b"gleicher inhalt"
     erste = OCRWrapper.from_path(_datei(tmp_path, "a.png", inhalt), db_conn, settings)
-    zweiter_pfad = _datei(tmp_path, "unterordner/b.png", inhalt)
-    zweite = OCRWrapper.from_path(zweiter_pfad, db_conn, settings)
+    zweite = OCRWrapper.from_path(
+        _datei(tmp_path, "unterordner/b.png", inhalt), db_conn, settings
+    )
+    dritte = OCRWrapper.from_bytes(inhalt, db_conn, settings)
 
-    assert erste.sha256 == zweite.sha256
+    assert erste.sha256 == zweite.sha256 == dritte.sha256
     assert len(list_documents(db_conn)) == 1
-    # Der ZUERST gesehene Pfad gewinnt — die zweite Anlage beruehrt die Zeile
-    # nicht (`ON CONFLICT DO NOTHING`).
-    assert zweite.source_path == erste.source_path
-
-    # Und der zweite steht als Vermerk da, samt seinem vollen Pfad.
-    vermerke = [v for v in zweite.row.notes if v.get("kind") == "zweiter_pfad"]
-    assert len(vermerke) == 1
-    assert vermerke[0]["pfad"] == str(zweiter_pfad.resolve())
-
-    # Denselben Pfad noch einmal zu sehen ist der Normalfall eines wiederholten
-    # Ordner-Durchlaufs und darf die Liste NICHT vollschreiben.
-    nochmal = OCRWrapper.from_path(zweiter_pfad, db_conn, settings)
-    assert len([v for v in nochmal.row.notes if v.get("kind") == "zweiter_pfad"]) == 1
+    assert dritte.row.notes == []
 
 
 async def test_zweiter_aufruf_faellt_nicht_zurueck(
@@ -172,8 +155,8 @@ def test_einreihen_oeffnet_keine_pdf(
     """
     kaputt = b"%PDF-1.7\nund dann nur noch Unsinn\n"
     aus_datei = OCRWrapper.from_path(_datei(tmp_path, "k.pdf", kaputt), db_conn, settings)
-    aus_bytes = OCRWrapper.from_bytes(kaputt + b"2", "k2.pdf", db_conn, settings)
-    gut = OCRWrapper.from_bytes(_pdf(4), "g.pdf", db_conn, settings)
+    aus_bytes = OCRWrapper.from_bytes(kaputt + b"2", db_conn, settings)
+    gut = OCRWrapper.from_bytes(_pdf(4), db_conn, settings)
 
     for huelle in (aus_datei, aus_bytes, gut):
         assert huelle.status is DocumentStatus.NEW
@@ -197,7 +180,7 @@ def test_abschicken_legt_die_bytes_in_inputs_ab(
     aus_bytes = PNG_KOPF + b"aus dem speicher"
 
     a = OCRWrapper.from_path(_datei(tmp_path, "a.png", aus_datei), db_conn, settings)
-    b = OCRWrapper.from_bytes(aus_bytes, "b.png", db_conn, settings)
+    b = OCRWrapper.from_bytes(aus_bytes, db_conn, settings)
 
     assert _eingabe(db_conn, a.sha256) == aus_datei
     assert _eingabe(db_conn, b.sha256) == aus_bytes
@@ -210,7 +193,7 @@ def test_zweites_abschicken_aendert_die_eingabe_nicht(
     inhalt = PNG_KOPF + b"einmal"
     erste = OCRWrapper.from_path(_datei(tmp_path, "a.png", inhalt), db_conn, settings)
     OCRWrapper.from_path(_datei(tmp_path, "b.png", inhalt), db_conn, settings)
-    OCRWrapper.from_bytes(inhalt, "c.png", db_conn, settings)
+    OCRWrapper.from_bytes(inhalt, db_conn, settings)
 
     assert _eingabe(db_conn, erste.sha256) == inhalt
     zaehlung = db_conn.execute("SELECT count(*) FROM inputs").fetchone()
@@ -244,45 +227,9 @@ def test_nicht_unterstuetzter_typ_hinterlaesst_keine_eingabe(
     with pytest.raises(UnsupportedTypeError):
         OCRWrapper.from_path(_datei(tmp_path, "n.txt", b"text"), db_conn, settings)
     with pytest.raises(UnsupportedTypeError):
-        OCRWrapper.from_bytes(b"nur text", "x.txt", db_conn, settings)
+        OCRWrapper.from_bytes(b"nur text", db_conn, settings)
     zaehlung = db_conn.execute("SELECT count(*) FROM inputs").fetchone()
     assert zaehlung is not None and zaehlung[0] == 0
-
-
-def test_bytes_eingabe_landet_im_spool(
-    db_conn: psycopg.Connection[Any], settings: Settings
-) -> None:
-    """`from_bytes` schreibt eine Spool-Datei, deren NAME der Hash ist.
-
-    Derselbe Inhalt ergibt denselben Pfad — der zweite Nutzen der
-    Hash-Identitaet. Und die Datei wird beim zweiten Mal NICHT neu geschrieben.
-    """
-    daten = PNG_KOPF + b"aus dem speicher"
-    erste = OCRWrapper.from_bytes(daten, "speicher.png", db_conn, settings)
-
-    spool = settings.spool_dir / f"{erste.sha256}.png"
-    assert spool.exists()
-    assert erste.source_path == spool
-    zeitstempel = spool.stat().st_mtime_ns
-
-    zweite = OCRWrapper.from_bytes(daten, "anderer name.png", db_conn, settings)
-    assert zweite.sha256 == erste.sha256
-    assert spool.stat().st_mtime_ns == zeitstempel
-
-
-def test_unbrauchbare_bytes_hinterlassen_keine_spool_datei(
-    db_conn: psycopg.Connection[Any], settings: Settings
-) -> None:
-    """Ein nicht unterstuetzter Typ darf keine Datei hinterlassen.
-
-    Das Spool-Verzeichnis wird ausdruecklich NIE automatisch geleert — was dort
-    landet, bleibt. Eine Datei zu einem Dokument, das es gar nicht gibt, laege
-    dort also fuer immer.
-    """
-    with pytest.raises(UnsupportedTypeError):
-        OCRWrapper.from_bytes(b"nur text", "x.txt", db_conn, settings)
-    if settings.spool_dir.exists():
-        assert list(settings.spool_dir.iterdir()) == []
 
 
 # --- Der Ordner-Fall ------------------------------------------------------
@@ -337,7 +284,7 @@ def test_ordner_waechst(
     neue = mega.refresh_dir(ordner)
 
     assert len(neue) == 1
-    assert neue[0].source_name == "c.png"
+    assert neue[0].sha256 == hashlib.sha256(PNG_KOPF + b"3").hexdigest()
     assert len(mega) == 3
     # Und in der Datenbank steht jedes genau einmal.
     assert len(list_documents(db_conn)) == 3
@@ -625,23 +572,6 @@ async def test_raw_wirft_auch_bei_gescheiterten_nicht(
     # … `raw` nicht.
     assert huelle.raw["markdown"] == "das kam noch an"
     assert huelle.raw["failure"]["type"] == "TerminalRunPodError"
-
-
-def test_bytes_werden_traege_gelesen(
-    db_conn: psycopg.Connection[Any], settings: Settings, tmp_path: Path
-) -> None:
-    """`bytes` liest erst beim Zugriff vom Pfad; die Huelle haelt sie nicht.
-
-    „pfad (damit die inputbytes nicht alle im ram liegen werden sie wenn
-    gebraucht vom pfad kurz gelesen)" — geprueft daran, dass eine AENDERUNG der
-    Datei beim naechsten Zugriff sichtbar ist.
-    """
-    pfad = _datei(tmp_path, "traege.png", PNG_KOPF + b"vorher")
-    huelle = OCRWrapper.from_path(pfad, db_conn, settings)
-    assert huelle.bytes == PNG_KOPF + b"vorher"
-
-    pfad.write_bytes(PNG_KOPF + b"nachher")
-    assert huelle.bytes == PNG_KOPF + b"nachher"
 
 
 async def test_refresh_verwirft_die_zwischenspeicherung(

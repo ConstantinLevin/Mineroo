@@ -74,8 +74,6 @@ weil ein vergessener Zustand dort still zu „laeuft noch" wuerde."""
 SCHEMA_SQL: Final = """
 CREATE TABLE IF NOT EXISTS documents (
     sha256        text PRIMARY KEY,
-    source_path   text NOT NULL,
-    source_name   text NOT NULL,
     size_bytes    bigint NOT NULL,
     mime          text NOT NULL,
     page_count    integer,
@@ -91,24 +89,22 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 
 CREATE INDEX IF NOT EXISTS documents_status_idx ON documents (status);
-CREATE INDEX IF NOT EXISTS documents_source_path_idx ON documents (source_path);
 
 CREATE TABLE IF NOT EXISTS inputs (
     sha256        text PRIMARY KEY,
     content       bytea NOT NULL
 );
 """
-"""Das vollstaendige Schema. Wortgleich zu Plan 4.1, mit zwei Zusaetzen.
+"""Das vollstaendige Schema: `documents` fuer die Ergebnisse, `inputs` fuer die
+Eingaben, die noch kein Ergebnis haben.
 
 Der CHECK auf `status` steht im Code, nicht nur im Kommentar: Die Aufzaehlung der
 gueltigen Zustaende ist der Kern dieses Datenmodells, und eine Aufzaehlung, die
 nur ein Kommentar ist, wird irgendwann von einem falsch geschriebenen Zustand
 verletzt, den niemand bemerkt. Die Datenbank bemerkt ihn.
 
-Die beiden Indizes folgen den Abfragen, die es tatsaechlich gibt: die Zaehlung
-nach Zustand fuer `status()`/`report()`, und das Nachschlagen ueber den Pfad fuer
-`mineru-ocr show PFAD`. Mehr Indizes waeren geraten; diese beiden sind
-hergeleitet.
+Der Index folgt der Abfrage, die es tatsaechlich gibt: die Zaehlung nach Zustand
+fuer `status()`/`report()`. Mehr Indizes waeren geraten; dieser ist hergeleitet.
 
 Eine dritte Abfrage gibt es, und sie hat bewusst KEINEN Index: die offenen
 Aufruest-Faelle in `status()`/`report()` — `status = 'input_error'` mit einem
@@ -128,9 +124,13 @@ falsche Treffer bei der Dubletten-Erkennung erzeugen — „gilt als fertig, wur
 nie erkannt" —, und das ist der unsichtbarste aller Fehler. Die eigentliche
 Dubletten-Erkennung ist Sache des Aufrufers.
 
-`source_path` zeigt auf das Original; bei Byte-Eingaben auf die Spool-Datei.
-Liegt dieselbe Datei unter zwei Pfaden, gewinnt der zuerst gesehene, und der
-zweite wird als Eintrag in `notes` vermerkt statt die Zeile zu ueberschreiben.
+`inputs` haelt die Bytes der Eingabe, solange das Dokument kein Endergebnis hat:
+`sha256` ist der Schluessel, `content` die vollstaendigen Bytes als `bytea` (nicht
+base64: verlustfrei wie dieses, aber auf der Platte das 1,03-Fache statt das
+1,37-Fache). Der Job traegt nur den Hash und liest die Eingabe ueber ihn. Mit dem
+Endergebnis loescht der Job die Eingabe in derselben Transaktion, bei `done`,
+`empty` und `input_error`; bei `failed` bleibt sie, damit `retry` etwas zu lesen
+hat. Pfade gibt es in der Datenbank nicht.
 
 `status` kennt KEIN `processing`. Siehe Modul-Vorspann.
 
@@ -161,19 +161,20 @@ Chunk-Angaben in der Datenbank fuehren, gegen die Festlegung oben.
 
 Geschrieben wird `raw` NUR beim Terminal-Schreiben eines Durchlaufs und
 ueberschrieben nur dann, wenn ein gescheitertes Dokument erneut verarbeitet wird.
-Mengengeruest: rund 0,5 bis 1 MB je Seite; bei 30.000 Dokumenten sind das
-zweistellige Gigabyte, die Postgres auslagert. Der Plattenplatz gehoert vor dem
+Mengengeruest: rund 0,05 bis 0,1 MB je Seite; bei 30.000 Dokumenten sind das
+Gigabyte, die Postgres auslagert. (Die frueher hier stehende Schaetzung von 0,5
+bis 1 MB je Seite war rund zehnfach zu hoch.) Der Plattenplatz gehoert vor dem
 grossen Lauf geprueft (Plan 12.5). Warum die Ergebnisse in die Datenbank gehoeren
 und nicht als Pfad daneben: Sie sind ab dem Schreiben die EINZIGE dauerhafte
 Kopie — auf der Gegenseite liegt ein fertiges Ergebnis nur rund dreissig Minuten
-zum Abholen bereit. Fuer die EINGABE-Bytes gilt das Umgekehrte, und deshalb steht
-dort ein Pfad.
+zum Abholen bereit. Fuer die EINGABE gilt das Umgekehrte: Sie liegt in `inputs`
+und verschwindet mit dem Endergebnis.
 
 `image_tag_at_submit` ist Herkunft. Ohne diese Angabe an der Zeile laesst sich
 eine spaetere Qualitaetsfrage nicht mehr beantworten.
 
 `notes` ist eine Ereignisliste, kein Freitext: angehaengt wird, nie ersetzt.
-Darin landen Aufruest-Hinweise, zweite Pfade, Auffaelligkeiten.
+Darin landen Aufruest-Hinweise und Auffaelligkeiten.
 
 `updated_at` wird im Anwendungscode gepflegt, nicht per Trigger. Ein Trigger
 waere versteckter Zustand in der Datenbank; die Tabelle soll ohne Wissen ueber
@@ -249,8 +250,6 @@ class DocumentRow:
     """Eine Zeile, so wie sie in der Datenbank steht. Reine Daten, keine Logik."""
 
     sha256: str
-    source_path: str
-    source_name: str
     size_bytes: int
     mime: str
     page_count: int | None
@@ -593,7 +592,7 @@ async def connect_async(dsn: str) -> psycopg.AsyncConnection[Any]:
 # --------------------------------------------------------------------------
 
 _SPALTEN_VOLL: Final = (
-    "sha256, source_path, source_name, size_bytes, mime, page_count, status, "
+    "sha256, size_bytes, mime, page_count, status, "
     "raw, error, endpoint_id, image_tag_at_submit, notes, created_at, updated_at, "
     "true AS raw_loaded"
 )
@@ -614,7 +613,7 @@ EINE Zeilenklasse fuer beide Lesearten — die schmale Fassung unten sagt an
 derselben Stelle `false`, und keine Aufrufstelle muss den Unterschied kennen."""
 
 _SPALTEN_OHNE_RAW: Final = (
-    "sha256, source_path, source_name, size_bytes, mime, page_count, status, "
+    "sha256, size_bytes, mime, page_count, status, "
     "NULL::jsonb AS raw, error, endpoint_id, image_tag_at_submit, notes, "
     "created_at, updated_at, false AS raw_loaded"
 )
@@ -630,8 +629,6 @@ def insert_document(
     conn: psycopg.Connection[Any],
     *,
     sha256: str,
-    source_path: str,
-    source_name: str,
     size_bytes: int,
     mime: str,
     endpoint_id: str,
@@ -647,8 +644,6 @@ def insert_document(
     Args:
         conn: Offene Verbindung, gehoert dem Aufrufer.
         sha256: Roher Byte-Hash.
-        source_path: Absoluter Pfad zum Original oder zur Spool-Datei.
-        source_name: Anzeigename, ueblicherweise der Dateiname.
         size_bytes: Rohe Groesse.
         mime: Die MIME-Zeichenkette aus `mime.DocumentType`.
         endpoint_id: Fuer welchen Endpoint die Zeile gilt.
@@ -670,13 +665,13 @@ def insert_document(
     ergebnis = conn.execute(
         """
         INSERT INTO documents (
-            sha256, source_path, source_name, size_bytes, mime, endpoint_id
+            sha256, size_bytes, mime, endpoint_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s)
         ON CONFLICT (sha256) DO NOTHING
         RETURNING sha256
         """,
-        (sha256, source_path, source_name, size_bytes, mime, endpoint_id),
+        (sha256, size_bytes, mime, endpoint_id),
     ).fetchone()
     # `RETURNING` liefert nur dann eine Zeile, wenn wirklich eingefuegt wurde —
     # bei `DO NOTHING` kommt nichts. Das ist die verlaessliche Unterscheidung;
@@ -780,25 +775,6 @@ def get_document(conn: psycopg.Connection[Any], sha256: str) -> DocumentRow | No
         ).fetchone()
 
 
-def get_document_by_path(
-    conn: psycopg.Connection[Any], source_path: str
-) -> DocumentRow | None:
-    """Liest eine Zeile ueber ihren Pfad — fuer `mineru-ocr show PFAD`.
-
-    Returns:
-        Die Zeile, oder None. Gibt es mehrere Zeilen zu demselben Pfad, kann es
-        sie nicht geben: Der Pfad ist nicht eindeutig, der Hash ist es. Diese
-        Funktion gibt dann die zuletzt angelegte zurueck — der Fall entsteht,
-        wenn eine Datei am selben Pfad durch eine andere ersetzt wurde.
-    """
-    with conn.cursor(row_factory=class_row(DocumentRow)) as cur:
-        return cur.execute(
-            f"SELECT {_SPALTEN_VOLL} FROM documents WHERE source_path = %s "
-            f"ORDER BY created_at DESC LIMIT 1",
-            (source_path,),
-        ).fetchone()
-
-
 def list_documents(
     conn: psycopg.Connection[Any],
     *,
@@ -809,7 +785,7 @@ def list_documents(
 
     Zusicherung:
         `raw` wird NICHT mitgeladen. Bei dreissigtausend Dokumenten waeren das
-        zweistellige Gigabyte, und keine Liste braucht sie.
+        Gigabyte, und keine Liste braucht sie.
 
         Damit „nicht geladen" nicht mit „ist leer" verwechselt werden kann,
         traegt jede so gelesene Zeile `raw_loaded = False`. Ohne diese
@@ -871,7 +847,7 @@ async def get_document_async(
 ) -> DocumentRow:
     """Liest eine Zeile fuer den Executor — OHNE `raw`.
 
-    Warum ohne: Der Executor braucht Pfad, Typ und Zustand. `raw` ist bei einem
+    Warum ohne: Der Executor braucht Typ und Zustand. `raw` ist bei einem
     bereits verarbeiteten Dokument zweistellige Megabyte gross, und der einzige
     Grund, es zu lesen, waere der Terminal-Guard — der aber nur den Zustand
     braucht. Es mitzuladen hiesse, bei jedem Wiederlauf eines fertigen Dokuments
@@ -1094,35 +1070,6 @@ async def write_terminal_async(
         # vorfinden; danach abgesetzt, faellt es bei einem Abbruch zwischen
         # beidem ganz aus. Postgres stellt NOTIFY ohnehin erst beim Commit zu.
         await conn.execute("SELECT pg_notify(%s, %s)", (DONE_CHANNEL, sha256))
-
-
-def append_note(
-    conn: psycopg.Connection[Any], sha256: str, note: dict[str, Any]
-) -> None:
-    """Die synchrone Fassung von `append_note_async` — Wort fuer Wort dieselbe
-    Zusicherung, nur auf einer synchronen Verbindung.
-
-    Es gibt sie, weil der EINZIGE Aufrufer synchron ist: `OCRWrapper.from_path`
-    vermerkt hier den zweiten Pfad, unter dem dieselbe Datei gefunden wurde.
-    Solange nur die asynchrone Fassung existierte, hatte `append_note_async`
-    ueberhaupt keinen Aufrufer im Paket — die Zusicherung im Schema-Docstring
-    („der zweite wird als Eintrag in `notes` vermerkt") war damit unerfuellt,
-    und der zweite Pfad verschwand spurlos. Am 08.08.2026 am echten Datensatz
-    belegt: Zwei Kopien derselben Dateien unter einem anderen Verzeichnis
-    hinterliessen keine einzige Spur.
-
-    Raises:
-        DocumentNotFound: Kein Eintrag zu diesem Hash. Still nichts zu tun waere
-            hier schlechter als zu werfen: Eine Beobachtung, die ins Leere
-            geschrieben wird, faellt sonst nie auf.
-    """
-    ergebnis = conn.execute(
-        "UPDATE documents SET notes = notes || %s::jsonb "
-        "WHERE sha256 = %s RETURNING sha256",
-        (Jsonb([note]), sha256),
-    ).fetchone()
-    if ergebnis is None:
-        raise DocumentNotFound(f"Kein Eintrag zu {sha256}, Notiz nicht angehaengt.")
 
 
 async def append_note_async(

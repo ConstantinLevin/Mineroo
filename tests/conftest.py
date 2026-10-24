@@ -288,17 +288,12 @@ def echte_tarball_antwort() -> dict[str, Any]:
 
 
 @pytest.fixture
-def settings(tmp_path: Path) -> Settings:
+def settings() -> Settings:
     """Eine Einstellung mit Testwerten und ohne echten Schluessel.
 
     Der Schluessel ist ausdruecklich erfunden und als solcher lesbar. Das ist
     keine Kosmetik: Faende ein Test doch den Weg ins Netz, soll die Ablehnung
     von der Gegenseite kommen und nicht ein bezahlter Lauf.
-
-    Das Spool-Verzeichnis liegt unter dem Temporaerpfad des jeweiligen Tests und
-    ist damit je Test ein anderes — die echte Voreinstellung ist
-    `~/.mineru_ocr/spool/`, und ein Test, der dort hineinschreibt, hinterlaesst
-    Dateien im Arbeitsverzeichnis des Benutzers.
 
     Die uebrigen Werte bleiben die Voreinstellungen aus `Settings`, damit die
     Tests gegen das laufen, was im Betrieb wirklich gilt. Wo ein Test eine
@@ -310,7 +305,6 @@ def settings(tmp_path: Path) -> Settings:
         db_dsn=TEST_DSN,
         endpoint_id="testendpoint",
         api_key="erfundener-schluessel-nicht-echt",
-        spool_dir=tmp_path / "spool",
     )
 
 
@@ -341,7 +335,7 @@ def _test_datenbank() -> str:
 def db_conn(_test_datenbank: str) -> Iterator[Any]:
     """Eine Verbindung zur Test-Datenbank, mit LEEREN Tabellen je Test.
 
-    Geleert werden `documents` und Procrastinates Job-Tabellen, damit kein Test
+    Geleert werden `documents`, `inputs` und Procrastinates Job-Tabellen, damit kein Test
     die Zeilen eines anderen sieht. `TRUNCATE` und nicht `DELETE`, weil es die
     Zaehler zuruecksetzt und schneller ist.
 

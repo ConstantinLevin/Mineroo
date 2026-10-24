@@ -84,7 +84,7 @@ class DocumentType(enum.Enum):
 
     @property
     def suffix(self) -> str:
-        """Die Endung mit fuehrendem Punkt, fuer den Namen der Spool-Datei."""
+        """Die Endung mit fuehrendem Punkt."""
         return _TABELLE[self][1]
 
 
@@ -112,10 +112,9 @@ _TABELLE: Final[dict[DocumentType, tuple[str, str]]] = {
 """MIME-Zeichenkette und Endung je Typ. DIESE WERTE SIND DAUERHAFT.
 
 Warum das keine Kleinigkeit ist: Die MIME-Zeichenkette landet unveraenderlich in
-`documents.mime`, die Endung im Namen der Spool-Datei — und `from_bytes` sichert
-zu, dass derselbe Inhalt denselben Pfad ergibt. Wer hier spaeter `.jpg` zu
-`.jpeg` aendert, laesst alle bestehenden `source_path`-Werte ins Leere zeigen und
-schreibt dieselben Bytes ein zweites Mal, ohne dass etwas auffaellt.
+`documents.mime`, und der Job findet ueber sie den Typ zur Zeile wieder
+(`executor._typ_aus_mime`). Wer hier spaeter eine MIME-Zeichenkette aendert,
+laesst alle bestehenden Zeilen ins Leere zeigen, ohne dass etwas auffaellt.
 
 Wo es zwei uebliche Schreibweisen gibt, ist die kuerzere gewaehlt (`.jpg`,
 `.tif`) — die Wahl ist beliebig, ihre Bestaendigkeit nicht."""
@@ -215,8 +214,7 @@ def sniff_path(path: Path) -> DocumentType:
 def sniff_bytes(data: bytes) -> DocumentType:
     """Bestimmt den Typ eines Byte-Puffers im Speicher.
 
-    Fuer den Weg ueber `OCRWrapper.from_bytes`, bei dem noch keine Datei
-    existiert. Verhaelt sich sonst genau wie `sniff_path`.
+    Fuer den Weg ueber `OCRWrapper.from_bytes`, bei dem es keine Datei gibt. Verhaelt sich sonst genau wie `sniff_path`.
 
     Args:
         data: Die VOLLSTAENDIGEN Bytes. Nicht nur der Anfang: Bei einem ZIP

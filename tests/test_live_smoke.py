@@ -103,9 +103,8 @@ def test_ordner_waechst_live() -> None:
     nichts neu bezahlt. Nach dem Dazulegen: „3 Dokumente, davon 2 bereits
     fertig; 1 eingereiht".
 
-    Derselbe Lauf hat einen Fehler belegt: Der zweite Pfad hinterliess KEINE
-    Spur, obwohl das Schema es zusichert. Behoben (`db.append_note` samt
-    Verdrahtung in `OCRWrapper.from_path`), am echten Bestand nachgeprueft.
+    Der zweite Pfad hinterlaesst heute bewusst keine Spur (Mineroo#23): Die
+    Datenbank kennt keine Pfade, und derselbe Inhalt ist dasselbe Dokument.
     """
 
 

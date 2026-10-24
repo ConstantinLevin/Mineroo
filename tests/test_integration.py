@@ -161,8 +161,6 @@ def _anlegen(conn: psycopg.Connection[Any], tmp_path: Path, name: str) -> str:
     db.insert_document(
         conn,
         sha256=sha,
-        source_path=str(pfad),
-        source_name=name,
         size_bytes=len(inhalt),
         mime="image/png",
         endpoint_id="l79lebhinxaqjz",
@@ -283,7 +281,7 @@ async def test_abgeschicktes_dokument_wird_aus_inputs_gelesen(
 
     tasks.configure(int_settings, for_worker=False)
     inhalt = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"abgeschickt"
-    huelle = OCRWrapper.from_bytes(inhalt, "x.png", db_conn, int_settings)
+    huelle = OCRWrapper.from_bytes(inhalt, db_conn, int_settings)
 
     zeile = db_conn.execute(
         "SELECT content FROM inputs WHERE sha256 = %s", (huelle.sha256,)
