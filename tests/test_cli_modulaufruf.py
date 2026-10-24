@@ -164,7 +164,7 @@ def test_der_modulaufruf_geht_wirklich_durch_main() -> None:
         sie ist direkt beobachtbar. Mit eingeschalteten Rich-Tracebacks druckt
         Typer je Rahmen eine Tabelle der lokalen Namen — gemessen steht darin
         woertlich `einstellung = Settings(db_dsn='kein-gueltiger-dsn ===',
-        endpoint_id='l79lebhinxaqjz', api_key='***', …)`. Eine `Settings`
+        endpoint_id='testendpoint', api_key='***', …)`. Eine `Settings`
         landet also wirklich im Traceback. Dass der Schluessel dabei als `***`
         erscheint, ist genau der Umstand, auf den man sich NICHT verlassen soll:
         Die Maskierung steckt in `Settings.__repr__`, und eine
@@ -228,3 +228,33 @@ def test_der_modulaufruf_geht_wirklich_durch_main() -> None:
         f"aus Pythons eigener Ausgabe, sondern von Rich — dieselbe Ursache wie "
         f"oben. Ausgabe war:\n{ausgabe}"
     )
+
+
+def test_fehlende_konfiguration_endet_mit_meldung_statt_traceback(tmp_path: Path) -> None:
+    """Ohne Endpoint in der Konfiguration sagt `setup` es und endet mit 1.
+
+    Es gibt keinen Endpoint im Code mehr; wer ihn nirgends einstellt, soll die
+    Stellen dafuer genannt bekommen — nicht einen Traceback lesen. `HOME` zeigt
+    auf ein leeres Verzeichnis, damit keine Konfigurationsdatei des Entwicklers
+    mitspielt, und die Umgebungsvariablen des Pakets fehlen.
+    """
+    umgebung = {
+        name: wert
+        for name, wert in os.environ.items()
+        if not name.startswith("MINERU_OCR_")
+    }
+    umgebung["HOME"] = str(tmp_path)
+    umgebung["NO_COLOR"] = "1"
+
+    lauf = subprocess.run(
+        [sys.executable, "-m", "mineru_ocr.cli", "setup", "--dsn", "host=egal"],
+        cwd=WURZEL,
+        env=umgebung,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert lauf.returncode == 1, lauf.stderr
+    assert "MINERU_OCR_ENDPOINT_ID" in lauf.stderr
+    assert "Traceback" not in lauf.stderr

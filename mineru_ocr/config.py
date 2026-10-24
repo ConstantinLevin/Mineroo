@@ -15,18 +15,31 @@ fuehrt diese Punkte als offene Nachmessungen.
 from __future__ import annotations
 
 import dataclasses
+import os
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 from .errors import ConfigurationError
 
-DEFAULT_DB_DSN: Final = "host=localhost port=5437 dbname=mineru_ocr user=jurgen"
-"""Die laufende Postgres-App-Instanz, eigene Datenbank (Plan 9)."""
+DEFAULT_CONFIG_PATH: Final = Path.home() / ".mineru_ocr" / "config.toml"
+"""Die Konfigurationsdatei, wenn nichts anderes gesagt ist. Fehlt sie, ist das
+kein Fehler: Wer alles ueber Umgebungsvariablen einstellt, braucht keine."""
 
-DEFAULT_ENDPOINT_ID: Final = "l79lebhinxaqjz"
-"""Der zweifach in Produktion bewaehrte queue-basierte Endpoint."""
+ENV_PREFIX: Final = "MINERU_OCR_"
+"""Vorsatz der Umgebungsvariablen. Jeder Schluessel der Konfigurationsdatei hat
+eine: `endpoint_id` ↔ `MINERU_OCR_ENDPOINT_ID`."""
+
+ENV_CONFIG_PATH: Final = "MINERU_OCR_CONFIG"
+"""Umgebungsvariable, die auf eine andere Konfigurationsdatei zeigt."""
+
+DATEI_SCHLUESSEL: Final = frozenset({"endpoint_id", "db_dsn"})
+"""Die Schluessel, die die Konfigurationsdatei kennt. Ein anderer ist ein Fehler
+und kein stilles Ignorieren: Ein Tippfehler im Namen waere sonst ein Wert, der da
+steht und nirgends wirkt. Der API-Schluessel gehoert ausdruecklich NICHT hierher;
+er bleibt in `~/.runpod/config.toml`."""
 
 RUNPOD_CONFIG_PATH: Final = Path.home() / ".runpod" / "config.toml"
 """Der im Projekt bewaehrte Ort des API-Schluessels, Feld `apikey`. Wird
@@ -70,6 +83,75 @@ def _schluessel_aus_datei() -> str:
             f"{RUNPOD_CONFIG_PATH} hat kein nutzbares Feld 'apikey'."
         )
     return schluessel
+
+def _konfigurationsdatei(pfad: Path, *, ausdruecklich: bool) -> dict[str, Any]:
+    """Liest die Konfigurationsdatei dieses Pakets.
+
+    Args:
+        pfad: Wo sie liegt.
+        ausdruecklich: Ob der Pfad ausdruecklich genannt wurde (Argument oder
+            `MINERU_OCR_CONFIG`). Dann ist eine fehlende Datei ein Fehler; bei
+            der Standarddatei ist sie der Normalfall.
+
+    Raises:
+        ConfigurationError: Datei fehlt trotz ausdruecklicher Nennung, ist
+            unlesbar, kein gueltiges TOML, oder kennt einen Schluessel nicht. Der
+            Pfad steht in jeder Meldung — er ist die erste Stelle, an der man
+            nachsieht.
+    """
+    if not pfad.exists():
+        if ausdruecklich:
+            raise ConfigurationError(
+                f"Die Konfigurationsdatei {pfad} existiert nicht, wurde aber "
+                f"ausdruecklich genannt."
+            )
+        return {}
+    try:
+        inhalt = pfad.read_bytes()
+    except OSError as fehler:
+        raise ConfigurationError(f"{pfad} ist nicht lesbar: {fehler}") from fehler
+    try:
+        daten = tomllib.loads(inhalt.decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as fehler:
+        raise ConfigurationError(f"{pfad} ist kein gueltiges TOML: {fehler}") from fehler
+    unbekannt = sorted(set(daten) - DATEI_SCHLUESSEL)
+    if unbekannt:
+        raise ConfigurationError(
+            f"{pfad} kennt den Schluessel {unbekannt} nicht. Bekannt sind: "
+            f"{sorted(DATEI_SCHLUESSEL)}. Der RunPod-Schluessel steht nicht hier, "
+            f"sondern in {RUNPOD_CONFIG_PATH}."
+        )
+    return daten
+
+
+def _wert(name: str, umgebung: Mapping[str, str], datei: Mapping[str, Any]) -> Any | None:
+    """Der Wert eines Schluessels aus Umgebung, sonst Datei; `None`, wenn keiner.
+
+    Eine leere oder nur aus Leerraum bestehende Angabe gilt als nicht gesetzt: Eine
+    leere Umgebungsvariable ist fast immer ein Rest aus einem Skript und kein
+    Wunsch, den Wert auf „nichts" zu setzen.
+    """
+    aus_umgebung = umgebung.get(ENV_PREFIX + name.upper())
+    if aus_umgebung is not None and aus_umgebung.strip():
+        return aus_umgebung
+    aus_datei = datei.get(name)
+    if isinstance(aus_datei, str) and not aus_datei.strip():
+        return None
+    return aus_datei
+
+
+def _fehlt(name: str, config_path: Path) -> str:
+    """Die Meldung fuer einen Pflichtwert, der nirgends eingestellt ist.
+
+    Nennt jede Stelle, an der man ihn einstellen kann — „Konfigurationsfehler"
+    allein hilft beim Suchen niemandem.
+    """
+    return (
+        f"`{name}` ist nirgends eingestellt. Es gibt dafuer keine "
+        f"Voreinstellung im Code. Einstellen: als Argument, als Umgebungsvariable "
+        f"{ENV_PREFIX}{name.upper()} oder als `{name} = \"…\"` in {config_path}."
+    )
+
 
 # --------------------------------------------------------------------------
 # Namen, die zwischen Prozessen verabredet sind
@@ -164,14 +246,16 @@ class Settings:
     # -- Verbindungen ------------------------------------------------------
 
     db_dsn: str
-    """Verbindung zur eigenen Datenbank. Voreinstellung siehe `load`: die
-    laufende Postgres-App-Instanz auf Port 5437, Datenbank `mineru_ocr`. Eigene
-    Datenbank statt eigenem Schema in einer fremden, damit Sicherung, Loeschen
-    und Migrationen sich nie mit den gbrain-Daten beruehren (Plan 9)."""
+    """Verbindung zur eigenen Datenbank. Kommt aus der Konfiguration (siehe
+    `load`), nicht aus dem Code: wo die Datenbank liegt, ist Sache des Betriebs.
+    Eigene Datenbank statt eigenem Schema in einer fremden, damit Sicherung,
+    Loeschen und Migrationen sich nie mit den Daten anderer Anwendungen
+    beruehren (Plan 9)."""
 
     endpoint_id: str
-    """Der RunPod-Serverless-Endpoint. Voreinstellung `l79lebhinxaqjz` — der
-    zweifach in Produktion bewiesene queue-basierte Endpoint."""
+    """Der RunPod-Serverless-Endpoint. Kommt aus der Konfiguration (siehe
+    `load`); es gibt keine Voreinstellung, denn jede im Code waere ein
+    bestimmter Endpoint fuer jeden Aufrufer."""
 
     api_key: str
     """RunPod-API-Schluessel. Gehoert NIE in eine URL und NIE in eine Ausgabe;
@@ -463,23 +547,33 @@ class Settings:
         backend: str | None = None,
         min_balance_start_usd: float | None = None,
         ocr_concurrency: int | None = None,
+        environ: Mapping[str, str] | None = None,
+        config_path: Path | None = None,
     ) -> Settings:
-        """Bildet die Einstellung aus ausdruecklichen Angaben und Voreinstellungen.
+        """Bildet die Einstellung aus Angabe, Umgebung, Datei und Voreinstellung.
 
-        Zwei Quellen, mehr nicht: Was hier uebergeben wurde, schlaegt die
-        Voreinstellung. Keine Umgebungsvariablen — bei einem Werkzeug fuer eine
-        Person auf einer Maschine waeren sie eine dritte Stelle, an der ein Wert
-        stehen kann, und die Fehlersuche „warum nimmt er den falschen Endpoint?"
-        beginnt dann in der Shell statt im Code.
+        Rangfolge, vom Staerksten: ausdrueckliche Angabe → Umgebungsvariable
+        `MINERU_OCR_<NAME>` → Konfigurationsdatei → Feld-Voreinstellung. Wer
+        gerade aufruft, hat das letzte Wort; die Datei ist der Grundzustand.
 
-        Der API-Schluessel hat eine eigene Voreinstellung: `~/.runpod/config.toml`,
-        Feld `apikey` — der im Projekt bewaehrte Ort, an dem er ohnehin schon
-        liegt. Er wird gelesen, nie geschrieben.
+        Die Datei ist TOML und liegt standardmaessig unter
+        `~/.mineru_ocr/config.toml`; `MINERU_OCR_CONFIG` oder `config_path`
+        zeigen auf eine andere. Fehlt die Standarddatei, ist das kein Fehler —
+        eine ausdruecklich genannte, die fehlt, aber schon: Ein falsch getippter
+        Pfad darf nicht still zur Voreinstellung werden.
+
+        Endpoint und Datenbank haben KEINE Voreinstellung. Beide muessen
+        irgendwo eingestellt sein, sonst wirft `load` mit einem Hinweis auf alle
+        Stellen, an denen man das tut.
+
+        Der API-Schluessel hat eine eigene Quelle: `~/.runpod/config.toml`, Feld
+        `apikey` — der im Projekt bewaehrte Ort, an dem er ohnehin schon liegt.
+        Er wird gelesen, nie geschrieben, und steht nie in der
+        Konfigurationsdatei dieses Pakets.
 
         Args:
-            db_dsn: Verbindungszeichenkette. Voreinstellung
-                `host=localhost port=5437 dbname=mineru_ocr user=jurgen`.
-            endpoint_id: Voreinstellung `l79lebhinxaqjz`.
+            db_dsn: Verbindungszeichenkette.
+            endpoint_id: Kennung des RunPod-Endpoints.
             api_key: Voreinstellung siehe oben.
             strict: Ob Konfigurations-Abweichungen im Preflight abbrechen.
             backend: Voreinstellung `vlm-auto-engine`. Steht hier, weil
@@ -490,28 +584,48 @@ class Settings:
             min_balance_start_usd: Untergrenze im Preflight, aus demselben Grund.
             ocr_concurrency: Gleichzeitig betreute Dokumente, aus demselben Grund
                 (`mineru-ocr daemon --concurrency`).
+            environ: Die Umgebung, aus der gelesen wird. Voreinstellung
+                `os.environ`; ein Test uebergibt eine eigene, damit sein Ergebnis
+                nicht davon abhaengt, was zufaellig in der Shell steht.
+            config_path: Die Konfigurationsdatei. Voreinstellung siehe oben.
 
         Returns:
             Die vollstaendige, unveraenderliche Einstellung.
 
         Zusicherung:
             Wirft, statt mit einer halben Einstellung weiterzulaufen. Legt NICHTS
-            an; `load` ist frei von Seiteneffekten ausser dem Lesen der
-            Schluesseldatei.
+            an; `load` ist frei von Seiteneffekten ausser dem Lesen der beiden
+            Dateien.
 
         Raises:
-            ConfigurationError: Kein API-Schluessel auffindbar, oder
-                `~/.runpod/config.toml` existiert und ist unlesbar bzw. hat kein
-                Feld `apikey`.
+            ConfigurationError: Kein API-Schluessel auffindbar; Endpoint oder
+                Datenbank nirgends eingestellt; die Konfigurationsdatei ist
+                unlesbar, kein gueltiges TOML oder kennt einen Schluessel nicht;
+                eine ausdruecklich genannte Datei fehlt.
 
         Kosten: keine. Spricht weder mit RunPod noch mit der Datenbank —
         insbesondere prueft `load` NICHT, ob die Datenbank erreichbar oder der
         Schluessel gueltig ist. Das ist Sache des Preflights, und die Trennung ist
         Absicht: Eine Einstellung zu bilden muss auch offline gehen.
         """
+        umgebung = os.environ if environ is None else environ
+        ausdruecklich = config_path is not None or ENV_CONFIG_PATH in umgebung
+        if config_path is None:
+            config_path = Path(umgebung.get(ENV_CONFIG_PATH) or DEFAULT_CONFIG_PATH)
+        datei = _konfigurationsdatei(config_path, ausdruecklich=ausdruecklich)
+
+        endpoint = endpoint_id if endpoint_id is not None else _wert(
+            "endpoint_id", umgebung, datei
+        )
+        if endpoint is None:
+            raise ConfigurationError(_fehlt("endpoint_id", config_path))
+        dsn = db_dsn if db_dsn is not None else _wert("db_dsn", umgebung, datei)
+        if dsn is None:
+            raise ConfigurationError(_fehlt("db_dsn", config_path))
+
         einstellung = cls(
-            db_dsn=db_dsn if db_dsn is not None else DEFAULT_DB_DSN,
-            endpoint_id=endpoint_id if endpoint_id is not None else DEFAULT_ENDPOINT_ID,
+            db_dsn=dsn,
+            endpoint_id=endpoint,
             api_key=api_key if api_key is not None else _schluessel_aus_datei(),
             strict=strict,
         )

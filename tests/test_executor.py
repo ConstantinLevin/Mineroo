@@ -151,7 +151,7 @@ def _anlegen(
         sha256=sha,
         size_bytes=len(inhalt),
         mime=typ.mime,
-        endpoint_id="l79lebhinxaqjz",
+        endpoint_id="testendpoint",
     )
     insert_input(conn, sha256=sha, content=inhalt)
     return sha, pfad
@@ -177,7 +177,7 @@ async def pool(_test_datenbank: str) -> Any:
 def exec_settings(settings: Settings) -> Settings:
     return dataclasses.replace(
         settings,
-        endpoint_id="l79lebhinxaqjz",
+        endpoint_id="testendpoint",
         poll_interval_seconds=0.01,
         balance_recheck_seconds=0.01,
     )

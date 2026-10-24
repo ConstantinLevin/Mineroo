@@ -89,8 +89,8 @@ def setup(
     nicht zur Zeilenklasse passt, sagt es das samt Abhilfe, statt selbst etwas
     umzubauen.
     """
-    einstellung = Settings.load(db_dsn=dsn)
     try:
+        einstellung = Settings.load(db_dsn=dsn)
         db.setup(einstellung.db_dsn)
     except MineruOcrError as fehler:
         _betriebsfehler(fehler)
@@ -125,7 +125,10 @@ def daemon(
     # Wer `mineru-ocr status` aufruft, soll das nicht laden muessen.
     from . import daemon as daemon_modul
 
-    einstellung = Settings.load(db_dsn=dsn, ocr_concurrency=concurrency)
+    try:
+        einstellung = Settings.load(db_dsn=dsn, ocr_concurrency=concurrency)
+    except MineruOcrError as fehler:
+        _betriebsfehler(fehler)
     raise typer.Exit(code=daemon_modul.main(einstellung, queues=queues or None))
 
 

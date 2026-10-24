@@ -68,8 +68,8 @@ REST_BASE: Final = "https://rest.runpod.io/v1"
 
 Diese Wurzel ist in diesem Projekt BEWIESEN: Der konservierte Schnappschuss vom
 05.08.2026 (`artifacts/2026-08-05-doku-verifikationstest/endpoint-snapshot.json`)
-traegt als Quelle woertlich
-`GET https://rest.runpod.io/v1/endpoints/l79lebhinxaqjz?includeWorkers=true`, und
+traegt als Quelle
+`GET https://rest.runpod.io/v1/endpoints/<endpoint-id>?includeWorkers=true`, und
 das Betriebshandbuch nennt dieselbe Adresse als Nachpruef-Ort fuer `workersMax`.
 
 OFFENER PUNKT, ausdruecklich benannt statt still uebergangen: RunPods eigene

@@ -130,7 +130,7 @@ def echte_settings(settings: Settings) -> Settings:
     return dataclasses.replace(
         settings,
         api_key=SCHLUESSEL,
-        endpoint_id="l79lebhinxaqjz",
+        endpoint_id="testendpoint",
         poll_interval_seconds=0.01,
         job_timeout_seconds=1.0,
     )
@@ -322,7 +322,7 @@ async def test_401_und_403_sind_konfigurationsfehler(
         )
         with pytest.raises(ConfigurationError) as fehler:
             await client.submit(file_b64="A", backend="b", transport="t")
-        assert "l79lebhinxaqjz" in str(fehler.value)
+        assert "testendpoint" in str(fehler.value)
 
 
 async def test_5xx_ist_wiederholbar(echte_settings: Settings) -> None:
@@ -822,7 +822,7 @@ async def test_worker_liste_ist_einzeln(echte_settings: Settings) -> None:
         Aufzeichnung(
             _antwort(
                 {
-                    "id": "l79lebhinxaqjz",
+                    "id": "testendpoint",
                     "workersMax": 10,
                     "workersMin": 0,
                     "workersStandby": 3,
@@ -943,7 +943,7 @@ async def test_image_bezeichner_wird_gelesen(echte_settings: Settings) -> None:
                             "endpoints": [
                                 {"id": "andererendpoint", "template": {"imageName": "x"}},
                                 {
-                                    "id": "l79lebhinxaqjz",
+                                    "id": "testendpoint",
                                     "templateId": "5wv9rko6zv",
                                     "template": {
                                         "imageName": "registry.runpod.net/"

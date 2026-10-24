@@ -90,7 +90,7 @@ class Zugang:
 def _guter_endpoint(**abweichungen: Any) -> dict[str, Any]:
     """Eine Endpoint-Konfiguration in der Form des konservierten Schnappschusses."""
     grund = {
-        "id": "l79lebhinxaqjz",
+        "id": "testendpoint",
         "name": "mineru-runpod",
         "workersMin": 0,
         "workersMax": 10,

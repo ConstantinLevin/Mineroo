@@ -33,7 +33,7 @@ class Zugang:
 
     async def endpoint(self) -> dict[str, Any]:
         return {
-            "id": "l79lebhinxaqjz",
+            "id": "testendpoint",
             "workersMin": 0,
             "workersMax": 10,
             "idleTimeout": 60,

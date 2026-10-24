@@ -50,7 +50,7 @@ def _zeile(status: DocumentStatus = DocumentStatus.NEW) -> DocumentRow:
         status=status,
         raw=None,
         error=None,
-        endpoint_id="l79lebhinxaqjz",
+        endpoint_id="testendpoint",
         image_tag_at_submit=None,
         notes=[],
         created_at=jetzt,
@@ -77,7 +77,7 @@ def _einfuegen(conn: psycopg.Connection[Any], sha: str = HASH) -> None:
         sha256=sha,
         size_bytes=123,
         mime="application/pdf",
-        endpoint_id="l79lebhinxaqjz",
+        endpoint_id="testendpoint",
     )
 
 

@@ -16,6 +16,7 @@ laufen nur, wenn man sie ausdruecklich anfordert.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any, Final
@@ -96,6 +97,31 @@ TEST_DSN = "host=localhost port=5437 dbname=mineru_ocr_test user=jurgen"
 """Eigene Datenbank auf der laufenden Instanz. NICHT `mineru_ocr` und schon gar
 nicht `gbrain` — ein Test, der die Arbeitsdatenbank leert, tut das genau einmal
 und dann nie wieder, weil danach niemand mehr Tests laufen laesst."""
+
+
+@pytest.fixture(autouse=True)
+def _konfiguration_isolieren(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Haelt die Konfiguration des Entwicklers aus jedem Test heraus.
+
+    Endpoint und Datenbank haben keine Voreinstellung im Code mehr; sie kommen
+    aus Umgebungsvariablen oder der Konfigurationsdatei. Ohne diese Vorrichtung
+    haengte das Ergebnis eines Tests davon ab, was in der Shell steht und ob
+    unter `~/.mineru_ocr/config.toml` eine Datei liegt — und ein Test, der
+    zufaellig den echten Endpoint oder die echte Datenbank einstellte, waere der
+    teuerste, den es gibt.
+
+    Eine vorhandene `MINERU_OCR_*`-Umgebung wird geraeumt, die Standarddatei auf
+    einen nicht vorhandenen Pfad umgebogen, und Endpoint und Datenbank zeigen auf
+    erfundene bzw. die Test-Datenbank. Tests, die die Quellen selbst pruefen,
+    uebergeben `environ=` und `config_path=` ausdruecklich.
+    """
+    for name in [n for n in os.environ if n.startswith("MINERU_OCR_")]:
+        monkeypatch.delenv(name)
+    monkeypatch.setattr(
+        "mineru_ocr.config.DEFAULT_CONFIG_PATH", tmp_path / "keine-konfiguration.toml"
+    )
+    monkeypatch.setenv("MINERU_OCR_ENDPOINT_ID", "testendpoint")
+    monkeypatch.setenv("MINERU_OCR_DB_DSN", TEST_DSN)
 
 
 @pytest.fixture

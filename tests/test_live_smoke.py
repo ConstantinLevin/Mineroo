@@ -11,8 +11,8 @@ machen daraus eine Liste, die man abhaken kann.
 
 ---
 
-STAND DER LISTE: AM 08./09.08.2026 GEFAHREN, gegen den echten Endpoint
-`l79lebhinxaqjz` (Image-Tag `17d4955b2`, Modell MinerU2.5-Pro-2605-1.2B,
+STAND DER LISTE: AM 08./09.08.2026 GEFAHREN, gegen den echten, inzwischen aufgegebenen
+Endpoint (Image-Tag `17d4955b2`, Modell MinerU2.5-Pro-2605-1.2B,
 `middle._version_name` 3.4.4). Gesamtkosten der Läufe: rund 0,25 USD.
 
 Was dabei herauskam, steht bei den einzelnen Punkten. Die WICHTIGSTE Erkenntnis
