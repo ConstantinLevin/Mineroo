@@ -1,6 +1,6 @@
 ---
 name: mineroo
-description: OCR auf Abruf mit Mineroo (MinerU auf RunPod). Nutzen, wenn Text, Struktur oder die vollständige MinerU-Antwort aus PDFs, Scans, Bildern oder Office-Dateien gebraucht wird, und wenn auf früher abgeschickte Dokumente gewartet oder ihr Ergebnis geholt werden soll.
+description: OCR auf Abruf mit Mineroo (MinerU auf RunPod; CLI `mineru-ocr`, Bibliothek `mineru_ocr`). Nutzen, wenn Text, Struktur oder die vollständige MinerU-Antwort aus PDFs, Scans, Bildern oder Office-Dateien gebraucht wird, und wenn auf früher abgeschickte Dokumente gewartet oder ihr Ergebnis geholt werden soll.
 ---
 
 # Mineroo: Dokumente lesen lassen
@@ -32,12 +32,15 @@ ersten Abschicken, auf jedem Weg:
 
 - `in_ordnung`: Du darfst abschicken, auch personenbezogene Dokumente.
 - `abweichung`: Du schickst nichts ab und zeigst dem Nutzer `soll` und `ist`.
-- `nicht_pruefbar`: Der Endpoint nennt seine Rechenzentren nicht. Sag das dem
-  Nutzer und schick erst ab, wenn er zustimmt.
+- Jedes andere Ergebnis: `nicht_pruefbar` (der Endpoint nennt seine
+  Rechenzentren nicht), kein `datacenters`-Eintrag (der Endpoint war nicht
+  erreichbar) oder ein Preflight, der mit einem Fehler endet (etwa ohne
+  RunPod-Schlüssel oder Endpoint). Dann sagst du dem Nutzer, dass sich die
+  Rechenzentren nicht bestätigen lassen, samt der Meldung, und schickst erst ab,
+  wenn er zustimmt.
 
 Der Preflight verändert nichts, fragt aber RunPod und braucht deshalb den
-RunPod-Schlüssel. Fehlt er, sagst du dem Nutzer, dass sich die Rechenzentren
-nicht prüfen lassen, und wartest auf seine Entscheidung.
+RunPod-Schlüssel; dasselbe gilt für `mineru-ocr status`.
 
 ## Ablauf über die CLI
 
@@ -45,9 +48,8 @@ Für Dateien und Ordner auf der Platte:
 
 1. `mineru-ocr ocr PFAD… --json`; je Datei steht dort ihr Hash.
 2. `mineru-ocr wait ZIEL… --timeout S --json`. Ziele sind Dateien oder Hashes;
-   für einen Ordner gibst du die Hashes aus Schritt 1 weiter. Endet `wait` mit
-   Exit-Code 4, ist noch etwas offen: Warte später erneut auf die Hashes, die es
-   auf stderr nennt.
+   für einen Ordner gibst du die Hashes aus Schritt 1 weiter. Läuft die Frist
+   ab, wartest du später erneut auf die noch offenen.
 3. Ergebnis holen: `mineru-ocr markdown ZIEL` für den Text des ganzen Dokuments,
    `mineru-ocr show ZIEL --raw` für die vollständige Antwort als JSON.
 
@@ -56,9 +58,10 @@ Setz bei `wait` immer `--timeout`: Ohne Daemon wird nichts fertig.
 ## Ablauf über die Bibliothek
 
 `OCRClient` ist synchron, `AsyncOCRClient` asynchron; du öffnest sie mit `with`
-bzw. `async with`. Beide können abschicken (`ocr_start`), warten (`wait`,
-`wait_all`, `as_completed`) und holen (`get`, `ocr`); `status`, `preflight`,
-`document` und `retry` hat nur der synchrone. Beim Async-Client rufst du jede
+bzw. `async with`. Beide können abschicken (`ocr_start`; `ocr` schickt ab und
+wartet in einem Zug), warten (`wait`, `wait_all`, `as_completed`) und holen
+(`get`); `status`, `preflight`, `document` und `retry` hat nur der synchrone.
+Beim Async-Client rufst du jede
 dieser Methoden mit `await`, außer `as_completed`: Das ist ein async-Generator,
 `async for w in client.as_completed(hs, timeout=…)`. Importierbar ist das Paket
 im Interpreter der Miniconda-Base
@@ -66,10 +69,9 @@ im Interpreter der Miniconda-Base
 Wirft `with OCRClient()` beim Öffnen `ConfigDriftError`, weicht der Endpoint von
 seinen Sollwerten ab; die Meldung gibst du dem Nutzer weiter.
 
-- `ocr_start` gibt je Dokument den Hash zurück; mit ihm wartest und holst du.
-- Auf viele wartest du mit `wait_all(hs)` in Eingabereihenfolge oder mit
-  `as_completed(hs)` in der Reihenfolge, in der sie fertig werden. Gib immer
-  `timeout=` mit.
+- Mit dem Hash, den `ocr_start` je Dokument zurückgibt, wartest und holst du.
+- Auf viele wartest du mit `wait_all` oder `as_completed`. Gib immer `timeout=`
+  mit.
 - Zurück kommt eine **Hülle**: `rendered_markdown` ist das ganze Dokument als
   Markdown, `raw` die vollständige Antwort.
 
@@ -88,9 +90,9 @@ Fertig wird ein Dokument nur, wenn ein `mineru-ocr daemon` läuft: Er ist der
 einzige Prozess, der Dokumente an RunPod schickt. Abschicken gelingt auch ohne
 ihn und warnt nur (CLI auf stderr, Bibliothek im Logger `mineru_ocr.client`);
 die Dokumente bleiben dann offen, bis einer startet. Den Daemon startet der
-Betreiber. Kommt beim Abschicken die Warnung, sagst du dem Nutzer, dass kein
-Daemon läuft, bevor du wartest. Ob einer läuft, zeigen auch `mineru-ocr status`
-und der Preflight; beide fragen RunPod und brauchen den RunPod-Schlüssel.
+Betreiber. Kommt beim Abschicken die Warnung, gibst du sie dem Nutzer weiter,
+bevor du wartest; sie sagt, ob kein Daemon läuft oder ob sich das nicht prüfen
+ließ. Ob einer läuft, zeigen auch `mineru-ocr status` und der Preflight.
 
 Hängt ein Dokument, sagt `mineru-ocr show ZIEL`, ob sein Job wartet, läuft oder
 ohne Ergebnis endete. Im letzten Fall und bei `failed` hilft
