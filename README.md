@@ -241,8 +241,8 @@ legt sonst einen Link `skills/mineroo/mineroo` im Checkout an.
 
 **Der Daemon ist ein eigener Prozess.** `ocr_start` bzw. das Kommando `ocr` legt
 Jobs an und kehrt sofort zurück. Läuft kein `daemon`, wird trotzdem eingereiht —
-aber danach passiert gar nichts, und es sieht aus wie ein Hänger. Deshalb warnt
-das Abschicken (auf stderr bzw. dem Logger `mineru_ocr.client`), und `status` und
+aber danach passiert gar nichts, und es sieht aus wie ein Hänger. Deshalb warnen
+das Abschicken und `retry` (auf stderr bzw. dem Logger `mineru_ocr.client`), und `status` und
 `preflight` sagen es einem ausdrücklich, statt es einen suchen zu lassen; einen
 Daemon startet der Betreiber. Als laufend gilt ein Daemon, wenn ein Worker einen
 Herzschlag hat, der jünger ist als 30 Sekunden — gemessen an der Uhr der

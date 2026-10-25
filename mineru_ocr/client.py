@@ -1129,7 +1129,13 @@ class OCRClient:
         """
         _hash_pruefen(sha256)
         with db.retry_lock(self.conn, sha256):
-            return self._retry_unter_sperre(sha256)
+            ausgang = self._retry_unter_sperre(sha256)
+        if ausgang is not RetryOutcome.HAS_RESULT:
+            # Dieselbe Regel wie beim Abschicken, fuer jeden Weg, auf dem
+            # eingereiht wird: Ist das Dokument danach offen, zurueckgesetzt, neu
+            # eingereiht oder unterwegs, und laeuft kein Daemon, wird es gesagt.
+            self._ohne_daemon_warnen()
+        return ausgang
 
     def _retry_unter_sperre(self, sha256: str) -> RetryOutcome:
         """`retry` fuer ein Dokument, dessen Sperre der Aufrufer haelt: Erst unter

@@ -1037,6 +1037,41 @@ def test_ocr_start_warnt_nicht_bei_laufendem_daemon(
     assert not [e for e in caplog.records if e.name == "mineru_ocr.client"]
 
 
+def test_retry_reiht_auch_ohne_daemon_ein_und_warnt(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Eine Regel fuer jeden Weg, auf dem ein Dokument eingereiht wird (Spec #1,
+    „Wenn diese Spec schweigt“): Wie das Abschicken reiht `retry` ohne Daemon ein
+    und sagt es; sonst saehe das Warten danach wie ein Haenger aus (Mineroo#26,
+    #4). Auch `retry_all` warnt, und zwar einmal."""
+    inhalte = [_png("ohne Job 1"), _png("ohne Job 2")]
+    for inhalt in inhalte:
+        db.insert_input(db_conn, sha256=_hash(inhalt), content=inhalt)
+
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        ausgaenge = offener_client.retry_all()
+
+    assert set(ausgaenge.values()) == {core.RetryOutcome.REQUEUED}
+    warnungen = [e for e in caplog.records if "kein Daemon" in e.getMessage()]
+    assert len(warnungen) == 1
+
+
+def test_retry_warnt_nicht_bei_laufendem_daemon(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    inhalt = _png("ohne Job")
+    db.insert_input(db_conn, sha256=_hash(inhalt), content=inhalt)
+    _worker_am_leben(db_conn)
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        assert offener_client.retry(_hash(inhalt)) is core.RetryOutcome.REQUEUED
+
+    assert not [e for e in caplog.records if e.name == "mineru_ocr.client"]
+
+
 def test_preflight_meldet_den_daemon_nach_dem_alter_des_herzschlags(
     _test_datenbank: str,
     db_conn: psycopg.Connection[Any],
