@@ -12,6 +12,7 @@ import base64
 import dataclasses
 import hashlib
 import io
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -989,6 +990,41 @@ async def test_ergebnis_ist_zusammengesetzt(
     # Und es gibt kein Feld, das die Teilung noch verriete.
     assert "chunks" not in zeile.raw
     assert "chunk_plan" not in zeile.raw
+
+
+async def test_echte_mineru4_antworten_ergeben_ein_dokument(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Der Musterbericht geht als PDF hinein, der Job schneidet ihn in drei
+    Teilstuecke zu vier Seiten, und RunPod antwortet mit den drei ECHTEN
+    MinerU-4.0.12-Ausgaben genau dieser Teilstuecke
+    (`artifacts/2026-10-26-mineru-4.0.12-lokal/musterbericht_teile/`). Heraus
+    kommt EIN Dokument: neun Seiten mit den Seitenzahlen des Originals, alle
+    zwoelf Bilder, obwohl die Teilstuecke vier gleich benannte tragen."""
+    ordner = ersatz.ECHT_LOKAL / "musterbericht_teile"
+    pdf = (ersatz.ECHT_LOKAL / "musterbericht.pdf").read_bytes()
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=4)
+    sha, _ = _anlegen(db_conn, tmp_path, pdf)
+    runpod = FalscherRunPod(
+        [
+            ersatz.tarball_antwort(ersatz.echte_dateien(ordner / f"teil_{nummer}"))
+            for nummer in range(3)
+        ]
+    )
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    assert zeile.raw is not None
+    assert len(runpod.abgesendet) == 3
+    assert [s["page_idx"] for m in zeile.raw["middle_json"] for s in m["pages"]] == list(range(9))
+    assert len(zeile.raw["images"]) == 12
+    for verweis in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", zeile.raw["markdown"]):
+        assert verweis in zeile.raw["images"]
 
 
 async def test_leeres_ergebnis_wird_empty(

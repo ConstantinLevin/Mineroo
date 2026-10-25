@@ -1,0 +1,576 @@
+{
+  "metadata": {
+    "file_suffix": "pdf",
+    "producer": {
+      "name": "mineru",
+      "version": "4.0.12"
+    },
+    "document": {
+      "created_at": "2026-10-26T02:51:20",
+      "creator_application": "PDFium",
+      "producer_application": "PDFium",
+      "page_count": 4,
+      "page_count_kind": "physical"
+    }
+  },
+  "extensions": {
+    "mineru": {
+      "tier": "flash",
+      "parse_mode": "txt"
+    },
+    "docvortex_layout": {
+      "version": 1,
+      "pages": [
+        {
+          "page_idx": 0,
+          "width_pt": 595.2760009765625,
+          "height_pt": 841.8900146484375
+        },
+        {
+          "page_idx": 1,
+          "width_pt": 595.2760009765625,
+          "height_pt": 841.8900146484375
+        },
+        {
+          "page_idx": 2,
+          "width_pt": 595.2760009765625,
+          "height_pt": 841.8900146484375
+        },
+        {
+          "page_idx": 3,
+          "width_pt": 595.2760009765625,
+          "height_pt": 841.8900146484375
+        }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "page_idx": 0,
+      "blocks": [
+        {
+          "type": "header",
+          "index": 0,
+          "bbox": [
+            0.084,
+            0.039,
+            0.323,
+            0.05
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Musterbericht 2025 der Beispiel AG"
+            }
+          ]
+        },
+        {
+          "type": "header",
+          "index": 1,
+          "bbox": [
+            0.084,
+            0.092,
+            0.541,
+            0.111
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Kapitel 5: Entwicklung im Bereich E"
+            }
+          ]
+        },
+        {
+          "type": "header",
+          "index": 2,
+          "bbox": [
+            0.084,
+            0.132,
+            0.711,
+            0.145
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Im Berichtsjahr wuchs der Bereich E um 7 Prozent gegenueber dem Vorjahr."
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "index": 3,
+          "bbox": [
+            0.084,
+            0.151,
+            0.79,
+            0.202
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Die Zahlen sind erfunden und dienen allein als Testmaterial fuer die Texterkennung. Der Umsatz betrug 625 Millionen Euro, das Ergebnis 55 Millionen Euro. Die folgende Abbildung zeigt die Entwicklung der Kennzahl ueber die letzten Quartale."
+            }
+          ]
+        },
+        {
+          "type": "image",
+          "index": 4,
+          "bbox": [
+            0.084,
+            0.254,
+            0.487,
+            0.42
+          ],
+          "content": [
+            {
+              "type": "image_body",
+              "index": 4,
+              "bbox": [
+                0.084,
+                0.254,
+                0.487,
+                0.42
+              ],
+              "image_path": "images/page_0_image_4.jpg",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "index": 5,
+          "bbox": [
+            0.084,
+            0.43,
+            0.345,
+            0.442
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Abbildung 5: Kennzahl E je Quartal"
+            }
+          ]
+        },
+        {
+          "type": "footer",
+          "index": 6,
+          "bbox": [
+            0.828,
+            0.956,
+            0.916,
+            0.967
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Seite 5 von 9"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_idx": 1,
+      "blocks": [
+        {
+          "type": "header",
+          "index": 0,
+          "bbox": [
+            0.084,
+            0.039,
+            0.323,
+            0.05
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Musterbericht 2025 der Beispiel AG"
+            }
+          ]
+        },
+        {
+          "type": "header",
+          "index": 1,
+          "bbox": [
+            0.084,
+            0.092,
+            0.54,
+            0.111
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Kapitel 6: Entwicklung im Bereich F"
+            }
+          ]
+        },
+        {
+          "type": "header",
+          "index": 2,
+          "bbox": [
+            0.084,
+            0.132,
+            0.71,
+            0.145
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Im Berichtsjahr wuchs der Bereich F um 8 Prozent gegenueber dem Vorjahr."
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "index": 3,
+          "bbox": [
+            0.084,
+            0.151,
+            0.79,
+            0.202
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Die Zahlen sind erfunden und dienen allein als Testmaterial fuer die Texterkennung. Der Umsatz betrug 750 Millionen Euro, das Ergebnis 66 Millionen Euro. Die folgende Abbildung zeigt die Entwicklung der Kennzahl ueber die letzten Quartale."
+            }
+          ]
+        },
+        {
+          "type": "image",
+          "index": 4,
+          "bbox": [
+            0.084,
+            0.254,
+            0.487,
+            0.42
+          ],
+          "content": [
+            {
+              "type": "image_body",
+              "index": 4,
+              "bbox": [
+                0.084,
+                0.254,
+                0.487,
+                0.42
+              ],
+              "image_path": "images/page_1_image_4.jpg",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "index": 5,
+          "bbox": [
+            0.084,
+            0.43,
+            0.345,
+            0.442
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Abbildung 6: Kennzahl F je Quartal"
+            }
+          ]
+        },
+        {
+          "type": "footer",
+          "index": 6,
+          "bbox": [
+            0.828,
+            0.956,
+            0.916,
+            0.967
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Seite 6 von 9"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_idx": 2,
+      "blocks": [
+        {
+          "type": "header",
+          "index": 0,
+          "bbox": [
+            0.084,
+            0.039,
+            0.323,
+            0.05
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Musterbericht 2025 der Beispiel AG"
+            }
+          ]
+        },
+        {
+          "type": "header",
+          "index": 1,
+          "bbox": [
+            0.084,
+            0.092,
+            0.544,
+            0.111
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Kapitel 7: Entwicklung im Bereich G"
+            }
+          ]
+        },
+        {
+          "type": "header",
+          "index": 2,
+          "bbox": [
+            0.084,
+            0.132,
+            0.714,
+            0.145
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Im Berichtsjahr wuchs der Bereich G um 9 Prozent gegenueber dem Vorjahr."
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "index": 3,
+          "bbox": [
+            0.084,
+            0.151,
+            0.79,
+            0.202
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Die Zahlen sind erfunden und dienen allein als Testmaterial fuer die Texterkennung. Der Umsatz betrug 875 Millionen Euro, das Ergebnis 77 Millionen Euro. Die folgende Abbildung zeigt die Entwicklung der Kennzahl ueber die letzten Quartale."
+            }
+          ]
+        },
+        {
+          "type": "image",
+          "index": 4,
+          "bbox": [
+            0.084,
+            0.254,
+            0.487,
+            0.42
+          ],
+          "content": [
+            {
+              "type": "image_body",
+              "index": 4,
+              "bbox": [
+                0.084,
+                0.254,
+                0.487,
+                0.42
+              ],
+              "image_path": "images/page_2_image_4.jpg",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "index": 5,
+          "bbox": [
+            0.084,
+            0.43,
+            0.347,
+            0.442
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Abbildung 7: Kennzahl G je Quartal"
+            }
+          ]
+        },
+        {
+          "type": "table",
+          "index": 6,
+          "bbox": [
+            0.084,
+            0.47,
+            0.538,
+            0.556
+          ],
+          "content": [
+            {
+              "type": "table_body",
+              "index": 6,
+              "bbox": [
+                0.084,
+                0.47,
+                0.538,
+                0.556
+              ],
+              "image_path": "images/page_2_table_6.jpg",
+              "content": "<table><tbody><tr><td>Quartal</td><td>Umsatz</td><td>Ergebnis</td></tr><tr><td>Q1</td><td>30</td><td>2</td></tr><tr><td>Q2</td><td>31</td><td>3</td></tr><tr><td>Q3</td><td>33</td><td>3</td></tr></tbody></table>"
+            }
+          ]
+        },
+        {
+          "type": "footer",
+          "index": 7,
+          "bbox": [
+            0.828,
+            0.956,
+            0.916,
+            0.967
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Seite 7 von 9"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_idx": 3,
+      "blocks": [
+        {
+          "type": "header",
+          "index": 0,
+          "bbox": [
+            0.084,
+            0.039,
+            0.323,
+            0.05
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Musterbericht 2025 der Beispiel AG"
+            }
+          ]
+        },
+        {
+          "type": "header",
+          "index": 1,
+          "bbox": [
+            0.084,
+            0.092,
+            0.543,
+            0.111
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Kapitel 8: Entwicklung im Bereich H"
+            }
+          ]
+        },
+        {
+          "type": "header",
+          "index": 2,
+          "bbox": [
+            0.084,
+            0.132,
+            0.723,
+            0.145
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Im Berichtsjahr wuchs der Bereich H um 10 Prozent gegenueber dem Vorjahr."
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "index": 3,
+          "bbox": [
+            0.084,
+            0.151,
+            0.79,
+            0.202
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Die Zahlen sind erfunden und dienen allein als Testmaterial fuer die Texterkennung. Der Umsatz betrug 1000 Millionen Euro, das Ergebnis 88 Millionen Euro. Die folgende Abbildung zeigt die Entwicklung der Kennzahl ueber die letzten Quartale."
+            }
+          ]
+        },
+        {
+          "type": "image",
+          "index": 4,
+          "bbox": [
+            0.084,
+            0.254,
+            0.487,
+            0.42
+          ],
+          "content": [
+            {
+              "type": "image_body",
+              "index": 4,
+              "bbox": [
+                0.084,
+                0.254,
+                0.487,
+                0.42
+              ],
+              "image_path": "images/page_3_image_4.jpg",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "index": 5,
+          "bbox": [
+            0.084,
+            0.43,
+            0.346,
+            0.442
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Abbildung 8: Kennzahl H je Quartal"
+            }
+          ]
+        },
+        {
+          "type": "footer",
+          "index": 6,
+          "bbox": [
+            0.828,
+            0.956,
+            0.916,
+            0.967
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Seite 8 von 9"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "is_full_document": true,
+  "schema": "docvortex.middle",
+  "schema_version": "2.0"
+}

@@ -1,0 +1,38 @@
+{
+  "pages": [
+    {
+      "page_idx": 0,
+      "blocks": []
+    }
+  ],
+  "metadata": {
+    "file_suffix": "pdf",
+    "producer": {
+      "name": "mineru",
+      "version": "4.0.12"
+    },
+    "document": {
+      "created_at": "2026-10-26T02:49:45",
+      "creator_application": "PDFium",
+      "page_count": 1,
+      "page_count_kind": "physical"
+    }
+  },
+  "extensions": {
+    "mineru": {
+      "tier": "flash",
+      "parse_mode": "txt"
+    },
+    "docvortex_layout": {
+      "version": 1,
+      "pages": [
+        {
+          "page_idx": 0,
+          "width_pt": 595.0,
+          "height_pt": 842.0
+        }
+      ]
+    }
+  },
+  "is_full_document": true
+}

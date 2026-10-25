@@ -588,8 +588,10 @@ ab Seite 0, ohne Namensraum überschrieben sie einander. Jeder Verweis in jeder
 Datei des Teilstücks (Markdown, `image_path`, `<img src>`, `image_source`) wird
 mit umbenannt, und `raw["images"]` trägt jedes Bild unter genau diesem Verweis.
 Leer (`assembly.is_empty`) ist ein Dokument ohne Text in beiden Markdowns, ohne
-Block im Middle-JSON und ohne Bild; das Kriterium an der echten leeren
-MinerU-4-Seite festzustellen ist offen bis Mineroo#10.
+Block im Middle-JSON und ohne Bild. Eine Seite ohne Bloecke traegt **keinen**
+`blocks`-Schluessel (`{"page_idx": 0}`, MinerU schreibt Voreinstellungen nicht),
+gemessen an echter MinerU-4.0.12-Ausgabe; die Bestaetigung an der Stufe
+`advanced` mit OCR auf dem Endpoint steht mit Mineroo#10 aus.
 
 `chunking.verify_page_coverage` prüft dabei strukturell und in dieser Reihenfolge:
 Beginn bei 0 → lückenlose Nachbarschaft → Ende bei `page_count - 1`. Die frühere
@@ -683,13 +685,26 @@ Jede steht wegen eines bezahlten Fehlers, nicht wegen einer Vorliebe.
 
 ## Das Testmaterial — was echt ist und was nicht
 
-**Echte MinerU-4-Antworten gibt es noch nicht.** Sie kommen mit Mineroo#10
+**Echte MinerU-4-Antworten von RunPod gibt es noch nicht.** Sie kommen mit Mineroo#10
 (sechs Aufnahmen auf dem neuen Endpoint: normale PDF-Seite, leere Seite als
 Bilddatei, zwölfseitiges Dokument in drei Teilstücken, DOCX, HTML, erzwungene
 Fehlerantwort), und erst dann ist das Paket so geprüft, wie die Spec es verlangt:
 durch Abspielen echter Antworten.
 
-**Bis dahin spielen die Tests Ersatz-Antworten aus `tests/ersatz_antworten.py`.**
+**Echte MinerU-4.0.12-Ausgaben, lokal erzeugt**, liegen unter
+`artifacts/2026-10-26-mineru-4.0.12-lokal/` (Herkunft im `README.md` dort): eine
+leere Seite und ein erfundener neunseitiger Musterbericht ohne personenbezogene
+Daten, ganz und in drei Teilstücken mit dem Schnitt des Pakets, geschrieben von
+MinerUs eigenem `ParseResult.save` in der Stufe `flash` mit OCR-Modus `txt`
+(DocVortex nativ, ohne Modelle, ohne RunPod). Die Tests spielen sie über
+`ersatz_antworten.echte_dateien` und `ECHT_LOKAL` ab, auch am Exekutor
+(`test_echte_mineru4_antworten_ergeben_ein_dokument`). Sie haben gezeigt: Die
+Bildnamen zweier Teilstücke kollidieren wirklich, und eine leere Seite trägt
+keinen `blocks`-Schlüssel. Neu erzeugen lassen sie sich mit den Skripten unter
+`erzeugung/` dort.
+
+**Wo es keine echte Ausgabe gibt, spielen die Tests Ersatz-Antworten aus
+`tests/ersatz_antworten.py`.**
 Sie sind nicht geraten, sondern nach den Quellen gebaut, die die Antwortform
 festlegen, und jede Bauform nennt ihre Quelle: der Job-Vertrag des Forks
 (`api.mdx`), der Code des Workers (`handler.py`, `worker/parse.py`,

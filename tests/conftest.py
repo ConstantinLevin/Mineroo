@@ -32,8 +32,10 @@ from mineru_ocr.config import Settings
 # Dateien, die es unter MinerU 4 nicht mehr gibt (`content_list`, `doc.md`,
 # `doc_middle.json`), und werden deshalb nicht mehr abgespielt; an ihrer Stelle
 # spielen die Tests Ersatz-Antworten aus `ersatz_antworten`, gebaut nach den
-# Quellen, die die MinerU-4-Antwort festlegen. Ersetzt werden sie durch die sechs
-# echten MinerU-4-Aufnahmen aus Mineroo#10. Abgespielt wird nur noch die echte
+# Quellen, die die MinerU-4-Antwort festlegen, und echte MinerU-4.0.12-Ausgaben,
+# lokal erzeugt (`artifacts/2026-10-26-mineru-4.0.12-lokal/`,
+# `ersatz_antworten.ECHT_LOKAL`). Ersetzt werden sie durch die sechs echten
+# MinerU-4-Aufnahmen auf dem Endpoint aus Mineroo#10. Abgespielt wird nur noch die echte
 # Fehlerantwort (`FEHLERANTWORT_FIXTURE`): Wie RunPod eine `FAILED`-Antwort
 # umschlaegt, haengt nicht an der MinerU-Version.
 

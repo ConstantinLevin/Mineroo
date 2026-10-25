@@ -410,6 +410,20 @@ def test_im_zweifel_nicht_leer() -> None:
     assert not is_empty({**leer, "markdown_full": "Fusszeile"})
 
 
+def test_die_echte_leere_mineru4_seite_ist_empty() -> None:
+    """Die ECHTE Ausgabe von MinerU 4.0.12 fuer eine leere A4-Seite
+    (`artifacts/2026-10-26-mineru-4.0.12-lokal/leere_seite/`): leeres Markdown,
+    keine Bilder, und im Middle-JSON eine Seite OHNE `blocks`-Schluessel —
+    `{"page_idx": 0}`, weil MinerU Voreinstellungen nicht schreibt. Das ist
+    `empty`, und die Darstellung ist der leere Text, kein Fehler."""
+    dateien = ersatz.echte_dateien(ersatz.ECHT_LOKAL / "leere_seite")
+    ergebnis = assemble([unpack_response(ersatz.tarball_antwort(dateien), Chunk(0, 0))])
+
+    assert ergebnis["middle_json"][0]["pages"] == [{"page_idx": 0}]
+    assert is_empty(ergebnis)
+    assert rendered_markdown(ergebnis) == ""
+
+
 # --- Die Leseseite --------------------------------------------------------
 
 
@@ -545,3 +559,96 @@ def test_nur_randbloecke_werden_angehaengt() -> None:
     text = rendered_markdown(_mit_rand("Kurzfassung."))
     assert "Der Fliesstext." not in text
     assert text.startswith("Kurzfassung.")
+
+
+# --- Echte MinerU-4-Ausgaben ----------------------------------------------
+
+
+def _echte_teilstuecke() -> list[ChunkArtifacts]:
+    """Die drei echten Teilstueck-Ausgaben des Musterberichts, ausgepackt wie
+    eine Antwort des Workers (`artifacts/2026-10-26-mineru-4.0.12-lokal/`)."""
+    ordner = ersatz.ECHT_LOKAL / "musterbericht_teile"
+    plan = json.loads((ordner / "plan.json").read_text())
+    return [
+        unpack_response(
+            ersatz.tarball_antwort(ersatz.echte_dateien(ordner / f"teil_{nummer}")),
+            Chunk(erste, letzte),
+        )
+        for nummer, (erste, letzte) in enumerate(plan)
+    ]
+
+
+def _image_paths(middle: dict[str, Any]) -> list[str]:
+    pfade: list[str] = []
+    stapel = [block for seite in middle["pages"] for block in seite.get("blocks", [])]
+    while stapel:
+        block = stapel.pop()
+        if "image_path" in block:
+            pfade.append(block["image_path"])
+        if isinstance(block.get("content"), list):
+            stapel.extend(teil for teil in block["content"] if "index" in teil)
+    return pfade
+
+
+def test_echte_teilstuecke_kollidieren_und_jeder_verweis_zeigt_auf_sein_bild() -> None:
+    """An echter MinerU-4-Ausgabe: Die Teilstuecke 0 und 1 tragen gleich
+    benannte Bilder mit verschiedenem Inhalt. Nach dem Zusammensetzen steht jedes
+    Bild einzeln da, und jeder Verweis — `image_path`, Markdown, `image_source` —
+    zeigt auf das Bild aus seinem eigenen Teilstueck."""
+    teile = _echte_teilstuecke()
+    gleich = set(teile[0].images) & set(teile[1].images)
+    assert gleich, "Die Aufnahme zeigt die Kollision nicht mehr"
+    assert any(teile[0].images[n] != teile[1].images[n] for n in gleich)
+
+    ergebnis = assemble(teile)
+
+    assert len(ergebnis["images"]) == sum(len(teil.images) for teil in teile)
+    for nummer, (teil, middle) in enumerate(zip(teile, ergebnis["middle_json"])):
+        pfade = _image_paths(middle)
+        assert pfade
+        for pfad in pfade:
+            name = pfad.removeprefix(f"images/teilstueck_{nummer}/")
+            assert _bild_unter(ergebnis, pfad) == teil.images[name]
+    for verweis in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", ergebnis["markdown"]):
+        assert verweis in ergebnis["images"]
+    for struktur in ergebnis["structured_content"]:
+        for seite in struktur["pages"]:
+            for block in seite["blocks"]:
+                if "image_source" in block:
+                    assert block["image_source"] in ergebnis["images"]
+
+
+def test_echte_teilstuecke_zaehlen_danach_die_seiten_des_originals() -> None:
+    """Jedes echte Teilstueck zaehlt ab Seite 0; zusammengesetzt zaehlen Seiten,
+    `docvortex_layout` und strukturierter Inhalt 0 bis 8."""
+    teile = _echte_teilstuecke()
+    assert [[s["page_idx"] for s in teil.middle_json["pages"]] for teil in teile if teil.middle_json] == [
+        [0, 1, 2, 3],
+        [0, 1, 2, 3],
+        [0],
+    ]
+    ergebnis = assemble(teile)
+    erwartet = list(range(9))
+    assert [s["page_idx"] for m in ergebnis["middle_json"] for s in m["pages"]] == erwartet
+    assert [
+        s["page_idx"] for m in ergebnis["middle_json"] for s in m["extensions"]["docvortex_layout"]["pages"]
+    ] == erwartet
+    assert [s["page_idx"] for sc in ergebnis["structured_content"] for s in sc["pages"]] == erwartet
+
+
+def test_echte_randbloecke_kommen_in_die_darstellung() -> None:
+    """MinerU 4 stuft in der echten Ausgabe Seitenzahl und Kopfzeile als
+    `footer`/`header` ein und laesst sie aus `markdown.md` weg; die Darstellung
+    traegt sie trotzdem (`FURNITURE_TYPES`). Gemessen: In den vierseitigen
+    Teilstuecken fehlen „Seite 1 von 9" und „Seite 5 von 9" im Markdown; das
+    einseitige letzte Teilstueck stuft dieselbe Fusszeile als Text ein — eine
+    Seite wird nicht in jedem Schnitt gleich gelesen."""
+    ergebnis = assemble(_echte_teilstuecke())
+    fehlend = ["Seite 1 von 9", "Seite 5 von 9"]
+    for text in fehlend:
+        assert text not in ergebnis["markdown"]
+    dargestellt = rendered_markdown(ergebnis)
+    assert dargestellt.startswith(ergebnis["markdown"])
+    for text in fehlend:
+        assert text in dargestellt
+    assert not is_empty(ergebnis)

@@ -38,9 +38,14 @@ Die Quellen, auf die sich die Verweise beziehen:
     `render/_internal/markdown/assets.py` (Markdown-Bild `![](images/…)`,
     `image_source` im strukturierten Inhalt).
 
-Was diese Bauformen NICHT wissen und erst die Aufnahmen zeigen: wie MinerU 4 eine
-leere Seite beschreibt, welche Randklassen der Vollmodus-Markdown traegt, und wie
-gross die Dateien wirklich sind.
+GEGEN ECHTE AUSGABE GEPRUEFT: Unter `ECHT_LOKAL` liegen echte Ausgaben von
+MinerU 4.0.12 (lokal, Stufe `flash`, OCR-Modus `txt`). Sie bestaetigen die
+Dateinamen, das Schema, die Bildnamen und alle vier Verweisformen; die eine
+Abweichung (eine Seite ohne Bloecke traegt keinen `blocks`-Schluessel) ist in
+`seite` nachgezogen. Wo es echte Ausgabe gibt, spielen die Tests sie; diese
+Bauformen bleiben fuer Lagen, die sich lokal nicht erzeugen lassen. Was erst die
+Aufnahmen aus Mineroo#10 zeigen: die Stufe `advanced` mit OCR, Bilder als
+Eingabe, die Antwortgroessen.
 """
 
 from __future__ import annotations
@@ -50,9 +55,29 @@ import io
 import json
 import tarfile
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 MINERU_VERSION = "4.0.12"
+
+ECHT_LOKAL = Path(__file__).resolve().parent.parent / "artifacts" / "2026-10-26-mineru-4.0.12-lokal"
+"""ECHTE MinerU-4.0.12-Ausgaben, lokal erzeugt (Herkunft: `README.md` dort).
+
+Jeder Unterordner ist ein Ausgabeverzeichnis, wie `ParseResult.save` es schreibt,
+samt `markdown_full.md`, das der Worker im Vollmodus rendert. Erzeugt mit MinerUs
+eigenem Code in der Stufe `flash` und dem OCR-Modus `txt` (DocVortex nativ, ohne
+Modelle); die Stufe `advanced` mit OCR braucht die GPU-Modelle und kommt erst mit
+den Aufnahmen aus Mineroo#10. Das Dateiformat ist dasselbe."""
+
+
+def echte_dateien(ordner: Path) -> dict[str, bytes]:
+    """Die Dateien eines echten Ausgabeverzeichnisses unter ihrem Pfad relativ zu
+    ihm, so wie der Harness sie ins Archiv legt (HARNESS `_archive_members`)."""
+    return {
+        datei.relative_to(ordner).as_posix(): datei.read_bytes()
+        for datei in sorted(ordner.rglob("*"))
+        if datei.is_file()
+    }
 
 
 def text_block(index: int, text: str, typ: str = "text") -> dict[str, Any]:
@@ -96,7 +121,12 @@ def bild_pfad(page_idx: int, index: int, *, endung: str = "jpg") -> str:
 
 
 def seite(page_idx: int, bloecke: list[dict[str, Any]]) -> dict[str, Any]:
-    """Eine Seite des Middle-JSON (DOCVORTEX `PageInfo`: `page_idx`, `blocks`)."""
+    """Eine Seite des Middle-JSON (DOCVORTEX `PageInfo`: `page_idx`, `blocks`).
+
+    Ohne Bloecke OHNE `blocks`-Schluessel: MinerU schreibt die Voreinstellung
+    `[]` nicht mit, gemessen an der echten leeren Seite unter `ECHT_LOKAL`."""
+    if not bloecke:
+        return {"page_idx": page_idx}
     return {"page_idx": page_idx, "blocks": bloecke}
 
 
@@ -141,7 +171,7 @@ def structured_content(middle: Mapping[str, Any]) -> dict[str, Any]:
     seiten = []
     for s in middle["pages"]:
         bloecke = []
-        for block in s["blocks"]:
+        for block in s.get("blocks", []):
             if block["type"] == "image":
                 body = block["content"][0]
                 bloecke.append(
@@ -182,7 +212,7 @@ def markdown_aus(middle: Mapping[str, Any], *, rand: bool = False) -> str:
     rand_typen = {"header", "footer", "page_number", "aside_text", "page_footnote"}
     teile: list[str] = []
     for s in middle["pages"]:
-        for block in s["blocks"]:
+        for block in s.get("blocks", []):
             if block["type"] == "image":
                 body = block["content"][0]
                 teile.append(f"![]({body['image_path']})")

@@ -680,6 +680,23 @@ def _blocktext(block: Mapping[str, Any]) -> str:
     return "\n".join(zeile for zeile in zeilen if zeile)
 
 
+def _bloecke(seite: Any) -> list[Any] | None:
+    """Die Bloecke einer Seite des Middle-JSON, oder None bei fremder Form.
+
+    EIN FEHLENDER `blocks`-SCHLUESSEL HEISST: KEINE BLOECKE. MinerU 4 schreibt
+    Voreinstellungen nicht mit, und `PageInfo.blocks` hat die Voreinstellung
+    `[]` (DocVortex 0.5.16, `schema.py`). Gemessen an der echten Ausgabe von
+    MinerU 4.0.12 fuer eine leere A4-Seite
+    (`artifacts/2026-10-26-mineru-4.0.12-lokal/leere_seite/`): Die Seite steht
+    dort als `{"page_idx": 0}`. Die Ersatz-Antworten hatten `"blocks": []`
+    angenommen, und so galt die echte leere Seite nicht als leer.
+    """
+    if not isinstance(seite, dict):
+        return None
+    bloecke = seite.get("blocks", [])
+    return bloecke if isinstance(bloecke, list) else None
+
+
 def is_empty(result: dict[str, Any]) -> bool:
     """Sagt, ob ein vollstaendig verarbeitetes Dokument gar keinen Inhalt hatte.
 
@@ -704,12 +721,13 @@ def is_empty(result: dict[str, Any]) -> bool:
         Ein fehlendes oder unlesbares Middle-JSON zaehlt als Inhalt, denn ueber
         seine Bloecke laesst sich dann nichts sagen.
 
-    OFFEN BIS ZU DEN AUFNAHMEN (Mineroo#10): Unter MinerU 3.4 war die Regel an
-    einer echten leeren Seite festgestellt (eine leere A4-Seite: `COMPLETED`,
-    `ok: true`, leeres Markdown, keine Bloecke). Fuer MinerU 4 steht diese
-    Feststellung aus; die Regel ist auf das Schema gebaut (eine Seite ohne Inhalt
-    hat eine leere `blocks`-Liste, DocVortex `PageInfo`) und wird an der echten
-    leeren MinerU-4-Seite bestaetigt oder nachgezogen.
+    AN ECHTER MINERU-4-AUSGABE FESTGESTELLT: MinerU 4.0.12 liefert fuer eine
+    leere A4-Seite leeres `markdown.md` und `markdown_full.md`, keine Bilder und
+    im Middle-JSON die Seite `{"page_idx": 0}` ohne `blocks`
+    (`artifacts/2026-10-26-mineru-4.0.12-lokal/leere_seite/`, lokal erzeugt mit
+    MinerUs eigenem Code in der Stufe `flash`, OCR-Modus `txt`; siehe
+    `_bloecke`). Offen bleibt die Bestaetigung an der Aufnahme der Stufe
+    `advanced` mit OCR auf dem Endpoint (Mineroo#10).
 
     Args:
         result: Das zusammengesetzte Ergebnis aus `assemble`.
@@ -731,8 +749,8 @@ def is_empty(result: dict[str, Any]) -> bool:
         if not isinstance(seiten, list):
             return False
         for seite in seiten:
-            bloecke = seite.get("blocks") if isinstance(seite, dict) else None
-            if not isinstance(bloecke, list) or bloecke:
+            bloecke = _bloecke(seite)
+            if bloecke is None or bloecke:
                 return False
     return True
 
@@ -798,8 +816,8 @@ def _randbloecke(middles: list[Any]) -> list[str]:
                 f"dann vollstaendig aus. Was da ist, steht unveraendert in `raw`."
             )
         for seite in seiten:
-            bloecke = seite.get("blocks") if isinstance(seite, dict) else None
-            if not isinstance(bloecke, list):
+            bloecke = _bloecke(seite)
+            if bloecke is None:
                 raise IncompleteResultError(
                     f"Eine Seite in Eintrag {nummer} von `middle_json` traegt keine "
                     f"Blockliste. Was da ist, steht unveraendert in `raw`."
