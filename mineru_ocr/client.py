@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
 from datetime import datetime
@@ -843,12 +844,15 @@ class OCRClient:
         Kosten: keine.
         """
         _hash_pruefen(sha256)
-        zeile = db.wait_for_terminal(
-            self.conn,
-            sha256,
-            timeout=timeout,
-            poll_seconds=self._settings.wait_poll_seconds,
-        )
+        with contextlib.closing(
+            db.wait_for_terminal(
+                self._settings.db_dsn,
+                [sha256],
+                timeout=timeout,
+                poll_seconds=self._settings.wait_poll_seconds,
+            )
+        ) as fertige:
+            zeile = next(fertige)
         return OCRWrapper.from_row(zeile, self.conn)
 
     def ocr(self, data: bytes, timeout: float | None = None) -> OCRWrapper:

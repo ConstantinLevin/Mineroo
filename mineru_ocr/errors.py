@@ -264,6 +264,29 @@ class DocumentNotFound(DatabaseError):
     """
 
 
+class WaitTimeoutError(MineruOcrError, TimeoutError):
+    """Die Frist eines Warte-Aufrufs ist abgelaufen, und Dokumente sind noch offen.
+
+    Zugleich ein `TimeoutError`: Wer allgemein auf einen Zeitablauf faengt, faengt
+    auch diesen. Die Frist gilt fuer den ganzen Aufruf, nicht je Dokument, und sie
+    beendet nur das Warten: Kein Job und kein Dokument wird angefasst, die offenen
+    koennen danach noch fertig werden. Der Zeitablauf sagt etwas ueber die Geduld
+    des Wartenden, nichts ueber die Dokumente.
+    """
+
+    def __init__(self, pending: tuple[str, ...], timeout: float | None) -> None:
+        self.pending = pending
+        """Die Hashes, die bei Ablauf noch offen waren, in der Reihenfolge der
+        Frage. Mit ihnen laesst sich spaeter erneut warten."""
+        self.timeout = timeout
+        super().__init__(
+            f"{len(pending)} Dokument(e) hatten innerhalb von {timeout} Sekunden "
+            f"kein Ergebnis: {', '.join(pending)}. Sie koennen trotzdem noch fertig "
+            f"werden — der Zeitablauf sagt etwas ueber die Geduld des Wartenden, "
+            f"nichts ueber die Dokumente."
+        )
+
+
 class TerminalOverwriteError(DatabaseError):
     """Es wurde versucht, ein bereits geschriebenes Endergebnis zu ueberschreiben.
 

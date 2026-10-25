@@ -27,15 +27,17 @@ gespiegelt. Es gibt keinen Abgleich-Waechter, weil es nichts abzugleichen gibt.
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import AsyncGenerator, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from datetime import datetime
 from typing import Any, Final
 
 import psycopg
+import psycopg.sql
 from procrastinate.jobs import Job
 from psycopg.rows import class_row, dict_row
 from psycopg.types.json import Jsonb
@@ -46,7 +48,9 @@ from .errors import (
     ConfigurationError,
     DatabaseError,
     DocumentNotFound,
+    MineruOcrError,
     TerminalOverwriteError,
+    WaitTimeoutError,
 )
 
 DONE_CHANNEL: Final = "doc_done"
@@ -751,11 +755,11 @@ def connect(dsn: str) -> psycopg.Connection[Any]:
     Besitz: Der Aufrufer besitzt und schliesst sie.
 
     Zusicherung:
-        `autocommit` ist AN. Das ist keine Bequemlichkeit, sondern Bedingung
-        dafuer, dass Benachrichtigungen zeitnah ankommen: Eine Verbindung in
-        einer offenen Transaktion sieht `NOTIFY` erst nach deren Ende — `wait()`
-        wuerde dann bis zum Zeitablauf haengen, obwohl das Ergebnis laengst da
-        ist. Wer eine Transaktion braucht, oeffnet sie ausdruecklich.
+        `autocommit` ist AN. Das ist keine Bequemlichkeit: Jede Anweisung sieht
+        so den neuesten Stand, und keine Lesung haelt eine Transaktion offen, die
+        das naechste Lesen auf einem alten Schnappschuss festhielte. Wer eine
+        Transaktion braucht, oeffnet sie ausdruecklich. Gewartet wird NICHT auf
+        dieser Verbindung, sondern auf einer eigenen (`_warte_verbindung`).
 
     Raises:
         DatabaseError: Die Instanz antwortet nicht. Ausdruecklich NICHT
@@ -1118,6 +1122,47 @@ _ZEILENFELDER: Final = tuple(feld.name for feld in fields(DocumentRow) if feld.n
 """Die Felder von `DocumentRow` ausser dem Hash, den `read_states` aus der
 gefragten Liste nimmt: Bei einem offenen Dokument sind alle anderen NULL."""
 
+_STAND_SQL: Final = (
+    "SELECT h.sha256, (i.sha256 IS NOT NULL) AS has_input, "
+    "i.job_id AS input_job_id, "
+    + ", ".join(
+        "NULL::jsonb AS raw" if name == "raw"
+        else "false AS raw_loaded" if name == "raw_loaded"
+        else f"d.{name}"
+        for name in _ZEILENFELDER
+    )
+    + " FROM unnest(%s::text[]) WITH ORDINALITY AS h(sha256, nr) "
+    "LEFT JOIN documents d ON d.sha256 = h.sha256 "
+    "LEFT JOIN inputs i ON i.sha256 = h.sha256 "
+    "ORDER BY h.nr"
+)
+"""Die EINE Anweisung, die `documents` und `inputs` zugleich liest — fuer
+`read_states` und `read_states_async`, also fuer Nachsehen und Warten, sync wie
+async. Ohne `raw` und ohne `content`: Aus `inputs` kommen nur, ob es die Zeile
+gibt, und die Kennung ihres Jobs (`inputs.job_id`)."""
+
+
+def _stand_aus_zeilen(zeilen: Sequence[dict[str, Any]]) -> list[DocumentState]:
+    """Macht aus den Zeilen von `_STAND_SQL` je Hash einen `DocumentState`."""
+    stand: list[DocumentState] = []
+    for zeile in zeilen:
+        ergebnis = (
+            None
+            if zeile["status"] is None
+            else DocumentRow(
+                sha256=zeile["sha256"], **{name: zeile[name] for name in _ZEILENFELDER}
+            )
+        )
+        stand.append(
+            DocumentState(
+                sha256=zeile["sha256"],
+                row=ergebnis,
+                has_input=zeile["has_input"],
+                job_id=zeile["input_job_id"],
+            )
+        )
+    return stand
+
 
 def read_states(
     conn: psycopg.Connection[Any], hashes: Sequence[str]
@@ -1143,40 +1188,19 @@ def read_states(
 
     Kosten: keine.
     """
-    spalten = ", ".join(
-        "NULL::jsonb AS raw" if name == "raw"
-        else "false AS raw_loaded" if name == "raw_loaded"
-        else f"d.{name}"
-        for name in _ZEILENFELDER
-    )
     with conn.cursor(row_factory=dict_row) as cur:
-        zeilen = cur.execute(
-            f"SELECT h.sha256, (i.sha256 IS NOT NULL) AS has_input, "
-            f"i.job_id AS input_job_id, {spalten} "
-            "FROM unnest(%s::text[]) WITH ORDINALITY AS h(sha256, nr) "
-            "LEFT JOIN documents d ON d.sha256 = h.sha256 "
-            "LEFT JOIN inputs i ON i.sha256 = h.sha256 "
-            "ORDER BY h.nr",
-            (list(hashes),),
-        ).fetchall()
-    stand: list[DocumentState] = []
-    for zeile in zeilen:
-        ergebnis = (
-            None
-            if zeile["status"] is None
-            else DocumentRow(
-                sha256=zeile["sha256"], **{name: zeile[name] for name in _ZEILENFELDER}
-            )
-        )
-        stand.append(
-            DocumentState(
-                sha256=zeile["sha256"],
-                row=ergebnis,
-                has_input=zeile["has_input"],
-                job_id=zeile["input_job_id"],
-            )
-        )
-    return stand
+        zeilen = cur.execute(_STAND_SQL, (list(hashes),)).fetchall()
+    return _stand_aus_zeilen(zeilen)
+
+
+async def read_states_async(
+    conn: psycopg.AsyncConnection[Any], hashes: Sequence[str]
+) -> list[DocumentState]:
+    """Dasselbe wie `read_states`, asynchron: dieselbe EINE Anweisung."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(_STAND_SQL, (list(hashes),))
+        zeilen = await cur.fetchall()
+    return _stand_aus_zeilen(zeilen)
 
 
 # --------------------------------------------------------------------------
@@ -1279,10 +1303,10 @@ async def write_terminal_async(
         Dokument bis zum Zeitablauf, und der Aufrufer wuesste am Ende nicht, ob
         es scheiterte oder nur lange dauert.
 
-        NICHT zugesichert ist, dass ein Warter das Signal empfaengt — er kann
-        genau zwischen seiner ersten Abfrage und dem Beginn des Lauschens stehen.
-        Deshalb hat `wait_for_terminal` zusaetzlich eine Erstabfrage und eine
-        Rueckfallabfrage.
+        NICHT zugesichert ist, dass ein Warter das Signal empfaengt — seine
+        Verbindung kann in diesem Augenblick abgerissen sein, oder er lauscht
+        noch nicht. Deshalb lauscht `wait_for_terminal` zuerst und liest danach,
+        liest nach jedem Neuverbinden alles Offene neu und im Takt ohnehin.
 
     Idempotenz und die eine erlaubte Ueberschreibung:
         Gibt es noch keine Zeile, wird sie angelegt.
@@ -1432,122 +1456,316 @@ async def write_terminal_async(
 # --------------------------------------------------------------------------
 
 
+WAIT_APPLICATION_NAME: Final = "mineru-ocr wait"
+"""Der `application_name` jeder Warte-Verbindung.
+
+Damit sieht man in `pg_stat_activity`, wie viele Warter gerade an der Datenbank
+haengen und welche Verbindung das ist — je Warte-Aufruf genau eine, neben der
+Verbindung des Clients."""
+
+NEUVERBINDEN_PAUSE_SEKUNDEN: Final = 0.5
+"""Wie lange die Schleife wartet, bevor sie nach einem gescheiterten Neuverbinden
+den naechsten Versuch macht. Nach einem Abbruch der Verbindung wird sofort neu
+verbunden; erst wenn das scheitert (die Instanz startet gerade neu), kommt diese
+Pause, damit die Schleife die Datenbank nicht im Leerlauf bestuermt. Die Frist
+kuerzt sie."""
+
+
+class _Warteplan:
+    """Der Kern der Warteschleife, ohne Ein- und Ausgabe.
+
+    Er weiss, welche Dokumente noch offen sind, was als Naechstes gelesen wird
+    und wie lange auf Signale gewartet wird. Die beiden Schalen
+    (`wait_for_terminal` und `wait_for_terminal_async`) tun nur noch das, was
+    sync und async verschieden ist: verbinden, lauschen, lesen, schlafen. So kann
+    keine der beiden still anders entscheiden als die andere.
+    """
+
+    def __init__(
+        self, hashes: Sequence[str], timeout: float | None, poll_seconds: float
+    ) -> None:
+        if isinstance(hashes, str):
+            # Ein Hash ist selbst eine Folge von Zeichen; als Folge von Hashes
+            # gelesen, wuerde auf vierundsechzig einzelne Zeichen gewartet.
+            raise TypeError(
+                "Erwartet wird eine Folge von Hashes, nicht ein einzelner Hash als "
+                "Zeichenkette: `[sha256]` statt `sha256`."
+            )
+        self.offen: dict[str, None] = dict.fromkeys(hashes)
+        """Die offenen Hashes in der Reihenfolge der Frage, jeder einmal."""
+        self.timeout = timeout
+        self.ende = None if timeout is None else time.monotonic() + timeout
+        self.poll_seconds = poll_seconds
+        self.naechste_vollabfrage = 0.0
+        self.angefangen = False
+        """Ob schon einmal gelesen wurde. Davor ist ein Verbindungsfehler ein
+        Betriebsfehler des Aufrufs (Postgres fehlt), danach ein Abbruch, der
+        durch Neuverbinden heilt."""
+
+    def alle(self) -> list[str]:
+        """Alle offenen, zum Lesen; der Takt beginnt von vorn."""
+        self.naechste_vollabfrage = time.monotonic() + self.poll_seconds
+        return list(self.offen)
+
+    def gemeldet(self, nutzlasten: Iterable[str]) -> list[str]:
+        """Die gemeldeten Hashes, die noch offen sind. Die Signale ALLER
+        Dokumente kommen auf demselben Kanal; die fremden fallen hier heraus."""
+        gemeldet = set(nutzlasten)
+        return [sha256 for sha256 in self.offen if sha256 in gemeldet]
+
+    def auswerten(self, stand: Sequence[DocumentState]) -> list[DocumentRow]:
+        """Nimmt die fertigen aus den offenen und gibt ihre Zeilen zurueck.
+
+        Raises:
+            DocumentNotFound: Ein gelesenes Dokument hat weder Ergebnis noch
+                Eingabe.
+        """
+        self.angefangen = True
+        unbekannt = [s.sha256 for s in stand if s.is_unknown]
+        if unbekannt:
+            raise DocumentNotFound(
+                f"Weder Ergebnis noch Eingabe zu {', '.join(unbekannt)}. Auf ein "
+                f"Dokument zu warten, das nie abgeschickt wurde, ist immer ein "
+                f"Irrtum des Aufrufers — deshalb kommt die Antwort jetzt und nicht "
+                f"nach Ablauf der Wartezeit."
+            )
+        fertig: list[DocumentRow] = []
+        for s in stand:
+            if s.row is not None and s.sha256 in self.offen:
+                del self.offen[s.sha256]
+                fertig.append(s.row)
+        return fertig
+
+    def _frist_pruefen(self) -> None:
+        if self.ende is not None and time.monotonic() >= self.ende:
+            raise WaitTimeoutError(tuple(self.offen), self.timeout)
+
+    def wartezeit(self) -> float:
+        """Wie lange auf Signale gewartet wird: bis zum naechsten Takt, hoechstens
+        bis zur Frist. Null heisst: Der Takt ist faellig, alle offenen lesen.
+
+        Raises:
+            WaitTimeoutError: Die Frist ist abgelaufen.
+        """
+        self._frist_pruefen()
+        jetzt = time.monotonic()
+        bis_takt = self.naechste_vollabfrage - jetzt
+        if bis_takt <= 0:
+            return 0.0
+        return bis_takt if self.ende is None else min(bis_takt, self.ende - jetzt)
+
+    def pause(self) -> float:
+        """Die Pause vor dem naechsten Verbindungsversuch, von der Frist gekuerzt.
+
+        Raises:
+            WaitTimeoutError: Die Frist ist abgelaufen.
+        """
+        self._frist_pruefen()
+        if self.ende is None:
+            return NEUVERBINDEN_PAUSE_SEKUNDEN
+        return max(0.0, min(NEUVERBINDEN_PAUSE_SEKUNDEN, self.ende - time.monotonic()))
+
+
+def _lauschen_sql() -> psycopg.sql.Composed:
+    """`LISTEN doc_done`, mit dem Kanal als Bezeichner gequotet."""
+    return psycopg.sql.SQL("LISTEN {}").format(psycopg.sql.Identifier(DONE_CHANNEL))
+
+
+def _warte_verbindung(dsn: str) -> psycopg.Connection[Any]:
+    """Oeffnet die EIGENE Verbindung eines sync-Warte-Aufrufs.
+
+    `autocommit`, sonst kaemen die Signale erst nach einer Transaktion an. Nie aus
+    einem Pool, denn ein Pool hebt kein `LISTEN` auf; nie die Verbindung des
+    Clients, denn dort wuechse der Rueckstau an Signalen ueber einen ganzen Lauf.
+
+    Raises:
+        DatabaseError: Die Instanz antwortet nicht. Wiederholbar.
+        ConfigurationError: Der Zugang taugt nicht.
+    """
+    try:
+        return psycopg.connect(
+            dsn, autocommit=True, application_name=WAIT_APPLICATION_NAME
+        )
+    except psycopg.Error as fehler:
+        raise _verbindungsfehler_uebersetzen(fehler, "Warte-Verbindung oeffnen") from fehler
+
+
+async def _warte_verbindung_async(dsn: str) -> psycopg.AsyncConnection[Any]:
+    """Dasselbe wie `_warte_verbindung`, asynchron."""
+    try:
+        return await psycopg.AsyncConnection.connect(
+            dsn, autocommit=True, application_name=WAIT_APPLICATION_NAME
+        )
+    except psycopg.Error as fehler:
+        raise _verbindungsfehler_uebersetzen(fehler, "Warte-Verbindung oeffnen") from fehler
+
+
+def _abbruch_einordnen(fehler: psycopg.Error, plan: _Warteplan) -> MineruOcrError | None:
+    """Entscheidet, ob nach einem Fehler auf der Warte-Verbindung neu verbunden wird.
+
+    None heisst: neu verbinden und neu anfangen. Das gilt nur fuer einen
+    `OperationalError`, der wiederholbar ist (kein Zugangsfehler), und erst, wenn
+    schon einmal gelesen wurde; sonst kommt der uebersetzte Fehler zurueck, und
+    der Aufrufer wirft ihn.
+    """
+    uebersetzt = _verbindungsfehler_uebersetzen(fehler, "Warten")
+    if (
+        isinstance(fehler, psycopg.OperationalError)
+        and isinstance(uebersetzt, DatabaseError)
+        and plan.angefangen
+    ):
+        return None
+    return uebersetzt
+
+
 def wait_for_terminal(
-    conn: psycopg.Connection[Any],
-    sha256: str,
+    dsn: str,
+    hashes: Sequence[str],
+    *,
     timeout: float | None = None,
     poll_seconds: float = DEFAULT_WAIT_POLL_SECONDS,
-) -> DocumentRow:
-    """Wartet, bis ein Dokument ein Ergebnis hat, und gibt die Zeile zurueck.
+) -> Generator[DocumentRow]:
+    """Wartet auf das Ergebnis vieler Dokumente und liefert jedes, sobald es da ist.
 
     Das ist Jurgens „awaiten des resultats" als eigene Funktion (Plan 2.3), und
     es ist der Grund, warum das Versprechen dieses Systems eine Datenbank-Zeile
-    ist und kein Objekt im Speicher: Auf ein Objekt im Speicher kann man nur
-    warten, solange der Prozess lebt. Auf eine Zeile kann man von ueberall
-    warten, jederzeit, auch Tage spaeter, auch aus einer anderen Sitzung.
+    ist und kein Objekt im Speicher: Auf eine Zeile kann man von ueberall warten,
+    jederzeit, auch Tage spaeter, auch aus einer anderen Sitzung. „das warten ist
+    kuenstlich man wartet auf die datenbank nicht direkt auf den worker der ist ja
+    unabhaengig" — ob ein Daemon laeuft, aendert am Warten nichts, und
+    Procrastinate wird nicht gefragt; ob ein Job steckt, sagt `OCRClient.document`.
 
-    Gelesen wird der Stand mit `read_states`, also `documents` und `inputs` in
-    EINER Anweisung: Ergebnis da heisst fertig, Eingabe da heisst offen, keins
-    von beiden heisst unbekannt. Procrastinate wird beim Warten nicht gefragt;
-    ob ein Job steckt, sagt `OCRClient.document`.
+    Der Ablauf, auf einer EIGENEN `autocommit`-Verbindung je Aufruf (nicht je
+    Dokument; `_warte_verbindung`):
+        1. `LISTEN doc_done`, BEVOR zum ersten Mal gelesen wird. Andersherum gaebe
+           es ein Fenster zwischen Lesen und Lauschen, in dem ein Signal verloren
+           ginge.
+        2. Dann alle offenen Hashes lesen, mit `read_states`: `documents` und
+           `inputs` in EINER Anweisung, ohne `raw` und ohne `content`. Ergebnis da
+           heisst fertig, Eingabe da heisst offen, keins von beiden unbekannt — und
+           das wird sofort gemeldet. Zwei Anweisungen (erst `documents`, dann
+           `inputs`) hielten ein Dokument, dessen Job genau dazwischen endet, fuer
+           unbekannt.
+        3. Dann auf Signale warten, mit `notifies(timeout=min(Takt, Frist),
+           stop_after=1)`, und den Generator der Signale bis zum Ende laufen
+           lassen, OHNE `break`: Ein `break` verwirft den Rest eines Pakets an
+           Signalen (gemessen: 4 von 5 verloren). Nach einem Signal werden nur die
+           gemeldeten Hashes gelesen, die noch offen sind; im Takt
+           (`poll_seconds`) zusaetzlich alle offenen — gegen Schreibvorgaenge von
+           Hand und alles, was ein Signal sonst verschlucken kann.
+        4. Bei einem wiederholbaren `OperationalError` (die Verbindung riss ab)
+           wird neu verbunden und neu angefangen: wieder lauschen, wieder alles
+           Offene lesen. Signale aus der Luecke heilt das erneute Lesen. Bei einem
+           Zugangsfehler nicht: Der endet das Warten.
 
-    Der Ablauf hat drei Teile, und jeder deckt eine Luecke der anderen ab:
-        1. `LISTEN doc_done`, BEVOR zum ersten Mal gelesen wird.
-        2. Dann die Erstabfrage — denn das Dokument kann bereits fertig sein,
-           und auf ein Signal zu warten, das schon vorbei ist, waere ein Warten
-           bis zum Zeitablauf.
-        3. Dann die Benachrichtigungen ueber `conn.notifies(timeout=…,
-           stop_after=1)` — die Bordmittel von psycopg ab 3.2, nicht eine eigene
-           Warteschleife auf dem Socket. Zwei Gruende: Die Zeitschranke wird
-           intern in kurze Abschnitte zerlegt, damit ein Signal (Strg-C) sofort
-           ankommt statt erst nach Ablauf; und sie laeuft ueber die monotone Uhr,
-           sodass eine Zeitumstellung das Warten nicht verlaengert. `stop_after=1`
-           sagt „ein Signal genuegt", statt es mit einem Abbruch nachzubauen.
-
-           Dazu eine Rueckfallabfrage alle `settings.wait_poll_seconds`. Die ist
-           nicht ueberfluessig, auch wenn Schritt 1 vor Schritt 2 steht: Eine
-           abgerissene Verbindung, ein verpasstes Signal, ein Schreibvorgang von
-           aussen an der Datenbank — gegen all das hilft nur, gelegentlich
-           einfach nachzusehen. psycopg liefert dafuer nichts; das ist echte
-           Ergaenzung, keine Wiedererfindung.
-
-           NICHT zusaetzlich `add_notify_handler` auf derselben Verbindung
-           benutzen: psycopg warnt zur Laufzeit, dass beides zusammen nicht
-           verlaesslich ist.
+    NICHT zusaetzlich `add_notify_handler` auf der Verbindung: psycopg warnt zur
+    Laufzeit, dass beides zusammen nicht verlaesslich ist.
 
     Args:
-        conn: Verbindung mit `autocommit` (sonst kommen die Signale erst nach
-            der Transaktion an — siehe `connect`).
-        sha256: Auf welches Dokument gewartet wird.
-        timeout: Sekunden, oder None fuer unbegrenzt.
-        poll_seconds: Abstand der Rueckfallabfrage.
+        dsn: Die Verbindungszeichenkette; die Schleife oeffnet und schliesst ihre
+            Verbindung selbst.
+        hashes: Auf welche Dokumente gewartet wird. Doppelte werden einmal
+            geliefert.
+        timeout: Sekunden fuer den GANZEN Aufruf, oder None fuer unbegrenzt.
+        poll_seconds: Der Takt, in dem alle offenen gelesen werden.
 
-    Returns:
-        Die Ergebniszeile OHNE `raw` (`raw_loaded` False) — bei JEDEM
-        Endzustand, auch bei `failed`. Wer nur den Zustand braucht, zieht so
-        nicht die ganze Antwort; die Huelle laedt sie nach, wenn jemand sie
-        will. Diese Funktion wirft nicht, weil ein Dokument scheiterte; das
-        Scheitern ist ein Ergebnis, kein Fehler des Wartens.
+    Yields:
+        Je Dokument einmal die Ergebniszeile OHNE `raw` (`raw_loaded` False),
+        sobald es endgueltig ist — bei JEDEM Endzustand, auch `failed` und
+        `input_error`. Ein gescheitertes Dokument beendet das Warten auf die
+        uebrigen nicht; das Scheitern ist ein Ergebnis, kein Fehler des Wartens.
+        Bereits fertige kommen sofort.
 
     Raises:
-        DocumentNotFound: Weder Ergebnis noch Eingabe. Kommt SOFORT, nicht nach
-            dem Zeitablauf — auf etwas zu warten, das nie abgeschickt wurde, ist
-            immer ein Irrtum des Aufrufers, und ihn zwei Stunden warten zu
-            lassen, bevor man es ihm sagt, waere unfreundlich.
-        TimeoutError: Die Zeit lief ab. Das Dokument kann trotzdem noch fertig
-            werden — der Zeitablauf sagt etwas ueber die Geduld des Wartenden,
-            nichts ueber das Dokument.
+        DocumentNotFound: Weder Ergebnis noch Eingabe zu einem Hash. Kommt SOFORT,
+            vor allem anderen, und nennt jeden unbekannten.
+        WaitTimeoutError: Die Frist lief ab; er nennt die noch offenen Hashes.
+        DatabaseError: Die Instanz antwortet schon beim ersten Verbinden nicht.
+        ConfigurationError: Der Zugang taugt nicht.
+
+    Eine Frist und Strg-C beenden nur das Warten: Die Schleife liest nur und fasst
+    nie einen Job oder ein Dokument an. Strg-C kommt nach Bruchteilen einer
+    Sekunde an, weil psycopg die Wartezeit in kurze Abschnitte zerlegt; die
+    Warte-Verbindung schliesst dabei.
 
     Kosten: keine.
     """
-    # Schritt 1: lauschen, BEVOR zum ersten Mal gelesen wird. Andersherum gaebe
-    # es ein Fenster zwischen Lesen und Lauschen, in dem ein Signal verloren
-    # ginge — und dann wartet der Aufrufer auf etwas, das schon vorbei ist.
-    conn.execute(
-        psycopg.sql.SQL("LISTEN {}").format(psycopg.sql.Identifier(DONE_CHANNEL))
-    )
+    plan = _Warteplan(hashes, timeout, poll_seconds)
+    while plan.offen:
+        try:
+            conn = _warte_verbindung(dsn)
+        except DatabaseError:
+            if not plan.angefangen:
+                raise
+            time.sleep(plan.pause())
+            continue
+        try:
+            conn.execute(_lauschen_sql())
+            zu_lesen = plan.alle()
+            while True:
+                if zu_lesen:
+                    yield from plan.auswerten(read_states(conn, zu_lesen))
+                if not plan.offen:
+                    return
+                warte = plan.wartezeit()
+                if warte <= 0:
+                    zu_lesen = plan.alle()
+                    continue
+                zu_lesen = plan.gemeldet(
+                    n.payload for n in conn.notifies(timeout=warte, stop_after=1)
+                )
+        except psycopg.Error as fehler:
+            weiter = _abbruch_einordnen(fehler, plan)
+            if weiter is not None:
+                raise weiter from fehler
+        finally:
+            conn.close()
 
-    # Schritt 2: die Erstabfrage. Sie beantwortet zugleich die Frage, ob es das
-    # Dokument ueberhaupt gibt — und die wird SOFORT beantwortet, nicht nach dem
-    # Zeitablauf.
-    (stand,) = read_states(conn, [sha256])
-    if stand.row is not None:
-        return stand.row
-    if stand.is_unknown:
-        raise DocumentNotFound(
-            f"Weder Ergebnis noch Eingabe zu {sha256}. Auf ein Dokument zu "
-            f"warten, das nie abgeschickt wurde, ist immer ein Irrtum des "
-            f"Aufrufers — deshalb kommt die Antwort jetzt und nicht nach Ablauf "
-            f"der Wartezeit."
-        )
 
-    ende = None if timeout is None else time.monotonic() + timeout
-    while True:
-        rest = None if ende is None else ende - time.monotonic()
-        if rest is not None and rest <= 0:
-            raise TimeoutError(
-                f"{sha256} hatte innerhalb von {timeout} Sekunden kein Ergebnis. "
-                f"Das Dokument kann trotzdem noch fertig werden — der Zeitablauf "
-                f"sagt etwas ueber die Geduld des Wartenden, nichts ueber das "
-                f"Dokument."
-            )
+async def wait_for_terminal_async(
+    dsn: str,
+    hashes: Sequence[str],
+    *,
+    timeout: float | None = None,
+    poll_seconds: float = DEFAULT_WAIT_POLL_SECONDS,
+) -> AsyncGenerator[DocumentRow]:
+    """Dasselbe wie `wait_for_terminal`, als async-Generator.
 
-        # Schritt 3: auf ein Signal warten, hoechstens aber bis zur naechsten
-        # Rueckfallabfrage. `stop_after=1` heisst „ein Signal genuegt"; die
-        # Zeitschranke zerlegt psycopg intern in kurze Abschnitte, damit Strg-C
-        # sofort ankommt statt erst nach Ablauf.
-        wartezeit = poll_seconds if rest is None else min(poll_seconds, rest)
-        for _ in conn.notifies(timeout=wartezeit, stop_after=1):
-            break
-
-        # Nachgesehen wird IMMER, ob ein Signal kam oder nicht. Das ist die
-        # Rueckfallabfrage: gegen abgerissene Verbindungen, verpasste Signale
-        # und Schreibvorgaenge von aussen. Und es ist zugleich die Pruefung, ob
-        # das Signal ueberhaupt zu UNSEREM Dokument gehoerte — auf dem Kanal
-        # liegen die Signale aller Dokumente.
-        (stand,) = read_states(conn, [sha256])
-        if stand.row is not None:
-            return stand.row
+    Derselbe Kern (`_Warteplan`), dieselbe Anweisung, dieselben Fehler. Das
+    Gegenstueck zu Strg-C ist hier `cancel()`: Es kommt sofort an, und die
+    Warte-Verbindung schliesst.
+    """
+    plan = _Warteplan(hashes, timeout, poll_seconds)
+    while plan.offen:
+        try:
+            conn = await _warte_verbindung_async(dsn)
+        except DatabaseError:
+            if not plan.angefangen:
+                raise
+            await asyncio.sleep(plan.pause())
+            continue
+        try:
+            await conn.execute(_lauschen_sql())
+            zu_lesen = plan.alle()
+            while True:
+                if zu_lesen:
+                    for zeile in plan.auswerten(await read_states_async(conn, zu_lesen)):
+                        yield zeile
+                if not plan.offen:
+                    return
+                warte = plan.wartezeit()
+                if warte <= 0:
+                    zu_lesen = plan.alle()
+                    continue
+                zu_lesen = plan.gemeldet(
+                    [n.payload async for n in conn.notifies(timeout=warte, stop_after=1)]
+                )
+        except psycopg.Error as fehler:
+            weiter = _abbruch_einordnen(fehler, plan)
+            if weiter is not None:
+                raise weiter from fehler
+        finally:
+            await conn.close()
 
 
 # --------------------------------------------------------------------------

@@ -8,7 +8,9 @@ Abfrage ist Handwerk.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import signal
 import threading
 import time
 from collections.abc import Callable
@@ -17,11 +19,13 @@ from typing import Any
 
 import procrastinate.worker
 import psycopg
+import psycopg.sql
 import pytest
 from procrastinate.jobs import Job
 
 from mineru_ocr.config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS
 from mineru_ocr.db import (
+    WAIT_APPLICATION_NAME,
     DocumentRow,
     DocumentStatus,
     Phase,
@@ -38,10 +42,17 @@ from mineru_ocr.db import (
     read_states,
     setup,
     wait_for_terminal,
+    wait_for_terminal_async,
     worker_heartbeats,
     write_terminal_async,
 )
-from mineru_ocr.errors import DatabaseError, DocumentNotFound, TerminalOverwriteError
+from mineru_ocr.errors import (
+    ConfigurationError,
+    DatabaseError,
+    DocumentNotFound,
+    TerminalOverwriteError,
+    WaitTimeoutError,
+)
 
 HASH = "a" * 64
 
@@ -911,75 +922,340 @@ def test_stand_kennt_fertig_offen_und_unbekannt(db_conn: psycopg.Connection[Any]
     assert stand[3].row is not None and stand[3].row.status is DocumentStatus.FAILED
 
 
-@pytest.mark.db
-async def test_warten_findet_bereits_fertiges_dokument_sofort(
-    db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
-) -> None:
-    """Ist das Dokument schon endgueltig, kehrt `wait_for_terminal` sofort
-    zurueck, statt auf ein Signal zu warten, das schon vorbei ist — und laedt
-    dabei `raw` nicht."""
-    await _schreiben(async_conn, raw={"fertig": True})
-    begonnen = time.monotonic()
-    zeile = wait_for_terminal(db_conn, HASH, timeout=30.0)
-    assert time.monotonic() - begonnen < 1.0
-    assert zeile.status is DocumentStatus.DONE
-    assert zeile.raw is None and zeile.raw_loaded is False
+# --- Warten: die Schleife, sync und async ---------------------------------
+
+ARTEN = pytest.mark.parametrize("art", ["sync", "async"])
+"""Jeder Fall der Warteschleife laeuft gegen beide Schalen: den sync- und den
+async-Generator. Sie teilen den Kern; ein Fall, der nur an einer geprueft waere,
+koennte an der anderen still anders ausgehen."""
 
 
-@pytest.mark.db
-def test_warten_auf_unbekannten_hash_wirft_sofort(
-    db_conn: psycopg.Connection[Any],
-) -> None:
-    """DocumentNotFound kommt sofort, nicht nach Ablauf der Wartezeit."""
-    begonnen = time.monotonic()
-    with pytest.raises(DocumentNotFound):
-        wait_for_terminal(db_conn, "d" * 64, timeout=30.0)
-    assert time.monotonic() - begonnen < 1.0
+async def _warten(
+    art: str, dsn: str, hashes: list[str], **angaben: Any
+) -> tuple[list[DocumentRow], BaseException | None]:
+    """Wartet mit der sync- oder der async-Schleife und gibt zurueck, was sie
+    lieferte, samt dem Fehler, mit dem sie endete (None ohne Fehler).
 
-
-@pytest.mark.db
-def test_warten_laeuft_ab(db_conn: psycopg.Connection[Any]) -> None:
-    """Bleibt das Dokument offen, endet das Warten mit TimeoutError.
-
-    Und die Meldung sagt, was der Zeitablauf bedeutet: etwas ueber die Geduld
-    des Wartenden, nichts ueber das Dokument.
+    Die sync-Schleife laeuft in einem Faden, damit der Test selbst zugleich
+    schreiben und abbrechen kann.
     """
-    insert_input(db_conn, sha256=HASH, content=b"x")
-    with pytest.raises(TimeoutError) as fehler:
-        wait_for_terminal(db_conn, HASH, timeout=1.0, poll_seconds=0.3)
-    assert "Geduld" in str(fehler.value)
+    geliefert: list[DocumentRow] = []
+    if art == "sync":
 
+        def lauf() -> BaseException | None:
+            try:
+                for zeile in wait_for_terminal(dsn, hashes, **angaben):
+                    geliefert.append(zeile)
+            except Exception as fehler:
+                return fehler
+            return None
 
-@pytest.mark.db
-def test_warten_faellt_auf_abfragen_zurueck(
-    db_conn: psycopg.Connection[Any], _test_datenbank: str
-) -> None:
-    """Auch ohne Signal — etwa bei einem Schreibvorgang von aussen — endet das
-    Warten durch die Rueckfallabfrage.
-
-    Geprueft wird das, indem das Ergebnis mit ROHEM SQL angelegt wird, ganz ohne
-    `pg_notify`. Genau so sieht ein Schreibvorgang von Hand an der Datenbank aus,
-    und genau dagegen ist die Rueckfallabfrage da.
-    """
-    insert_input(db_conn, sha256=HASH, content=b"x")
-
-    def spaeter_setzen() -> None:
-        time.sleep(0.5)
-        with psycopg.connect(_test_datenbank, autocommit=True) as andere:
-            _ergebnis_anlegen(andere)
-            andere.execute("DELETE FROM inputs WHERE sha256 = %s", (HASH,))
-
-    faden = threading.Thread(target=spaeter_setzen)
-    faden.start()
+        return geliefert, await asyncio.to_thread(lauf)
     try:
-        zeile = wait_for_terminal(db_conn, HASH, timeout=10.0, poll_seconds=0.2)
+        async for zeile in wait_for_terminal_async(dsn, hashes, **angaben):
+            geliefert.append(zeile)
+    except Exception as fehler:
+        return geliefert, fehler
+    return geliefert, None
+
+
+def _job_endet(
+    dsn: str,
+    hashes: list[str],
+    *,
+    signal: bool = True,
+    status: DocumentStatus = DocumentStatus.DONE,
+) -> None:
+    """Was ein Job am Ende tut, fuer mehrere Dokumente in EINER Transaktion:
+    Ergebnis anlegen, Eingabe loeschen, und (mit `signal`) das Wecksignal. Ohne
+    `signal` sieht es aus wie ein Schreibvorgang von Hand an der Datenbank."""
+    with psycopg.connect(dsn, autocommit=True) as job, job.transaction():
+        for sha in hashes:
+            _ergebnis_anlegen(job, sha, status)
+            job.execute("DELETE FROM inputs WHERE sha256 = %s", (sha,))
+            if signal:
+                job.execute("SELECT pg_notify('doc_done', %s)", (sha,))
+
+
+def _spaeter(sekunden: float, arbeit: Callable[[], object]) -> threading.Thread:
+    """Fuehrt `arbeit` nach `sekunden` in einem eigenen Faden aus."""
+
+    def lauf() -> None:
+        time.sleep(sekunden)
+        arbeit()
+
+    faden = threading.Thread(target=lauf)
+    faden.start()
+    return faden
+
+
+def _warte_verbindungen(dsn: str) -> int:
+    """Wie viele Warte-Verbindungen gerade offen sind. Ein Backend braucht nach
+    dem Schliessen einen Augenblick, bis es aus `pg_stat_activity` verschwindet;
+    deshalb wird bis zu zwei Sekunden auf null gewartet."""
+    with psycopg.connect(dsn, autocommit=True) as beobachter:
+        ende = time.monotonic() + 2.0
+        while True:
+            zeile = beobachter.execute(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND application_name = %s",
+                (WAIT_APPLICATION_NAME,),
+            ).fetchone()
+            anzahl = int(zeile[0]) if zeile is not None else 0
+            if anzahl == 0 or time.monotonic() > ende:
+                return anzahl
+            time.sleep(0.05)
+
+
+def _warte_verbindung_kappen(dsn: str) -> bool:
+    """Beendet die Warte-Verbindung von der Server-Seite, wie ein Neustart von
+    Postgres oder ein abgerissenes Netz es taete."""
+    with psycopg.connect(dsn, autocommit=True) as admin:
+        zeile = admin.execute(
+            "SELECT bool_or(pg_terminate_backend(pid)) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND application_name = %s",
+            (WAIT_APPLICATION_NAME,),
+        ).fetchone()
+    return bool(zeile and zeile[0])
+
+
+def _job_anlegen(conn: psycopg.Connection[Any], sha: str) -> None:
+    """Ein wartender Job zum Dokument, damit sich zeigen laesst, dass Frist und
+    Abbruch ihn nicht anfassen."""
+    conn.execute(
+        "INSERT INTO procrastinate_jobs (queue_name, task_name, lock, queueing_lock) "
+        "VALUES ('ocr', 'ocr_document', %s, %s)",
+        (sha, sha),
+    )
+
+
+def _bestand(conn: psycopg.Connection[Any]) -> tuple[list[Any], list[Any], list[Any]]:
+    """Jobs, Eingaben und Ergebnisse, so wie sie gerade stehen."""
+    return (
+        conn.execute(
+            "SELECT id, status, attempts, abort_requested FROM procrastinate_jobs ORDER BY id"
+        ).fetchall(),
+        conn.execute("SELECT sha256 FROM inputs ORDER BY sha256").fetchall(),
+        conn.execute("SELECT sha256, status FROM documents ORDER BY sha256").fetchall(),
+    )
+
+
+@pytest.mark.db
+@ARTEN
+async def test_warten_liefert_fertiges_sofort_und_ohne_raw(
+    art: str,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+) -> None:
+    """Sind die Dokumente schon endgueltig, liefert die Schleife sie sofort,
+    statt auf ein Signal zu warten, das schon vorbei ist — jedes einmal, auch wenn
+    es zweimal gefragt ist, und ohne `raw`. Gescheitert ist ein Ergebnis wie
+    jedes andere."""
+    fertig, gescheitert = "1" * 64, "2" * 64
+    await _schreiben(async_conn, fertig, raw={"gross": "x" * 1000})
+    await _schreiben(async_conn, gescheitert, DocumentStatus.FAILED, error="aus")
+
+    begonnen = time.monotonic()
+    geliefert, fehler = await _warten(
+        art, _test_datenbank, [fertig, gescheitert, fertig], timeout=30.0
+    )
+
+    assert fehler is None
+    assert time.monotonic() - begonnen < 1.0
+    assert sorted(z.sha256 for z in geliefert) == [fertig, gescheitert]
+    assert all(z.raw is None and z.raw_loaded is False for z in geliefert)
+    assert _warte_verbindungen(_test_datenbank) == 0
+
+
+@pytest.mark.db
+@ARTEN
+async def test_warten_meldet_einen_unbekannten_hash_sofort(
+    art: str, db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Weder Ergebnis noch Eingabe: `DocumentNotFound` kommt sofort, nicht nach
+    Ablauf der Frist, und nennt den unbekannten Hash."""
+    offen, unbekannt = "3" * 64, "d" * 64
+    insert_input(db_conn, sha256=offen, content=b"x")
+
+    begonnen = time.monotonic()
+    geliefert, fehler = await _warten(
+        art, _test_datenbank, [offen, unbekannt], timeout=30.0
+    )
+
+    assert isinstance(fehler, DocumentNotFound)
+    assert unbekannt in str(fehler) and offen not in str(fehler)
+    assert time.monotonic() - begonnen < 1.0
+    assert geliefert == []
+    assert _warte_verbindungen(_test_datenbank) == 0
+
+
+@pytest.mark.db
+@ARTEN
+async def test_frist_nennt_die_offenen_und_fasst_keinen_job_an(
+    art: str,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+) -> None:
+    """Die Frist gilt fuer den ganzen Aufruf. Was bis dahin fertig ist, ist
+    geliefert; der `TimeoutError` nennt die Hashes, die noch offen sind, in der
+    Reihenfolge der Frage. Jobs, Eingaben und Ergebnisse bleiben, wie sie sind."""
+    fertig, offen1, offen2 = "1" * 64, "5" * 64, "4" * 64
+    await _schreiben(async_conn, fertig)
+    for sha in (offen1, offen2):
+        insert_input(db_conn, sha256=sha, content=b"x")
+        _job_anlegen(db_conn, sha)
+    vorher = _bestand(db_conn)
+
+    begonnen = time.monotonic()
+    geliefert, fehler = await _warten(
+        art, _test_datenbank, [fertig, offen1, offen2], timeout=1.0, poll_seconds=0.3
+    )
+
+    assert 0.9 < time.monotonic() - begonnen < 3.0
+    assert [z.sha256 for z in geliefert] == [fertig]
+    assert isinstance(fehler, WaitTimeoutError)
+    assert isinstance(fehler, TimeoutError)
+    assert fehler.pending == (offen1, offen2)
+    assert offen1 in str(fehler) and offen2 in str(fehler) and fertig not in str(fehler)
+    assert "Geduld" in str(fehler)
+    assert _bestand(db_conn) == vorher
+    assert _warte_verbindungen(_test_datenbank) == 0
+
+
+@pytest.mark.db
+@ARTEN
+async def test_ohne_signal_findet_der_takt_das_ergebnis(
+    art: str, db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Auch ohne Signal — etwa bei einem Schreibvorgang von Hand an der
+    Datenbank — endet das Warten: Im Takt werden alle offenen gelesen."""
+    insert_input(db_conn, sha256=HASH, content=b"x")
+    faden = _spaeter(0.5, lambda: _job_endet(_test_datenbank, [HASH], signal=False))
+    try:
+        geliefert, fehler = await _warten(
+            art, _test_datenbank, [HASH], timeout=10.0, poll_seconds=0.3
+        )
     finally:
         faden.join()
-    assert zeile.status is DocumentStatus.DONE
+
+    assert fehler is None
+    assert [z.sha256 for z in geliefert] == [HASH]
+
+
+@pytest.mark.db
+@ARTEN
+async def test_kein_signal_eines_pakets_geht_verloren(
+    art: str, db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Fuenf Dokumente enden in EINER Transaktion, ihre fuenf Signale kommen in
+    einem Paket. Der Takt steht auf einer Minute: Jedes Dokument muss ueber sein
+    Signal kommen. Ein `break` im Generator der Signale verwuerfe den Rest des
+    Pakets, und die uebrigen vier warteten bis zur Frist."""
+    hashes = [str(n) * 64 for n in range(5, 10)]
+    for sha in hashes:
+        insert_input(db_conn, sha256=sha, content=b"x")
+    faden = _spaeter(0.5, lambda: _job_endet(_test_datenbank, hashes))
+    begonnen = time.monotonic()
+    try:
+        geliefert, fehler = await _warten(
+            art, _test_datenbank, hashes, timeout=10.0, poll_seconds=60.0
+        )
+    finally:
+        faden.join()
+
+    assert fehler is None
+    assert sorted(z.sha256 for z in geliefert) == sorted(hashes)
+    assert time.monotonic() - begonnen < 5.0
+
+
+@pytest.mark.db
+@ARTEN
+async def test_nach_einem_abbruch_der_verbindung_wird_neu_verbunden(
+    art: str, db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Reisst die Warte-Verbindung ab, verbindet die Schleife neu, lauscht wieder
+    und liest alles Offene. Der Takt steht auf einer Minute: Das Ergebnis kommt
+    ueber das Lesen nach dem Neuverbinden oder ueber das Signal danach, nie ueber
+    den Takt."""
+    insert_input(db_conn, sha256=HASH, content=b"x")
+    gekappt: list[bool] = []
+
+    def kappen_dann_enden() -> None:
+        gekappt.append(_warte_verbindung_kappen(_test_datenbank))
+        time.sleep(0.3)
+        _job_endet(_test_datenbank, [HASH])
+
+    faden = _spaeter(0.5, kappen_dann_enden)
+    begonnen = time.monotonic()
+    try:
+        geliefert, fehler = await _warten(
+            art, _test_datenbank, [HASH], timeout=10.0, poll_seconds=60.0
+        )
+    finally:
+        faden.join()
+
+    assert gekappt == [True]
+    assert fehler is None
+    assert [z.sha256 for z in geliefert] == [HASH]
+    assert time.monotonic() - begonnen < 5.0
+    assert _warte_verbindungen(_test_datenbank) == 0
+
+
+@pytest.mark.db
+@ARTEN
+async def test_ein_zugangsfehler_beim_neu_verbinden_beendet_das_warten(
+    art: str,
+    db_conn: psycopg.Connection[Any],
+    _test_datenbank: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Neu verbunden wird nur bei wiederholbaren Fehlern. Taugt der Zugang beim
+    Neuverbinden nicht (falsches Passwort, Datenbank weg), endet das Warten mit
+    `ConfigurationError`, statt es bis zur Frist weiter zu versuchen."""
+    from mineru_ocr import db
+
+    insert_input(db_conn, sha256=HASH, content=b"x")
+    name = "_warte_verbindung" if art == "sync" else "_warte_verbindung_async"
+    echte = getattr(db, name)
+    aufrufe = {"n": 0}
+
+    def zaehlen() -> None:
+        aufrufe["n"] += 1
+        if aufrufe["n"] > 1:
+            raise ConfigurationError("Verbindung oeffnen: Zugang taugt nicht (28P01)")
+
+    if art == "sync":
+
+        def verbinden(dsn: str) -> Any:
+            zaehlen()
+            return echte(dsn)
+
+    else:
+
+        async def verbinden(dsn: str) -> Any:  # type: ignore[misc]
+            zaehlen()
+            return await echte(dsn)
+
+    monkeypatch.setattr(db, name, verbinden)
+    faden = _spaeter(0.5, lambda: _warte_verbindung_kappen(_test_datenbank))
+    begonnen = time.monotonic()
+    try:
+        _, fehler = await _warten(
+            art, _test_datenbank, [HASH], timeout=10.0, poll_seconds=60.0
+        )
+    finally:
+        faden.join()
+
+    assert isinstance(fehler, ConfigurationError)
+    assert aufrufe["n"] == 2
+    assert time.monotonic() - begonnen < 3.0
 
 
 class _JobEndetNachDerErstenLesung:
-    """Eine Verbindung, nach deren erster Lesung von `documents` der Job endet.
+    """Eine Verbindung, nach deren erster Lesung von `documents` der Job endet,
+    und die mitschreibt, welche Anweisungen sie bekam.
 
     Damit faellt der Augenblick, in dem das Ergebnis entsteht und die Eingabe
     geht, genau hinter die erste Anweisung, die nach einem Ergebnis fragt. Wer
@@ -988,20 +1264,25 @@ class _JobEndetNachDerErstenLesung:
     sieht beide im selben Schnappschuss: zuerst offen, danach fertig.
     """
 
-    def __init__(self, echte: psycopg.Connection[Any], dsn: str) -> None:
+    def __init__(self, echte: Any, dsn: str) -> None:
         self._echte = echte
         self._dsn = dsn
         self.ausgeloest = False
+        self.anweisungen: list[str] = []
 
     def _danach(self, sql: object) -> None:
-        if self.ausgeloest or "documents" not in str(sql):
+        text = sql.as_string(None) if isinstance(sql, psycopg.sql.Composable) else str(sql)
+        self.anweisungen.append(text)
+        if self.ausgeloest or "documents" not in text:
             return
         self.ausgeloest = True
-        with psycopg.connect(self._dsn, autocommit=True) as job:
-            _ergebnis_anlegen(job)
-            job.execute("DELETE FROM inputs WHERE sha256 = %s", (HASH,))
-            job.execute("SELECT pg_notify('doc_done', %s)", (HASH,))
+        _job_endet(self._dsn, [HASH])
 
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._echte, name)
+
+
+class _SyncJobEndet(_JobEndetNachDerErstenLesung):
     def execute(self, sql: Any, *args: Any, **kwargs: Any) -> Any:
         ergebnis = self._echte.execute(sql, *args, **kwargs)
         self._danach(sql)
@@ -1026,24 +1307,137 @@ class _JobEndetNachDerErstenLesung:
 
         return _Cursor()
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._echte, name)
+
+class _AsyncJobEndet(_JobEndetNachDerErstenLesung):
+    async def execute(self, sql: Any, *args: Any, **kwargs: Any) -> Any:
+        ergebnis = await self._echte.execute(sql, *args, **kwargs)
+        await asyncio.to_thread(self._danach, sql)
+        return ergebnis
+
+    def cursor(self, *args: Any, **kwargs: Any) -> Any:
+        verbindung = self
+        echter = self._echte.cursor(*args, **kwargs)
+
+        class _Cursor:
+            async def __aenter__(self) -> Any:
+                await echter.__aenter__()
+                return self
+
+            async def __aexit__(self, *fehler: Any) -> None:
+                await echter.__aexit__(*fehler)
+
+            async def execute(self, sql: Any, *a: Any, **k: Any) -> Any:
+                await echter.execute(sql, *a, **k)
+                await asyncio.to_thread(verbindung._danach, sql)
+                return echter
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(echter, name)
+
+        return _Cursor()
 
 
 @pytest.mark.db
-def test_warten_haelt_ein_dokument_nicht_fuer_unbekannt_das_zwischen_zwei_lesungen_fertig_wird(
-    db_conn: psycopg.Connection[Any], _test_datenbank: str
+@ARTEN
+async def test_warten_haelt_ein_dokument_nicht_fuer_unbekannt_und_laedt_weder_raw_noch_content(
+    art: str,
+    db_conn: psycopg.Connection[Any],
+    _test_datenbank: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Endet der Job unmittelbar nach der ersten Lesung, liefert das Warten das
     Ergebnis — und kein `DocumentNotFound`, wie es zwei Abfragen nacheinander
-    (erst `documents`, dann `inputs`) taeten."""
+    (erst `documents`, dann `inputs`) taeten. Dabei fragt keine Anweisung nach
+    `raw` oder `content`."""
+    from mineru_ocr import db
+
     insert_input(db_conn, sha256=HASH, content=b"x")
-    verbindung = _JobEndetNachDerErstenLesung(db_conn, _test_datenbank)
+    verbindungen: list[_JobEndetNachDerErstenLesung] = []
+    if art == "sync":
+        echte_sync = db._warte_verbindung
 
-    zeile = wait_for_terminal(verbindung, HASH, timeout=10.0, poll_seconds=0.2)  # type: ignore[arg-type]
+        def verbinden(dsn: str) -> Any:
+            verbindungen.append(_SyncJobEndet(echte_sync(dsn), dsn))
+            return verbindungen[-1]
 
+        monkeypatch.setattr(db, "_warte_verbindung", verbinden)
+    else:
+        echte_async = db._warte_verbindung_async
+
+        async def verbinden_async(dsn: str) -> Any:
+            verbindungen.append(_AsyncJobEndet(await echte_async(dsn), dsn))
+            return verbindungen[-1]
+
+        monkeypatch.setattr(db, "_warte_verbindung_async", verbinden_async)
+
+    geliefert, fehler = await _warten(
+        art, _test_datenbank, [HASH], timeout=10.0, poll_seconds=60.0
+    )
+
+    assert fehler is None
+    assert [z.sha256 for z in geliefert] == [HASH]
+    (verbindung,) = verbindungen
     assert verbindung.ausgeloest
-    assert zeile.status is DocumentStatus.DONE
+    assert verbindung.anweisungen[0].startswith("LISTEN")
+    for anweisung in verbindung.anweisungen:
+        assert "content" not in anweisung
+        assert "d.raw" not in anweisung
+
+
+@pytest.mark.db
+def test_strg_c_beendet_nur_das_warten(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Strg-C kommt im sync-Warten nach Bruchteilen einer Sekunde an, auch wenn
+    der Takt auf einer Minute steht. Die Warte-Verbindung ist danach zu; Job,
+    Eingabe und Ergebnisse bleiben, wie sie sind."""
+    insert_input(db_conn, sha256=HASH, content=b"x")
+    _job_anlegen(db_conn, HASH)
+    vorher = _bestand(db_conn)
+
+    def unterbrechen(signum: int, frame: object) -> None:
+        raise KeyboardInterrupt
+
+    bisher = signal.signal(signal.SIGALRM, unterbrechen)
+    begonnen = time.monotonic()
+    try:
+        signal.setitimer(signal.ITIMER_REAL, 0.5)
+        with pytest.raises(KeyboardInterrupt):
+            for _ in wait_for_terminal(_test_datenbank, [HASH], poll_seconds=60.0):
+                pass
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, bisher)
+
+    assert time.monotonic() - begonnen < 0.8
+    assert _warte_verbindungen(_test_datenbank) == 0
+    assert _bestand(db_conn) == vorher
+
+
+@pytest.mark.db
+async def test_abbrechen_beendet_nur_das_async_warten(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Das Gegenstueck zu Strg-C im async-Warten ist `cancel()`: Es kommt sofort
+    an, die Warte-Verbindung ist danach zu, und nichts wird angefasst."""
+    insert_input(db_conn, sha256=HASH, content=b"x")
+    _job_anlegen(db_conn, HASH)
+    vorher = _bestand(db_conn)
+
+    async def warten() -> None:
+        async for _ in wait_for_terminal_async(_test_datenbank, [HASH], poll_seconds=60.0):
+            pass
+
+    aufgabe = asyncio.create_task(warten())
+    await asyncio.sleep(0.5)
+    begonnen = time.monotonic()
+    aufgabe.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await aufgabe
+
+    assert time.monotonic() - begonnen < 0.3
+    assert _warte_verbindungen(_test_datenbank) == 0
+    assert _bestand(db_conn) == vorher
 
 
 @pytest.mark.db
