@@ -70,8 +70,9 @@ Wirft `with OCRClient()` beim Öffnen `ConfigDriftError`, weicht der Endpoint vo
 seinen Sollwerten ab; die Meldung gibst du dem Nutzer weiter.
 
 - Mit dem Hash, den `ocr_start` je Dokument zurückgibt, wartest und holst du.
-- Auf viele wartest du mit `wait_all` oder `as_completed`. Gib immer `timeout=`
-  mit.
+- Auf viele wartest du mit `wait_all` oder `as_completed`. Jedem Aufruf, der
+  wartet (`wait`, `wait_all`, `as_completed`, `ocr`), gibst du `timeout=` mit:
+  Ohne Daemon kehrt er sonst nie zurück.
 - Zurück kommt eine **Hülle**: `rendered_markdown` ist das ganze Dokument als
   Markdown, `raw` die vollständige Antwort.
 
