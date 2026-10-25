@@ -15,9 +15,11 @@ Die Exit-Codes sind Teil des Vertrags, weil in einer Shell darauf verzweigt wird
     0  Erfolg.
     1  Betriebsfehler — Endpoint nicht erreichbar, Datenbank weg, Konto leer.
        Auch bei `ocr`, wenn eine ausdruecklich genannte Datei nicht abgeschickt
-       werden konnte (nicht unterstuetzt, zu gross, nicht lesbar): Die uebrigen sind
-       dann trotzdem eingereiht.
-    2  Aufruffehler — falsche Argumente, unbekannter Pfad. Setzt typer selbst.
+       werden konnte (nicht unterstuetzt, zu gross, nicht vorhanden): Die uebrigen
+       sind dann trotzdem eingereiht.
+    2  Aufruffehler — falsche Argumente oder Schalter; auch ein Pfad, den typer
+       schon beim Entgegennehmen ablehnt (etwa eine Datei ohne Leserecht, dann
+       wird NICHTS eingereiht). Setzt typer selbst.
     3  Nur bei `wait` und `markdown`: Das Dokument ist endgueltig, aber NICHT
        erfolgreich (`failed` oder `input_error`). Ein eigener Code, weil das
        weder ein Erfolg noch ein Fehler DES WERKZEUGS ist — das Werkzeug hat
@@ -122,7 +124,8 @@ def _ziel(target: str) -> str:
             f"Kein Dokument zu {target!r}: Es ist weder ein sha256 noch eine "
             f"lesbare Datei."
         )
-    return core.sha256_of(pfad.read_bytes())
+    with pfad.open("rb") as datei:
+        return core.sha256_of_file(datei)
 
 
 def _lesen(datei: Path) -> bytes:
@@ -261,6 +264,7 @@ def ocr(
     dokumente: list[dict[str, Any]] = []
     uebersprungen: list[dict[str, str]] = []
     ausdruecklich_fehlgeschlagen = False
+    betriebsfehler: MineruOcrError | None = None
 
     try:
         with OCRClient(preflight=False) as klient:
@@ -294,8 +298,25 @@ def ocr(
                         }
                     )
     except MineruOcrError as fehler:
-        _betriebsfehler(fehler)
+        betriebsfehler = fehler
+    finally:
+        # AUCH bei einem Abbruch mitten im Lauf (Betriebsfehler, Strg-C): Was
+        # bis dahin eingereiht ist, steht in der Datenbank, und die Zuordnung von
+        # Pfad zu Hash ist der Zweck dieser Ausgabe.
+        if betriebsfehler is None or dokumente or uebersprungen:
+            _ocr_ausgeben(dokumente, uebersprungen, json_out)
+    if betriebsfehler is not None:
+        _betriebsfehler(betriebsfehler)
+    if ausdruecklich_fehlgeschlagen:
+        raise typer.Exit(code=1)
 
+
+def _ocr_ausgeben(
+    dokumente: list[dict[str, Any]],
+    uebersprungen: list[dict[str, str]],
+    json_out: bool,
+) -> None:
+    """Die Ausgabe von `ocr`: Daten auf stdout, die Zaehlzeile auf stderr."""
     if json_out:
         typer.echo(
             json_modul.dumps(
@@ -312,13 +333,20 @@ def ocr(
                 f"{eintrag['path']}"
             )
     eingereiht = sum(1 for e in dokumente if e["queued"])
+    gruende: dict[str, int] = {}
+    for eintrag in uebersprungen:
+        gruende[eintrag["reason"]] = gruende.get(eintrag["reason"], 0) + 1
     typer.echo(
         f"{len(dokumente)} Dokumente, davon {eingereiht} eingereiht"
-        + (f"; {len(uebersprungen)} uebersprungen" if uebersprungen else ""),
+        + (
+            f"; {len(uebersprungen)} uebersprungen ("
+            + ", ".join(f"{grund}: {anzahl}" for grund, anzahl in sorted(gruende.items()))
+            + ")"
+            if uebersprungen
+            else ""
+        ),
         err=True,
     )
-    if ausdruecklich_fehlgeschlagen:
-        raise typer.Exit(code=1)
 
 
 def _grund(fehler: BaseException) -> str:

@@ -718,14 +718,88 @@ def test_ocr_ohne_daemon_reiht_trotzdem_ein_und_warnt_auf_stderr(
     assert _jobs(db_conn) == 2
 
 
+def test_ocr_warnt_ohne_daemon_einmal_je_lauf_und_nicht_je_datei(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Die Kommandozeile reicht die Dateien einzeln herein; trotzdem steht die
+    Warnung einmal da und nicht dreissigtausend Mal."""
+    db_conn.execute("DELETE FROM procrastinate_workers")
+    for name in ("a.png", "b.png", "c.png"):
+        _datei(tmp_path, name)
+
+    ergebnis = cli.invoke(app, ["ocr", str(tmp_path)])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert _jobs(db_conn) == 3
+    assert ergebnis.stderr.count("kein Daemon") == 1
+
+
 def test_ocr_warnt_nicht_wenn_ein_daemon_laeuft(
-    cli: CliRunner, tmp_path: Path
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
 ) -> None:
     """Die `cli`-Vorrichtung legt ein frisches Lebenszeichen an."""
     datei, _ = _datei(tmp_path, "a.png")
     ergebnis = cli.invoke(app, ["ocr", str(datei)])
+    # Erst dass der Aufruf gelungen ist und etwas eingereiht hat, macht das
+    # Ausbleiben der Warnung zu einer Aussage.
     assert ergebnis.exit_code == 0, ergebnis.output
+    assert _jobs(db_conn) == 1
     assert "Daemon" not in ergebnis.stderr
+
+
+def test_ocr_nennt_nach_einem_betriebsfehler_mitten_im_lauf_die_bis_dahin_eingereihten(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bricht ein Lauf ueber einen Ordner mittendrin ab, sind die ersten Dokumente
+    schon eingereiht. Die Zuordnung von Pfad zu Hash ist der Zweck der Ausgabe und
+    geht deshalb nicht mit dem Abbruch verloren."""
+    dateien = [_datei(tmp_path, name) for name in ("a.png", "b.png", "c.png", "d.png")]
+    echtes = client_modul.OCRClient.ocr_start
+    aufrufe = {"n": 0}
+
+    def dritter_scheitert(self: Any, data: Any) -> Any:
+        aufrufe["n"] += 1
+        if aufrufe["n"] == 3:
+            raise DatabaseError("Verbindung weg")
+        return echtes(self, data)
+
+    monkeypatch.setattr(client_modul.OCRClient, "ocr_start", dritter_scheitert)
+
+    ergebnis = cli.invoke(app, ["ocr", str(tmp_path), "--json"])
+
+    assert ergebnis.exit_code == 1
+    assert "Verbindung weg" in ergebnis.stderr
+    angaben = json.loads(ergebnis.stdout)
+    assert [d["sha256"] for d in angaben["documents"]] == [h for _, h in dateien[:2]]
+    assert _jobs(db_conn) == 2
+
+
+def test_ein_pfad_als_ziel_wird_gehasht_ohne_die_datei_ganz_zu_lesen(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`show` auf den Pfad einer grossen Datei hasht sie in Stuecken: Sie wird
+    nicht ganz in den Speicher geladen, nur um einen Hash zu bilden."""
+    huelle = _anlegen(db_conn, tmp_path, "gross.png", _test_datenbank)
+
+    echtes_lesen = Path.read_bytes
+
+    def nie(self: Path) -> bytes:
+        if self.name == "gross.png":
+            raise AssertionError("die Datei wurde ganz gelesen")
+        return echtes_lesen(self)
+
+    monkeypatch.setattr(Path, "read_bytes", nie)
+    ergebnis = cli.invoke(app, ["show", str(tmp_path / "gross.png"), "--json"])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert json.loads(ergebnis.stdout)["sha256"] == huelle.sha256
 
 
 def test_ocr_hat_weder_strict_noch_start(cli: CliRunner, tmp_path: Path) -> None:
