@@ -21,7 +21,8 @@ Client reiht unter ihnen ein, und beide lesen dieselbe Konstante.
 Eine zweite App im selben Prozess ist erlaubt (die Tests tun es), kostet aber
 etwas: Procrastinates eingebauter Task `remove_old_jobs` wird bei jeder weiteren
 App umbenannt. Der Daemon-Prozess baut deshalb keine weitere; dieses Paket
-benutzt `remove_old_jobs` ohnehin nicht (`delete_jobs="never"`).
+benutzt `remove_old_jobs` ohnehin nicht (erfolgreiche Jobs loescht der Worker,
+`delete_jobs="successful"`).
 
 Die Tasks hier sind duenn. Die Arbeit steht in `executor.py`, das nichts von
 Warteschlangen weiss; was hier hinzukommt, ist ausschliesslich die Anbindung.

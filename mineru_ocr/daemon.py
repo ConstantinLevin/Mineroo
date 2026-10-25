@@ -83,10 +83,10 @@ async def run(
     und bricht beide Koroutinen ab. Das ist genau das dokumentierte Muster
     „Worker in einer groesseren Anwendung" (Feature-Verifikation Punkt 1).
 
-    Beide laufen ausserdem mit `delete_jobs="never"`. Job-Zeilen bleiben stehen,
-    weil der abgeleitete Dokument-Zustand aus ihnen GELESEN wird — wer sie
-    aufraeumt, raeumt die Beobachtbarkeit weg. Das Aufraeumen alter Jobs ist ein
-    dokumentiertes Spaeter (`remove_old_jobs`) und keine Voreinstellung.
+    Beide laufen ausserdem mit `delete_jobs` aus der Einstellung, voreingestellt
+    `"successful"`: Erfolgreiche Jobs loescht der Worker, an ihnen haengt kein
+    Zustand mehr. Gescheiterte und abgebrochene bleiben stehen; `retry` findet sie
+    ueber `inputs.job_id`. `remove_old_jobs` benutzt das Paket nicht.
 
     Args:
         settings: Vollstaendige Betriebseinstellung.

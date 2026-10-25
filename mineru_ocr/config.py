@@ -701,11 +701,13 @@ class Settings:
     """Ob eine Abweichung der Endpoint-Konfiguration den Preflight abbricht
     (`ConfigDriftError`) oder nur gemeldet wird."""
 
-    delete_jobs: str = "never"
-    """Job-Zeilen bleiben in der Datenbank stehen. Das ist zugleich Procrastinates
-    Voreinstellung und Jurgens Festlegung („tidiness = full legibility"): Der
-    abgeleitete Dokument-Status LIEST aus den Job-Zeilen; wer sie loescht, loescht
-    die Beobachtbarkeit mit (Plan 5.3)."""
+    delete_jobs: str = "successful"
+    """Erfolgreiche Jobs loescht der Worker, gescheiterte und abgebrochene bleiben
+    stehen (Spec Mineroo#1, bisher `never`). An einem erfolgreichen Job haengt kein
+    Zustand mehr: Sein Dokument hat ein Ergebnis, und die Eingabe samt ihrer
+    Kennung `inputs.job_id` ist mit ihm gegangen. Die gescheiterten braucht
+    `retry`: Es findet sie ueber `inputs.job_id` und setzt sie zurueck. Ein
+    Aufraeumen ueber `remove_old_jobs` gibt es nicht; es bleiben wenige."""
 
     max_attempts: int = 3
     """Wie oft ein Dokument bei wiederholbaren Fehlern insgesamt versucht wird.

@@ -255,8 +255,10 @@ async def test_dokument_laeuft_vollstaendig_durch(
 ) -> None:
     """Der Grundfall, der alle anderen traegt: einreihen, Daemon laeuft, fertig.
 
-    Geprueft werden BEIDE Buecher — die Zeile steht auf `done`, der Job auf
-    `succeeded`, und der abgeleitete Zustand sagt TERMINAL.
+    Geprueft werden BEIDE Buecher — die Zeile steht auf `done`, und der
+    erfolgreiche Job ist geloescht (`delete_jobs = "successful"`): An ihm haengt
+    kein Zustand mehr, die Eingabe ist mit dem Ergebnis gegangen. Der abgeleitete
+    Zustand sagt TERMINAL.
     """
     sha = _anlegen(db_conn, tmp_path, "a.png")
     erzeuger.einreihen(sha)
@@ -273,8 +275,7 @@ async def test_dokument_laeuft_vollstaendig_durch(
     assert zeile.raw["markdown"] == "Text"
 
     jobs = _jobs_zu(db_conn, sha)
-    assert len(jobs) == 1
-    assert jobs[0].status == "succeeded"
+    assert jobs == []
     assert derive_status(sha, zeile, jobs).phase is Phase.TERMINAL
 
 
@@ -599,11 +600,16 @@ async def test_wartungs_queue_verhungert_nicht(
             hoechststand = max(hoechststand, belegt[0])
 
         # Der Waechter ist der Task auf der Wartungs-Queue. Sobald er einen Job
-        # bekommen und abgeschlossen hat, ist die Frage beantwortet.
+        # bekommen und abgeschlossen hat, ist die Frage beantwortet. Erfolgreiche
+        # Jobs loescht der Worker (`delete_jobs = "successful"`); abgeschlossen
+        # heisst deshalb: eingereiht (der periodische Vermerk steht) und kein
+        # Waechter-Job mehr da, der nicht erfolgreich waere.
         zeile = db_conn.execute(
-            "SELECT count(*) FROM procrastinate_jobs "
-            "WHERE task_name = %s AND status = 'succeeded'",
-            (config.TASK_RETRY_STALLED,),
+            "SELECT count(*) FROM procrastinate_periodic_defers d "
+            "WHERE d.task_name = %s AND NOT EXISTS ("
+            "SELECT 1 FROM procrastinate_jobs j "
+            "WHERE j.task_name = %s AND j.status <> 'succeeded')",
+            (config.TASK_RETRY_STALLED, config.TASK_RETRY_STALLED),
         ).fetchone()
         return zeile is not None and zeile[0] >= 1
 
@@ -703,8 +709,8 @@ async def test_duplikat_waehrend_der_verarbeitung_ist_ein_nichts_tun(
     zweiter = ProtokollRunPod()
 
     async def zweiter_job_fertig() -> bool:
-        jobs = _jobs_zu(db_conn, sha)
-        return len(jobs) == 2 and jobs[-1].status == "succeeded"
+        # Erfolgreich heisst geloescht (`delete_jobs = "successful"`).
+        return _jobs_zu(db_conn, sha) == []
 
     await _daemon_laufen_lassen(int_settings, zweiter, bis=zweiter_job_fertig)
 
@@ -880,7 +886,8 @@ async def test_vom_client_eingereihter_job_wird_vom_daemon_abgearbeitet(
     zeile = get_document(db_conn, sha)
     assert zeile is not None
     assert zeile.status is DocumentStatus.DONE
-    assert _jobs_zu(db_conn, sha)[0].status == "succeeded"
+    # Erfolgreich durchgelaufen und deshalb geloescht.
+    assert _jobs_zu(db_conn, sha) == []
 
 
 # --------------------------------------------------------------------------
@@ -989,6 +996,7 @@ async def test_zweites_abschicken_waehrend_der_job_laeuft_legt_keinen_zweiten_an
                 # Der Job laeuft jetzt bei RunPod: dasselbe noch einmal.
                 assert _jobs_zu(db_conn, sha)[0].status == "doing"
                 zweites.append(klient.ocr_start(inhalt))
+                assert len(_jobs_zu(db_conn, sha)) == 1
                 assert haengend.freigabe is not None
                 haengend.freigabe.set()
             return get_document(db_conn, sha) is not None
@@ -997,7 +1005,6 @@ async def test_zweites_abschicken_waehrend_der_job_laeuft_legt_keinen_zweiten_an
 
     assert zweites[0] == sha
     assert zweites[0].queued is False and zweites[0].status is None
-    assert len(_jobs_zu(db_conn, sha)) == 1
     assert haengend.aufrufe == 1
     zeile = get_document(db_conn, sha)
     assert zeile is not None and zeile.status is DocumentStatus.DONE
@@ -1431,8 +1438,8 @@ def test_zwei_prozess_rueckfall_ist_wirklich_vorbereitet(
     assert beide[1]["concurrency"] == 1
     # KEINER der beiden richtet Signal-Handler ein — das tut der Prozess selbst.
     assert all(o["install_signal_handlers"] is False for o in beide)
-    # Und Job-Zeilen bleiben stehen: Der abgeleitete Zustand LIEST aus ihnen.
-    assert all(o["delete_jobs"] == "never" for o in beide)
+    # Erfolgreiche Jobs loescht der Worker; gescheiterte bleiben fuer `retry`.
+    assert all(o["delete_jobs"] == "successful" for o in beide)
 
     einzeln = _worker_optionen(
         int_settings, [config.QUEUE_MAINTENANCE], {"settings": int_settings}
