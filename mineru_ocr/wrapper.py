@@ -320,6 +320,9 @@ class OCRWrapper:
                 haelt keine Verbindung; die Meldung nennt den Weg. War ihre Zeile
                 beim Laden schon weg (ein `retry` lief dazwischen), stattdessen
                 `DocumentNotFound`.
+            DatabaseError: Die Verbindung des Clients taugt nicht mehr (etwa
+                nach einem Neustart von Postgres); ebenso beim Nachladen von
+                `raw`.
         """
         zeile = db.get_document(self._verbindung(), self.row.sha256)
         if zeile is None:

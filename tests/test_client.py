@@ -1514,6 +1514,32 @@ async def test_wait_gibt_bei_jedem_endzustand_zurueck(
     assert zurueck.success is False
 
 
+async def test_nachladen_meldet_eine_abgerissene_client_verbindung_als_databaseerror(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+) -> None:
+    """Wie im Async-Client: Reisst die Verbindung des Clients ab (etwa ein Neustart
+    von Postgres, waehrend gewartet wurde), meldet das Nachladen von `raw` an der
+    Huelle einen `DatabaseError` des Pakets, nicht den rohen psycopg-Fehler. Die
+    Uebersetzung sitzt in `db.get_document`, also gilt sie fuer `raw` wie fuer
+    `refresh()`."""
+    h = _abschicken(offener_client, "abgerissen")
+    await write_terminal_async(
+        async_conn, sha256=h, status=DocumentStatus.DONE, raw={}, endpoint_id="e"
+    )
+    huelle = offener_client.wait(h, timeout=5.0)
+    db_conn.execute(
+        "SELECT pg_terminate_backend(%s)", (offener_client.conn.info.backend_pid,)
+    )
+
+    with pytest.raises(DatabaseError) as laden:
+        huelle.raw
+    assert isinstance(laden.value.__cause__, psycopg.Error)
+    with pytest.raises(DatabaseError):
+        huelle.refresh()
+
+
 def test_wait_auf_unbekannten_hash_wirft_sofort(offener_client: OCRClient) -> None:
     """Nicht erst nach Ablauf der Wartezeit. Auf etwas zu warten, das nie
     eingereiht wurde, ist immer ein Irrtum des Aufrufers."""

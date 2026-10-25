@@ -1098,9 +1098,18 @@ def get_document(
     CHECK-Bedingung, kein Postgres-Aufzaehlungstyp — `class_row` reicht die
     Zeichenkette durch, und `DocumentStatus` entsteht daraus in
     `DocumentRow.__post_init__`.
+
+    Raises:
+        DatabaseError: Die Verbindung taugt nicht mehr (etwa nach einem Neustart
+            von Postgres) — uebersetzt wie jeder Verbindungsfehler
+            (`_verbindungsfehler_uebersetzen`), nicht als roher psycopg-Fehler;
+            dasselbe wie `get_document_async`.
     """
-    with conn.cursor(row_factory=class_row(DocumentRow)) as cur:
-        return cur.execute(_zeile_sql(with_raw), (sha256,)).fetchone()
+    try:
+        with conn.cursor(row_factory=class_row(DocumentRow)) as cur:
+            return cur.execute(_zeile_sql(with_raw), (sha256,)).fetchone()
+    except psycopg.Error as fehler:
+        raise _verbindungsfehler_uebersetzen(fehler, "Ergebnis lesen") from fehler
 
 
 def _zeile_sql(with_raw: bool) -> str:
