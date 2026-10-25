@@ -561,7 +561,7 @@ def test_typfehler_bei_einem_text_nennt_den_wert_nicht(tmp_path: Path) -> None:
     ["RUNPOD_AI_API_KEY", "HF_TOKEN", "DB_PASSWORD", "ADMIN_PASSWD", "SSH_PASSPHRASE",
      "DB_PWD", "CLIENT_SECRET", "AWS_CREDENTIALS", "AUTH", "BEARER", "PRIVATE_KEY",
      "APIKEY", "hf_token", "hf-token", "SECRETS", "API_KEYS", "DB_PASS",
-     "HTTP_AUTHORIZATION"],
+     "HTTP_AUTHORIZATION", "PASSWORDS", "ACCESSKEY", "PRIVATEKEY", "SSHKEY"],
 )
 def test_geheimnisnamen_werden_erkannt(name: str) -> None:
     assert ist_geheimnisname(name)

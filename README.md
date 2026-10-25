@@ -90,8 +90,9 @@ Jeder Schlüssel außer der Tabelle hat eine Umgebungsvariable, zum Beispiel
 `MINERU_OCR_ALLOWED_DATA_CENTERS`.
 
 Der Preflight zeigt die Werte der Variablen aus `[endpoint_env]`. Ist ein ganzer
-Namensteil (getrennt an `_` und `-`) `KEY`, `KEYS`, `APIKEY`, `SECRET`,
-`SECRETS`, `TOKEN`, `PASSWORD`, `PASSWD`, `PASS`, `PASSPHRASE`, `PWD`,
+Namensteil (getrennt an allem außer Buchstaben und Ziffern) `KEY(S)`,
+`APIKEY(S)`, `ACCESSKEY`, `PRIVATEKEY`, `SSHKEY`, `SECRET(S)`, `SECRETKEY`,
+`TOKEN`, `PASSWORD(S)`, `PASSWD`, `PASS`, `PASSPHRASE`, `PWD`,
 `CREDENTIAL(S)`, `AUTH`, `AUTHORIZATION` oder `BEARER`, wird die Variable
 verglichen und als `***` gezeigt, im Befund wie in `repr(Settings)`. Teilwörter
 zählen nicht: `HF_TOKEN` wird verdeckt, `MAX_TOKENS` und `MONKEY` nicht.
@@ -117,9 +118,8 @@ Templates und jedes Workers gegen `expected_image_tag`, die Endpoint-Variablen
 nach Wert an der Umgebung aller zuletzt gelaufenen Worker (auch der beendeten),
 dass alle Rechenzentren in der zulässigen Liste liegen, und die Sollwerte des
 Endpoints. FlashBoot wird berichtet. Was sich nicht feststellen lässt — kein
-Worker oder einer ohne Umgebung, keine Rechenzentren in der Antwort, kein
-erwarteter Tag —, heißt „nicht
-prüfbar" und ausdrücklich nicht „in Ordnung".
+Worker, ein Worker ohne Umgebung, keine Rechenzentren in der Antwort, kein
+erwarteter Tag —, heißt „nicht prüfbar" und ausdrücklich nicht „in Ordnung".
 
 Neun Kommandos gibt es: `setup`, `daemon`, `ocr`, `status`, `show`, `wait`,
 `markdown`, `retry`, `preflight`. Die Exit-Codes sind belegt (0/1/2/3).

@@ -116,7 +116,7 @@ def _runpod_fragen(
 
 OHNE_ANGABE: Final = "(nicht angegeben)"
 """Was im Befund fuer einen Worker steht, dessen Umgebung die Endpoint-Antwort
-nicht fuehrt. Ein eigener Text und nicht `None`: `None` heisst dort „die Variable
+nicht oder leer fuehrt. Ein eigener Text und nicht `None`: `None` heisst dort „die Variable
 fehlt in der Umgebung", und das ist etwas anderes."""
 
 
