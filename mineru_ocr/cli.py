@@ -649,7 +649,8 @@ def retry(
 
     Jedes zurueckgesetzte oder neu eingereihte Dokument wird vollstaendig neu
     verarbeitet und neu bezahlt. Das Kommando fragt deshalb vorher nach — ausser
-    mit `--yes` — und nennt danach je Dokument und in Summe, was geschah.
+    mit `--yes` — und nennt danach je Dokument und in Summe, was geschah. Laeuft
+    kein Daemon, warnt es wie `ocr` auf stderr.
     """
     if (target is None) == (not all_):
         typer.echo(

@@ -1860,6 +1860,11 @@ def test_ocr_weist_eine_folge_von_dokumenten_ab_bevor_es_einreiht(
     Aufrufer (Mineroo#24). Die Meldung nennt den Weg fuer viele."""
     with pytest.raises(TypeError, match="wait_all"):
         offener_client.ocr([_png("a"), _png("b")])  # type: ignore[arg-type]
+    # Ein Pfad oder Text ist kein „viele“: Die Meldung sagt, dass die Bibliothek
+    # keine Pfade kennt, wie bei `ocr_start`.
+    for falsch in (Path("scan.pdf"), "scan.pdf", bytearray(b"%PDF")):
+        with pytest.raises(TypeError, match="Pfade"):
+            offener_client.ocr(falsch)  # type: ignore[arg-type]
     for tabelle in ("documents", "inputs", "procrastinate_jobs"):
         assert _zaehlen(db_conn, tabelle) == 0, tabelle
 

@@ -60,17 +60,17 @@ from .wrapper import OCRWrapper
 log = logging.getLogger("mineru_ocr.client")
 """Der Logger dieses Moduls.
 
-Er steht hier, weil `ocr_start` ohne laufenden Daemon trotzdem einreiht und
-das SAGT: auf diesem Logger, nicht per Ausnahme. Die Kommandozeile leitet die
+Er steht hier, weil `ocr_start` und `retry` ohne laufenden Daemon trotzdem
+einreihen und das SAGEN: auf diesem Logger, nicht per Ausnahme. Die Kommandozeile leitet die
 Warnungen des Pakets auf stderr (`cli._FehlerAusgabe`)."""
 
 T = TypeVar("T")
 
 
-def _nimmt_bytes(wert: object) -> str:
-    """Die Meldung, wenn `ocr_start` etwas anderes als Bytes bekommt."""
+def _nimmt_bytes(wert: object, name: str = "ocr_start") -> str:
+    """Die Meldung, wenn `ocr_start` (oder `ocr`) etwas anderes als Bytes bekommt."""
     return (
-        f"ocr_start nimmt Bytes, nicht {type(wert).__name__}. "
+        f"{name} nimmt Bytes, nicht {type(wert).__name__}. "
         f"Pfade und Text kennt die Bibliothek nicht: Wer eine Datei "
         f"abschicken will, liest sie und reicht ihre Bytes herein."
     )
@@ -100,15 +100,21 @@ def _dokumente(data: object) -> list[bytes]:
 def _ein_dokument_pruefen(data: object) -> None:
     """Weist ab, was `ocr` beider Clients nicht als EIN Dokument nehmen kann.
 
-    Vor dem Einreihen: Eine Folge von Dokumenten nahme `ocr_start` an, und erst
+    Vor dem Einreihen: Eine Folge von Dokumenten naehme `ocr_start` an, und erst
     das Warten fiele ueber die Liste — die Jobs liefen und kosteten, und der
-    Aufrufer bekaeme keine Hashes (Mineroo#24).
+    Aufrufer bekaeme keine Hashes (Mineroo#24). Ein Pfad, Text oder Puffer ist
+    keine Folge von Dokumenten und bekommt die Meldung von `ocr_start`.
     """
-    if not isinstance(data, bytes):
+    if isinstance(data, bytes):
+        return
+    if isinstance(data, Iterable) and not isinstance(
+        data, (str, bytearray, memoryview)
+    ):
         raise TypeError(
             f"ocr nimmt EIN Dokument als Bytes, nicht {type(data).__name__}. "
             f"Fuer viele gibt es `ocr_start` und `wait_all`."
         )
+    raise TypeError(_nimmt_bytes(data, "ocr"))
 
 
 def _daemon_warnung_geben(bisher: str | None, fehler: BaseException | None) -> str:
@@ -1112,6 +1118,10 @@ class OCRClient:
         liest erst, wenn der erste fertig ist, sieht dessen Job und meldet
         unterwegs, statt einen zweiten einzureihen, der noch einmal bezahlt wuerde.
 
+        Laeuft kein Daemon, wird trotzdem wiederholt, und der Client warnt wie
+        beim Abschicken (Logger `mineru_ocr.client`, einmal je daemonloser Phase),
+        sobald das Dokument danach offen ist, also bei allem ausser `HAS_RESULT`.
+
         Lese-Einstellungen nimmt `retry` keine: Es wiederholt einen Job. Ein Fehler
         von Procrastinate (etwa ein Job, den jemand anderes zwischen Lesen und
         Zuruecksetzen zuruecksetzte) geht als `DatabaseError` nach oben, statt als
@@ -1217,6 +1227,7 @@ class OCRClient:
 
         Je Dokument eine Abfrage seines Jobs (`list_jobs(id=…)`); waehrend eines
         grossen Laufs mit vielen offenen Dokumenten sind das entsprechend viele.
+        Ohne laufenden Daemon warnt es wie `retry`, einmal fuer den ganzen Aufruf.
 
         Args:
             hashes: Die Dokumente, oder None fuer jedes ohne gueltiges Ergebnis.
