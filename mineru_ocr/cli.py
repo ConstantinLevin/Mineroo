@@ -214,10 +214,12 @@ def setup(
     """
     try:
         einstellung = Settings.load(db_dsn=dsn)
-        db.setup(einstellung.db_dsn)
+        name = db.setup(einstellung.db_dsn)
     except MineruOcrError as fehler:
         _betriebsfehler(fehler)
-    typer.echo(f"Datenbank und Schema stehen: {einstellung.db_dsn}")
+    # Eine Meldung, keine Daten, also stderr; und nie die DSN, sie kann ein
+    # Passwort tragen.
+    typer.echo(f"Datenbank {name!r} und Schema stehen.", err=True)
 
 
 @app.command()

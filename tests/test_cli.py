@@ -1395,6 +1395,20 @@ def test_setup_braucht_weder_endpoint_noch_schluessel(
     assert ergebnis.exit_code == 0, ergebnis.output
 
 
+def test_setup_meldet_auf_stderr_und_nennt_kein_passwort(
+    cli_ohne_schluessel: CliRunner, _test_datenbank: str
+) -> None:
+    """Auf stdout stehen nur Daten, und `setup` liefert keine: Die Meldung geht auf
+    stderr. Die DSN kommt aus Konfiguration oder Umgebung und kann ein Passwort
+    tragen; die Meldung nennt die Datenbank, nie das Passwort (Mineroo#3)."""
+    dsn = f"{_test_datenbank} password=nur-ein-testwert"
+    ergebnis = cli_ohne_schluessel.invoke(app, ["setup", "--dsn", dsn])
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert ergebnis.stdout == ""
+    assert "mineru_ocr_test" in ergebnis.stderr
+    assert "nur-ein-testwert" not in ergebnis.output
+
+
 def test_abschicken_braucht_keinen_endpoint(
     cli_ohne_schluessel: CliRunner,
     db_conn: psycopg.Connection[Any],

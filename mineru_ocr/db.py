@@ -435,7 +435,7 @@ class DerivedStatus:
 # --------------------------------------------------------------------------
 
 
-def setup(dsn: str) -> None:
+def setup(dsn: str) -> str:
     """Richtet Datenbank und Schema ein. Mehrfach aufrufbar. KEINE Migrationen.
 
     Vier Schritte: Datenbank anlegen, falls sie fehlt; Procrastinates eigenes
@@ -465,6 +465,10 @@ def setup(dsn: str) -> None:
             Wartungsdatenbank derselben Instanz verbunden — `CREATE DATABASE`
             geht nicht aus der Datenbank heraus, die angelegt werden soll.
 
+    Returns:
+        Den Namen der Datenbank, damit eine Meldung sie nennen kann, ohne die
+        Verbindungszeichenkette zu zeigen: Die kann ein Passwort tragen.
+
     Zusicherung:
         Mehrfach aufrufbar ohne Wirkung beim zweiten Mal. Zerstoert NICHTS:
         keine Tabelle wird geloescht, keine Spalte veraendert, keine Zeile
@@ -480,12 +484,13 @@ def setup(dsn: str) -> None:
 
     Kosten: keine.
     """
-    _datenbank_anlegen_falls_noetig(dsn)
+    name = _datenbank_anlegen_falls_noetig(dsn)
     _procrastinate_schema_anwenden_falls_noetig(dsn)
 
     with connect(dsn) as conn:
         conn.execute(SCHEMA_SQL)
         check_schema(conn)
+    return name
 
 
 def _procrastinate_schema_anwenden_falls_noetig(dsn: str) -> None:
@@ -528,8 +533,8 @@ def _procrastinate_schema_anwenden_falls_noetig(dsn: str) -> None:
         app.schema_manager.apply_schema()
 
 
-def _datenbank_anlegen_falls_noetig(dsn: str) -> None:
-    """Legt die Ziel-Datenbank an, wenn sie fehlt.
+def _datenbank_anlegen_falls_noetig(dsn: str) -> str:
+    """Legt die Ziel-Datenbank an, wenn sie fehlt, und gibt ihren Namen zurueck.
 
     `CREATE DATABASE` laesst sich nicht aus der Datenbank heraus ausfuehren, die
     angelegt werden soll — deshalb der Umweg ueber die Wartungsdatenbank
@@ -566,6 +571,7 @@ def _datenbank_anlegen_falls_noetig(dsn: str) -> None:
         raise _verbindungsfehler_uebersetzen(
             fehler, f"Datenbank {zielname!r} anlegen"
         ) from fehler
+    return zielname
 
 
 INPUT_SPALTEN: Final = frozenset({"sha256", "content", "job_id"})
