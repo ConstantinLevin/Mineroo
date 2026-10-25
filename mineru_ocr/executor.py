@@ -90,10 +90,21 @@ def _fehler_umschlag(fehler: BaseException) -> dict[str, Any]:
     scheiterte, sieht eine solche Zeile aus wie ein unvollstaendiges Ergebnis
     ohne Grund.
     """
+    return _umschlag(type(fehler).__name__, _fehlernachricht(fehler))
+
+
+def _umschlag(typ: str, nachricht: str) -> dict[str, Any]:
+    """Der Fehler-Umschlag aus Typ und Text, fuer Fehlerpfad und Waechter."""
+    return {"type": typ, "message": nachricht, "at": _jetzt()}
+
+
+def _vermerk_gescheitert(teilstuecke_bezahlt: int, detail: str) -> dict[str, Any]:
+    """Der Vermerk an einem `failed`, fuer Fehlerpfad und Waechter."""
     return {
-        "type": type(fehler).__name__,
-        "message": _fehlernachricht(fehler),
+        "kind": "gescheitert",
         "at": _jetzt(),
+        "teilstuecke_bezahlt": teilstuecke_bezahlt,
+        "detail": detail,
     }
 
 
@@ -554,14 +565,7 @@ async def process_document(
             # hier VOLLSTAENDIG, weil sie bezahlt sind und dreissig Minuten nach
             # ihrer Entstehung nirgends mehr abrufbar waeren.
             ergebnis["unverwertbare_antworten"] = unverwertbar
-        vermerke.append(
-            {
-                "kind": "gescheitert",
-                "at": _jetzt(),
-                "teilstuecke_bezahlt": len(teile),
-                "detail": beschreibung,
-            }
-        )
+        vermerke.append(_vermerk_gescheitert(len(teile), beschreibung))
         status = (
             db.DocumentStatus.INPUT_ERROR
             if isinstance(fehler, InputError)
@@ -620,16 +624,9 @@ async def write_failure_if_no_result(
 
     Kosten: keine.
     """
-    vermerke: list[dict[str, Any]] = [
-        {
-            "kind": "gescheitert",
-            "at": _jetzt(),
-            "teilstuecke_bezahlt": 0,
-            "detail": grund,
-        }
-    ]
+    vermerke = [_vermerk_gescheitert(0, grund)]
     ergebnis = _ergebnis_fuer_endzustand([], vermerke)
-    ergebnis["failure"] = {"type": "JobOhneErgebnis", "message": grund, "at": _jetzt()}
+    ergebnis["failure"] = _umschlag("JobOhneErgebnis", grund)
     async with pool.connection() as conn:
         if await db.get_status_async(conn, sha256) is not None:
             return False

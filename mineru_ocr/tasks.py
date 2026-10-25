@@ -35,7 +35,7 @@ from typing import Any, Final
 
 import procrastinate
 from procrastinate import RetryDecision
-from procrastinate.jobs import Status
+from procrastinate.jobs import DeleteJobCondition, Status
 from psycopg_pool import AsyncConnectionPool
 
 from . import config, executor
@@ -441,7 +441,8 @@ async def retry_stalled(context: procrastinate.JobContext, timestamp: int) -> No
         await verwalter.finish_job(
             job,
             status=Status.FAILED,
-            delete_job=einstellungen.delete_jobs == "always",
+            delete_job=DeleteJobCondition(einstellungen.delete_jobs)
+            is DeleteJobCondition.ALWAYS,
         )
 
 
