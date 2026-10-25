@@ -1079,6 +1079,54 @@ def test_retry_reiht_auch_ohne_daemon_ein_und_warnt(
     assert len(warnungen) == 1
 
 
+async def test_retry_warnt_ohne_daemon_genau_dann_wenn_das_dokument_offen_bleibt(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Die Regel des Abschickens: gewarnt wird, wenn das Dokument danach offen ist
+    (unterwegs, zurueckgesetzt oder neu eingereiht), nicht bei einem gueltigen
+    Ergebnis (Mineroo#26). Ein gesehener Daemon beendet die daemonlose Phase, die
+    naechste wird wieder gesagt."""
+    fertig = _png("fertig")
+    db_conn.execute(
+        "INSERT INTO documents (sha256, size_bytes, mime, endpoint_id, status, raw) "
+        "VALUES (%s, 1, 'image/png', 'e', 'done', '{}'::jsonb)",
+        (_hash(fertig),),
+    )
+    _worker_am_leben(db_conn)
+    wartend = offener_client.ocr_start(_png("wartet"))
+    gescheitert = offener_client.ocr_start(_png("gescheitert"))
+    db_conn.execute(
+        "UPDATE procrastinate_jobs SET status = 'failed' WHERE lock = %s",
+        (str(gescheitert),),
+    )
+    await write_terminal_async(
+        async_conn,
+        sha256=gescheitert,
+        status=DocumentStatus.FAILED,
+        raw={},
+        endpoint_id="e",
+    )
+    db_conn.execute("DELETE FROM procrastinate_workers")
+
+    def warnungen() -> int:
+        return len([e for e in caplog.records if "kein Daemon" in e.getMessage()])
+
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        assert offener_client.retry(_hash(fertig)) is core.RetryOutcome.HAS_RESULT
+        assert warnungen() == 0
+        assert offener_client.retry(wartend) is core.RetryOutcome.UNDERWAY
+        assert warnungen() == 1
+        _worker_am_leben(db_conn)
+        assert offener_client.retry(wartend) is core.RetryOutcome.UNDERWAY
+        assert warnungen() == 1
+        db_conn.execute("DELETE FROM procrastinate_workers")
+        assert offener_client.retry(gescheitert) is core.RetryOutcome.RESET
+        assert warnungen() == 2
+
+
 def test_retry_warnt_nicht_bei_laufendem_daemon(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
