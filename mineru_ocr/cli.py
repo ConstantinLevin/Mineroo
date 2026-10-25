@@ -502,28 +502,48 @@ def wait(
 
     Ruft `OCRClient.as_completed`: Je Dokument steht eine Zeile auf stdout, sobald
     es endgueltig ist (`HASH: ZUSTAND`, mit `--json` eine JSON-Zeile mit seinen
-    Angaben, ohne `raw`). Ein gescheitertes beendet das Warten auf die uebrigen
-    nicht. Die Frist gilt fuer alle zusammen; nach ihrem Ablauf nennt stderr die
-    noch offenen. Frist und Strg-C beenden nur das Warten, kein Job wird
-    angefasst.
+    Angaben, ohne `raw`). Die Zeilen kommen in der Reihenfolge, in der die
+    Dokumente fertig werden; war ein Ziel ein Pfad, nennt seine Zeile ihn deshalb
+    mit (`HASH: ZUSTAND  PFAD`, in JSON `paths`, leer fuer ein Ziel, das ein Hash
+    war). Ein gescheitertes beendet das Warten auf die uebrigen nicht. Die Frist
+    gilt fuer alle zusammen; nach ihrem Ablauf nennt stderr die noch offenen.
+    Frist und Strg-C beenden nur das Warten, kein Job wird angefasst.
 
     Exit-Code: 0, wenn alle `done` oder `empty` sind; 3, wenn eines `failed` oder
     `input_error` ist; 4, wenn nach Ablauf der Frist noch eines offen ist; 1 bei
-    einem Betriebsfehler (auch ein unbekannter Hash, sofort gemeldet); 130 bei
-    Strg-C. Bei mehreren gilt der schwerste, 1 vor 4 vor 3 vor 0.
+    einem Betriebsfehler (auch ein unbekannter Hash, sofort gemeldet); 2 bei einer
+    Frist, die keine Zahl ab null ist; 130 bei Strg-C. Bei mehreren gilt der
+    schwerste, 1 vor 4 vor 3 vor 0.
     """
+    if timeout is not None and not timeout >= 0:
+        # `nan` liefe nie ab, eine negative Frist ist ein Irrtum.
+        raise typer.BadParameter(
+            f"Sekunden ab null erwartet, nicht {timeout!r}.", param_hint="--timeout"
+        )
     code = 0
     try:
         with OCRClient(preflight=False) as klient:
-            hashes = [_ziel(target) for target in targets]
+            pfade: dict[str, list[str]] = {}
+            for target in targets:
+                eintrag = pfade.setdefault(_ziel(target), [])
+                if not HASH_FORM.match(target) and target not in eintrag:
+                    eintrag.append(target)
             try:
-                for huelle in klient.as_completed(hashes, timeout=timeout):
+                for huelle in klient.as_completed(list(pfade), timeout=timeout):
                     if json_out:
                         typer.echo(
-                            json_modul.dumps(huelle.to_dict(), ensure_ascii=False, default=str)
+                            json_modul.dumps(
+                                {**huelle.to_dict(), "paths": pfade[huelle.sha256]},
+                                ensure_ascii=False,
+                                default=str,
+                            )
                         )
                     else:
-                        typer.echo(f"{huelle.sha256}: {huelle.status.value}")
+                        typer.echo(
+                            "  ".join(
+                                [f"{huelle.sha256}: {huelle.status.value}", *pfade[huelle.sha256]]
+                            )
+                        )
                     if not huelle.success:
                         # Weder ein Erfolg noch ein Fehler DES WERKZEUGS: Es hat
                         # einwandfrei gearbeitet, das Ergebnis ist nur schlecht.

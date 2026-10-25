@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import time
@@ -17,7 +18,7 @@ from mineru_ocr import client as client_modul
 from mineru_ocr import config, core, db, tasks
 from mineru_ocr.client import OCRClient
 from mineru_ocr.config import Settings
-from mineru_ocr.db import DocumentStatus, Phase, write_terminal_async
+from mineru_ocr.db import WAIT_APPLICATION_NAME, DocumentStatus, Phase, write_terminal_async
 from mineru_ocr.errors import (
     ConfigDriftError,
     ConfigurationError,
@@ -1610,6 +1611,54 @@ def test_wait_all_und_as_completed_nehmen_eine_folge_von_hashes(
         offener_client.wait_all([Path("scan.pdf")])  # type: ignore[list-item]
     with pytest.raises(TypeError, match="sha256"):
         offener_client.as_completed([Path("scan.pdf")])  # type: ignore[list-item]
+    with pytest.raises(TypeError, match="wait"):
+        offener_client.wait_all(b"f" * 64)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="wait"):
+        offener_client.as_completed(b"f" * 64)  # type: ignore[arg-type]
+
+
+def test_warten_auf_einem_nicht_betretenen_client_wirft_beim_aufruf(
+    _test_datenbank: str,
+) -> None:
+    """Ein Client, der nicht betreten wurde, hat keine Verbindung fuer die
+    Huellen. Das sagt schon der Aufruf, nicht erst das erste Ergebnis — auch bei
+    `as_completed`, dessen Iterator sonst erst beim Weiterschalten arbeitet."""
+    klient = OCRClient(db_dsn=_test_datenbank, api_key="x", preflight=False)
+    with pytest.raises(ConfigurationError, match="betreten"):
+        klient.wait_all(["f" * 64])
+    with pytest.raises(ConfigurationError, match="betreten"):
+        klient.as_completed(["f" * 64])
+
+
+async def test_wer_as_completed_vorher_schliesst_schliesst_die_warte_verbindung(
+    offener_client: OCRClient, async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """Wer nach dem ersten Ergebnis aufhoert und den Iterator schliesst, laesst
+    keine Warte-Verbindung zurueck, obwohl noch eines offen ist."""
+    fertig, offen = _abschicken(offener_client, "fertig"), _abschicken(offener_client, "offen")
+    await write_terminal_async(
+        async_conn, sha256=fertig, status=DocumentStatus.DONE, raw={}, endpoint_id="testendpoint"
+    )
+
+    def warte_verbindungen() -> int:
+        ende = time.monotonic() + 2.0
+        while True:
+            zeile = offener_client.conn.execute(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND application_name = %s",
+                (WAIT_APPLICATION_NAME,),
+            ).fetchone()
+            anzahl = int(zeile[0]) if zeile is not None else 0
+            if anzahl == 0 or time.monotonic() > ende:
+                return anzahl
+            time.sleep(0.05)
+
+    fertige = offener_client.as_completed([fertig, offen], timeout=30.0)
+    assert next(fertige).sha256 == fertig
+    assert warte_verbindungen() == 1
+    with contextlib.closing(fertige):
+        pass
+    assert warte_verbindungen() == 0
 
 
 def test_ocr_liefert_das_ergebnis_eines_treffers_ohne_etwas_einzureihen(

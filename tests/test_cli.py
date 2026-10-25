@@ -321,6 +321,42 @@ async def test_wait_ohne_json_nennt_je_dokument_hash_und_zustand(
     assert ergebnis.stdout == f"{fertig.sha256}: done\n"
 
 
+async def test_wait_nennt_in_jeder_zeile_den_pfad_ihres_ziels(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    """Die Zeilen kommen in der Reihenfolge, in der die Dokumente fertig werden.
+    War das Ziel ein Pfad, nennt die Zeile ihn deshalb mit — sonst liesse sich
+    keine Zeile ihrer Datei zuordnen. Die Pfade kennt nur die CLI; ein Ziel, das
+    ein Hash war, hat keinen. Dasselbe Dokument als Pfad und als Hash ist eine
+    Zeile."""
+    fertig = await _endgueltig(
+        async_conn, db_conn, tmp_path, _test_datenbank, "fertig.png", DocumentStatus.DONE
+    )
+    leer = await _endgueltig(
+        async_conn, db_conn, tmp_path, _test_datenbank, "leer.png", DocumentStatus.EMPTY
+    )
+    pfad_fertig, pfad_leer = str(tmp_path / "fertig.png"), str(tmp_path / "leer.png")
+    ziele = ["wait", pfad_fertig, pfad_leer, leer.sha256]
+
+    text = cli.invoke(app, ziele)
+    mit_json = cli.invoke(app, [*ziele, "--json"])
+
+    assert text.exit_code == 0, text.output
+    assert sorted(text.stdout.splitlines()) == sorted(
+        [f"{fertig.sha256}: done  {pfad_fertig}", f"{leer.sha256}: empty  {pfad_leer}"]
+    )
+    assert mit_json.exit_code == 0, mit_json.output
+    assert sorted((z["sha256"], z["paths"]) for z in map(json.loads, mit_json.stdout.splitlines())) == sorted(
+        [(fertig.sha256, [pfad_fertig]), (leer.sha256, [pfad_leer])]
+    )
+    nur_hash = cli.invoke(app, ["wait", fertig.sha256, "--json"])
+    assert json.loads(nur_hash.stdout)["paths"] == []
+
+
 async def test_wait_endet_mit_drei_wenn_eines_scheiterte(
     cli: CliRunner,
     db_conn: psycopg.Connection[Any],
@@ -367,17 +403,57 @@ async def test_wait_endet_mit_vier_wenn_nach_der_frist_eines_offen_ist(
     assert offen in ergebnis.stderr
 
 
-async def test_wait_betriebsfehler_schlaegt_alles(
+async def test_wait_ein_unbekannter_hash_ist_sofort_eins(
     cli: CliRunner,
     db_conn: psycopg.Connection[Any],
     tmp_path: Path,
 ) -> None:
-    """Ein Betriebsfehler — hier ein unbekannter Hash, sofort gemeldet — ist 1,
-    auch wenn ein anderes Dokument nach der Frist offen waere."""
+    """Ein unbekannter Hash ist ein Betriebsfehler und kommt sofort: 1, noch ehe
+    die Frist fuer das offene Dokument daneben ablaufen kann. Einen Vorrang
+    zwischen 1 und 4 braucht es nicht weiter: Ein Betriebsfehler und der
+    Fristablauf beenden das Warten beide, also kommt nie beides."""
     offen = _offen(db_conn, tmp_path, "offen.png")
-    ergebnis = cli.invoke(app, ["wait", offen, "f" * 64, "--timeout", "0.5"])
+    ergebnis = cli.invoke(app, ["wait", offen, "f" * 64, "--timeout", "30"])
     assert ergebnis.exit_code == 1
     assert "f" * 64 in ergebnis.stderr
+    assert ergebnis.stdout == ""
+
+
+async def test_wait_ein_betriebsfehler_nach_einem_gescheiterten_ist_eins(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1 vor 3: Steht schon die Zeile eines gescheiterten Dokuments, und endet
+    das Warten dann mit einem Betriebsfehler, ist der Code 1. Die Zeile bleibt
+    stehen."""
+    kaputt = await _endgueltig(
+        async_conn, db_conn, tmp_path, _test_datenbank, "kaputt.png", DocumentStatus.FAILED
+    )
+    echt = client_modul.OCRClient.as_completed
+
+    def dann_betriebsfehler(self: Any, hashes: Any, timeout: Any = None) -> Any:
+        yield from echt(self, hashes, timeout=timeout)
+        raise DatabaseError("Warten: Datenbank antwortet nicht")
+
+    monkeypatch.setattr(client_modul.OCRClient, "as_completed", dann_betriebsfehler)
+    ergebnis = cli.invoke(app, ["wait", kaputt.sha256])
+
+    assert ergebnis.exit_code == 1
+    assert ergebnis.stdout == f"{kaputt.sha256}: failed\n"
+    assert "DatabaseError" in ergebnis.stderr
+
+
+@pytest.mark.parametrize("frist", ["nan", "-1"])
+def test_wait_weist_eine_frist_ab_die_nie_oder_schon_abgelaufen_waere(
+    cli: CliRunner, frist: str
+) -> None:
+    """`nan` liefe nie ab, eine negative Frist ist ein Irrtum: Fehlbedienung, 2."""
+    ergebnis = cli.invoke(app, ["wait", "f" * 64, "--timeout", frist])
+    assert ergebnis.exit_code == 2, ergebnis.output
 
 
 def test_wait_endet_bei_strg_c_mit_130(

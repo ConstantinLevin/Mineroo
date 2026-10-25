@@ -30,7 +30,6 @@ from collections.abc import (
     Coroutine,
     Generator,
     Iterable,
-    Iterator,
     Sequence,
 )
 from datetime import datetime
@@ -894,7 +893,7 @@ class OCRClient:
 
     def as_completed(
         self, hashes: Sequence[str], timeout: float | None = None
-    ) -> Iterator[OCRWrapper]:
+    ) -> Generator[OCRWrapper]:
         """Liefert jedes Dokument, sobald es endgueltig ist — in der Reihenfolge,
         in der sie fertig werden; bereits fertige sofort.
 
