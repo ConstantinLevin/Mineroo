@@ -105,8 +105,8 @@ Norwegen, denn dort gilt die DSGVO —, und die zulässige Liste ist der Sollwer
 ### Der übliche Ablauf
 
 ```bash
-mineru-ocr preflight     # prueft Endpoint, Konto und Daemon. VERAENDERT NICHTS.
 mineru-ocr setup         # legt Datenbank und Schema an. Mehrfach aufrufbar.
+mineru-ocr preflight     # prueft Endpoint, Konto und Daemon. VERAENDERT NICHTS.
 mineru-ocr daemon        # in einem EIGENEN Fenster: hier laeuft der Exekutor
 mineru-ocr ocr ~/Scans   # einreihen — kehrt sofort zurueck
 mineru-ocr status
