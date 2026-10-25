@@ -294,12 +294,12 @@ async def ocr_document(context: procrastinate.JobContext, sha256: str) -> None:
 
     Args:
         context: Von Procrastinet gestellt; traegt die Betriebsmittel des Workers.
-        sha256: Das einzige Argument des Jobs. Alles Weitere steht in der Zeile —
+        sha256: Das einzige Argument des Jobs. Die Bytes stehen in `inputs` —
             und das ist Absicht: Ein Job-Argument ist eine Kopie, und eine Kopie
-            kann von der Zeile abweichen. Ein Hash kann das nicht.
+            kann von der Datenbank abweichen. Ein Hash kann das nicht.
 
     Idempotenz:
-        Ja, ueber den Terminal-Guard im Executor — mit der gewollten Ausnahme
+        Ja, ueber das Nachsehen im Executor — mit der gewollten Ausnahme
         `failed`.
 
     Kosten: JA.
@@ -312,9 +312,10 @@ async def ocr_document(context: procrastinate.JobContext, sha256: str) -> None:
     # ihr. Also wird die Frage hier beantwortet und die Antwort weitergereicht.
     #
     # Wozu der Executor sie braucht: Bei einem wiederholbaren Fehler wirft er
-    # normalerweise, ohne die Zeile anzufassen — die Warteschlange legt ja neu
+    # normalerweise, ohne etwas zu schreiben — die Warteschlange legt ja neu
     # vor. Kommt aber kein Versuch mehr, faende dieses „neu vorlegen" nie statt,
-    # und die Zeile bliebe fuer immer `new`. Genau so war es gebaut: Ein
+    # und das Dokument bliebe fuer immer ohne Ergebnis. Genau so war es gebaut
+    # (damals mit einer Zeile `new`): Ein
     # Dokument, das dreimal transient scheiterte, endete mit Job `failed` und
     # Zeile `new`, tauchte nie im `failed`-Zaehler auf und zaehlte fuer immer als
     # „pending" — obwohl `errors.py` und `db.py` beide zusichern, aus
@@ -380,12 +381,12 @@ async def retry_stalled(context: procrastinate.JobContext, timestamp: int) -> No
 
     Was daraus fuer das Dokument folgt: Es wird von vorn verarbeitet. Der
     haengengebliebene Job wird auf `todo` zurueckgesetzt, sein Versuchszaehler
-    steigt, und beim naechsten Anlauf beginnt der Executor bei Schritt 0 — die
-    Zeile stand ja noch auf `new`, also greift der Guard nicht.
+    steigt, und beim naechsten Anlauf beginnt der Executor bei Schritt 0 — ein
+    Ergebnis gab es ja noch nicht, also kehrt das Nachsehen nicht zurueck.
 
     Einen ZEILEN-Abgleich gibt es hier ausdruecklich nicht (Plan 2.4, ein Buch):
-    Weil die Zeile zwischen Anlage und Endzustand nie angefasst wird, kann sie
-    mit nichts auseinanderlaufen. Es gibt nichts abzugleichen.
+    Weil die Ergebniszeile erst am Ende des Jobs entsteht, kann sie mit nichts
+    auseinanderlaufen. Es gibt nichts abzugleichen.
 
     Args:
         context: Von Procrastinate gestellt.
@@ -430,7 +431,7 @@ def enqueue_document(
 
     `lock = sha256` schliesst diese Luecke. Es serialisiert Jobs gleichen Locks —
     das Duplikat startet erst NACH dem laufenden Job. Endet der laufende
-    erfolgreich, endet das Duplikat sofort am Terminal-Guard, ohne etwas zu
+    erfolgreich, endet das Duplikat sofort am Nachsehen des Executors, ohne etwas zu
     kosten. Endet er `failed`, verarbeitet das Duplikat das Dokument neu, und
     auch das ist gewollt: Es ist genau der eine weitere Versuch. Der Lock wird
     bei JEDEM Job-Ende frei, auch bei einem gescheiterten — „the second task

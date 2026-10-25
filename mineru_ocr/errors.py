@@ -7,8 +7,8 @@ Retry-Strategie (die entscheidet, ob der Job noch einmal vorgelegt wird) und vom
 Exception-Handler des Tasks (der entscheidet, ob er vor dem Werfen `status='failed'`
 in die Zeile schreibt). Beantworten die beiden Seiten die Frage verschieden,
 entsteht der schlimmste Zustand dieses Systems: ein Job, der noch einmal laeuft,
-waehrend die Zeile schon `failed` sagt — oder eine Zeile, die `new` bleibt, waehrend
-der Job endgueltig aufgegeben hat. Deshalb gibt es `classify_failure` genau einmal,
+waehrend die Zeile schon `failed` sagt — oder ein Dokument, das ohne Ergebnis bleibt,
+waehrend der Job endgueltig aufgegeben hat. Deshalb gibt es `classify_failure` genau einmal,
 und beide Seiten rufen sie.
 
 Die drei moeglichen Antworten sind nicht zwei, sondern drei, und das ist eine
@@ -254,22 +254,23 @@ class DatabaseError(MineruOcrError):
 
 
 class DocumentNotFound(DatabaseError):
-    """Zu diesem Hash gibt es keine Zeile.
+    """Zu diesem Hash gibt es nicht, was gefragt ist.
 
-    Beim Task heisst das: Der Job verweist auf ein Dokument, das es nicht mehr
-    gibt (jemand hat die Zeile geloescht). Beim `wait` heisst es: Der Aufrufer
-    wartet auf etwas, das nie eingereiht wurde — und bekommt das sofort gesagt,
-    statt bis zum Timeout zu warten.
+    Beim `wait` und bei `document` heisst das: weder Ergebnis noch Eingabe. Der
+    Aufrufer wartet auf etwas, das nie abgeschickt wurde — und bekommt das
+    sofort gesagt, statt bis zum Timeout zu warten. Bei `get` und an einer Huelle
+    heisst es: Es gibt (noch) kein Ergebnis; die Meldung sagt, ob das Dokument
+    offen oder unbekannt ist.
     """
 
 
 class TerminalOverwriteError(DatabaseError):
     """Es wurde versucht, ein bereits geschriebenes Endergebnis zu ueberschreiben.
 
-    Das ist ein Programmierfehler, kein Betriebsfall: Der Terminal-Guard des Tasks
+    Das ist ein Programmierfehler, kein Betriebsfall: Das Nachsehen des Tasks
     (Plan 5.1, Schritt 0) haelt jeden Wiederlauf ueber einem fertigen Dokument auf,
     bevor es dazu kommen kann. Die Ausnahme ist das Netz darunter — sie faengt
-    genau den Fall, dass der Guard einmal falsch gesetzt wird.
+    genau den Fall, dass das Nachsehen einmal falsch gesetzt wird.
 
     Der EINE erlaubte Ueberschreibungsweg ist der Wiederanlauf eines gescheiterten
     Dokuments (Plan 4.2): Ein per `retry_job_by_id` wieder vorgelegter Job MUSS
@@ -442,7 +443,7 @@ def should_run_again(exc: BaseException) -> bool:
     `BALANCE_PAUSE` als „werfen, nichts schreiben", die Strategie aber als „nicht
     wiederholen", weil sie nur auf `RETRYABLE` prüfte. Das Ergebnis waere ein
     Dokument gewesen, das wegen eines LEEREN KONTOS endgueltig aufgegeben wird,
-    obwohl mit ihm nichts ist — und dessen Zeile dabei auf `new` stehen bleibt,
+    obwohl mit ihm nichts ist — und das dabei ohne Ergebnis liegen bleibt,
     weil der Executor ja nichts geschrieben hat. Die Einstufung war an beiden
     Stellen dieselbe; die Gruppierung war es nicht. Also steht auch sie hier.
 

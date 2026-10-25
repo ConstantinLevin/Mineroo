@@ -125,7 +125,7 @@ nennt dann die Stellen bzw. sagt, was mit `~/.runpod/config.toml` ist:
 | Weg | Endpoint | RunPod-Schlüssel |
 |---|---|---|
 | `setup`, `get`, `wait`, `show`, `markdown`, `retry` | nein | nein |
-| Abschicken (`ocr_start`, `ocr`) | ja, bis #25 die Zeile erst am Ende des Jobs anlegt | nein |
+| Abschicken (`ocr_start`, `ocr`) | nein (den Endpoint trägt erst die Ergebniszeile, die der Job anlegt) | nein |
 | `daemon`, `preflight`, `workers` | ja | ja |
 | `status`, `credit`, `account` | nein | ja |
 
@@ -153,8 +153,9 @@ Preflight berichtet den Ist-Wert und bewertet ihn als „nicht prüfbar“.
 **Pfade kennt nur die CLI.** Die Bibliothek nimmt Bytes und gibt Hashes
 (`OCRClient.ocr_start(bytes | Sequence[bytes])`, `ocr`, `wait`, `get`, `document`);
 `cli.py` liest Dateien und Ordner, hasht sie und nennt die Zuordnung von Pfad zu
-Hash. `ocr --json` gibt je Dokument Hash, Zustand und ob eingereiht, dazu die
-übersprungenen Dateien. Eine ausdrücklich genannte, nicht unterstützte oder zu große
+Hash. `ocr --json` gibt je Dokument Hash, Zustand (`null`, solange es offen ist)
+und ob eingereiht, dazu die übersprungenen Dateien. `show` zeigt, was `document()`
+sagt, ohne `raw`; `show --raw` gibt die vollständige Antwort als JSON aus. Eine ausdrücklich genannte, nicht unterstützte oder zu große
 Datei hält die übrigen nicht auf, `ocr` endet dann mit Exit-Code 1; in Ordnern
 werden solche Dateien übersprungen und gezählt. Auf stdout stehen nur Daten,
 Meldungen und Warnungen (auch die der Bibliothek) gehen auf stderr. Es gibt in der
@@ -240,17 +241,37 @@ Was daraus folgt und nicht aus einer einzelnen Datei hervorgeht:
 
 ### Ein Buch, nicht zwei
 
+Jede Tatsache steht an genau einer Stelle: das Ergebnis in `documents`, die
+offene Eingabe in `inputs`, was wartet oder läuft in Procrastinates Job-Tabelle.
 Die Tabelle `documents` trägt **ausschließlich Endzustände**:
-`new | done | empty | failed | input_error`. Es gibt bewusst **kein
-`processing`**. „Läuft gerade" wird stattdessen aus dem jüngsten verknüpften
-Procrastinate-Job **gelesen** (`queueing_lock = sha256`, `ORDER BY id DESC LIMIT
-1`) und nirgends gespiegelt. Wer das nicht weiß, sucht vergeblich nach dem
-Feld — oder, schlimmer, führt es ein und erzeugt genau die zwei Bücher, die
-auseinanderlaufen.
+`done | empty | failed | input_error`. Es gibt **kein `new`** und **kein
+`processing`**: Die Ergebniszeile legt **der Job an, wenn er endet**
+(`db.write_terminal_async`; überschrieben werden darf nur eine `failed`-Zeile),
+nicht das Abschicken. **Offen ist ein Dokument, solange seine Eingabe in
+`inputs` steht** und es kein Ergebnis hat. Bei `failed` steht die Eingabe auch,
+dann entscheidet das Ergebnis.
 
-Daraus folgt: Es gibt keinen Aufräum-Wächter, der verwaiste `processing`-Zeilen
+Gelesen wird beides in **einer** Anweisung (`db.read_states`, ein `LEFT JOIN`
+über `documents` und `inputs`): Ergebnis da heißt fertig, Eingabe da heißt
+offen, keins von beiden heißt unbekannt. Zwei Abfragen nacheinander (erst
+`documents`, dann `inputs`) meldeten ein Dokument, dessen Job genau dazwischen
+fertig wird, fälschlich als unbekannt. Das Warten (`db.wait_for_terminal`) fragt
+Procrastinate nicht und lädt kein `raw`.
+
+„Läuft gerade" wird aus dem jüngsten verknüpften Procrastinate-Job **gelesen**
+(`queueing_lock = sha256`, `ORDER BY id DESC LIMIT 1`), nur von
+`OCRClient.document`, und nirgends gespiegelt. Wer das nicht weiß, sucht
+vergeblich nach dem Feld — oder, schlimmer, führt es ein und erzeugt genau die
+zwei Bücher, die auseinanderlaufen. `document()` meldet den Endzustand, ein
+offenes Dokument samt dem Zustand seines Jobs (`Phase.WAITING`, `RUNNING` oder
+`ENDED_WITHOUT_RESULT`, dann hilft `retry`), und `DocumentNotFound` für einen
+unbekannten Hash. `status` zählt die Endzustände und `open` (Eingabe ohne
+Ergebnis, `db.count_open`).
+
+Daraus folgt: Es gibt keinen Aufräum-Wächter, der verwaiste Zeilen
 zurücksetzt, weil es keine gibt. Zuständig sind `db.DocumentStatus`,
-`db.derive_status` und `db.Phase`; die Verknüpfung entsteht in `tasks.py`.
+`db.DocumentState`, `db.derive_status` und `db.Phase`; die Verknüpfung zum Job
+entsteht in `tasks.py`.
 
 `empty` ist ein **gültiges** Ergebnis, kein Fehler: Der Gegenstand war leer. Als
 Erfolg geführt wäre es unsichtbarer Verlust, als Fehler geführt erzeugte es
@@ -261,21 +282,27 @@ endlose Wiedervorlage und Doppelkosten.
 Die Bytes eines Dokuments stehen in der Tabelle `inputs` (`sha256 text PRIMARY
 KEY`, `content bytea NOT NULL`), **solange das Dokument kein Endergebnis hat**.
 Pfade gibt es weder in `documents` noch im Job; der Job trägt nur den Hash, und
-`OCRClient.ocr_start` legt Zeile, Eingabe und Job beim Abschicken in **einer**
-Transaktion an, **je Dokument** in einer eigenen und nie mehrere in einer (zwei
-Aufrufer mit überlappenden Mengen in verschiedener Reihenfolge würden sich sonst an
-den Eindeutigkeitsprüfungen gegenseitig blockieren). Es entsteht keine Datei, und das
-Einreihen öffnet keine PDF: Die Seitenzahl bestimmt der Job aus den Bytes und
-schreibt sie mit dem Endergebnis.
+`OCRClient.ocr_start` legt Eingabe und Job beim Abschicken in **einer**
+Transaktion an (`INSERT INTO inputs … ON CONFLICT DO NOTHING`, dann einreihen),
+**je Dokument** in einer eigenen und nie mehrere in einer (zwei Aufrufer mit
+überlappenden Mengen in verschiedener Reihenfolge würden sich sonst an den
+Eindeutigkeitsprüfungen gegenseitig blockieren). Steht die Eingabe schon, ist das
+Dokument unterwegs, und es geschieht nichts: Der Primärschlüssel von `inputs` ist
+die Sperre gegen ein zweites Einreihen, auch gleichzeitig und während der Job
+läuft. Es entsteht keine Datei, und das Einreihen öffnet keine PDF: Typ, Größe und
+Seitenzahl bestimmt der Job aus den Bytes und schreibt sie mit dem Endergebnis
+(`mime` bleibt leer bei einem Typ, den das Paket nicht kennt, beides bei fehlender
+Eingabe).
 
 Abschicken prüft **erst alle** übergebenen Dokumente (`core.prepare`), dann reiht es
 ein; sonst wären bei einem abgewiesenen Element die vorderen schon abgeschickt.
 Abgewiesen wird, woraus nichts Neues entstehen kann: ein Typ, den das Paket nicht
 liest, und ein Ganzdokument-Format oder Bild über `max_payload_bytes`. Gibt es eine
 Ergebniszeile, ist das ein **Treffer**, auch bei `failed`, und es geschieht nichts
-(ein gescheitertes Dokument liest nur `retry` neu); eine Zeile `new` heißt
-unterwegs. Der Treffer wird ohne `raw` gelesen: ein erneuter Lauf über 30.000
-fertige Dokumente zöge sonst rund 34 GB.
+(ein gescheitertes Dokument liest nur `retry` neu); eine stehende Eingabe ohne
+Ergebnis heißt unterwegs. Der Treffer wird ohne `raw` gelesen: ein erneuter Lauf
+über 30.000 fertige Dokumente zöge sonst rund 34 GB. `Submitted.status` ist der
+Endzustand eines Treffers und `None` für ein offenes Dokument.
 
 Der Job liest `content` über den Hash auf einer **eigenen kurzlebigen
 Verbindung** (`db.read_input_async`), immer mit `binary=True`, und prüft den Hash
@@ -286,9 +313,10 @@ Leitung, doppelt so groß.
 
 **Gelöscht wird die Eingabe mit dem Endergebnis, in derselben Transaktion**
 (`db.write_terminal_async`), bei `done`, `empty` und `input_error`. Bei `failed`
-bleibt sie stehen, damit `retry` etwas zu lesen hat. „Offen" ist ein Dokument
-also bis zum Löschen an zwei Stellen ablesbar, an der Zeile `new` und an der
-Eingabe; dass die Zeile erst am Ende des Jobs entsteht, ist ein eigenes Ticket.
+bleibt sie stehen, damit `retry` etwas zu lesen hat. Findet ein Job schon ein
+Ergebnis `done`, `empty` oder `input_error` vor (ein Abschicken legte die Eingabe
+genau im Augenblick des Endschreibens neu an), löscht er die Eingabe und endet
+ohne RunPod-Aufruf.
 
 Eine Eingabe über `db.MAX_INPUT_BYTES` (1 GB, Postgres begrenzt ein Feld auf knapp
 1 GiB) weist das Abschicken mit `TooLargeError` ab; die CLI prüft Typ und Größe schon
@@ -338,8 +366,8 @@ hinweg, und eine Vereinigung behielte nur das letzte.)
   RunPod-Zugang und eine Verbindung; die Warteschlange liegt darüber in
   `tasks.py`. Deshalb ist der Exekutor ohne Warteschlange testbar.
 - `db.py` ist die **einzige** Stelle mit SQL auf `documents` und `inputs`. Wer anderswo eine
-  Abfrage schreibt, umgeht den Vertrag; für den Lesezugriff aus dem Exekutor gibt
-  es `db.get_document_async`.
+  Abfrage schreibt, umgeht den Vertrag; für das Nachsehen aus dem Exekutor gibt
+  es `db.get_status_async` und `db.delete_input_async`.
 - `runpod.py` ist die einzige Stelle, die HTTP mit RunPod spricht. `RunPodAccess`
   ist das Protokoll dazu — Tests setzen dort eine eigene Umsetzung ein, statt mit
   `type: ignore` an der Klasse vorbeizuarbeiten.

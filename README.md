@@ -55,8 +55,9 @@ Endpoint, Datenbank und die Sollwerte des Preflights stehen **nicht im Code**,
 sondern in einer Konfiguration. Es gibt für Endpoint und Datenbank keine
 Voreinstellung. Wer die Datenbank nirgends einstellt, bekommt beim ersten Aufruf
 eine Meldung, die alle Stellen nennt. Den Endpoint verlangt nur, wer ihn braucht
-(Abschicken, `daemon`, `preflight`); erst dort kommt die Meldung, `setup` und die
-lesenden Kommandos fragen nicht nach ihm.
+(`daemon`, `preflight`); erst dort kommt die Meldung. Abschicken, `setup` und die
+lesenden Kommandos fragen nicht nach ihm: Den Endpoint trägt erst die
+Ergebniszeile, die der Job am Ende anlegt.
 
 Quellen, vom Stärksten: ausdrückliche Angabe (Argument oder Option) →
 Umgebungsvariable `MINERU_OCR_<NAME>` → Konfigurationsdatei → Voreinstellung. Die
@@ -103,8 +104,7 @@ zählen nicht: `HF_TOKEN` wird verdeckt, `MAX_TOKENS` und `MONKEY` nicht.
 steht nie in dieser Konfiguration. Verlangt wird er nur, wo RunPod angesprochen
 wird: von `daemon`, `status` und `preflight` und den Lesefragen an RunPod.
 Abschicken, `get`, `wait`, `show`, `markdown`, `retry` und `setup` brauchen nur die
-Datenbank; Abschicken braucht dazu den Endpoint (die Zeile trägt ihn), `setup` nicht
-einmal den. „Nur EU" heißt EWR — EU-Staaten plus Island und
+Datenbank. „Nur EU" heißt EWR — EU-Staaten plus Island und
 Norwegen, denn dort gilt die DSGVO —, und die zulässige Liste ist der Sollwert
 `allowed_data_centers`.
 
@@ -132,8 +132,10 @@ Neun Kommandos gibt es: `setup`, `daemon`, `ocr`, `status`, `show`, `wait`,
 
 **Pfade kennt nur die CLI.** Sie liest Dateien und Ordner (in Ordnern über das
 Muster `--glob`), hasht sie und nennt in ihrer Ausgabe die Zuordnung von Pfad zu
-Hash; `ocr --json` gibt je Dokument den Hash, den Zustand und ob es eingereiht
-wurde, dazu die übersprungenen Dateien. Eine ausdrücklich genannte, nicht
+Hash; `ocr --json` gibt je Dokument den Hash, den Zustand (`null`, solange es
+offen ist) und ob es eingereiht wurde, dazu die übersprungenen Dateien. `show` zeigt,
+wo ein Dokument steht (Endzustand, oder offen samt seinem Job); `show --raw` gibt
+die vollständige Antwort als JSON aus. Eine ausdrücklich genannte, nicht
 unterstützte oder zu große Datei hält die übrigen nicht auf: Sie wird mit Grund
 gemeldet, und `ocr` endet mit Exit-Code 1. In Ordnern werden solche Dateien
 übersprungen und gezählt. Ziele für `show`, `wait`, `markdown` und `retry` sind
@@ -218,9 +220,10 @@ Die ausführliche Fassung steht in [`CLAUDE.md`](CLAUDE.md) und die Begründunge
 vier Entscheidungen, ohne die man den Code falsch liest:
 
 **Ein Buch, nicht zwei.** Die Tabelle `documents` trägt ausschließlich
-Endzustände: `new | done | empty | failed | input_error` (so ist es heute gebaut;
-die Spec ändert das, siehe oben). „Läuft gerade" wird aus dem
-jüngsten verknüpften Procrastinate-Job **gelesen** und nirgends gespiegelt. Wer
+Endzustände: `done | empty | failed | input_error`. Die Zeile legt der Job an, wenn
+er endet; offen ist ein Dokument, solange seine Eingabe in `inputs` steht. „Läuft
+gerade" wird aus dem jüngsten verknüpften Procrastinate-Job **gelesen** und
+nirgends gespiegelt. Wer
 das nicht weiß, sucht vergeblich nach dem Feld — oder führt es ein und erzeugt
 genau die zwei Bücher, die auseinanderlaufen.
 
