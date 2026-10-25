@@ -584,6 +584,67 @@ async def process_document(
         raise
 
 
+async def write_failure_if_no_result(
+    sha256: str,
+    *,
+    settings: Settings,
+    pool: AsyncConnectionPool,
+    grund: str,
+) -> bool:
+    """Schreibt `failed` fuer ein Dokument, dessen Job ohne eigenen Lauf endet.
+
+    Fuer den Waechter (`tasks.retry_stalled`): Ist das Budget eines haengenden
+    Jobs erschoepft, legt er ihn nicht mehr vor, und ohne diesen Schritt bliebe
+    das Dokument ohne Ergebnis liegen. Die Regel, die das Modell traegt: Jeder
+    Job, der nicht neu eingereiht wird, schreibt ein Ergebnis (Mineroo#27).
+
+    Geschrieben wird NUR, wenn das Dokument noch kein Ergebnis hat. Ein
+    vorhandenes bleibt, auch ein `failed`: Dessen `raw` traegt womoeglich
+    bezahlte Teilstuecke, und ein `failed` ohne Inhalt darueber waere genau der
+    Verlust, gegen den die Abruf-Regel steht. Zwischen Nachsehen und Schreiben
+    kann kein anderer Job dieses Dokuments ein Ergebnis anlegen: Der haengende
+    Job haelt seinen `lock`, bis er beendet ist.
+
+    Die Form ist die des Fehlerpfads von `process_document` (ohne Teilstuecke,
+    mit Fehler-Umschlag und Vermerk). Die Eingabe bleibt stehen, wie bei jedem
+    `failed`, damit `retry` etwas zu lesen hat.
+
+    Args:
+        sha256: Welches Dokument.
+        settings: Fuer den Endpoint, der in die Zeile geht.
+        pool: Verbindungen zur eigenen Datenbank.
+        grund: Was in `error`, im Umschlag und im Vermerk steht.
+
+    Returns:
+        True, wenn das Ergebnis angelegt wurde; False, wenn schon eins da war.
+
+    Kosten: keine.
+    """
+    vermerke: list[dict[str, Any]] = [
+        {
+            "kind": "gescheitert",
+            "at": _jetzt(),
+            "teilstuecke_bezahlt": 0,
+            "detail": grund,
+        }
+    ]
+    ergebnis = _ergebnis_fuer_endzustand([], vermerke)
+    ergebnis["failure"] = {"type": "JobOhneErgebnis", "message": grund, "at": _jetzt()}
+    async with pool.connection() as conn:
+        if await db.get_status_async(conn, sha256) is not None:
+            return False
+        await db.write_terminal_async(
+            conn,
+            sha256=sha256,
+            status=db.DocumentStatus.FAILED,
+            raw=ergebnis,
+            endpoint_id=settings.require_endpoint_id(),
+            error=grund,
+            notes=vermerke,
+        )
+    return True
+
+
 _GUARD_ZUSTAENDE: frozenset[db.DocumentStatus] = frozenset(
     {
         db.DocumentStatus.DONE,

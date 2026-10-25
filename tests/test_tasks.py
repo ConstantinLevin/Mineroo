@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import inspect
+import types
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -21,10 +22,10 @@ from typing import Any
 import procrastinate
 import pytest
 from procrastinate import testing
-from procrastinate.jobs import Job
+from procrastinate.jobs import Job, Status
 from psycopg_pool import AsyncConnectionPool
 
-from mineru_ocr import client, config, daemon, tasks
+from mineru_ocr import client, config, daemon, executor, tasks
 from mineru_ocr.config import Settings
 from mineru_ocr.errors import (
     CorruptDocumentError,
@@ -86,6 +87,7 @@ def _job(attempts: int = 0) -> Job:
         lock=HASH,
         queueing_lock=None,
         task_name=config.TASK_OCR_DOCUMENT,
+        task_kwargs={"sha256": HASH},
         attempts=attempts,
     )
 
@@ -441,6 +443,115 @@ def test_erschoepftes_budget_ergibt_none(settings: Settings) -> None:
             )
             is None
         ), versuche
+
+
+# --- Der Waechter fuer haengende Jobs ------------------------------------
+
+
+class ErsatzVerwalter:
+    """Die Job-Verwaltung, soweit `retry_stalled` sie benutzt, mitschreibend."""
+
+    def __init__(self, haengend: list[Job]) -> None:
+        self.haengend = haengend
+        self.vorgelegt: list[Job] = []
+        self.beendet: list[tuple[Job, Status, bool]] = []
+
+    async def get_stalled_jobs(self) -> list[Job]:
+        return self.haengend
+
+    async def retry_job(self, job: Job) -> None:
+        self.vorgelegt.append(job)
+
+    async def finish_job(self, job: Job, status: Status, delete_job: bool) -> None:
+        self.beendet.append((job, status, delete_job))
+
+
+def _waechter_kontext(settings: Settings, verwalter: ErsatzVerwalter) -> Any:
+    return types.SimpleNamespace(
+        app=types.SimpleNamespace(job_manager=verwalter),
+        additional_context={"settings": settings, "pool": "der Pool"},
+    )
+
+
+@pytest.fixture
+def geschrieben(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Faengt das Schreiben des `failed`-Ergebnisses ab; die Datenbankseite
+    steht in `test_executor.py` und `test_integration.py`."""
+    aufrufe: list[dict[str, Any]] = []
+
+    async def merken(sha256: str, **kwargs: Any) -> bool:
+        aufrufe.append({"sha256": sha256, **kwargs})
+        return True
+
+    monkeypatch.setattr(executor, "write_failure_if_no_result", merken)
+    return aufrufe
+
+
+async def test_waechter_legt_mit_restbudget_vor(
+    settings: Settings, geschrieben: list[dict[str, Any]]
+) -> None:
+    """Solange Versuche uebrig sind, legt der Waechter den haengenden Job neu
+    vor, wie das Rezept der Doku es tut, und schreibt nichts (Mineroo#27)."""
+    verwalter = ErsatzVerwalter([_job(attempts=0), _job(attempts=1)])
+    await tasks.retry_stalled(_waechter_kontext(settings, verwalter), 0)
+
+    assert verwalter.vorgelegt == verwalter.haengend
+    assert verwalter.beendet == []
+    assert geschrieben == []
+
+
+async def test_waechter_beendet_bei_erschoepftem_budget_mit_failed(
+    settings: Settings, geschrieben: list[dict[str, Any]]
+) -> None:
+    """Ist das Budget erschoepft, legt der Waechter nicht mehr vor: Er schreibt
+    das `failed`-Ergebnis „Worker wiederholt abgestuerzt" (wenn noch keins da
+    ist, das prueft der Executor) und beendet den Job als `failed`.
+
+    Ohne Budget liefe ein Dokument, das den Worker abstuerzen laesst, endlos,
+    und jede Runde bezahlte die bis zu 23 anderen laufenden Dokumente neu.
+    Gezaehlt wird mit derselben Frage wie an der Retry-Strategie: Der Lauf, in
+    dem der Worker starb, war der letzte, wenn danach keiner mehr kommt.
+    """
+    erschoepft = _job(attempts=settings.max_attempts - 1)
+    verwalter = ErsatzVerwalter([erschoepft])
+    await tasks.retry_stalled(_waechter_kontext(settings, verwalter), 0)
+
+    assert verwalter.vorgelegt == []
+    assert verwalter.beendet == [(erschoepft, Status.FAILED, False)]
+    assert len(geschrieben) == 1
+    assert geschrieben[0]["sha256"] == HASH
+    assert geschrieben[0]["settings"] is settings
+    assert geschrieben[0]["pool"] == "der Pool"
+    assert "Worker wiederholt abgestuerzt" in geschrieben[0]["grund"]
+
+
+async def test_waechter_loescht_den_job_nur_wenn_es_eingestellt_ist(
+    settings: Settings, geschrieben: list[dict[str, Any]]
+) -> None:
+    """Beendet wird mit derselben Loeschregel wie im Worker (`delete_jobs`):
+    `always` loescht auch den gescheiterten Job, `never` und `successful` nicht."""
+    for regel, geloescht in (("never", False), ("successful", False), ("always", True)):
+        eingestellt = dataclasses.replace(settings, delete_jobs=regel)
+        verwalter = ErsatzVerwalter([_job(attempts=eingestellt.max_attempts - 1)])
+        await tasks.retry_stalled(_waechter_kontext(eingestellt, verwalter), 0)
+        assert [b[2] for b in verwalter.beendet] == [geloescht], regel
+
+
+async def test_waechter_schreibt_fuer_fremde_tasks_kein_ergebnis(
+    settings: Settings, geschrieben: list[dict[str, Any]]
+) -> None:
+    """Ein haengender Job eines anderen Tasks (etwa des Waechters selbst) hat
+    kein Dokument: Er wird bei erschoepftem Budget beendet, ohne dass ein
+    Ergebnis geschrieben wird."""
+    fremd = _job(attempts=settings.max_attempts - 1).evolve(
+        task_name=config.TASK_RETRY_STALLED,
+        task_kwargs={"timestamp": 0},
+    )
+    verwalter = ErsatzVerwalter([fremd])
+    await tasks.retry_stalled(_waechter_kontext(settings, verwalter), 0)
+
+    assert verwalter.beendet == [(fremd, Status.FAILED, False)]
+    assert geschrieben == []
 
 
 # --- Die Betriebsmittel des Workers --------------------------------------

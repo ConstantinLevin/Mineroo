@@ -490,6 +490,52 @@ async def test_absturz_mitten_im_dokument_heilt_durch_den_waechter(
     assert runpod.aufrufe >= 1
 
 
+async def test_waechter_beendet_einen_haengenden_job_ohne_restbudget_mit_failed(
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
+) -> None:
+    """(a2) Starb der Worker im letzten Versuch, legt der Waechter nicht mehr
+    vor: Er schreibt `failed` („Worker wiederholt abgestuerzt") und beendet den
+    Job als `failed` (Mineroo#27).
+
+    Ohne Budget lief ein Dokument, das den Worker abstuerzen laesst, endlos.
+    Der harte Tod wird wie in Szenario (a) nachgestellt, diesmal mit einem
+    Versuchszaehler, nach dem kein Versuch mehr kommt. RunPod wird nicht
+    gefragt, und die Eingabe bleibt fuer `retry` stehen.
+    """
+    sha = _anlegen(db_conn, tmp_path, "a2.png")
+    erzeuger.einreihen(sha)
+
+    tote_kennung = db_conn.execute(
+        "INSERT INTO procrastinate_workers (last_heartbeat) "
+        "VALUES (now() - interval '2 minutes') RETURNING id"
+    ).fetchone()
+    assert tote_kennung is not None
+    db_conn.execute(
+        "UPDATE procrastinate_jobs SET status = 'doing', worker_id = %s, "
+        "attempts = %s WHERE lock = %s",
+        (tote_kennung[0], int_settings.max_attempts - 1, sha),
+    )
+    db_conn.commit()
+
+    runpod = ProtokollRunPod()
+
+    async def job_beendet() -> bool:
+        jobs = _jobs_zu(db_conn, sha)
+        return bool(jobs) and jobs[-1].status == "failed"
+
+    await _daemon_laufen_lassen(int_settings, runpod, bis=job_beendet, zeit=90.0)
+
+    jobs = _jobs_zu(db_conn, sha)
+    assert len(jobs) == 1
+    assert jobs[0].status == "failed"
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.error is not None and "Worker wiederholt abgestuerzt" in zeile.error
+    assert runpod.aufrufe == 0
+    assert _eingabe_steht(db_conn, sha)
+
+
 async def test_retry_von_hand_verarbeitet_wirklich_neu(
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],

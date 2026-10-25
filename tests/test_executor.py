@@ -36,7 +36,11 @@ from mineru_ocr.errors import (
     TransientRunPodError,
     UnsupportedTypeError,
 )
-from mineru_ocr.executor import process_document, wait_for_balance
+from mineru_ocr.executor import (
+    process_document,
+    wait_for_balance,
+    write_failure_if_no_result,
+)
 from mineru_ocr.mime import DocumentType, sniff_bytes
 
 pytestmark = pytest.mark.db
@@ -1887,6 +1891,50 @@ async def test_datenbankfehler_vor_dem_lesen_mit_restbudget_schreibt_nichts(
 
     assert get_document(db_conn, sha) is None
     assert _eingabe_steht(db_conn, sha)
+
+
+async def test_failed_ohne_lauf_schreibt_nur_wo_noch_kein_ergebnis_ist(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """`write_failure_if_no_result` legt ein `failed`-Ergebnis an, wenn das
+    Dokument noch keins hat, und laesst ein vorhandenes stehen, auch ein
+    `failed` mit bezahltem `raw` (Mineroo#27, der Waechter bei erschoepftem
+    Budget). Die Eingabe bleibt, damit `retry` etwas zu lesen hat."""
+    offen, _ = _anlegen(db_conn, tmp_path, b"o", name="o.png", typ=DocumentType.PNG)
+    assert await write_failure_if_no_result(
+        offen, settings=exec_settings, pool=pool, grund="Worker wiederholt abgestuerzt"
+    )
+    zeile = get_document(db_conn, offen)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.error is not None and "Worker wiederholt abgestuerzt" in zeile.error
+    assert zeile.raw is not None
+    assert "Worker wiederholt abgestuerzt" in zeile.raw["failure"]["message"]
+    assert zeile.notes[-1]["kind"] == "gescheitert"
+    assert _eingabe_steht(db_conn, offen)
+
+    for status in (DocumentStatus.FAILED, DocumentStatus.DONE):
+        sha, _ = _anlegen(
+            db_conn, tmp_path, status.value.encode(), name="v.png", typ=DocumentType.PNG
+        )
+        async with pool.connection() as conn:
+            await write_terminal_async(
+                conn,
+                sha256=sha,
+                status=status,
+                raw={"bezahlt": True},
+                endpoint_id="testendpoint",
+            )
+        assert not await write_failure_if_no_result(
+            sha, settings=exec_settings, pool=pool, grund="Worker wiederholt abgestuerzt"
+        )
+        zeile = get_document(db_conn, sha)
+        assert zeile is not None
+        assert zeile.status is status
+        assert zeile.raw == {"bezahlt": True}
 
 
 async def test_abbruch_beim_warten_bricht_den_runpod_job_ab(

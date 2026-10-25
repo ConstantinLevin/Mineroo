@@ -35,6 +35,7 @@ from typing import Any, Final
 
 import procrastinate
 from procrastinate import RetryDecision
+from procrastinate.jobs import Status
 from psycopg_pool import AsyncConnectionPool
 
 from . import config, executor
@@ -366,24 +367,42 @@ auseinandergelaufen. Ein Stellvertreter ist haesslicher als ein `if`, aber er
 kann nicht von der Strategie abweichen."""
 
 
+WORKER_ABGESTUERZT: Final = "Worker wiederholt abgestuerzt"
+"""Der Grund am `failed`-Ergebnis eines Dokuments, dessen Job der Waechter bei
+erschoepftem Budget beendet: Jeder Versuch endete mit einem toten Worker."""
+
+
 async def retry_stalled(context: procrastinate.JobContext, timestamp: int) -> None:
-    """Legt Jobs erneut vor, deren Worker gestorben ist. Woertlich das Doku-Muster.
+    """Legt Jobs erneut vor, deren Worker gestorben ist, solange Versuche uebrig sind.
 
     Angemeldet unter `config.TASK_RETRY_STALLED` in der Queue
     `config.QUEUE_MAINTENANCE`, periodisch nach `settings.stalled_check_cron`,
     mit einem eigenen `queueing_lock`, damit sich diese Aufgabe nicht selbst
     ueberholt.
 
-    Der Koerper sind vier Zeilen: `get_stalled_jobs()` holen, ueber die Liste
-    laufen, `retry_job()` rufen. Nichts Eigenes. Das ist Procrastinates eigene,
-    dokumentierte Antwort auf „Daemon hart gestorben, was nun?" (Feature-
-    Verifikation Punkt 6), und Eigenbau an dieser Stelle waere die schlechtere
-    Fassung eines geloesten Problems.
+    Der Grundstock ist Procrastinates dokumentiertes Rezept: `get_stalled_jobs()`
+    holen, ueber die Liste laufen, `retry_job()` rufen (Feature-Verifikation
+    Punkt 6). Das Rezept laesst eigene Regeln ausdruecklich zu, und eine kommt
+    hinzu: das Budget (Mineroo#27). Ohne es lief ein Dokument, das den Worker
+    abstuerzen laesst, endlos, und jede Runde bezahlte die bis zu 23 anderen
+    laufenden Dokumente neu.
 
-    Was daraus fuer das Dokument folgt: Es wird von vorn verarbeitet. Der
-    haengengebliebene Job wird auf `todo` zurueckgesetzt, sein Versuchszaehler
-    steigt, und beim naechsten Anlauf beginnt der Executor bei Schritt 0 — ein
-    Ergebnis gab es ja noch nicht, also kehrt das Nachsehen nicht zurueck.
+    Je haengendem Job:
+
+        Versuche uebrig (dieselbe Frage wie an der Retry-Strategie,
+        `wird_erneut_vorgelegt` mit der Sonde): `retry_job`. Der Job steht
+        wieder auf `todo`, sein Versuchszaehler steigt, und beim naechsten
+        Anlauf beginnt der Executor bei Schritt 0.
+
+        Budget erschoepft: Bei einem Dokument-Job schreibt der Executor das
+        `failed`-Ergebnis `WORKER_ABGESTUERZT`, aber nur, wenn noch keins da
+        ist (`executor.write_failure_if_no_result`); dann beendet
+        `JobManager.finish_job` den Job als `failed`, mit derselben Loeschregel
+        wie der Worker (`settings.delete_jobs`). Ein Job eines anderen Tasks
+        hat kein Dokument und wird nur beendet.
+
+    Die Regel, die das Modell traegt: Jeder Job, der nicht neu eingereiht wird,
+    schreibt ein Ergebnis.
 
     Einen ZEILEN-Abgleich gibt es hier ausdruecklich nicht (Plan 2.4, ein Buch):
     Weil die Ergebniszeile erst am Ende des Jobs entsteht, kann sie mit nichts
@@ -406,8 +425,24 @@ async def retry_stalled(context: procrastinate.JobContext, timestamp: int) -> No
     Verarbeitungslauf aus, und der kostet.
     """
     verwalter = context.app.job_manager
+    mittel = context.additional_context
+    einstellungen: Settings = mittel["settings"]
     for job in await verwalter.get_stalled_jobs():
-        await verwalter.retry_job(job)
+        if wird_erneut_vorgelegt(_ERSCHOEPFUNGS_SONDE, job, einstellungen):
+            await verwalter.retry_job(job)
+            continue
+        if job.task_name == config.TASK_OCR_DOCUMENT:
+            await executor.write_failure_if_no_result(
+                str(job.task_kwargs["sha256"]),
+                settings=einstellungen,
+                pool=mittel["pool"],
+                grund=WORKER_ABGESTUERZT,
+            )
+        await verwalter.finish_job(
+            job,
+            status=Status.FAILED,
+            delete_job=einstellungen.delete_jobs == "always",
+        )
 
 
 def enqueue_document(
