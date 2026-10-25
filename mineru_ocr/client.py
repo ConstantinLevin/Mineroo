@@ -1582,6 +1582,10 @@ class AsyncOCRClient:
         dazwischen, siehe `_fertige`). Wirft nicht, weil ein Dokument scheiterte: Jeder
         Endzustand ist ein Ergebnis.
 
+        Die Frist begrenzt das Warten auf Endzustaende; das Laden fertiger
+        Ergebnisse kommt hinzu: `wait_all([a, b], timeout=10)` mit `a` fertig
+        (2 GB `raw`) und `b` offen wirft nach etwa 10 s plus der Ladezeit von `a`.
+
         Raises:
             DocumentNotFound: Weder Ergebnis noch Eingabe — sofort.
             ValueError: Die Frist ist `nan` oder negativ.
@@ -1600,6 +1604,10 @@ class AsyncOCRClient:
     ) -> list[OCRWrapper]:
         """Wartet auf ALLE und liefert sie in der Reihenfolge der Frage, wie
         `OCRClient.wait_all`; ein doppelt gefragter Hash steht zweimal da.
+
+        Die Frist begrenzt das Warten auf Endzustaende; das Laden fertiger
+        Ergebnisse kommt hinzu: `wait_all([a, b], timeout=10)` mit `a` fertig
+        (2 GB `raw`) und `b` offen wirft nach etwa 10 s plus der Ladezeit von `a`.
 
         Raises:
             TypeError: `hashes` ist ein einzelner Hash, oder ein Element ist kein
@@ -1627,6 +1635,10 @@ class AsyncOCRClient:
         Weiterschalten. Gewartet wird auf EINER eigenen Verbindung fuer den ganzen
         Aufruf; sie schliesst, wenn der Generator erschoepft ist, mit einem Fehler
         endet oder geschlossen wird (`aclose()`, oder `contextlib.aclosing`).
+
+        Die Frist begrenzt das Warten auf Endzustaende; das Laden fertiger
+        Ergebnisse kommt hinzu: `wait_all([a, b], timeout=10)` mit `a` fertig
+        (2 GB `raw`) und `b` offen wirft nach etwa 10 s plus der Ladezeit von `a`.
 
         Raises:
             TypeError, ValueError: Sofort beim Aufruf, wie bei `wait_all`.

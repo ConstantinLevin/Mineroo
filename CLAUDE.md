@@ -320,7 +320,10 @@ sind; Frist und Strg-C fassen keinen Job an. Der Client
 (`wait`, `wait_all`, `as_completed`) liefert daraus Hüllen; der `AsyncOCRClient`
 mit dem async-Generator und mit geladenem `raw` (eine Eigenschaft kann nicht
 `await`en), seine Hüllen halten keine Verbindung (`refresh()` nennt den Weg über
-`await client.get(h)`). Läuft zwischen dem Lesen der Schleife und dem Laden ein
+`await client.get(h)`). Beim `AsyncOCRClient` begrenzt die Frist deshalb das
+Warten auf Endzustände; das Laden fertiger Ergebnisse kommt hinzu: `wait_all([a, b], timeout=10)` mit `a`
+fertig (2 GB `raw`) und `b` offen wirft nach etwa 10 s plus der Ladezeit von `a`.
+Läuft zwischen dem Lesen der Schleife und dem Laden ein
 `retry`, trägt die Hülle wie im Sync-Client den gesehenen Endzustand, ohne `raw`,
 und `raw` meldet `DocumentNotFound`.
 
