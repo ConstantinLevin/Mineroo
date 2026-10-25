@@ -143,7 +143,8 @@ async def process_document(
        ist, als `input_error`: eine PDF, die sich nicht oeffnen laesst (kaputt
        oder verschluesselt, `CorruptDocumentError`), und eine Bilddatei mit mehr
        als einem Bild (`MultiImageError`, Hinweis: als PDF einreichen). Beides
-       gilt vor der Kontostandsabfrage.
+       gilt vor jedem Kontakt, auch vor dem lesenden (Herkunft des Images,
+       Kontostand).
 
        Je Teilstueck NACHEINANDER: absenden, abfragen bis terminal, SOFORT
        abholen und auspacken (`assembly.unpack_response`), dann das naechste.
@@ -334,25 +335,14 @@ async def process_document(
 
         typ = DocumentType(_typ_aus_mime(zeile.mime))
 
-        # Die Herkunft einmal je Lauf. Ein Fehlschlag hier darf KEIN Dokument
-        # kosten: Die Angabe ist wertvoll, aber sie ist nicht das Ergebnis. Sie
-        # bleibt dann leer, und der Vermerk sagt, warum — ehrlicher als ein
-        # erfundener Wert und billiger als ein verlorener Parse.
-        try:
-            image_tag = await runpod.image_tag()
-        except Exception as fehler:  # noqa: BLE001 — bewusst breit, siehe oben
-            vermerke.append(
-                {
-                    "kind": "image_tag_nicht_lesbar",
-                    "at": _jetzt(),
-                    "detail": f"{type(fehler).__name__}: {fehler}",
-                }
-            )
-
         # --- 3.: zerlegen, absenden, abholen ----------------------------
         # Zuerst wird geprueft, was sich billig ohne RunPod pruefen laesst (eine
-        # PDF oeffnen, bei allem anderen die Groesse gegen die Anfragegrenze), und
-        # erst DANN auf Geld gewartet: Das Einreihen oeffnet keine PDF mehr, also
+        # PDF oeffnen, bei einer Bilddatei die Bilder zaehlen, bei allem anderen
+        # die Groesse gegen die Anfragegrenze). Erst DANACH kommt der erste
+        # Kontakt mit RunPod: die Herkunft des Images (`_image_tag_lesen`), dann
+        # die Kontostandsabfrage. Eine Eingabe, die nicht verarbeitbar ist, endet
+        # ohne jeden Kontakt, auch ohne den lesenden. Und es wird erst DANN auf
+        # Geld gewartet: Das Einreihen oeffnet keine PDF mehr, also
         # faellt eine kaputte erst hier auf, und sie darf bei leerem Konto nicht
         # einen Platz des Daemons belegen, bis wieder Geld da ist, obwohl RunPod
         # nie gefragt wird. Nicht davor: eine einzelne PDF-Seite ueber der Grenze.
@@ -362,6 +352,7 @@ async def process_document(
             with PdfReader(rohbytes) as leser:
                 seiten = leser.page_count
                 seitenzahl = seiten
+                image_tag = await _image_tag_lesen(runpod, vermerke)
                 # Vorsorglich, VOR dem ersten bezahlten Aufruf. Bei leerem Konto
                 # liefe man sonst in eine Wand aus 402-Antworten.
                 await wait_for_balance(runpod, settings)
@@ -394,23 +385,22 @@ async def process_document(
                 )
         else:
             seiten = None
-            if typ.is_image:
+            if typ.can_hold_several_images and images.has_several_images(rohbytes):
                 # Die Engine liest von einer Bilddatei nur das erste Bild. Mehr
                 # als eines (ein mehrseitiges Fax als TIFF) hiesse: alle Seiten
-                # nach der ersten gehen still verloren. Gezaehlt wird VOR der
-                # Kontostandsabfrage und vor jedem RunPod-Kontakt; ein Bild, das
-                # sich nicht zaehlen laesst (`None`), geht weiter.
-                bilder = images.count_images(rohbytes)
-                if bilder is not None and bilder > 1:
-                    raise MultiImageError(
-                        f"Die Bilddatei enthaelt {bilder} Bilder, gelesen wuerde "
-                        f"nur das erste. Bitte als PDF einreichen. Es wurde "
-                        f"nichts bezahlt."
-                    )
+                # nach der Ersten gehen still verloren. Gefragt wird VOR jedem
+                # RunPod-Kontakt; ein Bild, das sich nicht lesen laesst, geht
+                # weiter (`images.has_several_images`).
+                raise MultiImageError(
+                    "Die Bilddatei enthaelt mehr als ein Bild, gelesen wuerde "
+                    "nur das erste. Bitte als PDF einreichen. Es wurde nichts "
+                    "bezahlt."
+                )
             # Nicht zerlegbar — also muss es ungeteilt passen.
             chunking.check_fits_unsplit(
                 size_bytes=len(rohbytes), doc_type=typ, settings=settings
             )
+            image_tag = await _image_tag_lesen(runpod, vermerke)
             await wait_for_balance(runpod, settings)
             await _stuecke_verarbeiten(
                 [(chunking.Chunk(first_page=0, last_page=0), rohbytes)],
@@ -730,6 +720,32 @@ def _typ_aus_mime(mime: str) -> str:
         f"bekannten Typ gibt. Entweder wurde die Zeile von einer aelteren "
         f"Fassung angelegt, oder die Tabelle in mime.py hat sich geaendert."
     )
+
+
+async def _image_tag_lesen(
+    runpod: RunPodAccess, vermerke: list[dict[str, Any]]
+) -> str | None:
+    """Liest die Herkunft des laufenden Images, einmal je Lauf.
+
+    Ein Fehlschlag hier darf KEIN Dokument kosten: Die Angabe ist wertvoll, aber
+    sie ist nicht das Ergebnis. Sie bleibt dann leer, und der Vermerk sagt, warum
+    — ehrlicher als ein erfundener Wert und billiger als ein verlorener Parse.
+
+    Das ist der erste Kontakt mit RunPod (lesend, ohne Kosten). Er steht deshalb
+    erst nach der Pruefung der Eingabe: Eine PDF, die sich nicht oeffnen laesst,
+    und eine mehrbildige Bilddatei enden, ohne dass RunPod etwas davon hoert.
+    """
+    try:
+        return await runpod.image_tag()
+    except Exception as fehler:  # noqa: BLE001 — bewusst breit, siehe oben
+        vermerke.append(
+            {
+                "kind": "image_tag_nicht_lesbar",
+                "at": _jetzt(),
+                "detail": f"{type(fehler).__name__}: {fehler}",
+            }
+        )
+        return None
 
 
 async def _stuecke_verarbeiten(

@@ -1,13 +1,17 @@
-"""Der einzige Ort im Paket, der Pillow benutzt: Wie viele Bilder traegt eine Bilddatei?
+"""Der einzige Ort im Paket, der Pillow benutzt: Traegt eine Bilddatei mehrere Bilder?
 
 Warum das ueberhaupt gefragt wird: Die Engine liest von einer Bilddatei nur das
 erste Bild. Ein mehrseitiges Fax als TIFF endete sonst als einseitiges `done`, und
 alle Seiten nach der ersten gingen still verloren — ohne ein Fehlersignal, das
-einer bemerkte. Der Job zaehlt deshalb vor jedem RunPod-Kontakt.
+einer bemerkte. Der Job fragt deshalb vor jedem RunPod-Kontakt.
+
+Gefragt wird nur „mehr als eines?", nicht „wie viele?": `Image.seek(1)` springt
+zum zweiten Bild und kostet bei TIFF einen einzigen Verzeichniseintrag, waehrend
+`n_frames` jede Seite durchlaeuft — bei einem TIFF mit Zehntausenden Seiten
+Sekunden, die auf der Ereignisschleife des Daemons alle anderen Dokumente anhalten.
 
 Pillow oeffnet lazy: `Image.open` liest nur den Kopf, die Pixel werden nicht
-geladen. Gezaehlt wird mit `n_frames`; fehlt das Attribut, kennt das Format keine
-Folge von Bildern (JPEG, BMP), und es ist eines.
+geladen.
 """
 
 from __future__ import annotations
@@ -17,24 +21,27 @@ import io
 from PIL import Image
 
 
-def count_images(data: bytes) -> int | None:
-    """Zaehlt die Bilder in einer Bilddatei.
+def has_several_images(data: bytes) -> bool:
+    """Ob eine Bilddatei ein zweites Bild traegt.
 
     Args:
         data: Die Bytes einer Bilddatei, deren Typ bereits erkannt wurde
-            (`mime.sniff_bytes`).
+            (`mime.sniff_bytes`) und die mehrere Bilder tragen kann
+            (`DocumentType.can_hold_several_images`).
 
     Returns:
-        Die Zahl der Bilder, mindestens 1. `None`, wenn Pillow die Datei nicht
-        oeffnen oder durchzaehlen kann (abgeschnitten, beschaedigt, zu viele
-        Pixel): Dann steht nicht fest, dass es mehrere sind, und ob die Datei
-        lesbar ist, entscheidet die Engine, nicht diese Zaehlung. Eine Pruefung,
-        die nur zaehlen soll, macht die Datei nicht auch noch zum `input_error`.
+        `True`, wenn Pillow ein zweites Bild findet. `False` bei genau einem Bild
+        und auch dann, wenn Pillow die Datei nicht oeffnen oder bis zum zweiten
+        Bild lesen kann (abgeschnitten, beschaedigt, zu viele Pixel): Dann steht
+        nicht fest, dass es mehrere sind, und ob die Datei lesbar ist, entscheidet
+        die Engine, nicht diese Pruefung. Eine Pruefung, die nur fragen soll,
+        macht die Datei nicht auch noch zum `input_error`.
 
     Kosten: keine. Reine lokale Rechenarbeit.
     """
     try:
         with Image.open(io.BytesIO(data)) as bild:
-            return int(getattr(bild, "n_frames", 1))
-    except Exception:  # noqa: BLE001 — Pillow wirft je Format Unterschiedliches
-        return None
+            bild.seek(1)
+    except Exception:  # noqa: BLE001 — EOFError heisst „nur ein Bild", der Rest „nicht zu lesen"
+        return False
+    return True

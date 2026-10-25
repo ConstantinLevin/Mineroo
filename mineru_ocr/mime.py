@@ -66,8 +66,9 @@ class DocumentType(enum.Enum):
     def is_pdf(self) -> bool:
         """Ob dieser Typ seitenweise zerlegt werden kann.
 
-        Nur PDF kann das. Bilder sind einseitig, Office-Formate sind nicht
-        seitenweise zerlegbar — beide gehen ungeteilt hinaus oder gar nicht
+        Nur PDF kann das. Bilder gehen ungeteilt hinaus (ein Bild je Datei; die
+        mit mehreren Bildern prueft `can_hold_several_images`), Office-Formate sind
+        nicht seitenweise zerlegbar — beide gehen ungeteilt hinaus oder gar nicht
         (Plan 6).
 
         Der Name sagt „ist PDF", die Frage lautet „ist zerlegbar". Heute ist das
@@ -77,13 +78,17 @@ class DocumentType(enum.Enum):
         return self is DocumentType.PDF
 
     @property
-    def is_image(self) -> bool:
-        """Ob dieser Typ eine Bilddatei ist, die mehr als ein Bild tragen kann.
+    def can_hold_several_images(self) -> bool:
+        """Ob dieser Typ eine Bilddatei ist, die eine Folge von Seiten tragen kann.
 
-        Office-Formate gehoeren nicht dazu, auch wenn sie Bilder enthalten: Sie
-        sind ein Dokument, keine Folge von Bildern.
+        TIFF (mehrseitiges Fax), GIF, WebP und PNG (animiert). JPEG und BMP
+        gehoeren nicht dazu: Ein JPEG mit einem zweiten Bild (Multi-Picture-Format,
+        von Kameras und Telefonen fuer Vorschau oder Tiefenkarte geschrieben) ist
+        ein Foto, keine Seitenfolge, und Pillow zaehlte dort trotzdem zwei Frames.
+        Office-Formate gehoeren auch nicht dazu, auch wenn sie Bilder enthalten:
+        Sie sind ein Dokument, keine Folge von Bildern.
         """
-        return self in _BILDTYPEN
+        return self in _BILDFOLGEN
 
     @property
     def mime(self) -> str:
@@ -96,12 +101,10 @@ class DocumentType(enum.Enum):
         return _TABELLE[self][1]
 
 
-_BILDTYPEN: Final[frozenset[DocumentType]] = frozenset(
+_BILDFOLGEN: Final[frozenset[DocumentType]] = frozenset(
     {
         DocumentType.PNG,
-        DocumentType.JPEG,
         DocumentType.GIF,
-        DocumentType.BMP,
         DocumentType.TIFF,
         DocumentType.WEBP,
     }

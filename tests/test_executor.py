@@ -65,17 +65,22 @@ class FalscherRunPod:
         self.abgeholt: list[str] = []
         self.abgebrochen: list[str] = []
         self.verlauf: list[str] = []
+        # JEDER Aufruf, auch die lesenden (Kontostand, Herkunft des Images): wer
+        # „vor jedem RunPod-Kontakt" prueft, darf keinen davon uebersehen.
+        self.kontakte: list[str] = []
         self._nummer = 0
 
     async def submit(
         self, *, file_b64: str, backend: str, transport: str, **_: Any
     ) -> str:
         job = f"job-{len(self.abgesendet)}"
+        self.kontakte.append("submit")
         self.abgesendet.append(file_b64)
         self.verlauf.append(f"submit:{job}")
         return job
 
     async def await_result(self, job_id: str) -> dict[str, Any]:
+        self.kontakte.append("await_result")
         self.abgeholt.append(job_id)
         self.verlauf.append(f"holen:{job_id}")
         nummer = min(self._nummer, len(self.antworten) - 1)
@@ -83,14 +88,17 @@ class FalscherRunPod:
         return self.antworten[nummer]
 
     async def cancel(self, job_id: str) -> dict[str, Any]:
+        self.kontakte.append("cancel")
         self.abgebrochen.append(job_id)
         self.verlauf.append(f"abbrechen:{job_id}")
         return {"id": job_id, "status": "CANCELLED"}
 
     async def image_tag(self) -> str | None:
+        self.kontakte.append("image_tag")
         return self.marke
 
     async def balance(self) -> float:
+        self.kontakte.append("balance")
         return self.kontostand
 
 
@@ -340,7 +348,7 @@ async def test_kaputte_pdf_endet_input_error_auch_bei_leerem_konto(
             timeout=5,
         )
 
-    assert runpod.abgesendet == []
+    assert runpod.kontakte == []
     zeile = get_document(db_conn, sha)
     assert zeile is not None
     assert zeile.status is DocumentStatus.INPUT_ERROR
@@ -396,28 +404,33 @@ async def test_verschluesselte_pdf_endet_input_error_ohne_runpod_kontakt(
             timeout=5,
         )
 
-    assert runpod.abgesendet == []
+    assert runpod.kontakte == []
     zeile = get_document(db_conn, sha)
     assert zeile is not None
     assert zeile.status is DocumentStatus.INPUT_ERROR
     assert zeile.error is not None
 
 
-def _bild(format: str, anzahl: int) -> bytes:
+def _bild(dateiformat: str, anzahl: int) -> bytes:
     """Eine Bilddatei mit `anzahl` Bildern (Frames), in dem Format."""
     bilder = [Image.new("RGB", (8, 8), farbe) for farbe in ("red", "blue", "green")]
     puffer = io.BytesIO()
+    # JPEG und BMP kennen kein `save_all`; sie tragen auch nur ein Bild.
+    folge: dict[str, Any] = (
+        {"save_all": True, "append_images": bilder[1:anzahl]}
+        if dateiformat not in ("JPEG", "BMP")
+        else {}
+    )
     bilder[0].save(
         puffer,
-        format=format,
-        save_all=True,
-        append_images=bilder[1:anzahl],
-        **({"lossless": True} if format == "WEBP" else {}),
+        format=dateiformat,
+        **folge,
+        **({"lossless": True} if dateiformat == "WEBP" else {}),
     )
     return puffer.getvalue()
 
 
-_BILDTYPEN = [
+_BILDFORMATE = [
     ("TIFF", DocumentType.TIFF),
     ("GIF", DocumentType.GIF),
     ("WEBP", DocumentType.WEBP),
@@ -425,13 +438,13 @@ _BILDTYPEN = [
 ]
 
 
-@pytest.mark.parametrize(("format", "typ"), _BILDTYPEN)
+@pytest.mark.parametrize(("dateiformat", "typ"), _BILDFORMATE)
 async def test_mehrbildige_bilddatei_endet_input_error_vor_jedem_runpod_kontakt(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
     exec_settings: Settings,
     tmp_path: Path,
-    format: str,
+    dateiformat: str,
     typ: DocumentType,
 ) -> None:
     """Ein mehrseitiges Fax als TIFF (oder ein anderes Bild mit mehreren Bildern)
@@ -442,7 +455,7 @@ async def test_mehrbildige_bilddatei_endet_input_error_vor_jedem_runpod_kontakt(
     nie sieht. Ohne die Pruefung ginge nur das erste Bild hinaus und das Dokument
     endete als einseitiges `done`.
     """
-    sha, _ = _anlegen(db_conn, tmp_path, _bild(format, 3), typ=typ)
+    sha, _ = _anlegen(db_conn, tmp_path, _bild(dateiformat, 3), typ=typ)
 
     runpod = FalscherRunPod([_fertige_antwort()], kontostand=0.0)
     with pytest.raises(MultiImageError, match="PDF"):
@@ -451,26 +464,56 @@ async def test_mehrbildige_bilddatei_endet_input_error_vor_jedem_runpod_kontakt(
             timeout=5,
         )
 
-    assert runpod.abgesendet == []
-    assert runpod.verlauf == []
+    assert runpod.kontakte == []
     zeile = get_document(db_conn, sha)
     assert zeile is not None
     assert zeile.status is DocumentStatus.INPUT_ERROR
-    assert zeile.error is not None and "3 Bilder" in zeile.error
+    assert zeile.error is not None and "PDF" in zeile.error
 
 
-@pytest.mark.parametrize(("format", "typ"), _BILDTYPEN)
+# Formate, die keine Folge von Seiten tragen koennen, gehoeren zur Gegenprobe: Sie
+# duerfen nie als mehrbildig abgewiesen werden.
+_EINBILD_FORMATE = [
+    *_BILDFORMATE,
+    ("JPEG", DocumentType.JPEG),
+    ("BMP", DocumentType.BMP),
+]
+
+
+@pytest.mark.parametrize(("dateiformat", "typ"), _EINBILD_FORMATE)
 async def test_einbildige_bilddatei_geht_unveraendert_hinaus(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
     exec_settings: Settings,
     tmp_path: Path,
-    format: str,
+    dateiformat: str,
     typ: DocumentType,
 ) -> None:
     """Das Gegenstueck: Ein Bild mit einem Bild wird gelesen."""
-    inhalt = _bild(format, 1)
+    inhalt = _bild(dateiformat, 1)
     sha, _ = _anlegen(db_conn, tmp_path, inhalt, typ=typ)
+
+    runpod = FalscherRunPod([_fertige_antwort()])
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert [base64.b64decode(b) for b in runpod.abgesendet] == [inhalt]
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+
+
+async def test_jpeg_mit_zweitem_bild_geht_hinaus_denn_es_ist_keine_seitenfolge(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Eine JPEG-Datei mit einem zweiten eingebetteten Bild (Multi-Picture-Format,
+    wie es Kameras und Telefone fuer Vorschau oder Tiefenkarte schreiben) ist ein
+    Foto, kein mehrseitiges Dokument: Pillow zaehlt dort 2 Frames, die Datei wird
+    aber gelesen und nicht abgewiesen."""
+    inhalt = _bild("MPO", 2)
+    sha, _ = _anlegen(db_conn, tmp_path, inhalt, typ=DocumentType.JPEG)
 
     runpod = FalscherRunPod([_fertige_antwort()])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
