@@ -27,6 +27,7 @@ import psycopg
 import pytest
 from procrastinate import utils
 from procrastinate.jobs import Job
+from procrastinate.manager import JobManager
 from psycopg_pool import NullConnectionPool
 
 from mineru_ocr import config, daemon, db, tasks
@@ -892,7 +893,9 @@ async def test_jede_wiedervorlage_erhoeht_den_versuchszaehler(
 
 
 async def test_daemon_faehrt_sauber_herunter(
-    db_conn: psycopg.Connection[Any], int_settings: Settings
+    db_conn: psycopg.Connection[Any],
+    int_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Beide Worker enden, die Betriebsmittel werden NACH ihnen geschlossen.
 
@@ -923,13 +926,31 @@ async def test_daemon_faehrt_sauber_herunter(
         gebaut.update(mittel)
         return mittel
 
+    # Gewartet wird, bis BEIDE Worker ihre Anmeldung abgeschlossen haben, nicht
+    # nur, bis der Pool offen ist. Procrastinates `Worker.run` meldet sich
+    # ungeschuetzt an: Trifft der Abbruch einen Worker zwischen dem INSERT in
+    # `procrastinate_workers` und der Rueckkehr von `register_worker`, kennt er
+    # seine Kennung nie und kann sich nicht abmelden. Das war die Ursache, warum
+    # dieser Test etwa einmal in sieben Laeufen scheiterte: Er brach genau dann
+    # ab, wenn sich die Worker gerade anmeldeten. Was er prueft, das Abmelden
+    # beim Herunterfahren, setzt angemeldete Worker voraus.
+    echtes_anmelden = JobManager.register_worker
+    angemeldet: list[int] = []
+
+    async def anmelden_und_merken(selbst: JobManager) -> int:
+        kennung = await echtes_anmelden(selbst)
+        angemeldet.append(kennung)
+        return kennung
+
+    monkeypatch.setattr(JobManager, "register_worker", anmelden_und_merken)
     tasks.worker_context_resources = merken  # type: ignore[assignment]
     try:
         lauf = asyncio.create_task(daemon.run(int_settings))
         # Warten, bis der Pool wirklich offen ist — sonst prueft der Test das
-        # Schliessen von etwas, das nie auf war.
+        # Schliessen von etwas, das nie auf war — und beide Worker angemeldet
+        # sind.
         async with asyncio.timeout(15.0):
-            while not gebaut or gebaut["pool"].closed:
+            while not gebaut or gebaut["pool"].closed or len(angemeldet) < 2:
                 await asyncio.sleep(0.05)
         lauf.cancel()
         with pytest.raises(asyncio.CancelledError):
