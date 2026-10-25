@@ -69,6 +69,8 @@ class OCRWrapper:
                 Huellen des `AsyncOCRClient`: Sie kommen mit geladenem `raw`,
                 weil eine Eigenschaft nicht `await`en kann, und halten keine
                 Verbindung; neu lesen heisst dort `await client.get(sha256)`.
+                Ohne `raw` kommt eine solche Huelle nur, wenn waehrend des Wartens
+                ein `retry` dazwischenlief; dann meldet `raw` `DocumentNotFound`.
 
         Kosten: keine.
         """
@@ -315,7 +317,9 @@ class OCRWrapper:
         Raises:
             DocumentNotFound: Die Zeile gibt es nicht mehr.
             ConfigurationError: Die Huelle stammt aus dem `AsyncOCRClient` und
-                haelt keine Verbindung; die Meldung nennt den Weg.
+                haelt keine Verbindung; die Meldung nennt den Weg. War ihre Zeile
+                beim Laden schon weg (ein `retry` lief dazwischen), stattdessen
+                `DocumentNotFound`.
         """
         zeile = db.get_document(self._verbindung(), self.row.sha256)
         if zeile is None:
@@ -364,6 +368,15 @@ class OCRWrapper:
     def _verbindung(self) -> psycopg.Connection[Any]:
         """Die Verbindung zum Neu- und Nachlesen — oder die Ansage, dass diese
         Huelle keine hat."""
+        if self._conn is None and not self.row.raw_loaded:
+            # Eine Huelle des AsyncOCRClient ohne `raw`: Das Warten sah den
+            # Endzustand, aber ein `retry` lief vor dem Laden dazwischen.
+            raise DocumentNotFound(
+                f"Die Zeile zu {self.row.sha256}, die das Warten sah, gibt es "
+                f"nicht mehr: Ein `retry` nahm sie weg, oder ein neuer Lauf schrieb "
+                f"schon ein neues Ergebnis. Den jetzigen Stand holt "
+                f"`await client.get({self.row.sha256!r})`."
+            )
         if self._conn is None:
             raise ConfigurationError(
                 f"Die Huelle zu {self.row.sha256} stammt aus dem `AsyncOCRClient` "
@@ -384,14 +397,6 @@ class OCRWrapper:
         """
         if self.row.raw_loaded:
             return
-        if self._conn is None:
-            # Eine Huelle des AsyncOCRClient ohne `raw`: Das Warten sah den
-            # Endzustand, aber ein `retry` nahm die Zeile vor dem Laden weg.
-            raise DocumentNotFound(
-                f"Die Zeile zu {self.row.sha256} gibt es nicht mehr: `retry` nahm "
-                f"sie weg, das Dokument ist wieder offen. Auf den neuen Lauf "
-                f"wartet `await client.wait({self.row.sha256!r})`."
-            )
         zeile = db.get_document(self._verbindung(), self.row.sha256)
         if zeile is None:
             raise DocumentNotFound(

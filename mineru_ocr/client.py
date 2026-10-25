@@ -1578,8 +1578,8 @@ class AsyncOCRClient:
     async def wait(self, sha256: str, timeout: float | None = None) -> OCRWrapper:
         """Wartet auf das Endergebnis EINES Dokuments, wie `OCRClient.wait`.
 
-        Die Huelle traegt `raw` geladen (ausser ein `retry` nahm die Zeile eben
-        weg, siehe `_fertige`). Wirft nicht, weil ein Dokument scheiterte: Jeder
+        Die Huelle traegt `raw` geladen (ausser ein `retry` lief eben
+        dazwischen, siehe `_fertige`). Wirft nicht, weil ein Dokument scheiterte: Jeder
         Endzustand ist ein Ergebnis.
 
         Raises:
@@ -1607,6 +1607,8 @@ class AsyncOCRClient:
             ValueError: Die Frist ist `nan` oder negativ.
             DocumentNotFound: Ein Hash ist unbekannt — sofort.
             WaitTimeoutError: Die Frist lief ab; `pending` nennt die offenen.
+            DatabaseError: Die Verbindung des Clients riss ab, waehrend gewartet
+                wurde; das Ergebnis liess sich nicht laden.
 
         Kosten: keine.
         """
@@ -1631,6 +1633,8 @@ class AsyncOCRClient:
             DocumentNotFound: Beim ersten Weiterschalten, wenn ein Hash unbekannt
                 ist.
             WaitTimeoutError: Die Frist lief ab; `pending` nennt die offenen.
+            DatabaseError: Die Verbindung des Clients riss ab, waehrend gewartet
+                wurde; das Ergebnis liess sich nicht laden.
 
         Kosten: keine.
         """
@@ -1650,10 +1654,18 @@ class AsyncOCRClient:
         `await`en; geladen wird hier, je fertigem Dokument, ueber die Verbindung
         des Clients.
 
-        Nimmt ein `retry` die Zeile zwischen dem Lesen der Schleife und dem Laden
-        weg, endet das Warten wie im Sync-Client mit dem gesehenen Endzustand:
-        Die Huelle traegt dann die Zeile der Schleife ohne `raw`, und `raw` meldet
-        `DocumentNotFound`, wie es eine Sync-Huelle in derselben Lage taete."""
+        Laeuft zwischen dem Lesen der Schleife und dem Laden ein `retry` (die
+        Zeile ist weg, oder der neue Lauf schrieb schon ein neues Ergebnis), endet
+        das Warten wie im Sync-Client mit dem gesehenen Endzustand: Die Huelle
+        traegt dann die Zeile der Schleife ohne `raw`, und `raw` meldet
+        `DocumentNotFound`. Ob es dieselbe Zeile ist, sagen Zustand und
+        `updated_at`; ein neuer Lauf legt die Zeile neu an oder ueberschreibt sie.
+
+        Raises:
+            DatabaseError: Die Verbindung des Clients riss ab (etwa ein Neustart
+                von Postgres, waehrend gewartet wurde: Die Warteschleife verbindet
+                sich neu, der Client nicht).
+        """
         async with contextlib.aclosing(
             db.wait_for_terminal_async(
                 self._settings.db_dsn,
@@ -1663,8 +1675,13 @@ class AsyncOCRClient:
             )
         ) as zeilen:
             async for gesehen in zeilen:
-                zeile = await self._ergebnis_lesen(gesehen.sha256)
-                yield OCRWrapper.from_row(zeile if zeile is not None else gesehen, None)
+                zeile = await db.get_document_async(self._verbindung, gesehen.sha256)
+                if zeile is None or (zeile.status, zeile.updated_at) != (
+                    gesehen.status,
+                    gesehen.updated_at,
+                ):
+                    zeile = gesehen
+                yield OCRWrapper.from_row(zeile, None)
 
     async def _huelle(self, sha256: str) -> OCRWrapper:
         """Die Huelle zu einem Dokument mit Ergebnis, `raw` geladen.
@@ -1672,30 +1689,12 @@ class AsyncOCRClient:
         Raises:
             DocumentNotFound: Das Ergebnis ist inzwischen weg — `retry` nahm eine
                 `failed`-Zeile weg, und das Dokument ist wieder offen.
-            DatabaseError: Wie bei `_ergebnis_lesen`.
+            DatabaseError: Die Verbindung des Clients taugt nicht mehr.
         """
-        zeile = await self._ergebnis_lesen(sha256)
+        zeile = await db.get_document_async(self._verbindung, sha256)
         if zeile is None:
             raise _noch_offen(sha256)
         return OCRWrapper.from_row(zeile, None)
-
-    async def _ergebnis_lesen(self, sha256: str) -> db.DocumentRow | None:
-        """Die Ergebniszeile samt `raw`, ueber die Verbindung des Clients.
-
-        Raises:
-            DatabaseError: Die Verbindung des Clients riss ab (etwa ein Neustart
-                von Postgres, waehrend gewartet wurde: Die Warteschleife verbindet
-                sich neu, der Client nicht) — als Fehler des Pakets, nicht als
-                roher psycopg-Fehler.
-        """
-        try:
-            return await db.get_document_async(self._verbindung, sha256)
-        except psycopg.Error as fehler:
-            raise DatabaseError(
-                f"Das Ergebnis zu {sha256} laesst sich nicht lesen, die "
-                f"Verbindung des Clients taugt nicht mehr: {fehler}. Ein neuer "
-                f"Client (`async with AsyncOCRClient() as client`) verbindet neu."
-            ) from fehler
 
     async def ocr(self, data: bytes, timeout: float | None = None) -> OCRWrapper:
         """Ein Dokument: abschicken und auf dieses eine warten, wie
@@ -1705,6 +1704,8 @@ class AsyncOCRClient:
             ValueError: Die Frist ist `nan` oder negativ. Gemeldet, BEVOR
                 eingereiht wird.
             WaitTimeoutError: Die Zeit lief ab; das Dokument bleibt unterwegs.
+            DatabaseError: Die Verbindung des Clients riss ab, waehrend gewartet
+                wurde; das Ergebnis liess sich nicht laden.
 
         Kosten: JA, mittelbar.
         """

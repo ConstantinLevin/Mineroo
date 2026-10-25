@@ -6,7 +6,7 @@ import contextlib
 import hashlib
 import logging
 import time
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -2604,16 +2604,19 @@ async def test_async_get_unterscheidet_offen_und_unbekannt(
         await offener_async_client.get(h)
 
 
+@pytest.mark.parametrize("neuer_lauf_fertig", [False, True])
 async def test_async_warten_liefert_failed_auch_wenn_retry_die_zeile_eben_wegnahm(
     offener_async_client: AsyncOCRClient,
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],
     monkeypatch: pytest.MonkeyPatch,
+    neuer_lauf_fertig: bool,
 ) -> None:
     """Wie im Sync-Client: Ein Warten, das `failed` gesehen hat, endet mit `failed`,
     auch wenn ein `retry` aus einem anderen Prozess die Zeile wegnimmt, bevor
-    `raw` geladen ist. Die uebrigen kommen trotzdem; `raw` der weggenommenen Zeile
-    meldet `DocumentNotFound` wie im Sync-Client."""
+    `raw` geladen ist — und auch, wenn der neue Lauf bis dahin schon `done`
+    schrieb. Die uebrigen kommen trotzdem; `raw` der gesehenen Zeile meldet
+    `DocumentNotFound` wie im Sync-Client."""
     gescheitert = await offener_async_client.ocr_start(_png("gescheitert"))
     fertig = await offener_async_client.ocr_start(_png("fertig"))
     for h, zustand in ((gescheitert, DocumentStatus.FAILED), (fertig, DocumentStatus.DONE)):
@@ -2630,6 +2633,14 @@ async def test_async_warten_liefert_failed_auch_wenn_retry_die_zeile_eben_wegnah
                 "DELETE FROM documents WHERE sha256 = %s AND status = 'failed'",
                 (sha256,),
             )
+            if neuer_lauf_fertig:
+                await write_terminal_async(
+                    async_conn,
+                    sha256=sha256,
+                    status=DocumentStatus.DONE,
+                    raw={"neu": True},
+                    endpoint_id="e",
+                )
         return await laden(conn, sha256, **angaben)
 
     monkeypatch.setattr(db, "get_document_async", retry_kommt_dazwischen)
@@ -2643,6 +2654,8 @@ async def test_async_warten_liefert_failed_auch_wenn_retry_die_zeile_eben_wegnah
     assert huellen[1].raw == {}
     with pytest.raises(DocumentNotFound, match="gibt es nicht mehr"):
         huellen[0].raw
+    with pytest.raises(DocumentNotFound, match="await client.get"):
+        huellen[0].refresh()
 
 
 async def test_async_warten_meldet_eine_abgerissene_client_verbindung_als_databaseerror(
@@ -2769,30 +2782,39 @@ async def test_async_client_macht_bei_scheiterndem_betreten_alles_wieder_zu(
     assert _verbindungen_erreichen(db_conn, vorher), "Verbindung blieb offen"
 
 
+@pytest.mark.parametrize("schritt", ["app", "pool"])
 async def test_async_client_schliesst_die_verbindung_auch_wenn_der_abbruch_ins_verlassen_faellt(
-    _test_datenbank: str, db_conn: psycopg.Connection[Any]
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], schritt: str
 ) -> None:
     """In asynchronem Code kann ein Abbruch an jedem `await` von `__aexit__`
-    ankommen. Faellt er auf das Schliessen des Pools, schliesst der Client die
-    Verbindung trotzdem und laesst kein halb zugemachtes Objekt zurueck."""
+    ankommen. Faellt er auf das Schliessen der App oder des Pools, schliesst der
+    Client die Verbindung trotzdem (nach der App auch den Pool) und laesst kein
+    halb zugemachtes Objekt zurueck."""
     import asyncio
 
     vorher = _verbindungen_stabil(db_conn)
     klient = AsyncOCRClient(db_dsn=_test_datenbank)
     await klient.__aenter__()
-    pool = klient._pool
-    assert pool is not None
-    schliessen = pool.close
+    app, pool = klient._app, klient._pool
+    assert app is not None and pool is not None
+    schliessen: Callable[[], Awaitable[None]]
 
     async def abgebrochen(*_: Any, **__: Any) -> None:
         raise asyncio.CancelledError
 
-    pool.close = abgebrochen  # type: ignore[method-assign]
+    if schritt == "app":
+        schliessen = app.close_async
+        app.close_async = abgebrochen  # type: ignore[method-assign]
+    else:
+        schliessen = pool.close
+        pool.close = abgebrochen  # type: ignore[method-assign]
     try:
         with pytest.raises(asyncio.CancelledError):
             await klient.__aexit__(None, None, None)
 
         assert (klient._conn, klient._pool, klient._app) == (None, None, None)
+        if schritt == "app":
+            assert pool.closed
     finally:
         await schliessen()
     assert _verbindungen_erreichen(db_conn, vorher), "Verbindung blieb offen"

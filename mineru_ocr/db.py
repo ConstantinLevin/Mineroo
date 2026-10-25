@@ -1112,10 +1112,19 @@ def _zeile_sql(with_raw: bool) -> str:
 async def get_document_async(
     conn: psycopg.AsyncConnection[Any], sha256: str, *, with_raw: bool = True
 ) -> DocumentRow | None:
-    """Dasselbe wie `get_document`, asynchron: fuer den `AsyncOCRClient`."""
-    async with conn.cursor(row_factory=class_row(DocumentRow)) as cur:
-        await cur.execute(_zeile_sql(with_raw), (sha256,))
-        return await cur.fetchone()
+    """Dasselbe wie `get_document`, asynchron: fuer den `AsyncOCRClient`.
+
+    Raises:
+        DatabaseError: Die Verbindung taugt nicht mehr (etwa nach einem Neustart
+            von Postgres) — uebersetzt wie jeder Verbindungsfehler
+            (`_verbindungsfehler_uebersetzen`), nicht als roher psycopg-Fehler.
+    """
+    try:
+        async with conn.cursor(row_factory=class_row(DocumentRow)) as cur:
+            await cur.execute(_zeile_sql(with_raw), (sha256,))
+            return await cur.fetchone()
+    except psycopg.Error as fehler:
+        raise _verbindungsfehler_uebersetzen(fehler, "Ergebnis lesen") from fehler
 
 
 def list_documents(
