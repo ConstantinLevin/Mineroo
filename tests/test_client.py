@@ -16,8 +16,13 @@ from mineru_ocr import config, tasks
 from mineru_ocr.client import HASH_FORM, OCRClient
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, write_terminal_async
-from mineru_ocr.errors import ConfigDriftError, ConfigurationError, DocumentNotFound
-from mineru_ocr.wrapper import OCRWrapper
+from mineru_ocr.errors import (
+    ConfigDriftError,
+    ConfigurationError,
+    DatabaseError,
+    DocumentNotFound,
+)
+from mineru_ocr.wrapper import OCRMegaWrapper, OCRWrapper
 
 pytestmark = pytest.mark.db
 
@@ -138,6 +143,11 @@ def _huelle(client: OCRClient, tmp_path: Path, name: str) -> OCRWrapper:
 
 def _worker_am_leben(conn: psycopg.Connection[Any]) -> None:
     conn.execute("INSERT INTO procrastinate_workers DEFAULT VALUES")
+
+
+def _warnungen_des_clients(caplog: pytest.LogCaptureFixture) -> int:
+    """Wie viele Warnungen der Logger des Clients bisher aufgezeichnet hat."""
+    return len([e for e in caplog.records if e.name == "mineru_ocr.client"])
 
 
 def _worker_ist_abgestuerzt(conn: psycopg.Connection[Any]) -> None:
@@ -706,23 +716,96 @@ def test_ocr_start_warnt_je_daemonloser_phase_einmal(
     laeuft — und erneut, wenn nach einem laufenden wieder keiner da ist."""
     huellen = [_huelle(offener_client, tmp_path, f"{nr}.png") for nr in range(3)]
 
-    def warnungen() -> int:
-        return len([e for e in caplog.records if e.name == "mineru_ocr.client"])
-
     with caplog.at_level("WARNING", logger="mineru_ocr.client"):
         offener_client.ocr_start(huellen[0])
         offener_client.ocr_start(huellen[1])
-        assert warnungen() == 1
+        assert _warnungen_des_clients(caplog) == 1
 
         # Ein Daemon kommt hoch ...
         _worker_am_leben(db_conn)
         offener_client.ocr_start(huellen[0])
-        assert warnungen() == 1
+        assert _warnungen_des_clients(caplog) == 1
 
         # ... und faellt wieder aus: Das ist eine neue Lage, und sie wird gesagt.
         db_conn.execute("DELETE FROM procrastinate_workers")
         offener_client.ocr_start(huellen[2])
-        assert warnungen() == 2
+        assert _warnungen_des_clients(caplog) == 2
+
+
+@pytest.mark.parametrize("beobachter", ["status", "preflight"])
+def test_ocr_start_warnt_erneut_auch_wenn_der_daemon_nur_anderswo_gesehen_wurde(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    beobachter: str,
+) -> None:
+    """Ein langlebiger Client sieht den Daemon nicht nur beim Abschicken: `status`
+    und `preflight` fragen dieselbe Lebendigkeit. Kommt ein Daemon hoch, wird nur
+    dort gesehen und faellt aus, ist das fuer das naechste Abschicken eine NEUE
+    daemonlose Phase — und sie wird gesagt."""
+    huellen = [_huelle(offener_client, tmp_path, f"{nr}.png") for nr in range(2)]
+
+    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
+        offener_client.ocr_start(huellen[0])
+        assert _warnungen_des_clients(caplog) == 1
+
+        _worker_am_leben(db_conn)
+        getattr(offener_client, beobachter)()  # sieht den Daemon
+
+        db_conn.execute("DELETE FROM procrastinate_workers")
+        offener_client.ocr_start(huellen[1])
+        assert _warnungen_des_clients(caplog) == 2
+
+
+async def test_ocr_start_warnt_nicht_wenn_nichts_eingereiht_wird(
+    offener_client: OCRClient,
+    async_conn: psycopg.AsyncConnection[Any],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Die Warnung sagt „die Jobs werden eingereiht“. Wird nichts eingereiht —
+    eine leere Sammlung, lauter fertige Dokumente —, waere sie falsch."""
+    fertig = _huelle(offener_client, tmp_path, "fertig.png")
+    await write_terminal_async(
+        async_conn, sha256=fertig.sha256, status=DocumentStatus.DONE, raw={}
+    )
+    fertig.refresh()
+    leer = OCRMegaWrapper.from_paths([], offener_client.conn, offener_client.settings)
+
+    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
+        offener_client.ocr_start(leer)
+        offener_client.ocr_start(fertig)
+
+    assert _warnungen_des_clients(caplog) == 0
+
+
+def test_ocr_start_reiht_auch_ein_wenn_die_lebendigkeit_nicht_lesbar_ist(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Die Lebendigkeit ist nur Auskunft. Fehlt Procrastinates undokumentierte
+    Worker-Tabelle (oder sieht sie nach einem Upgrade anders aus), scheitert
+    `db.worker_heartbeats` — und das Abschicken darf daran nicht haengen."""
+
+    def kaputt(conn: psycopg.Connection[Any]) -> Any:
+        raise DatabaseError("procrastinate_workers sieht anders aus")
+
+    monkeypatch.setattr(client_modul.db, "worker_heartbeats", kaputt)
+    huelle = _huelle(offener_client, tmp_path, "a.png")
+
+    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
+        offener_client.ocr_start(huelle)
+
+    anzahl = db_conn.execute(
+        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s",
+        (huelle.sha256,),
+    ).fetchone()
+    assert anzahl is not None and anzahl[0] == 1
+    assert any("nicht pruefbar" in e.getMessage() for e in caplog.records)
 
 
 def test_ocr_start_warnt_nicht_bei_laufendem_daemon(

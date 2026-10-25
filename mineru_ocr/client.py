@@ -21,6 +21,7 @@ import hashlib
 import logging
 import re
 from collections.abc import Awaitable, Callable, Coroutine
+from datetime import datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Final, TypeVar
@@ -34,7 +35,12 @@ from psycopg_pool import NullConnectionPool
 from . import db, tasks
 from .config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS, MASKE, Settings, ist_geheimnisname
 from .db import DerivedStatus, DocumentStatus
-from .errors import ConfigDriftError, ConfigurationError, DocumentNotFound
+from .errors import (
+    ConfigDriftError,
+    ConfigurationError,
+    DatabaseError,
+    DocumentNotFound,
+)
 from .runpod import RunPodClient
 from .wrapper import OCRMegaWrapper, OCRWrapper
 
@@ -547,7 +553,7 @@ class OCRClient:
         # normal aus, nur arbeitet niemand. Der Client SAGT es, statt es einen
         # suchen zu lassen.
         try:
-            lebenszeichen = db.worker_heartbeats(self.conn)
+            lebenszeichen = self._lebenszeichen()
         except Exception as fehler:  # noqa: BLE001
             merken("daemon", "laeuft", f"{type(fehler).__name__}", "nicht_pruefbar")
         else:
@@ -615,46 +621,83 @@ class OCRClient:
         `config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS`, gemessen an der Uhr der
         Datenbank — die stehengebliebene Zeile eines abgestuerzten Daemons zaehlt
         nicht. Die Jobs liegen bis zum Start eines Daemons in der Datenbank; ihn
-        startet der Betreiber, weder Bibliothek noch Kommandozeile tun es.
+        startet der Betreiber, weder Bibliothek noch Kommandozeile tun es. Ist
+        die Lebendigkeit gar nicht lesbar, steht auch das in der Warnung, und
+        eingereiht wird trotzdem. Gewarnt wird nur, wenn wirklich etwas
+        eingereiht wird.
 
         Das war frueher anders: Unter `strict` brach das Abschicken ab, mit der
-        Begruendung einer fruehen Festlegung des Eigentuemers („ja natürlich der
+        Begruendung einer fruehen Festlegung des Eigentuemers („ja natuerlich der
         client soll dann sterben und errorn"). Sein spaeterer Satz loest sie ab:
-        „das warten ist künstlich man wartet auf die datenbank nicht direkt auf
-        den worker der ist ja unabhängig". Eingereihte Arbeit wartet auf die
+        „das warten ist kuenstlich man wartet auf die datenbank nicht direkt auf
+        den worker der ist ja unabhaengig". Eingereihte Arbeit wartet auf die
         Datenbank und nicht auf den Worker; ein fehlender Daemon verzoegert sie,
         verliert sie aber nicht. Die Lebendigkeit ist nur Auskunft — `status` und
         `preflight` melden sie, die Warnung hier sagt sie beim Abschicken.
 
         Kosten: keine unmittelbar. Mittelbar: alles, was der Daemon danach tut.
         """
-        if db.worker_heartbeats(self.conn):
-            self._ohne_daemon_gewarnt = False
-        elif not self._ohne_daemon_gewarnt:
-            # Einmal je daemonloser Phase: Die Kommandozeile reiht Dokument fuer
-            # Dokument ein, und dreissigtausend gleiche Zeilen waeren Laerm.
-            self._ohne_daemon_gewarnt = True
-            log.warning(
-                "Es laeuft kein Daemon (kein Worker-Herzschlag juenger als %g s). "
-                "Die Jobs werden eingereiht und bleiben liegen, bis einer startet: "
-                "`mineru-ocr daemon`.",
-                DAEMON_HEARTBEAT_MAX_AGE_SECONDS,
-            )
-
         huellen = [target] if isinstance(target, OCRWrapper) else list(target)
-        for huelle in huellen:
-            if huelle.status.is_terminal:
-                # Fertiges wird nicht angefasst. Eingereiht wird jede Zeile OHNE
-                # endgueltigen Zustand — einschliesslich derer, deren juengster
-                # Job endgueltig endete, ohne etwas zu schreiben. Auch die laufen
-                # dann schlicht noch einmal.
-                continue
+        # Fertiges wird nicht angefasst. Eingereiht wird jede Zeile OHNE
+        # endgueltigen Zustand — einschliesslich derer, deren juengster Job
+        # endgueltig endete, ohne etwas zu schreiben. Auch die laufen dann
+        # schlicht noch einmal.
+        offene = [huelle for huelle in huellen if not huelle.status.is_terminal]
+        if offene:
+            # Nur wenn wirklich eingereiht wird: Die Warnung sagt, dass die Jobs
+            # liegen bleiben, und bei nichts Einzureihendem waere das falsch.
+            self._ohne_daemon_warnen()
+        for huelle in offene:
             # EINZELN, nie im Stapel: Ein Stapel mit einem einzigen Konflikt
             # wuerde vollstaendig zurueckgerollt (Feature-Verifikation Punkt 9).
             # Bei dreissigtausend Dokumenten waere ein einziges bereits
             # wartendes genug, damit gar nichts passiert.
             tasks.enqueue_document(self._procrastinate, self.conn, huelle.sha256)
         return target
+
+    def _lebenszeichen(self) -> list[tuple[int, datetime]]:
+        """Die Worker mit frischem Herzschlag (`db.worker_heartbeats`).
+
+        Jeder Weg, der die Lebendigkeit liest — Abschicken, `status`,
+        `preflight` —, geht hierher, und sieht er einen Daemon, endet die
+        daemonlose Phase: Ein Daemon, der nur ueber `status` gesehen wurde und
+        dann ausfaellt, ist fuer das naechste Abschicken eine NEUE Phase, und die
+        wird gesagt.
+        """
+        lebende = db.worker_heartbeats(self.conn)
+        if lebende:
+            self._ohne_daemon_gewarnt = False
+        return lebende
+
+    def _ohne_daemon_warnen(self) -> None:
+        """Warnt vor dem Einreihen, wenn kein Daemon laeuft — einmal je Phase.
+
+        Einmal, weil die Kommandozeile Dokument fuer Dokument einreiht und
+        dreissigtausend gleiche Zeilen Laerm waeren. Nur Auskunft: Ist die
+        Lebendigkeit nicht lesbar (Procrastinates undokumentierte Worker-Tabelle
+        fehlt oder sieht anders aus), steht das in der Warnung, und eingereiht
+        wird trotzdem — das Abschicken haengt nicht an einer Auskunft.
+        """
+        try:
+            if self._lebenszeichen():
+                return
+            grund = (
+                "Es laeuft kein Daemon (kein Worker-Herzschlag juenger als "
+                f"{DAEMON_HEARTBEAT_MAX_AGE_SECONDS:g} s)"
+            )
+        except DatabaseError:
+            grund = (
+                "Ob ein Daemon laeuft, ist nicht pruefbar (Procrastinates "
+                "Worker-Tabelle ist nicht lesbar, siehe `db.worker_heartbeats`)"
+            )
+        if self._ohne_daemon_gewarnt:
+            return
+        self._ohne_daemon_gewarnt = True
+        log.warning(
+            "%s. Die Jobs werden eingereiht und bleiben liegen, bis einer startet: "
+            "`mineru-ocr daemon`.",
+            grund,
+        )
 
     def wait(
         self,
@@ -918,7 +961,7 @@ class OCRClient:
             "jobs": jobs,
             "upgrade_cases": offene_aufruest_faelle[0] if offene_aufruest_faelle else 0,
             "balance": stand,
-            "daemon_alive": bool(db.worker_heartbeats(self.conn)),
+            "daemon_alive": bool(self._lebenszeichen()),
         }
 
     def document(self, target: str | Path) -> DerivedStatus:
