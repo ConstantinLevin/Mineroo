@@ -226,8 +226,8 @@ vier Entscheidungen, ohne die man den Code falsch liest:
 **Ein Buch, nicht zwei.** Die Tabelle `documents` trägt ausschließlich
 Endzustände: `done | empty | failed | input_error`. Die Zeile legt der Job an, wenn
 er endet; offen ist ein Dokument, solange seine Eingabe in `inputs` steht. „Läuft
-gerade" wird aus dem jüngsten verknüpften Procrastinate-Job **gelesen** und
-nirgends gespiegelt. Wer
+gerade" wird aus dem Procrastinate-Job **gelesen**, dessen Kennung an der Eingabe
+steht (`inputs.job_id`), und nirgends gespiegelt. Wer
 das nicht weiß, sucht vergeblich nach dem Feld — oder führt es ein und erzeugt
 genau die zwei Bücher, die auseinanderlaufen.
 

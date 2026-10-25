@@ -431,7 +431,8 @@ hinweg, und eine Vereinigung behielte nur das letzte.)
   Kommando enthält keine eigene Logik; jedes ruft genau eine Funktion der
   Bibliothek.
 - `core.py` ist der Kern des Abschickens ohne Ein- und Ausgabe (Hash,
-  Typ- und Größenprüfung, `Submitted`), und `client.py` ist die dünne Schale darüber
+  Typ- und Größenprüfung, `Submitted`, dazu `RetryOutcome`, das Bibliothek und
+  Kommando teilen), und `client.py` ist die dünne Schale darüber
   (psycopgs `Connection`; die asynchrone Schale über `AsyncConnection` kommt später).
   Auf dem Weg Abschicken–Warten gibt es keine Brücke wie asgiref oder anyio.
 
