@@ -231,12 +231,13 @@ def test_der_modulaufruf_geht_wirklich_durch_main() -> None:
 
 
 def test_fehlende_konfiguration_endet_mit_meldung_statt_traceback(tmp_path: Path) -> None:
-    """Ohne Endpoint in der Konfiguration sagt `setup` es und endet mit 1.
+    """Ohne Datenbank in der Konfiguration sagt `setup` es und endet mit 1.
 
-    Es gibt keinen Endpoint im Code mehr; wer ihn nirgends einstellt, soll die
-    Stellen dafuer genannt bekommen — nicht einen Traceback lesen. `HOME` zeigt
-    auf ein leeres Verzeichnis, damit keine Konfigurationsdatei des Entwicklers
-    mitspielt, und die Umgebungsvariablen des Pakets fehlen.
+    Es gibt keine Datenbank im Code; wer sie nirgends einstellt, soll die Stellen
+    dafuer genannt bekommen — nicht einen Traceback lesen. Endpoint und
+    RunPod-Schluessel verlangt `setup` nicht: Es spricht RunPod nie an. `HOME`
+    zeigt auf ein leeres Verzeichnis, damit keine Konfigurationsdatei des
+    Entwicklers mitspielt, und die Umgebungsvariablen des Pakets fehlen.
     """
     umgebung = {
         name: wert
@@ -247,7 +248,7 @@ def test_fehlende_konfiguration_endet_mit_meldung_statt_traceback(tmp_path: Path
     umgebung["NO_COLOR"] = "1"
 
     lauf = subprocess.run(
-        [sys.executable, "-m", "mineru_ocr.cli", "setup", "--dsn", "host=egal"],
+        [sys.executable, "-m", "mineru_ocr.cli", "setup"],
         cwd=WURZEL,
         env=umgebung,
         capture_output=True,
@@ -256,7 +257,9 @@ def test_fehlende_konfiguration_endet_mit_meldung_statt_traceback(tmp_path: Path
     )
 
     assert lauf.returncode == 1, lauf.stderr
-    assert "MINERU_OCR_ENDPOINT_ID" in lauf.stderr
+    assert "MINERU_OCR_DB_DSN" in lauf.stderr
+    assert "ENDPOINT" not in lauf.stderr
+    assert "API-Schluessel" not in lauf.stderr
     assert "Traceback" not in lauf.stderr
 
 

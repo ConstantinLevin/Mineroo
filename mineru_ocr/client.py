@@ -390,9 +390,15 @@ class OCRClient:
         Raises:
             ConfigDriftError: Nur bei `strict=True` und einer echten Abweichung.
                 Ohne `strict` steht dieselbe Abweichung als Warnung im Befund.
+            ConfigurationError: Kein Endpoint oder kein RunPod-Schluessel. Der
+                Preflight prueft den Endpoint bei RunPod; ohne beides waere jeder
+                Befund „nicht pruefbar", und das ist eine Frage der
+                Konfiguration, kein Befund.
 
         Kosten: keine.
         """
+        self._settings.require_endpoint_id()
+        self._settings.require_api_key()
         befunde: list[dict[str, Any]] = []
 
         def merken(punkt: str, soll: Any, ist: Any, bewertung: str) -> None:
@@ -657,6 +663,8 @@ class OCRClient:
 
         Raises:
             TypeError: Ein Element ist keine Bytes — meist ein Pfad oder Text.
+            ConfigurationError: Kein Endpoint eingestellt. Es ist dann NICHTS
+                eingereiht worden. Den RunPod-Schluessel braucht Abschicken nicht.
             UnsupportedTypeError: Ein Dokument hat einen Typ, den das Paket nicht
                 liest. Es ist dann NICHTS eingereiht worden.
             TooLargeError: Ein Dokument ist zu gross. Dito.
@@ -678,11 +686,14 @@ class OCRClient:
         for dokument in dokumente:
             if not isinstance(dokument, bytes):
                 raise TypeError(_nimmt_bytes(dokument))
-        # ERST ALLES PRUEFEN, DANN EINREIHEN.
+        # ERST ALLES PRUEFEN, DANN EINREIHEN. Dazu gehoert der Endpoint: Die Zeile
+        # traegt ihn, bis sie erst am Ende des Jobs entsteht (#25). Der
+        # RunPod-Schluessel gehoert NICHT dazu; Abschicken spricht RunPod nie an.
+        endpoint = self._settings.require_endpoint_id()
         vorbereitet = [core.prepare(dokument, self._settings) for dokument in dokumente]
 
         ergebnisse = [
-            self._abschicken(dokument, bereit)
+            self._abschicken(dokument, bereit, endpoint)
             for dokument, bereit in zip(dokumente, vorbereitet, strict=True)
         ]
         if any(not e.status.is_terminal for e in ergebnisse):
@@ -747,7 +758,9 @@ class OCRClient:
             grund,
         )
 
-    def _abschicken(self, data: bytes, bereit: core.Prepared) -> Submitted:
+    def _abschicken(
+        self, data: bytes, bereit: core.Prepared, endpoint_id: str
+    ) -> Submitted:
         """Schickt EIN geprueftes Dokument ab, in seiner eigenen Transaktion.
 
         Ein Treffer (Zeile da) wird ohne `raw` gelesen und nicht angefasst. Sonst
@@ -765,7 +778,7 @@ class OCRClient:
                     sha256=sha256,
                     size_bytes=bereit.size_bytes,
                     mime=bereit.doc_type.mime,
-                    endpoint_id=self._settings.endpoint_id,
+                    endpoint_id=endpoint_id,
                 )
                 if not angelegt:
                     # Ein anderer Aufrufer war zwischen dem Nachsehen und dem
@@ -988,8 +1001,14 @@ class OCRClient:
             nicht, Procrastinates Worker-Tabelle fehlt), stehen sie als `None`
             da, und die Uebersicht scheitert nicht.
 
+        Raises:
+            ConfigurationError: Kein RunPod-Schluessel. Die Uebersicht fragt
+                RunPod nach dem Kontostand; ein fehlender Schluessel ist keine
+                Auskunft „unbekannt", sondern eine Frage der Konfiguration.
+
         Kosten: keine.
         """
+        self._settings.require_api_key()
         zeilen = db.counts_by_status(self.conn)
 
         aufgaben = self._procrastinate.job_manager.list_tasks()
@@ -1095,15 +1114,23 @@ class OCRClient:
         runpodcredit […] die per getter direkt von der api gegettet werden wenn
         man darauf zugreift" (Plan 2.1). Ein zwischengespeicherter Kontostand ist
         genau dann falsch, wenn es darauf ankommt.
+
+        Raises:
+            ConfigurationError: Kein RunPod-Schluessel.
         """
+        self._settings.require_api_key()
         return _runpod_fragen(self._settings, lambda z: z.balance())
 
     def account(self) -> dict[str, Any]:
-        """Die Kontoangaben als Ganzes."""
+        """Die Kontoangaben als Ganzes. Verlangt den RunPod-Schluessel."""
+        self._settings.require_api_key()
         return _runpod_fragen(self._settings, lambda z: z.account())
 
     def workers(self) -> list[dict[str, Any]]:
         """Die Worker EINZELN aufgelistet — die zusammengefassten Zaehler luegen
         (Plan 8, Regel 11). Leere Liste heisst „gerade laeuft keiner" und ist bei
-        einem auf null herunterskalierenden Endpoint der Normalfall."""
+        einem auf null herunterskalierenden Endpoint der Normalfall. Verlangt
+        Endpoint und RunPod-Schluessel."""
+        self._settings.require_endpoint_id()
+        self._settings.require_api_key()
         return _runpod_fragen(self._settings, lambda z: z.workers())

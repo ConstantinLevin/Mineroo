@@ -139,6 +139,28 @@ def echte_settings(settings: Settings) -> Settings:
 # --- Die Nutzlast ---------------------------------------------------------
 
 
+async def test_ohne_schluessel_laesst_sich_kein_runpod_zugang_bauen(
+    echte_settings: Settings,
+) -> None:
+    """Der Zugang ist die eine Stelle, die RunPod anspricht; er verlangt den
+    Schluessel, bevor irgendetwas hinausgeht."""
+    ohne = dataclasses.replace(echte_settings, api_key=None)
+    with pytest.raises(ConfigurationError, match="Kein API-Schluessel"):
+        RunPodClient(ohne)
+
+
+async def test_ohne_endpoint_geht_keine_endpoint_anfrage_hinaus(
+    echte_settings: Settings,
+) -> None:
+    """Der Kontostand braucht nur den Schluessel; was den Endpoint anspricht,
+    verlangt ihn, bevor eine Anfrage hinausgeht."""
+    ohne = dataclasses.replace(echte_settings, endpoint_id=None)
+    client, aufzeichnung = _client(ohne, Aufzeichnung([]))
+    with pytest.raises(ConfigurationError, match="endpoint_id"):
+        await client.endpoint()
+    assert aufzeichnung.anfragen == []
+
+
 async def test_nutzlast_hat_kein_formats_feld(echte_settings: Settings) -> None:
     """Die gesendete Nutzlast enthaelt unter keinen Umstaenden `formats`.
 

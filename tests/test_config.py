@@ -137,12 +137,15 @@ def test_rangfolge_uebergabe_umgebung_datei(tmp_path: Path) -> None:
     assert aus_angabe.db_dsn == "host=angabe"
 
 
-def test_ohne_endpoint_wirft_load_mit_hinweis_auf_beide_quellen() -> None:
+def test_ohne_endpoint_bildet_load_die_einstellung_und_wer_ihn_braucht_bekommt_den_hinweis() -> None:
     """Es gibt keine Voreinstellung fuer den Endpoint: Ein im Code eingetragener
-    waere ein bestimmter Endpoint fuer jeden Aufrufer. Die Meldung nennt beide
-    Stellen, an denen man ihn einstellt."""
+    waere ein bestimmter Endpoint fuer jeden Aufrufer. `setup` und die lesenden
+    Kommandos brauchen ihn nicht; wer ihn braucht (`require_endpoint_id`),
+    bekommt eine Meldung, die beide Stellen nennt, an denen man ihn einstellt."""
+    einstellung = Settings.load(api_key=GEHEIM, db_dsn=DSN, environ={})
+    assert einstellung.endpoint_id is None
     with pytest.raises(ConfigurationError) as fehler:
-        Settings.load(api_key=GEHEIM, db_dsn=DSN, environ={})
+        einstellung.require_endpoint_id()
     text = str(fehler.value)
     assert "endpoint_id" in text
     assert "MINERU_OCR_ENDPOINT_ID" in text
@@ -204,12 +207,18 @@ def test_unbekannter_schluessel_in_der_datei_wirft(tmp_path: Path) -> None:
         Settings.load(api_key=GEHEIM, environ={}, config_path=datei)
 
 
-def test_ohne_schluessel_wirft_load(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Kein Schluessel uebergeben und keiner in `~/.runpod/config.toml`:
-    `ConfigurationError`, nicht eine Einstellung mit leerem Feld."""
+def test_ohne_schluessel_bildet_load_die_einstellung_und_erst_runpod_verlangt_ihn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Kein Schluessel uebergeben und keiner in `~/.runpod/config.toml`: Das ist
+    fuer Abschicken, Lesen und `setup` kein Fehler, sie brauchen nur die
+    Datenbank. Erst wer RunPod anspricht (`require_api_key`), bekommt die
+    `ConfigurationError` — und kein leeres Feld."""
     monkeypatch.setattr("mineru_ocr.config.RUNPOD_CONFIG_PATH", tmp_path / "fehlt.toml")
+    einstellung = Settings.load()
+    assert einstellung.api_key is None
     with pytest.raises(ConfigurationError, match="Kein API-Schluessel"):
-        Settings.load()
+        einstellung.require_api_key()
 
 
 def test_schluessel_kommt_aus_der_datei(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -218,6 +227,7 @@ def test_schluessel_kommt_aus_der_datei(monkeypatch: pytest.MonkeyPatch, tmp_pat
     datei.write_text(f'apikey = "{GEHEIM}"\n', encoding="utf-8")
     monkeypatch.setattr("mineru_ocr.config.RUNPOD_CONFIG_PATH", datei)
     assert Settings.load().api_key == GEHEIM
+    assert Settings.load().require_api_key() == GEHEIM
 
 
 def test_kaputte_datei_wirft_mit_pfad(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -226,8 +236,9 @@ def test_kaputte_datei_wirft_mit_pfad(monkeypatch: pytest.MonkeyPatch, tmp_path:
     datei = tmp_path / "config.toml"
     datei.write_text("das ist [[kein gueltiges toml\n", encoding="utf-8")
     monkeypatch.setattr("mineru_ocr.config.RUNPOD_CONFIG_PATH", datei)
+    einstellung = Settings.load()  # wer RunPod nicht anspricht, merkt nichts
     with pytest.raises(ConfigurationError, match=str(datei)):
-        Settings.load()
+        einstellung.require_api_key()
 
 
 def test_datei_ohne_apikey_wirft(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -236,7 +247,7 @@ def test_datei_ohne_apikey_wirft(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     datei.write_text('etwasanderes = "x"\n', encoding="utf-8")
     monkeypatch.setattr("mineru_ocr.config.RUNPOD_CONFIG_PATH", datei)
     with pytest.raises(ConfigurationError, match="apikey"):
-        Settings.load()
+        Settings.load().require_api_key()
 
 
 def test_leerer_apikey_wirft(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -245,8 +256,10 @@ def test_leerer_apikey_wirft(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     datei = tmp_path / "config.toml"
     datei.write_text('apikey = "   "\n', encoding="utf-8")
     monkeypatch.setattr("mineru_ocr.config.RUNPOD_CONFIG_PATH", datei)
+    einstellung = Settings.load()
+    assert einstellung.api_key is None
     with pytest.raises(ConfigurationError):
-        Settings.load()
+        einstellung.require_api_key()
 
 
 # --- Die Sollwerte des Endpoints ------------------------------------------

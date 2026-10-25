@@ -895,6 +895,44 @@ def test_status_meldet_den_daemon_auch_bei_einem_psycopg_fehler_als_unbekannt(
     assert offener_client.status()["daemon_alive"] is None
 
 
+def test_ohne_schluessel_schickt_der_client_ab_und_liest_aber_fragt_runpod_nicht(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Abschicken und Lesen brauchen nur die Datenbank. Was RunPod fragt
+    (`status`, `credit`, `account`, `workers`, `preflight`), verlangt den
+    Schluessel, bevor es fragt."""
+
+    def nie(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("RunPod wurde angesprochen")
+
+    monkeypatch.setattr(client_modul, "_runpod_fragen", nie)
+    _worker_am_leben(db_conn)
+    with OCRClient(db_dsn=_test_datenbank, preflight=False) as klient:
+        assert klient.settings.api_key is None
+        h = klient.ocr_start(_png("ohne schluessel"))
+        assert h.queued is True
+        assert klient.get(h).status is DocumentStatus.NEW
+        assert klient.document(h) is not None
+        for frage in ("status", "credit", "account", "workers", "preflight"):
+            with pytest.raises(ConfigurationError, match="Kein API-Schluessel"):
+                getattr(klient, frage)()
+
+
+def test_abschicken_ohne_endpoint_wirft_bevor_etwas_angelegt_ist(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MINERU_OCR_ENDPOINT_ID")
+    with OCRClient(db_dsn=_test_datenbank, api_key="erfunden", preflight=False) as klient:
+        with pytest.raises(ConfigurationError, match="endpoint_id"):
+            klient.ocr_start([_png("a"), _png("b")])
+    assert _zaehlen(db_conn, "documents") == 0
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 0
+
+
 def test_ocr_start_warnt_ohne_daemon_nur_einmal_je_client(
     offener_client: OCRClient, caplog: pytest.LogCaptureFixture
 ) -> None:

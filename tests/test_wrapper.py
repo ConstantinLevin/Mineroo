@@ -40,7 +40,7 @@ def _huelle(
             sha256=sha256,
             size_bytes=len(inhalt),
             mime="image/png",
-            endpoint_id=settings.endpoint_id,
+            endpoint_id=settings.require_endpoint_id(),
         )
         db.insert_input(conn, sha256=sha256, content=inhalt)
     zeile = db.get_document(conn, sha256, with_raw=False)

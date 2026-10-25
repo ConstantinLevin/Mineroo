@@ -237,6 +237,10 @@ def daemon(
 
     try:
         einstellung = Settings.load(db_dsn=dsn, ocr_concurrency=concurrency)
+        # Der Daemon spricht RunPod an: Endpoint und Schluessel VOR dem Start, nicht
+        # erst beim ersten Job.
+        einstellung.require_endpoint_id()
+        einstellung.require_api_key()
     except MineruOcrError as fehler:
         _betriebsfehler(fehler)
     raise typer.Exit(code=daemon_modul.main(einstellung, queues=queues or None))

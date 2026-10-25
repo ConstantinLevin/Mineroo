@@ -122,6 +122,12 @@ def _konfiguration_isolieren(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     )
     monkeypatch.setenv("MINERU_OCR_ENDPOINT_ID", "testendpoint")
     monkeypatch.setenv("MINERU_OCR_DB_DSN", TEST_DSN)
+    # Auch der RunPod-Schluessel des Entwicklers bleibt draussen: Wer einen
+    # braucht, uebergibt ihn ausdruecklich. Sonst hinge davon, ob
+    # `~/.runpod/config.toml` auf der Maschine liegt, ob ein Test besteht.
+    monkeypatch.setattr(
+        "mineru_ocr.config.RUNPOD_CONFIG_PATH", tmp_path / "kein-runpod-schluessel.toml"
+    )
 
 
 @pytest.fixture

@@ -116,8 +116,21 @@ werden von `cli.py` bewusst gesetzt.
 Angabe → Umgebungsvariable `MINERU_OCR_<NAME>` → TOML-Datei
 `~/.mineru_ocr/config.toml` (`MINERU_OCR_CONFIG` oder `config_path` nennen eine
 andere) → Feld-Voreinstellung. Für `endpoint_id` und `db_dsn` gibt es **keine**
-Voreinstellung; fehlen sie, wirft `load` eine `ConfigurationError`, die alle Stellen
-nennt. Die Sollwerte des Preflights (`expected_image_tag`, `workers_min`,
+Voreinstellung. Fehlt `db_dsn`, wirft `load` eine `ConfigurationError`, die alle
+Stellen nennt. `endpoint_id` und der RunPod-Schlüssel dürfen beim Laden fehlen
+(`None`); verlangt werden sie erst dort, wo sie gebraucht werden, mit
+`Settings.require_endpoint_id()` und `Settings.require_api_key()`, und die Meldung
+nennt dann die Stellen bzw. sagt, was mit `~/.runpod/config.toml` ist:
+
+| Weg | Endpoint | RunPod-Schlüssel |
+|---|---|---|
+| `setup`, `get`, `wait`, `show`, `markdown`, `retry` | nein | nein |
+| Abschicken (`ocr_start`, `ocr`) | ja, bis #25 die Zeile erst am Ende des Jobs anlegt | nein |
+| `daemon`, `preflight`, `workers` | ja | ja |
+| `status`, `credit`, `account` | nein | ja |
+
+Den Schlüssel verlangt `RunPodClient` beim Bauen, die Lesefragen des Clients
+vor dem Fragen. Die Sollwerte des Preflights (`expected_image_tag`, `workers_min`,
 `workers_max`, `idle_timeout`, `execution_timeout_ms`, `allowed_data_centers`, die
 Tabelle `[endpoint_env]`) sind Felder von `Settings` mit den Voreinstellungen aus
 Mineroo#3 (0, 10, 60, 600000). Ein unbekannter Schlüssel in der Datei, eine
@@ -128,8 +141,9 @@ diese Datei. Das Beispiel steht in `README.md`.
 
 **Die Tests sind von der Konfiguration des Entwicklers abgeschirmt:** Eine
 `autouse`-Vorrichtung in `tests/conftest.py` räumt jede `MINERU_OCR_*`-Variable,
-biegt die Standarddatei auf einen nicht vorhandenen Pfad um und stellt Endpoint und
-Datenbank auf Testwerte (die Testdatenbank). Ein Test, der die Quellen selbst
+biegt die Standarddatei und `config.RUNPOD_CONFIG_PATH` auf nicht vorhandene Pfade
+um und stellt Endpoint und Datenbank auf Testwerte (die Testdatenbank). Einen
+RunPod-Schlüssel hat ein Test nur, wenn er ihn ausdrücklich übergibt. Ein Test, der die Quellen selbst
 prüft, übergibt `environ=` und `config_path=` ausdrücklich. Der Sollwert des
 GPU-Speicheranteils (`MINERU_VIRTUAL_VRAM_SIZE`) ist bis zur Messung offen: Der
 Preflight berichtet den Ist-Wert und bewertet ihn als „nicht prüfbar“.

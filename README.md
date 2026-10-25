@@ -98,7 +98,11 @@ verglichen und als `***` gezeigt, im Befund wie in `repr(Settings)`. Teilwörter
 zählen nicht: `HF_TOKEN` wird verdeckt, `MAX_TOKENS` und `MONKEY` nicht.
 
 **Der RunPod-Schlüssel bleibt in `~/.runpod/config.toml`**, Feld `apikey`, und
-steht nie in dieser Konfiguration. „Nur EU" heißt EWR — EU-Staaten plus Island und
+steht nie in dieser Konfiguration. Verlangt wird er nur, wo RunPod angesprochen
+wird: von `daemon`, `status` und `preflight` und den Lesefragen an RunPod.
+Abschicken, `get`, `wait`, `show`, `markdown`, `retry` und `setup` brauchen nur die
+Datenbank; Abschicken braucht dazu den Endpoint (die Zeile trägt ihn), `setup` nicht
+einmal den. „Nur EU" heißt EWR — EU-Staaten plus Island und
 Norwegen, denn dort gilt die DSGVO —, und die zulässige Liste ist der Sollwert
 `allowed_data_centers`.
 

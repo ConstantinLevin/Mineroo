@@ -160,6 +160,16 @@ def _schluessel_aus_datei() -> str:
         )
     return schluessel
 
+def _schluessel_oder_nichts() -> str | None:
+    """Der Schluessel aus `~/.runpod/config.toml`, oder `None`, wenn keiner
+    nutzbar ist. Fuer `load`: Wer RunPod nicht anspricht, braucht ihn nicht, und
+    die genaue Meldung kommt aus `Settings.require_api_key`."""
+    try:
+        return _schluessel_aus_datei()
+    except ConfigurationError:
+        return None
+
+
 def _konfigurationsdatei(pfad: Path, *, ausdruecklich: bool) -> dict[str, Any]:
     """Liest die Konfigurationsdatei dieses Pakets.
 
@@ -437,15 +447,21 @@ class Settings:
     Loeschen und Migrationen sich nie mit den Daten anderer Anwendungen
     beruehren (Plan 9)."""
 
-    endpoint_id: str
+    endpoint_id: str | None
     """Der RunPod-Serverless-Endpoint. Kommt aus der Konfiguration (siehe
     `load`); es gibt keine Voreinstellung, denn jede im Code waere ein
-    bestimmter Endpoint fuer jeden Aufrufer."""
+    bestimmter Endpoint fuer jeden Aufrufer. `None` heisst „nirgends
+    eingestellt": Das ist fuer `setup` und die lesenden Wege kein Fehler. Wer ihn
+    braucht — Abschicken (die Zeile traegt ihn, bis sie erst am Ende des Jobs
+    entsteht, #25), der Daemon, `preflight` —, holt ihn ueber
+    `require_endpoint_id` und bekommt sonst die Meldung, wo man ihn einstellt."""
 
-    api_key: str
+    api_key: str | None
     """RunPod-API-Schluessel. Gehoert NIE in eine URL und NIE in eine Ausgabe;
     er reist ausschliesslich im Authorization-Header als Bearer-Token
-    (Plan 8, Regel 12). `__repr__` dieser Klasse maskiert ihn (siehe unten)."""
+    (Plan 8, Regel 12). `__repr__` dieser Klasse maskiert ihn (siehe unten).
+    `None` heisst „nicht gefunden": Abschicken, Lesen und `setup` brauchen nur
+    die Datenbank. Wer RunPod anspricht, holt ihn ueber `require_api_key`."""
 
     # -- Job-Contract ------------------------------------------------------
 
@@ -703,6 +719,38 @@ class Settings:
     retry_factor: float = 4.0
     """Faktor des Rueckzugs: rund 30 Sekunden, 2 Minuten, 8 Minuten."""
 
+    config_path: Path | None = dataclasses.field(default=None, compare=False)
+    """Die Konfigurationsdatei, aus der `load` gelesen hat. Nur fuer Meldungen:
+    `require_endpoint_id` nennt sie als eine der Stellen, an denen man den
+    Endpoint einstellt."""
+
+    def require_endpoint_id(self) -> str:
+        """Der Endpoint, fuer die Wege, die ihn brauchen.
+
+        Raises:
+            ConfigurationError: Er ist nirgends eingestellt; die Meldung nennt
+                jede Stelle, an der man ihn einstellt.
+        """
+        if self.endpoint_id is None:
+            raise ConfigurationError(
+                _fehlt("endpoint_id", self.config_path or DEFAULT_CONFIG_PATH)
+            )
+        return self.endpoint_id
+
+    def require_api_key(self) -> str:
+        """Der RunPod-Schluessel, fuer die Wege, die RunPod ansprechen.
+
+        Fehlt er in der Einstellung, wird `~/.runpod/config.toml` jetzt gelesen:
+        Die Meldung sagt dann genau, was mit der Datei ist (fehlt, kein TOML,
+        kein Feld `apikey`), statt nur „kein Schluessel".
+
+        Raises:
+            ConfigurationError: Kein Schluessel uebergeben und keiner in der Datei.
+        """
+        if self.api_key is not None:
+            return self.api_key
+        return _schluessel_aus_datei()
+
     def __post_init__(self) -> None:
         """Prueft die Werte, die die Gegenseite sonst erst gegen Bezahlung prueft.
 
@@ -753,7 +801,9 @@ class Settings:
         """
         teile = []
         for feld in dataclasses.fields(self):
-            wert: Any = MASKE if feld.name == "api_key" else getattr(self, feld.name)
+            wert: Any = getattr(self, feld.name)
+            if feld.name == "api_key" and wert is not None:
+                wert = MASKE
             if feld.name == "endpoint_env":
                 wert = {
                     k: (MASKE if v is not None and ist_geheimnisname(k) else v)
@@ -788,14 +838,19 @@ class Settings:
         eine ausdruecklich genannte, die fehlt, aber schon: Ein falsch getippter
         Pfad darf nicht still zur Voreinstellung werden.
 
-        Endpoint und Datenbank haben KEINE Voreinstellung. Beide muessen
+        Endpoint und Datenbank haben KEINE Voreinstellung. Die Datenbank muss
         irgendwo eingestellt sein, sonst wirft `load` mit einem Hinweis auf alle
-        Stellen, an denen man das tut.
+        Stellen, an denen man das tut. Der Endpoint darf fehlen (`None`): `setup`
+        und die lesenden Wege brauchen ihn nicht, und wer ihn braucht, verlangt
+        ihn mit `require_endpoint_id`.
 
         Der API-Schluessel hat eine eigene Quelle: `~/.runpod/config.toml`, Feld
         `apikey` — der im Projekt bewaehrte Ort, an dem er ohnehin schon liegt.
         Er wird gelesen, nie geschrieben, und steht nie in der
-        Konfigurationsdatei dieses Pakets.
+        Konfigurationsdatei dieses Pakets. Fehlt er (oder ist die Datei nicht
+        nutzbar), ist das hier kein Fehler: Abschicken, Lesen und `setup`
+        brauchen nur die Datenbank. Wer RunPod anspricht, verlangt ihn mit
+        `require_api_key` und bekommt dort die genaue Meldung.
 
         Args:
             db_dsn: Verbindungszeichenkette.
@@ -824,10 +879,9 @@ class Settings:
             Dateien.
 
         Raises:
-            ConfigurationError: Kein API-Schluessel auffindbar; Endpoint oder
-                Datenbank nirgends eingestellt; die Konfigurationsdatei ist
-                unlesbar, kein gueltiges TOML oder kennt einen Schluessel nicht;
-                eine ausdruecklich genannte Datei fehlt.
+            ConfigurationError: Die Datenbank ist nirgends eingestellt; die
+                Konfigurationsdatei ist unlesbar, kein gueltiges TOML oder kennt
+                einen Schluessel nicht; eine ausdruecklich genannte Datei fehlt.
 
         Kosten: keine. Spricht weder mit RunPod noch mit der Datenbank —
         insbesondere prueft `load` NICHT, ob die Datenbank erreichbar oder der
@@ -845,9 +899,8 @@ class Settings:
         endpoint = endpoint_id
         if endpoint is None:
             gefunden = _wert("endpoint_id", umgebung, datei, config_path)
-            if gefunden is None:
-                raise ConfigurationError(_fehlt("endpoint_id", config_path))
-            endpoint = _zeichenkette("endpoint_id", *gefunden)
+            if gefunden is not None:
+                endpoint = _zeichenkette("endpoint_id", *gefunden)
         dsn = db_dsn
         if dsn is None:
             gefunden = _wert("db_dsn", umgebung, datei, config_path)
@@ -858,8 +911,9 @@ class Settings:
         einstellung = cls(
             db_dsn=dsn,
             endpoint_id=endpoint,
-            api_key=api_key if api_key is not None else _schluessel_aus_datei(),
+            api_key=api_key if api_key is not None else _schluessel_oder_nichts(),
             strict=strict,
+            config_path=config_path,
             **_sollwerte(umgebung, datei, config_path),
         )
 

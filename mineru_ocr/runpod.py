@@ -189,8 +189,14 @@ class RunPodClient:
             kann einen ZWEITEN bezahlten Job erzeugen, dessen Kennung der
             Aufrufer nie zu sehen bekommt. Wiederholt wird in diesem Paket an
             genau einer Stelle, und die heisst `OCRRetryStrategy`.
+
+        Raises:
+            ConfigurationError: Kein RunPod-Schluessel (`Settings.require_api_key`).
+                Geprueft, BEVOR ein HTTP-Client entsteht: Ohne Schluessel geht
+                keine Anfrage hinaus.
         """
         self._settings = settings
+        self._schluessel = settings.require_api_key()
         self._eigener_client = http is None
         self._http = http if http is not None else httpx.AsyncClient(
             timeout=httpx.Timeout(
@@ -233,7 +239,7 @@ class RunPodClient:
         einen Transport einhaengen.
         """
         return {
-            "Authorization": f"Bearer {self._settings.api_key}",
+            "Authorization": f"Bearer {self._schluessel}",
             "Content-Type": "application/json",
         }
 
@@ -265,7 +271,7 @@ class RunPodClient:
                 f"Zu pruefen ist ZWEIERLEI, nicht nur der Schluessel: Auch eine "
                 f"URL auf einen geloeschten Endpoint antwortet mit 401 (im "
                 f"Betrieb schon vorgekommen). Also erst nachsehen, ob "
-                f"{self._settings.endpoint_id} ueberhaupt noch existiert."
+                f"{self._settings.endpoint_id or 'der Endpoint'} ueberhaupt noch existiert."
             )
         if code == 404:
             raise ResultLostError(
@@ -448,7 +454,7 @@ class RunPodClient:
 
         antwort = await self._anfragen(
             "POST",
-            f"{API_BASE}/{self._settings.endpoint_id}/run",
+            f"{API_BASE}/{self._settings.require_endpoint_id()}/run",
             "Job einreichen",
             json_daten={"input": eingabe},
         )
@@ -511,7 +517,7 @@ class RunPodClient:
         """
         return await self._anfragen(
             "GET",
-            f"{API_BASE}/{self._settings.endpoint_id}/status/{job_id}",
+            f"{API_BASE}/{self._settings.require_endpoint_id()}/status/{job_id}",
             f"Job {job_id} abfragen",
         )
 
@@ -549,7 +555,7 @@ class RunPodClient:
         """
         return await self._anfragen(
             "POST",
-            f"{API_BASE}/{self._settings.endpoint_id}/cancel/{job_id}",
+            f"{API_BASE}/{self._settings.require_endpoint_id()}/cancel/{job_id}",
             f"Job {job_id} abbrechen",
         )
 
@@ -861,7 +867,7 @@ class RunPodClient:
         """
         return await self._anfragen(
             "GET",
-            f"{REST_BASE}/endpoints/{self._settings.endpoint_id}"
+            f"{REST_BASE}/endpoints/{self._settings.require_endpoint_id()}"
             f"?includeWorkers=true",
             "Endpoint-Konfiguration lesen",
         )
@@ -898,7 +904,7 @@ class RunPodClient:
         for eintrag in endpunkte:
             if not isinstance(eintrag, dict):
                 continue
-            if eintrag.get("id") != self._settings.endpoint_id:
+            if eintrag.get("id") != self._settings.require_endpoint_id():
                 continue
             vorlage = eintrag.get("template")
             if not isinstance(vorlage, dict):

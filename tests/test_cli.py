@@ -22,12 +22,16 @@ from mineru_ocr import cli as cli_modul
 from mineru_ocr import client as client_modul
 from mineru_ocr import db
 from mineru_ocr.cli import app
+from mineru_ocr.config import Settings as _Settings
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, write_terminal_async
 from mineru_ocr.errors import DatabaseError
 from mineru_ocr.wrapper import OCRWrapper
 
 pytestmark = pytest.mark.db
+
+_ECHTES_LOAD = _Settings.load
+"""`Settings.load`, bevor eine Vorrichtung es umbiegt."""
 
 PNG_KOPF = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 SCHLUESSEL = "ganz-geheimer-schluessel"
@@ -78,7 +82,11 @@ def cli(
         angaben.setdefault("db_dsn", None)
         if angaben["db_dsn"] is None:
             angaben["db_dsn"] = _test_datenbank
-        angaben.setdefault("api_key", SCHLUESSEL)
+        # `OCRClient` reicht `api_key=None` ausdruecklich herein; `setdefault`
+        # griffe dann nicht, und der Test laese still den echten Schluessel des
+        # Entwicklers aus `~/.runpod/config.toml`.
+        if angaben.get("api_key") is None:
+            angaben["api_key"] = SCHLUESSEL
         return echtes_load(**angaben)
 
     monkeypatch.setattr(Settings, "load", staticmethod(auf_testdatenbank))
@@ -123,7 +131,7 @@ def _anlegen(
             sha256=sha256,
             size_bytes=len(inhalt),
             mime="image/png",
-            endpoint_id=Settings.load(db_dsn=dsn, api_key=SCHLUESSEL).endpoint_id,
+            endpoint_id=Settings.load(db_dsn=dsn, api_key=SCHLUESSEL).require_endpoint_id(),
         )
         db.insert_input(db_conn, sha256=sha256, content=inhalt)
     zeile = db.get_document(db_conn, sha256, with_raw=False)
@@ -929,6 +937,109 @@ def test_ziel_als_nicht_lesbare_datei_ist_ein_betriebsfehler_ohne_traceback(
         assert ergebnis.exception is None or isinstance(
             ergebnis.exception, SystemExit
         ), kommando
+
+
+@pytest.fixture
+def cli_ohne_schluessel(
+    cli: CliRunner, monkeypatch: pytest.MonkeyPatch, _test_datenbank: str
+) -> CliRunner:
+    """Wie `cli`, aber ohne RunPod-Schluessel: keiner uebergeben, keine Datei
+    (die liegt dank `conftest` nirgends). Spricht ein Kommando RunPod trotzdem an,
+    scheitert der Test laut."""
+    def ohne(**angaben: Any) -> Settings:
+        angaben.setdefault("db_dsn", None)
+        if angaben["db_dsn"] is None:
+            angaben["db_dsn"] = _test_datenbank
+        angaben["api_key"] = None
+        return _ECHTES_LOAD(**angaben)
+
+    def nie(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("RunPod wurde angesprochen")
+
+    monkeypatch.setattr(Settings, "load", staticmethod(ohne))
+    monkeypatch.setattr(client_modul, "_runpod_fragen", nie)
+    return cli
+
+
+def test_abschicken_und_lesen_brauchen_keinen_runpod_schluessel(
+    cli_ohne_schluessel: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Abschicken, `show`, `markdown`, `wait` und `retry` brauchen nur die
+    Datenbank: Fehlt der Schluessel, ist das kein Fehler."""
+    datei, sha = _datei(tmp_path, "a.png")
+
+    ergebnis = cli_ohne_schluessel.invoke(app, ["ocr", str(datei), "--json"])
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert json.loads(ergebnis.stdout)["documents"][0]["queued"] is True
+    assert _jobs(db_conn) == 1
+
+    for kommando in (["show", sha], ["markdown", sha], ["retry", sha]):
+        ergebnis = cli_ohne_schluessel.invoke(app, kommando)
+        assert "API-Schluessel" not in ergebnis.output, kommando
+        assert ergebnis.exception is None or isinstance(
+            ergebnis.exception, SystemExit
+        ), (kommando, ergebnis.output)
+    ergebnis = cli_ohne_schluessel.invoke(app, ["wait", sha, "--timeout", "0.1"])
+    assert "API-Schluessel" not in ergebnis.output
+    assert ergebnis.exception is None or isinstance(ergebnis.exception, SystemExit)
+
+
+def test_setup_braucht_weder_endpoint_noch_schluessel(
+    cli_ohne_schluessel: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MINERU_OCR_ENDPOINT_ID")
+    ergebnis = cli_ohne_schluessel.invoke(app, ["setup"])
+    assert ergebnis.exit_code == 0, ergebnis.output
+
+
+def test_abschicken_verlangt_den_endpoint_und_reiht_ohne_ihn_nichts_ein(
+    cli_ohne_schluessel: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bis die Zeile erst am Ende des Jobs entsteht (#25), traegt sie den Endpoint;
+    der ist Konfiguration, kein Geheimnis, und Abschicken verlangt ihn weiter."""
+    monkeypatch.delenv("MINERU_OCR_ENDPOINT_ID")
+    datei, _ = _datei(tmp_path, "a.png")
+
+    ergebnis = cli_ohne_schluessel.invoke(app, ["ocr", str(datei)])
+
+    assert ergebnis.exit_code == 1
+    assert "MINERU_OCR_ENDPOINT_ID" in ergebnis.stderr
+    assert "Traceback" not in ergebnis.output
+    assert _zaehlen(db_conn, "documents") == 0
+    assert _jobs(db_conn) == 0
+
+
+@pytest.mark.parametrize("kommando", [["status"], ["preflight"]])
+def test_wer_runpod_anspricht_verlangt_den_schluessel(
+    cli_ohne_schluessel: CliRunner, kommando: list[str]
+) -> None:
+    """`status` und `preflight` fragen RunPod: ohne Schluessel ein Betriebsfehler
+    mit Auskunft, und RunPod wird gar nicht erst angesprochen."""
+    ergebnis = cli_ohne_schluessel.invoke(app, kommando)
+    assert ergebnis.exit_code == 1, ergebnis.output
+    assert "Kein API-Schluessel" in ergebnis.stderr
+    assert not isinstance(ergebnis.exception, AssertionError)
+
+
+def test_daemon_verlangt_den_schluessel_vor_dem_start(
+    cli_ohne_schluessel: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mineru_ocr import daemon as daemon_modul
+
+    gestartet: list[bool] = []
+
+    def gestartet_merken(*_a: Any, **_k: Any) -> int:
+        gestartet.append(True)
+        return 0
+
+    monkeypatch.setattr(daemon_modul, "main", gestartet_merken)
+    ergebnis = cli_ohne_schluessel.invoke(app, ["daemon"])
+    assert ergebnis.exit_code == 1, ergebnis.output
+    assert "Kein API-Schluessel" in ergebnis.stderr
+    assert gestartet == []
 
 
 def test_hash_oder_pfad_wird_festgelegt_unterschieden() -> None:
