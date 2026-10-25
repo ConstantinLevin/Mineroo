@@ -98,6 +98,9 @@ ließ. Ob einer läuft, zeigen auch `mineru-ocr status` und der Preflight.
 Hängt ein Dokument, sagt `mineru-ocr show ZIEL`, ob sein Job wartet, läuft oder
 ohne Ergebnis endete. Im letzten Fall und bei `failed` hilft
 `mineru-ocr retry ZIEL --yes`, nachdem der Nutzer zugestimmt hat (siehe Kosten).
+Nennt `show` als Fehler `UnstorableResultError`, liess sich das Ergebnis nicht
+speichern; ein `retry` bezahlt das Dokument neu und scheitert voraussichtlich
+wieder. Das sagst du dem Nutzer, bevor er zustimmt.
 
 ## Was Lesen kostet
 
