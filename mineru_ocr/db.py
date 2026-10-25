@@ -485,7 +485,7 @@ def setup(dsn: str) -> None:
 
     with connect(dsn) as conn:
         conn.execute(SCHEMA_SQL)
-        _schema_abgleichen(conn)
+        check_schema(conn)
 
 
 def _procrastinate_schema_anwenden_falls_noetig(dsn: str) -> None:
@@ -570,9 +570,9 @@ def _datenbank_anlegen_falls_noetig(dsn: str) -> None:
 
 INPUT_SPALTEN: Final = frozenset({"sha256", "content", "job_id"})
 """Die Spalten von `inputs`. Die Tabelle hat keine Zeilenklasse (der Executor
-liest nur `content`), also steht die Erwartung hier, und `_schema_abgleichen`
+liest nur `content`), also steht die Erwartung hier, und `_schema_bewerten`
 vergleicht gegen sie. Die Form der Spalten (Typ, NOT NULL) und den
-Primaerschluessel prueft `_schema_abgleichen` dort selbst."""
+Primaerschluessel prueft `_schema_bewerten` dort selbst."""
 
 MAX_INPUT_BYTES: Final = 1_000_000_000
 """Die groesste Eingabe, die sich ablegen laesst. Postgres begrenzt ein Feld und
@@ -586,34 +586,67 @@ Job danach in Stuecke schneidet."""
 def check_schema(conn: psycopg.Connection[Any]) -> None:
     """Prueft rein lesend, ob die Tabellen da sind und zum Code passen.
 
-    Fuer jeden Zugang ausser `setup`: Daemon und Client rufen das beim Start.
-    Nach einem Paket-Update ohne `setup` steht sonst die alte Tabelle mit
-    `new`-Zeilen da, und der erste Lesezugriff scheiterte an
+    Fuer jeden Zugang: Daemon und Client rufen das beim Start, `setup` nach dem
+    Anlegen. Nach einem Paket-Update ohne `setup` steht sonst die alte
+    Tabelle mit `new`-Zeilen da, und der erste Lesezugriff scheiterte an
     `DocumentStatus('new')` mit einem `ValueError` — beim Daemon in jedem Job
     vor dem Fehlerzweig, sodass das Dokument ohne Ergebnis endete, bei der
     Kommandozeile als ungefangener Ausnahmetext.
+
+    Gelesen wird der Katalog in EINER Anweisung (`_KATALOG_SQL`), bewertet ohne
+    Ein- und Ausgabe (`_schema_bewerten`).
 
     Raises:
         DatabaseError: Eine der Tabellen fehlt (nie `setup` gelaufen) oder passt
             nicht; die Meldung nennt den Weg.
 
-    Kosten: keine. Einige Katalogabfragen.
+    Kosten: keine. Eine Katalogabfrage.
     """
-    fehlend: list[str] = []
-    for tabelle in ("documents", "inputs"):
-        zeile = conn.execute("SELECT to_regclass(%s)", (tabelle,)).fetchone()
-        if zeile is None or zeile[0] is None:
-            fehlend.append(tabelle)
-    if fehlend:
-        raise DatabaseError(
-            f"Die Tabellen {fehlend} fehlen in dieser Datenbank. Erst "
-            "`mineru-ocr setup` ausfuehren."
-        )
-    _schema_abgleichen(conn)
+    with conn.cursor(row_factory=dict_row) as cur:
+        katalog = cur.execute(_KATALOG_SQL).fetchone()
+    _schema_bewerten(katalog)
 
 
-def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
-    """Prueft die Tabellen auf der Platte gegen ihre Zeilenklassen.
+def _form_sql(tabelle: str) -> str:
+    """Spalten einer Tabelle als JSON-Liste von [Name, Typ, NOT NULL].
+
+    Aus `pg_attribute` der Tabelle, die `search_path` aufloest
+    (`to_regclass`), nicht aus `information_schema.columns` nach Namen: Das
+    fasste gleichnamige Tabellen anderer Schemas dazu und meldete eine gesunde
+    Datenbank als unpassend. Fehlt die Tabelle, ist die Liste leer.
+    """
+    return (
+        "(SELECT coalesce(json_agg(json_build_array(a.attname, "
+        "format_type(a.atttypid, a.atttypmod), a.attnotnull)), '[]'::json) "
+        f"FROM pg_attribute a WHERE a.attrelid = to_regclass('{tabelle}') "
+        "AND a.attnum > 0 AND NOT a.attisdropped)"
+    )
+
+
+_KATALOG_SQL: Final = (
+    "SELECT to_regclass('documents') IS NOT NULL AS documents_da, "
+    "to_regclass('inputs') IS NOT NULL AS inputs_da, "
+    f"{_form_sql('documents')} AS documents_form, "
+    f"{_form_sql('inputs')} AS inputs_form, "
+    "(SELECT coalesce(string_agg(pg_get_constraintdef(oid), ' '), '') "
+    "FROM pg_constraint WHERE conrelid = to_regclass('documents') "
+    "AND contype = 'c') AS pruefungen, "
+    "(SELECT pg_get_expr(d.adbin, d.adrelid) FROM pg_attrdef d "
+    "JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum "
+    "WHERE d.adrelid = to_regclass('documents') AND a.attname = 'status') "
+    "AS voreinstellung, "
+    "(SELECT coalesce(json_agg(a.attname), '[]'::json) FROM pg_index i "
+    "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey) "
+    "WHERE i.indrelid = to_regclass('inputs') AND i.indisprimary) AS schluessel"
+)
+"""Was `check_schema` ueber beide Tabellen wissen
+muessen, in EINER Anweisung: ob sie da sind, ihre Spalten, die Pruefungen und
+die Voreinstellung von `documents.status`, der Primaerschluessel von `inputs`."""
+
+
+def _schema_bewerten(katalog: dict[str, Any] | None) -> None:
+    """Prueft die Tabellen auf der Platte gegen ihre Zeilenklassen. Ohne Ein- und
+    Ausgabe: `katalog` ist die Zeile von `_KATALOG_SQL`.
 
     Die Antwort auf die einzige Doppelung dieses Moduls. Ein Migrationswerkzeug
     loeste sie auf, waere hier aber Ballast — dies ist ein Werkzeug fuer einen
@@ -623,6 +656,13 @@ def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
     `DocumentRow` und `inputs` gegen `INPUT_SPALTEN`; gemeldet wird alles auf
     einmal, damit die Abhilfe nicht Tabelle fuer Tabelle gesucht werden muss.
     """
+    assert katalog is not None  # Ein SELECT ohne FROM liefert genau eine Zeile.
+    fehlend = [t for t in ("documents", "inputs") if not katalog[f"{t}_da"]]
+    if fehlend:
+        raise DatabaseError(
+            f"Die Tabellen {fehlend} fehlen in dieser Datenbank. Erst "
+            "`mineru-ocr setup` ausfuehren."
+        )
     # `raw_loaded` ist ein Merkmal des gelesenen Objekts, keine Spalte — es sagt,
     # ob `raw` mitgelesen wurde, und das kann die Tabelle nicht wissen.
     erwartet = {
@@ -634,27 +674,17 @@ def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
     }
     abweichungen: list[str] = []
     for tabelle, (soll, gegen) in erwartet.items():
-        # Aus `pg_attribute` der Tabelle, die `search_path` aufloest, nicht aus
-        # `information_schema.columns` nach Namen: Das fasste gleichnamige
-        # Tabellen anderer Schemas dazu und meldete eine gesunde Datenbank als
-        # unpassend.
-        form = {
+        form: dict[str, tuple[str, bool]] = {
             name: (typ, nicht_null)
-            for name, typ, nicht_null in conn.execute(
-                "SELECT a.attname, format_type(a.atttypid, a.atttypmod), "
-                "a.attnotnull FROM pg_attribute a "
-                "WHERE a.attrelid = %s::regclass AND a.attnum > 0 "
-                "AND NOT a.attisdropped",
-                (tabelle,),
-            ).fetchall()
+            for name, typ, nicht_null in katalog[f"{tabelle}_form"]
         }
         ist = set(form)
-        fehlend = soll - ist
+        fehlend_spalten = soll - ist
         ueberzaehlig = ist - soll
-        if fehlend or ueberzaehlig:
+        if fehlend_spalten or ueberzaehlig:
             abweichungen.append(
                 f"Die Tabelle `{tabelle}` passt nicht zu {gegen}. "
-                f"Im Code, aber nicht in der Tabelle: {sorted(fehlend)}. "
+                f"Im Code, aber nicht in der Tabelle: {sorted(fehlend_spalten)}. "
                 f"In der Tabelle, aber nicht im Code: {sorted(ueberzaehlig)}."
             )
         elif tabelle == "documents":
@@ -663,18 +693,8 @@ def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
             # anlegte, kennt `new`, setzt es als Voreinstellung und verlangt
             # `mime` und `size_bytes` — und der Job, der die Zeile jetzt erst am
             # Ende anlegt, scheiterte daran bei der ersten Eingabe, die fehlt.
-            pruefungen = " ".join(
-                zeile[0]
-                for zeile in conn.execute(
-                    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-                    "WHERE conrelid = 'documents'::regclass AND contype = 'c'"
-                ).fetchall()
-            )
-            voreinstellung = conn.execute(
-                "SELECT pg_get_expr(d.adbin, d.adrelid) FROM pg_attrdef d "
-                "JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum "
-                "WHERE d.adrelid = 'documents'::regclass AND a.attname = 'status'"
-            ).fetchone()
+            pruefungen = katalog["pruefungen"]
+            voreinstellung = katalog["voreinstellung"]
             nullbar_erwartet = {"size_bytes", "mime"}
             falsch_nicht_null = sorted(
                 name for name in nullbar_erwartet if form[name][1]
@@ -687,22 +707,14 @@ def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
                     "Endzustaenden ('done', 'empty', 'failed', 'input_error'), "
                     "`mime` und `size_bytes` ohne NOT NULL; gefunden die "
                     f"Pruefungen {pruefungen or '(keine)'}, Voreinstellung "
-                    f"{voreinstellung[0] if voreinstellung else '(keine)'}, "
+                    f"{voreinstellung or '(keine)'}, "
                     f"NOT NULL an {falsch_nicht_null or '(keiner)'}."
                 )
         elif tabelle == "inputs":
             # Die Namen stimmen; ob die Form stimmt, sagen sie nicht. Ohne
             # Primaerschluessel scheitert `ON CONFLICT (sha256)` beim ersten
             # Abschicken, und `setup` haette vorher Erfolg gemeldet.
-            schluessel = {
-                zeile[0]
-                for zeile in conn.execute(
-                    "SELECT a.attname FROM pg_index i "
-                    "JOIN pg_attribute a ON a.attrelid = i.indrelid "
-                    "AND a.attnum = ANY (i.indkey) "
-                    "WHERE i.indrelid = 'inputs'::regclass AND i.indisprimary"
-                ).fetchall()
-            }
+            schluessel = set(katalog["schluessel"])
             if (
                 form["sha256"][0] != "text"
                 or form["content"] != ("bytea", True)
@@ -831,7 +843,7 @@ die Spalten in der Reihenfolge der Tabelle samt allem, was jemand spaeter
 hinzufuegt. Eine unbekannte Spalte waere dann ein unerwartetes Schluesselwort
 beim Erzeugen der Zeilenklasse — ein Fehler zur Laufzeit, an einer Stelle, die
 mit der eigentlichen Aenderung nichts zu tun hat. Die ausgeschriebene Liste
-bricht stattdessen dort, wo sie gepflegt gehoert, und `_schema_abgleichen` sagt
+bricht stattdessen dort, wo sie gepflegt gehoert, und `_schema_bewerten` sagt
 es beim `setup` ohnehin vorher.
 
 `true AS raw_loaded` faellt auf, ist aber der Kern: Es fuellt das gleichnamige
