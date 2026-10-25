@@ -899,11 +899,12 @@ class OCRClient:
              `check_not_todo_abort_requested`) oder kein Job: Procrastinate legt
              sie nicht wieder vor. In EINER Transaktion geht eine `failed`-Zeile
              weg, ein neuer Job entsteht, und seine Kennung kommt an die Eingabe
-             (`REQUEUED`); er liest die Eingabe samt ihren Einstellungen. Die
-             Eingabe wird dabei zuerst gesperrt: Ist sie inzwischen weg (der Job
-             wurde zwischen Lesen und Einreihen fertig, und das Ergebnis loeschte
-             sie), hat das Dokument ein Ergebnis, und es geschieht nichts
-             (`HAS_RESULT`).
+             (`REQUEUED`); er liest die Eingabe samt ihren Einstellungen.
+
+           In beiden Faellen wird die Eingabe zuerst gesperrt: Ist sie inzwischen
+           weg (der Job wurde zwischen Lesen und Handeln fertig, und das Ergebnis
+           loeschte sie), hat das Dokument ein Ergebnis, und es geschieht nichts
+           (`HAS_RESULT`).
 
         Warum die `failed`-Zeile weggeht: Dann ist „offen" wieder eine Tatsache
         der Datenbank (Eingabe da, kein Ergebnis), und jeder, der wartet, wartet
@@ -973,6 +974,10 @@ class OCRClient:
             and not job.abort_requested
         ):
             with self.conn.transaction():
+                if not db.lock_input(self.conn, sha256):
+                    # Wie beim Neu-Einreihen: Die Eingabe ist weg, das Dokument
+                    # bekam ein Ergebnis (etwa `input_error`, Job `failed`).
+                    return RetryOutcome.HAS_RESULT
                 db.delete_failed_result(self.conn, sha256)
             try:
                 self._procrastinate.job_manager.retry_job_by_id(
@@ -980,11 +985,11 @@ class OCRClient:
                 )
             except procrastinate.exceptions.ProcrastinateException as fehler:
                 raise DatabaseError(
-                    f"Procrastinate lehnte das Zuruecksetzen von Job {job.id} fuer "
-                    f"{sha256} ab ({fehler}); vermutlich hat ihn jemand anderes "
-                    f"gleichzeitig zurueckgesetzt. Die `failed`-Zeile ist schon "
-                    f"weg; ein neues `retry` liest den Stand und tut, was noch "
-                    f"fehlt."
+                    f"Procrastinate konnte Job {job.id} fuer {sha256} nicht "
+                    f"zuruecksetzen ({fehler}), etwa weil ihn jemand anderes "
+                    f"gleichzeitig zuruecksetzte oder die Verbindung abbrach. Die "
+                    f"`failed`-Zeile ist schon weg; ein neues `retry` liest den "
+                    f"Stand und tut, was noch fehlt."
                 ) from fehler
             return RetryOutcome.RESET
         with self.conn.transaction():

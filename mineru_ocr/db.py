@@ -563,8 +563,8 @@ def _datenbank_anlegen_falls_noetig(dsn: str) -> None:
 INPUT_SPALTEN: Final = frozenset({"sha256", "content", "job_id"})
 """Die Spalten von `inputs`. Die Tabelle hat keine Zeilenklasse (der Executor
 liest nur `content`), also steht die Erwartung hier, und `_schema_abgleichen`
-vergleicht gegen sie. Typ, NOT NULL und Primaerschluessel prueft `check_schema`
-selbst, fuer jede der drei Spalten."""
+vergleicht gegen sie. Die Form der Spalten (Typ, NOT NULL) und den
+Primaerschluessel prueft `_schema_abgleichen` dort selbst."""
 
 MAX_INPUT_BYTES: Final = 1_000_000_000
 """Die groesste Eingabe, die sich ablegen laesst. Postgres begrenzt ein Feld und
@@ -883,10 +883,10 @@ def set_input_job(conn: psycopg.Connection[Any], *, sha256: str, job_id: int) ->
 def lock_input(conn: psycopg.Connection[Any], sha256: str) -> bool:
     """Sperrt die Eingabe eines Dokuments bis zum Ende der Transaktion.
 
-    Fuer `retry`, bevor es einen neuen Job einreiht: Steht die Eingabe noch,
-    kann sie bis zum Commit niemand loeschen (das Endschreiben eines Jobs wartet).
-    Ist sie weg, wurde der Job fertig, seit `retry` las, und sein Ergebnis
-    loeschte sie; einzureihen gibt es dann nichts.
+    Fuer `retry`, bevor es einen Job zuruecksetzt oder neu einreiht: Steht die
+    Eingabe noch, kann sie bis zum Commit niemand loeschen (das Endschreiben
+    eines Jobs wartet). Ist sie weg, wurde der Job fertig, seit `retry` las, und
+    sein Ergebnis loeschte sie; zu wiederholen gibt es dann nichts.
 
     Returns:
         True, wenn die Eingabe steht und gesperrt ist; False, wenn es keine gibt.

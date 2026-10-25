@@ -2051,16 +2051,7 @@ def test_retry_auf_ein_eben_fertig_gewordenes_dokument_reiht_nichts_ein(
         echt = OCRClient._job
 
         def job_endet_dazwischen(self: OCRClient, stand: db.DocumentState) -> Any:
-            async def schreiben() -> None:
-                async with await psycopg.AsyncConnection.connect(
-                    int_settings.db_dsn, autocommit=True
-                ) as ac:
-                    await db.write_terminal_async(
-                        ac, sha256=sha, status=DocumentStatus.DONE, raw={},
-                        endpoint_id="testendpoint",
-                    )
-
-            asyncio.run(schreiben())
+            _ergebnis_schreiben(int_settings.db_dsn, sha, DocumentStatus.DONE)
             db_conn.execute("DELETE FROM procrastinate_jobs WHERE lock = %s", (sha,))
             return echt(self, stand)
 
@@ -2073,18 +2064,86 @@ def test_retry_auf_ein_eben_fertig_gewordenes_dokument_reiht_nichts_ein(
     assert zeile is not None and zeile.status is DocumentStatus.DONE
 
 
-def _failed_schreiben(dsn: str, sha: str, fehler: str) -> None:
-    """Schreibt ein `failed`-Ergebnis so, wie ein Job es am Ende taete: ueber
-    `db.write_terminal_async` auf einer eigenen Verbindung (wie im Daemon)."""
+def _ergebnis_schreiben(
+    dsn: str, sha: str, status: DocumentStatus, fehler: str | None = None
+) -> None:
+    """Schreibt ein Ergebnis so, wie ein Job es am Ende taete: ueber
+    `db.write_terminal_async` auf einer eigenen Verbindung (wie im Daemon). Ein
+    gueltiges Ergebnis loescht dabei die Eingabe."""
 
     async def schreiben() -> None:
         async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as ac:
             await db.write_terminal_async(
-                ac, sha256=sha, status=DocumentStatus.FAILED, raw={},
+                ac, sha256=sha, status=status, raw={},
                 endpoint_id="testendpoint", error=fehler,
             )
 
     asyncio.run(schreiben())
+
+
+def test_retry_setzt_einen_job_nicht_zurueck_dessen_dokument_eben_ein_ergebnis_bekam(
+    db_conn: psycopg.Connection[Any],
+    int_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Endet das Dokument, waehrend `retry` liest, mit einem gueltigen Ergebnis und
+    bleibt sein Job dabei `failed` stehen (etwa `input_error`), hat es ein
+    Ergebnis: `retry` meldet das und setzt den Job nicht zurueck, statt
+    „zurueckgesetzt“ zu melden und einen ueberfluessigen Versuch einzuplanen."""
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(PNG_KOPF + b"wird gerade input_error")
+        echt = OCRClient._job
+
+        def job_endet_dazwischen(self: OCRClient, stand: db.DocumentState) -> Any:
+            _ergebnis_schreiben(
+                int_settings.db_dsn, sha, DocumentStatus.INPUT_ERROR, "kaputt"
+            )
+            db_conn.execute(
+                "UPDATE procrastinate_jobs SET status = 'failed' WHERE lock = %s", (sha,)
+            )
+            return echt(self, stand)
+
+        monkeypatch.setattr(OCRClient, "_job", job_endet_dazwischen)
+        ausgang = klient.retry(sha)
+
+    assert ausgang is RetryOutcome.HAS_RESULT
+    (job,) = _jobs_zu(db_conn, sha)
+    assert (job.status, job.attempts) == ("failed", 0)
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
+
+
+def test_retry_haelt_die_eingabe_bis_zum_commit_fest(
+    db_conn: psycopg.Connection[Any],
+    int_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Waehrend `retry` neu einreiht, kann kein Endschreiben die Eingabe loeschen:
+    Es wartet bis zum Commit. Sonst wuerde das Dokument fertig, waehrend `retry`
+    seinen neuen Job an eine Eingabe schreibt, die es nicht mehr gibt."""
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(PNG_KOPF + b"eingabe festhalten")
+        db_conn.execute("UPDATE procrastinate_jobs SET status = 'cancelled'")
+        echtes_einreihen = tasks.enqueue_document
+        blockiert: list[bool] = []
+
+        def einreihen_waehrend_eines_endschreibens(app: Any, conn: Any, sha256: str) -> int:
+            with psycopg.connect(int_settings.db_dsn, autocommit=True) as anderswo:
+                anderswo.execute("SET lock_timeout = '300ms'")
+                try:
+                    anderswo.execute("DELETE FROM inputs WHERE sha256 = %s", (sha256,))
+                    blockiert.append(False)
+                except psycopg.errors.LockNotAvailable:
+                    blockiert.append(True)
+            return echtes_einreihen(app, conn, sha256)
+
+        monkeypatch.setattr(tasks, "enqueue_document", einreihen_waehrend_eines_endschreibens)
+        ausgang = klient.retry(sha)
+
+    assert blockiert == [True]
+    assert ausgang is RetryOutcome.REQUEUED
+    neu = _job_der_eingabe(db_conn, sha)
+    assert neu is not None and neu.status == "todo"
 
 
 def test_retry_nimmt_die_failed_zeile_weg_bevor_es_den_job_zuruecksetzt(
@@ -2098,13 +2157,13 @@ def test_retry_nimmt_die_failed_zeile_weg_bevor_es_den_job_zuruecksetzt(
     with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
         sha = klient.ocr_start(PNG_KOPF + b"reihenfolge")
         db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed' WHERE lock = %s", (sha,))
-        _failed_schreiben(int_settings.db_dsn, sha, "das alte")
+        _ergebnis_schreiben(int_settings.db_dsn, sha, DocumentStatus.FAILED, "das alte")
         manager = klient._procrastinate.job_manager
         echt = manager.retry_job_by_id
 
         def zuruecksetzen_und_gleich_scheitern(*args: Any, **kwargs: Any) -> None:
             echt(*args, **kwargs)
-            _failed_schreiben(int_settings.db_dsn, sha, "das neue")
+            _ergebnis_schreiben(int_settings.db_dsn, sha, DocumentStatus.FAILED, "das neue")
 
         monkeypatch.setattr(manager, "retry_job_by_id", zuruecksetzen_und_gleich_scheitern)
         ausgang = klient.retry(sha)
