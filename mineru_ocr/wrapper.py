@@ -384,6 +384,14 @@ class OCRWrapper:
         """
         if self.row.raw_loaded:
             return
+        if self._conn is None:
+            # Eine Huelle des AsyncOCRClient ohne `raw`: Das Warten sah den
+            # Endzustand, aber ein `retry` nahm die Zeile vor dem Laden weg.
+            raise DocumentNotFound(
+                f"Die Zeile zu {self.row.sha256} gibt es nicht mehr: `retry` nahm "
+                f"sie weg, das Dokument ist wieder offen. Auf den neuen Lauf "
+                f"wartet `await client.wait({self.row.sha256!r})`."
+            )
         zeile = db.get_document(self._verbindung(), self.row.sha256)
         if zeile is None:
             raise DocumentNotFound(

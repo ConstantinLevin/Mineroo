@@ -2604,6 +2604,70 @@ async def test_async_get_unterscheidet_offen_und_unbekannt(
         await offener_async_client.get(h)
 
 
+async def test_async_warten_liefert_failed_auch_wenn_retry_die_zeile_eben_wegnahm(
+    offener_async_client: AsyncOCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wie im Sync-Client: Ein Warten, das `failed` gesehen hat, endet mit `failed`,
+    auch wenn ein `retry` aus einem anderen Prozess die Zeile wegnimmt, bevor
+    `raw` geladen ist. Die uebrigen kommen trotzdem; `raw` der weggenommenen Zeile
+    meldet `DocumentNotFound` wie im Sync-Client."""
+    gescheitert = await offener_async_client.ocr_start(_png("gescheitert"))
+    fertig = await offener_async_client.ocr_start(_png("fertig"))
+    for h, zustand in ((gescheitert, DocumentStatus.FAILED), (fertig, DocumentStatus.DONE)):
+        await write_terminal_async(
+            async_conn, sha256=h, status=zustand, raw={}, endpoint_id="e"
+        )
+    laden = db.get_document_async
+
+    async def retry_kommt_dazwischen(
+        conn: psycopg.AsyncConnection[Any], sha256: str, **angaben: Any
+    ) -> db.DocumentRow | None:
+        if sha256 == gescheitert:
+            db_conn.execute(
+                "DELETE FROM documents WHERE sha256 = %s AND status = 'failed'",
+                (sha256,),
+            )
+        return await laden(conn, sha256, **angaben)
+
+    monkeypatch.setattr(db, "get_document_async", retry_kommt_dazwischen)
+
+    huellen = await offener_async_client.wait_all([gescheitert, fertig], timeout=5.0)
+
+    assert [(w.sha256, w.status) for w in huellen] == [
+        (gescheitert, DocumentStatus.FAILED),
+        (fertig, DocumentStatus.DONE),
+    ]
+    assert huellen[1].raw == {}
+    with pytest.raises(DocumentNotFound, match="gibt es nicht mehr"):
+        huellen[0].raw
+
+
+async def test_async_warten_meldet_eine_abgerissene_client_verbindung_als_databaseerror(
+    offener_async_client: AsyncOCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+) -> None:
+    """Startet Postgres neu, waehrend gewartet wird, verbindet sich die Warteschleife
+    neu, die Verbindung des Clients aber nicht. Das Laden der Ergebnisse meldet das
+    dann als `DatabaseError` des Pakets, nicht als rohen psycopg-Fehler."""
+    h = await offener_async_client.ocr_start(_png("abgerissen"))
+    await write_terminal_async(
+        async_conn, sha256=h, status=DocumentStatus.DONE, raw={}, endpoint_id="e"
+    )
+    db_conn.execute(
+        "SELECT pg_terminate_backend(%s)",
+        (offener_async_client._verbindung.info.backend_pid,),
+    )
+
+    with pytest.raises(DatabaseError) as warten:
+        await offener_async_client.wait(h, timeout=5.0)
+
+    assert isinstance(warten.value.__cause__, psycopg.Error)
+
+
 async def test_async_client_oeffnet_und_schliesst_pool_und_app_selbst(
     _test_datenbank: str,
 ) -> None:
