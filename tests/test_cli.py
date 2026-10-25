@@ -19,9 +19,11 @@ from typer.testing import CliRunner
 
 from mineru_ocr import cli as cli_modul
 from mineru_ocr import client as client_modul
+from mineru_ocr import db as db_modul
 from mineru_ocr.cli import app
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, write_terminal_async
+from mineru_ocr.errors import DatabaseError
 from mineru_ocr.wrapper import OCRWrapper
 
 pytestmark = pytest.mark.db
@@ -417,6 +419,24 @@ def test_status_zaehlt_einen_alten_herzschlag_nicht_als_daemon(
     ergebnis = cli.invoke(app, ["status"])
     assert ergebnis.exit_code == 0
     assert "LAEUFT NICHT" in ergebnis.output
+
+
+def test_status_sagt_unbekannt_wenn_die_lebendigkeit_nicht_lesbar_ist(
+    cli: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Die Lebendigkeit ist nur Auskunft: `status` scheitert nicht an ihr, und es
+    behauptet auch nicht „LAEUFT NICHT“, wo es das nicht weiss."""
+
+    def kaputt(conn: psycopg.Connection[Any]) -> Any:
+        raise DatabaseError("procrastinate_workers sieht anders aus")
+
+    monkeypatch.setattr(db_modul, "worker_heartbeats", kaputt)
+
+    ergebnis = cli.invoke(app, ["status"])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert "Daemon:     unbekannt" in ergebnis.output
+    assert "LAEUFT NICHT" not in ergebnis.output
 
 
 def test_ocr_reiht_auch_ohne_daemon_ein_und_warnt_auf_stderr(

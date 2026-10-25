@@ -238,7 +238,7 @@ class OCRClient:
         self._app: procrastinate.App | None = None
         self._pool: NullConnectionPool[psycopg.Connection[Any]] | None = None
         self._letzter_preflight: dict[str, Any] | None = None
-        self._ohne_daemon_gewarnt = False
+        self._daemon_warnung: str | None = None
 
     def __enter__(self) -> OCRClient:
         """Oeffnet Verbindung, Pool und App und fuehrt den Preflight aus.
@@ -666,33 +666,36 @@ class OCRClient:
         """
         lebende = db.worker_heartbeats(self.conn)
         if lebende:
-            self._ohne_daemon_gewarnt = False
+            self._daemon_warnung = None
         return lebende
 
     def _ohne_daemon_warnen(self) -> None:
-        """Warnt vor dem Einreihen, wenn kein Daemon laeuft — einmal je Phase.
+        """Warnt vor dem Einreihen, wenn kein Daemon laeuft — einmal je Lage.
 
         Einmal, weil die Kommandozeile Dokument fuer Dokument einreiht und
-        dreissigtausend gleiche Zeilen Laerm waeren. Nur Auskunft: Ist die
+        dreissigtausend gleiche Zeilen Laerm waeren. Eine Lage ist die daemonlose
+        Phase oder die nicht lesbare Lebendigkeit; wechselt sie, wird erneut
+        gewarnt, und ein gesehener Daemon beendet sie. Nur Auskunft: Ist die
         Lebendigkeit nicht lesbar (Procrastinates undokumentierte Worker-Tabelle
-        fehlt oder sieht anders aus), steht das in der Warnung, und eingereiht
-        wird trotzdem — das Abschicken haengt nicht an einer Auskunft.
+        fehlt oder sieht anders aus, die Verbindung ist weggebrochen), steht das
+        samt Ursache in der Warnung, und eingereiht wird trotzdem — das Abschicken
+        haengt nicht an einer Auskunft.
         """
         try:
             if self._lebenszeichen():
                 return
+            lage = "kein_daemon"
             grund = (
                 "Es laeuft kein Daemon (kein Worker-Herzschlag juenger als "
                 f"{DAEMON_HEARTBEAT_MAX_AGE_SECONDS:g} s)"
             )
-        except DatabaseError:
-            grund = (
-                "Ob ein Daemon laeuft, ist nicht pruefbar (Procrastinates "
-                "Worker-Tabelle ist nicht lesbar, siehe `db.worker_heartbeats`)"
-            )
-        if self._ohne_daemon_gewarnt:
+        except DatabaseError as fehler:
+            lage = "nicht_lesbar"
+            ursache = (str(fehler.__cause__ or fehler).splitlines() or [""])[0]
+            grund = f"Ob ein Daemon laeuft, ist nicht pruefbar ({ursache})"
+        if lage == self._daemon_warnung:
             return
-        self._ohne_daemon_gewarnt = True
+        self._daemon_warnung = lage
         log.warning(
             "%s. Die Jobs werden eingereiht und bleiben liegen, bis einer startet: "
             "`mineru-ocr daemon`.",
@@ -915,7 +918,10 @@ class OCRClient:
 
         Returns:
             Zaehler je Dokument-Zustand, Zaehler je Job-Zustand, die Zahl offener
-            Aufruest-Faelle, der Kontostand und ob ein Daemon lebt.
+            Aufruest-Faelle, der Kontostand und ob ein Daemon lebt. Beide
+            letzten sind nur Auskunft: Sind sie nicht lesbar (RunPod antwortet
+            nicht, Procrastinates Worker-Tabelle fehlt), stehen sie als `None`
+            da, und die Uebersicht scheitert nicht.
 
         Kosten: keine.
         """
@@ -954,6 +960,13 @@ class OCRClient:
             # Konto. Er wird als „unbekannt" gemeldet und nicht als Null.
             stand = None
 
+        try:
+            daemon_lebt: bool | None = bool(self._lebenszeichen())
+        except DatabaseError:
+            # Wie der Kontostand: Nicht lesbar ist nicht dasselbe wie „laeuft
+            # nicht“, und die Uebersicht bricht an einer Auskunft nicht ab.
+            daemon_lebt = None
+
         return {
             "documents": {
                 zustand.value: anzahl for zustand, anzahl in zeilen.items()
@@ -961,7 +974,7 @@ class OCRClient:
             "jobs": jobs,
             "upgrade_cases": offene_aufruest_faelle[0] if offene_aufruest_faelle else 0,
             "balance": stand,
-            "daemon_alive": bool(self._lebenszeichen()),
+            "daemon_alive": daemon_lebt,
         }
 
     def document(self, target: str | Path) -> DerivedStatus:

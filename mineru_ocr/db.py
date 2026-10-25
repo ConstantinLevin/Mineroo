@@ -1383,12 +1383,11 @@ def worker_heartbeats(conn: psycopg.Connection[Any]) -> list[tuple[int, datetime
     Merkmal: Eine 67 Tage alte Zeile liess frueher „der Daemon laeuft" sagen. Als
     Lebenszeichen gilt deshalb nur ein Herzschlag, der juenger ist als
     `config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS`. Das Alter rechnet DIE DATENBANK
-    (`clock_timestamp()` gegen
-    `last_heartbeat`, beides ihre Uhr): Der Client kann eine andere Zeit oder
-    Zeitzone haben, und ein Vergleich mit seiner Uhr wuerde einen laufenden
-    Daemon fuer tot erklaeren oder einen toten fuer lebendig. `clock_timestamp()`
-    und nicht `now()`, weil `now()` innerhalb einer Transaktion auf ihren Beginn
-    eingefroren ist.
+    (`clock_timestamp()` gegen `last_heartbeat`, beides ihre Uhr): Der Client
+    kann eine andere Zeit oder Zeitzone haben, und ein Vergleich mit seiner Uhr
+    wuerde einen laufenden Daemon fuer tot erklaeren oder einen toten fuer
+    lebendig. `clock_timestamp()` und nicht `now()`, weil `now()` innerhalb einer
+    Transaktion auf ihren Beginn eingefroren ist.
 
     Wozu ueberhaupt: Das haeufigste Betriebs-Missverstaendnis dieser Architektur
     ist „es passiert nichts" bei totem Daemon. Producer legen Zeilen an, Jobs

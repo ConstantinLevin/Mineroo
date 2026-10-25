@@ -146,6 +146,19 @@ def _worker_am_leben(conn: psycopg.Connection[Any]) -> None:
     conn.execute("INSERT INTO procrastinate_workers DEFAULT VALUES")
 
 
+def _lebendigkeit_unlesbar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`db.worker_heartbeats` scheitert, wie es bei einer fehlenden oder
+    umgebauten Worker-Tabelle oder einer weggebrochenen Verbindung tut."""
+
+    def kaputt(conn: psycopg.Connection[Any]) -> Any:
+        try:
+            raise OSError("verbindung weg")
+        except OSError as ursache:
+            raise DatabaseError("procrastinate_workers sieht anders aus") from ursache
+
+    monkeypatch.setattr(db_modul, "worker_heartbeats", kaputt)
+
+
 def _warnungen_des_clients(caplog: pytest.LogCaptureFixture) -> int:
     """Wie viele Warnungen der Logger des Clients bisher aufgezeichnet hat."""
     return len([e for e in caplog.records if e.name == "mineru_ocr.client"])
@@ -786,17 +799,59 @@ def test_ocr_start_reiht_auch_ein_wenn_die_lebendigkeit_nicht_lesbar_ist(
     Worker-Tabelle (oder sieht sie nach einem Upgrade anders aus), scheitert
     `db.worker_heartbeats` — und das Abschicken darf daran nicht haengen."""
 
-    def kaputt(conn: psycopg.Connection[Any]) -> Any:
-        raise DatabaseError("procrastinate_workers sieht anders aus")
-
-    monkeypatch.setattr(db_modul, "worker_heartbeats", kaputt)
+    _lebendigkeit_unlesbar(monkeypatch)
     huelle = _huelle(offener_client, tmp_path, "a.png")
 
     with caplog.at_level("WARNING", logger="mineru_ocr.client"):
         offener_client.ocr_start(huelle)
 
     assert _jobs_zaehlen(db_conn, huelle.sha256) == 1
-    assert any("nicht pruefbar" in e.getMessage() for e in caplog.records)
+    meldungen = [e.getMessage() for e in caplog.records]
+    assert any("nicht pruefbar" in m for m in meldungen)
+    # Die Ursache steht im Log: Eine weggebrochene Verbindung ist etwas anderes
+    # als eine umgebaute Worker-Tabelle, und der Betreiber soll nicht an der
+    # falschen Stelle suchen.
+    assert any("verbindung weg" in m for m in meldungen)
+
+
+def test_ocr_start_warnt_erneut_wenn_der_grund_wechselt(
+    offener_client: OCRClient,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Erst ist die Lebendigkeit nicht lesbar, dann lesbar, aber es laeuft kein
+    Daemon: Das sind zwei verschiedene Lagen, und die zweite wird auch gesagt,
+    obwohl zwischendurch nie ein Daemon zu sehen war."""
+    huellen = [_huelle(offener_client, tmp_path, f"{nr}.png") for nr in range(3)]
+
+    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
+        with monkeypatch.context() as kaputt:
+            _lebendigkeit_unlesbar(kaputt)
+            offener_client.ocr_start(huellen[0])
+            offener_client.ocr_start(huellen[1])  # derselbe Grund: still
+        assert _warnungen_des_clients(caplog) == 1
+
+        offener_client.ocr_start(huellen[2])  # jetzt lesbar, aber kein Daemon
+
+    meldungen = [e.getMessage() for e in caplog.records]
+    assert len(meldungen) == 2
+    assert "nicht pruefbar" in meldungen[0]
+    assert "kein Daemon" in meldungen[1]
+
+
+def test_status_meldet_den_daemon_als_unbekannt_wenn_die_lebendigkeit_nicht_lesbar_ist(
+    offener_client: OCRClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Die Lebendigkeit ist nur Auskunft: Eine unlesbare Worker-Tabelle laesst
+    `status` nicht scheitern, sie macht nur diese eine Angabe unbekannt — wie das
+    Guthaben, wenn RunPod nicht antwortet."""
+    _lebendigkeit_unlesbar(monkeypatch)
+
+    uebersicht = offener_client.status()
+
+    assert uebersicht["daemon_alive"] is None
+    assert "documents" in uebersicht
 
 
 def test_ocr_start_warnt_nicht_bei_laufendem_daemon(

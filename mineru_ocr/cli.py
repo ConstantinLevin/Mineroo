@@ -82,6 +82,13 @@ def _betriebsfehler(fehler: BaseException) -> None:
     raise typer.Exit(code=1)
 
 
+def _daemon_zeile(lebt: bool | None) -> str:
+    """Die Daemon-Angabe von `status`; `None` heisst „nicht lesbar“, nicht „aus“."""
+    if lebt is None:
+        return "unbekannt"
+    return "laeuft" if lebt else "LAEUFT NICHT"
+
+
 @contextlib.contextmanager
 def _warnungen_auf_stderr() -> Iterator[None]:
     """Leitet die Warnungen des Pakets (Logger `mineru_ocr`) auf stderr.
@@ -262,7 +269,7 @@ def status(
         ),
         "Jobs:       "
         + "  ".join(f"{name}={anzahl}" for name, anzahl in uebersicht["jobs"].items()),
-        f"Daemon:     {'laeuft' if uebersicht['daemon_alive'] else 'LAEUFT NICHT'}",
+        f"Daemon:     {_daemon_zeile(uebersicht['daemon_alive'])}",
         f"Guthaben:   {uebersicht['balance'] if uebersicht['balance'] is not None else 'unbekannt'}",
     ]
     if uebersicht["upgrade_cases"]:
@@ -273,7 +280,7 @@ def status(
             f"einen Aufgaben-Eintrag anlegen (`mineru-ocr show <hash>` zeigt den "
             f"Hinweis)."
         )
-    if not uebersicht["daemon_alive"]:
+    if uebersicht["daemon_alive"] is False:
         zeilen.append(
             "Es laeuft kein Daemon — eingereihte Jobs bleiben liegen. "
             "Starten mit `mineru-ocr daemon`."

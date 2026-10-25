@@ -1004,19 +1004,23 @@ def test_das_alter_rechnet_mit_der_laufenden_uhr_der_datenbank(
     db_conn: psycopg.Connection[Any],
 ) -> None:
     """In einer offenen Transaktion bleibt `now()` auf deren Beginn stehen,
-    `clock_timestamp()` laeuft weiter. Ein Herzschlag, der beim Einfuegen 29 s alt
-    war, ist anderthalb Sekunden spaeter aelter als die Schwelle — und das muss
-    die Abfrage sehen. Mit `now()` bliebe er fuer immer 29 s alt, und ein
+    `clock_timestamp()` laeuft weiter. Ein Herzschlag, der beim Einfuegen 28 s alt
+    war, ist zweieinhalb Sekunden spaeter aelter als die Schwelle — und das muss
+    die Abfrage sehen. Mit `now()` bliebe er fuer immer 28 s alt, und ein
     Client, der eine Transaktion offen haelt, saehe einen toten Daemon als
-    lebend."""
+    lebend.
+
+    Der Spielraum: Die erste Pruefung hat zwei Sekunden Luft gegen eine langsame
+    Maschine, die zweite kann nur zu spaet, nie zu frueh kommen (`pg_sleep`
+    schlaeft mindestens so lange)."""
     with db_conn.transaction():
         db_conn.execute(
             "INSERT INTO procrastinate_workers (last_heartbeat) "
-            "VALUES (clock_timestamp() - interval '29 seconds')"
+            "VALUES (clock_timestamp() - interval '28 seconds')"
         )
         assert len(worker_heartbeats(db_conn)) == 1
 
-        db_conn.execute("SELECT pg_sleep(1.5)")
+        db_conn.execute("SELECT pg_sleep(2.5)")
         assert worker_heartbeats(db_conn) == []
 
 

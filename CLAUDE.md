@@ -160,7 +160,9 @@ Ein Daemon **läuft**, wenn ein Worker einen Herzschlag hat, der jünger ist als
 (`db.worker_heartbeats`). Die Zeile eines abgestürzten Daemons bleibt bis zum
 nächsten Start stehen; ihr Alter ist das Merkmal, und abgeräumt wird sie dann von
 Procrastinate selbst. Die Lebendigkeit ist nur Auskunft für `status` und
-`preflight`.
+`preflight`; ist sie nicht lesbar (die undokumentierte Worker-Tabelle fehlt),
+meldet `status` den Daemon als „unbekannt“, und das Abschicken warnt und reiht
+trotzdem ein.
 
 ### Welcher Prozess welche App hält
 
