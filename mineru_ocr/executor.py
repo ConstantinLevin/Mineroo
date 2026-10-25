@@ -52,6 +52,8 @@ from .errors import (
     TerminalRunPodError,
     TransientRunPodError,
     UnstorableResultError,
+    WorkerRejectedError,
+    ist_dateiabweisung,
     should_run_again,
 )
 from .mime import sniff_bytes
@@ -1191,7 +1193,10 @@ def _endzustand_uebersetzen(antwort: dict[str, Any], job_id: str) -> None:
     erfolgreiche.
 
     `TIMED_OUT` ist wiederholbar (es kann an der Warteschlange gelegen haben),
-    `FAILED` und `CANCELLED` sind endgueltig.
+    `FAILED` und `CANCELLED` sind endgueltig. Ein `FAILED`, mit dem der Worker
+    die Datei als nicht lesbar abweist (`errors.ist_dateiabweisung`), wird zur
+    `WorkerRejectedError` und endet als `input_error`, mit dem Grund aus der
+    Antwort.
     """
     zustand = antwort.get("status")
     if zustand == "COMPLETED":
@@ -1200,6 +1205,15 @@ def _endzustand_uebersetzen(antwort: dict[str, Any], job_id: str) -> None:
         raise TransientRunPodError(
             f"Job {job_id} endete auf TIMED_OUT. Wiederholbar: Es kann an der "
             f"Warteschlange gelegen haben. Volle Antwort: {antwort}"
+        )
+    # Das `error` traegt nur eine Antwort, die der Handler des Workers selbst
+    # zurueckgegeben hat, also ein `FAILED` (RunPod hebt es auf die oberste
+    # Ebene); ein `CANCELLED` kommt ohne.
+    fehlertext = antwort.get("error")
+    if isinstance(fehlertext, str) and ist_dateiabweisung(fehlertext):
+        raise WorkerRejectedError(
+            f"Der Worker hat die Datei als nicht lesbar abgewiesen (Job {job_id}): "
+            f"{fehlertext}"
         )
     raise TerminalRunPodError(
         f"Job {job_id} endete auf {zustand!r}. Endgueltig. Volle Antwort: "

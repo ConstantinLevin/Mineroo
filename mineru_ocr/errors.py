@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+from typing import Final
 
 import httpx
 import psycopg
@@ -119,6 +120,56 @@ class MultiImageError(InputError):
     PDF einzureichen. Mehrseitige Bilder selbst in eine PDF umzuwandeln ist
     ausdruecklich nicht Aufgabe des Pakets (Mineroo#1, Out of Scope).
     """
+
+
+class WorkerRejectedError(InputError):
+    """Der Worker hat die Datei als nicht lesbar abgewiesen; der Grund steht in seiner Antwort.
+
+    Die Ausnahme von der Regel der Oberklasse, „RunPod wird gar nicht erst
+    gefragt": Hier hat RunPod geantwortet, und zwar, dass MinerU mit dieser
+    Datei nichts anfangen kann. Das ist eine Aussage ueber die Eingabe, nicht
+    ueber die Engine, und endet deshalb wie die anderen Eingabefehler als
+    `input_error` (Mineroo#11); ein weiterer Versuch kaufte dieselbe Abweisung.
+    Ob eine `FAILED`-Antwort eine solche Abweisung ist, entscheidet
+    `ist_dateiabweisung`. Die Meldung traegt den Grund aus der Antwort.
+    """
+
+
+DATEIABWEISUNG_KENNUNGEN: Final = (
+    "ValueError: input is not a file type MinerU",
+    "InvalidRequestError:",
+)
+"""Die Anfaenge des `error` einer `FAILED`-Antwort, an denen der Worker eine Datei
+als nicht lesbar abweist.
+
+AUS DEN QUELLEN des MinerU-4-Workers (Fork `ConstantinLevin/mineru-runpod`) und
+von MinerU 4.0.12, nicht geraten:
+
+    `ValueError: input is not a file type MinerU …` ist die eigene Meldung des
+    Workers fuer eine Datei, deren Typ MinerU nicht liest (`worker/parse.py`,
+    `run_mineru`).
+
+    `InvalidRequestError: …` ist MinerUs eigene Abweisung; der Worker behaelt
+    MinerUs Fehlertyp (Job-Vertrag `api.mdx`, „Validation behaviour", letzter
+    Absatz). Im Lesepfad von MinerU 4.0.12 entsteht sie an der Seitenauswahl,
+    etwa bei einer PDF ohne Seite („document has no available pages"); einen
+    Seitenbereich schickt das Paket nicht.
+
+Was NICHT darunter faellt und `failed` bleibt: die Pruefungen der Anfrage durch
+den Worker (`ValueError: input validation failed: …` und die uebrigen
+`ValueError` seiner Schema-Pruefung) und jeder Fehler der Engine. Weitere
+Abweisungen, die die Ganzdokument-Formate mitbringen (Office, HTML), gehoeren mit
+deren Ticket (Mineroo#17) und den Aufnahmen (Mineroo#10) hierher."""
+
+
+def ist_dateiabweisung(fehlertext: str) -> bool:
+    """Ob das `error` einer `FAILED`-Antwort eine Abweisung der Datei ist.
+
+    Die eine Stelle, an der das entschieden wird; der Executor uebersetzt eine
+    solche Antwort in `WorkerRejectedError`, und `classify_failure` stuft die wie
+    jede `InputError` als endgueltig ein. Kosten: keine.
+    """
+    return fehlertext.startswith(DATEIABWEISUNG_KENNUNGEN)
 
 
 class TooLargeError(InputError):

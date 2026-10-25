@@ -29,6 +29,7 @@ from mineru_ocr.db import DocumentStatus, get_document, insert_input, write_term
 from mineru_ocr.errors import (
     ConfigurationError,
     CorruptDocumentError,
+    InputError,
     InsufficientBalanceError,
     JobAufgegebenError,
     MultiImageError,
@@ -1668,6 +1669,66 @@ async def test_echte_fehlerantwort_landet_vollstaendig_in_raw(
     assert ausgabe["ok"] is False
     assert "Traceback" in ausgabe["traceback"]
     assert ausgabe["debug"]["gpu"]["name"].startswith("NVIDIA")
+
+
+@pytest.mark.parametrize(
+    "fehler",
+    [
+        # Worker, `worker/parse.py` (`run_mineru`): die Meldung fuer einen Typ,
+        # den MinerU nicht liest.
+        "ValueError: input is not a file type MinerU 4.0.12 reads (detected "
+        "'txt'). It reads PDF, images, Office, OpenDocument, RTF, EPUB, OFD, "
+        "HTML and MHTML files.",
+        # Job-Vertrag (`api.mdx`, „Validation behaviour", Punkt 10): MinerUs
+        # eigene Abweisung einer PDF ohne Seite, mit MinerUs Fehlertyp.
+        "InvalidRequestError: Invalid page range '': document has no available pages",
+    ],
+)
+async def test_vom_worker_abgewiesene_datei_endet_input_error_mit_seinem_grund(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    fehler: str,
+) -> None:
+    """Weist der Worker eine Datei als nicht lesbar ab, endet sie als
+    `input_error`, und der Grund ist der aus seiner Antwort (Mineroo#11). Die
+    bezahlte Antwort bleibt ganz in `raw`."""
+    sha, _ = _anlegen(db_conn, tmp_path, b"nicht lesbar", name="a.png", typ=DocumentType.PNG)
+    antwort = ersatz.fehlerantwort(fehler)
+    runpod = FalscherRunPod([antwort])
+
+    with pytest.raises(InputError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.error is not None and fehler in zeile.error
+    assert zeile.raw is not None
+    assert zeile.raw["unverwertbare_antworten"][0]["antwort"] == antwort
+
+
+async def test_ein_anderer_fehler_des_workers_bleibt_failed(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Scheitert der Worker an etwas anderem als der Datei — eine abgewiesene
+    Anfrage (`ValueError: input validation failed: …`), die Engine selbst —,
+    ist das `failed`: Die Datei kann nichts dafuer."""
+    sha, _ = _anlegen(db_conn, tmp_path, b"engine scheitert", name="a.png", typ=DocumentType.PNG)
+    runpod = FalscherRunPod(
+        [ersatz.fehlerantwort("RuntimeError: CUDA error: out of memory")]
+    )
+
+    with pytest.raises(TerminalRunPodError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
 
 
 async def test_eingabeprobleme_enden_input_error_nicht_failed(

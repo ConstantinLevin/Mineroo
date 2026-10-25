@@ -32,7 +32,9 @@ from mineru_ocr.errors import (
     TransientRunPodError,
     UnstorableResultError,
     UnsupportedTypeError,
+    WorkerRejectedError,
     classify_failure,
+    ist_dateiabweisung,
 )
 
 
@@ -80,8 +82,27 @@ def test_eingabefehler_ist_endgueltig() -> None:
         UnsupportedTypeError("kein PDF"),
         CorruptDocumentError("kaputt"),
         TooLargeError("zu gross"),
+        WorkerRejectedError("vom Worker abgewiesen"),
     ):
         assert classify_failure(fehler) is FailureKind.TERMINAL, type(fehler)
+
+
+@pytest.mark.parametrize(
+    ("fehlertext", "abweisung"),
+    [
+        ("ValueError: input is not a file type MinerU 4.0.12 reads (detected 'txt').", True),
+        ("InvalidRequestError: Invalid page range '': document has no available pages", True),
+        # Die Pruefung der ANFRAGE durch den Worker ist keine Abweisung der Datei.
+        ("ValueError: input validation failed: tier must be one of [...]", False),
+        ("RuntimeError: CUDA error: out of memory", False),
+    ],
+)
+def test_nur_eine_abweisung_der_datei_gilt_als_dateiabweisung(
+    fehlertext: str, abweisung: bool
+) -> None:
+    """Welche `FAILED`-Antwort eine Abweisung der Datei ist, steht an einer
+    Stelle; die Quellen dazu stehen an `DATEIABWEISUNG_KENNUNGEN`."""
+    assert ist_dateiabweisung(fehlertext) is abweisung
 
 
 def test_schluesselfehler_ist_endgueltig() -> None:
