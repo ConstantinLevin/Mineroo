@@ -449,8 +449,11 @@ Antwort als `letzter_versuch`. Daraus folgt:
   Schreiben ab, damit eine hängende Datenbank den Daemon nicht festhält. Mit
   Restbudget reiht Procrastinate den Job dann neu ein, und das Dokument läuft
   noch einmal, auch nach einem endgültigen Fehler; im letzten Versuch bleibt es
-  ohne Ergebnis. Kamen zwei Abbrüche schon vor dem Schreiben, beginnt es gar
-  nicht erst.
+  ohne Ergebnis. Wird das Schreiben trotz des zweiten Abbruchs binnen
+  `abbruch.AUFRAEUMFRIST_SEKUNDEN` doch fertig (die Datenbank hatte schon
+  bestätigt), gilt es als geschrieben, und weitergeworfen wird wieder der Fehler,
+  der in den Fehlerzweig führte. Kamen zwei Abbrüche schon vor dem Schreiben,
+  beginnt es gar nicht erst.
 - **Nachsehen und Lesen im Fehlerzweig.** Das Nachsehen nach einem Ergebnis und
   das Lesen der Eingabe stehen im `try` des Exekutors, damit auch ein
   Datenbankfehler dort im letzten Versuch `failed` schreibt.

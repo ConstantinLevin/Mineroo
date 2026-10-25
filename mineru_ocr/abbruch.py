@@ -121,13 +121,17 @@ async def abwarten_bis_zum_zweiten_abbruch(arbeit: Awaitable[T]) -> T:
         arbeit: Was zu Ende laufen soll.
 
     Returns:
-        Das Ergebnis von `arbeit`, auch wenn ein Abbruch abgehalten wurde.
+        Das Ergebnis von `arbeit`, auch wenn ein Abbruch abgehalten wurde, und
+        auch nach dem zweiten Abbruch, wenn die Arbeit ihn ohne Fehler zu Ende
+        bringt, bevor die Aufraeumfrist ablaeuft.
 
     Raises:
-        asyncio.CancelledError: Beim zweiten Abbruch (die Arbeit wird dann
-            abgebrochen; auf ihr Aufraeumen wird hoechstens
-            `AUFRAEUMFRIST_SEKUNDEN` gewartet) oder wenn `arbeit` selbst
-            abgebrochen wurde. Was `arbeit` selbst wirft, kommt heraus.
+        asyncio.CancelledError: Beim zweiten Abbruch, wenn die Arbeit danach
+            nicht ohne Fehler fertig wird (sie wird abgebrochen; auf ihr
+            Aufraeumen wird hoechstens `AUFRAEUMFRIST_SEKUNDEN` gewartet, und ein
+            Fehler, den sie dabei wirft, bleibt verborgen), oder wenn `arbeit`
+            selbst abgebrochen wurde. Was `arbeit` vor dem zweiten Abbruch
+            wirft, kommt heraus.
 
     Kosten: keine.
     """
@@ -157,4 +161,14 @@ async def abwarten_bis_zum_zweiten_abbruch(arbeit: Awaitable[T]) -> T:
                 # Mit Frist: psycopg wartet nach einem Abbruch auf die Antwort
                 # des Servers, und ein unerreichbarer Server antwortet nie.
                 await asyncio.wait([aufgabe], timeout=AUFRAEUMFRIST_SEKUNDEN)
+                if (
+                    aufgabe.done()
+                    and not aufgabe.cancelled()
+                    and aufgabe.exception() is None
+                ):
+                    # Doch noch fertig geworden: Die Arbeit war schon bestaetigt,
+                    # als der Abbruch sie erreichte. Dann gilt ihr Ergebnis; kaeme
+                    # der Abbruch heraus, reihte Procrastinate das Dokument mit
+                    # Restbudget neu ein, obwohl sein Ergebnis schon steht.
+                    return aufgabe.result()
                 raise

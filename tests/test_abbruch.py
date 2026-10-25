@@ -175,3 +175,55 @@ async def test_nach_dem_zweiten_abbruch_wird_aufs_aufraeumen_nur_befristet_gewar
     finally:
         freigabe.set()
         await asyncio.wait([lauf, *innere])
+
+
+async def test_wird_die_arbeit_nach_dem_zweiten_abbruch_doch_fertig_gilt_ihr_ergebnis() -> None:
+    """Wird die Arbeit nach dem zweiten Abbruch innerhalb der Aufraeumfrist doch
+    noch fertig (das Schreiben war schon bestaetigt, als der Abbruch ankam),
+    kommt ihr Ergebnis zurueck und nicht der Abbruch.
+
+    Sonst warf der Executor den Abbruch statt des Fehlers, dessen Ergebnis eben
+    geschrieben wurde, und Procrastinate reihte das Dokument mit Restbudget neu
+    ein: Es liefe und kostete noch einmal.
+    """
+    begonnen = asyncio.Event()
+
+    async def arbeit() -> str:
+        begonnen.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # Die Bestaetigung des Servers kam schon; der Abbruch aendert nichts
+            # mehr daran, dass geschrieben ist.
+            await asyncio.sleep(0)
+            return "geschrieben"
+        return "nie"
+
+    lauf = asyncio.ensure_future(abwarten_bis_zum_zweiten_abbruch(arbeit()))
+    await begonnen.wait()
+    lauf.cancel()
+    await asyncio.sleep(0)
+    lauf.cancel()
+    assert await asyncio.wait_for(lauf, timeout=5) == "geschrieben"
+
+
+async def test_scheitert_die_arbeit_nach_dem_zweiten_abbruch_kommt_der_abbruch_heraus() -> None:
+    """Scheitert die abgebrochene Arbeit mit einem eigenen Fehler (psycopg meldet
+    den Abbruch etwa als Datenbankfehler), ist nichts geschrieben: Dann kommt
+    der Abbruch heraus und nicht dieser Fehler."""
+    begonnen = asyncio.Event()
+
+    async def arbeit() -> None:
+        begonnen.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise RuntimeError("Anweisung abgebrochen") from None
+
+    lauf = asyncio.ensure_future(abwarten_bis_zum_zweiten_abbruch(arbeit()))
+    await begonnen.wait()
+    lauf.cancel()
+    await asyncio.sleep(0)
+    lauf.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(lauf, timeout=5)
