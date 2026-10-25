@@ -1815,7 +1815,7 @@ def test_ocr_liefert_das_ergebnis_eines_treffers_ohne_etwas_einzureihen(
         "VALUES (%s, 1, 'image/png', 'e', 'done', %s::jsonb)",
         (
             _hash(inhalt),
-            '{"markdown": "steht da", "content_list": [], "images": {}}',
+            '{"markdown": "steht da", "middle_json": [], "images": {}}',
         ),
     )
 
@@ -1893,7 +1893,7 @@ async def test_get_holt_das_ergebnis_ohne_zu_warten_und_laedt_raw_erst_bei_bedar
         async_conn,
         sha256=h,
         status=DocumentStatus.DONE,
-        raw={"markdown": "steht in der Datenbank", "content_list": [], "images": {}},
+        raw={"markdown": "steht in der Datenbank", "middle_json": [], "images": {}},
         endpoint_id="testendpoint",
     )
 
@@ -2728,7 +2728,7 @@ async def test_async_ocr_liefert_einen_treffer_und_prueft_die_frist_vor_dem_einr
     db_conn.execute(
         "INSERT INTO documents (sha256, size_bytes, mime, endpoint_id, status, raw) "
         "VALUES (%s, 1, 'image/png', 'e', 'done', %s::jsonb)",
-        (_hash(inhalt), '{"markdown": "steht da", "content_list": [], "images": {}}'),
+        (_hash(inhalt), '{"markdown": "steht da", "middle_json": [], "images": {}}'),
     )
 
     ergebnis = await offener_async_client.ocr(inhalt, timeout=5.0)
@@ -3035,7 +3035,7 @@ async def test_sync_und_async_client_zugleich_im_selben_prozess(
                     async_conn,
                     sha256=h,
                     status=DocumentStatus.DONE,
-                    raw={"markdown": h, "content_list": [], "images": {}},
+                    raw={"markdown": h, "middle_json": [], "images": {}},
                     endpoint_id="e",
                 )
 

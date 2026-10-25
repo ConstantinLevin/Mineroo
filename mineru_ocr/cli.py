@@ -592,8 +592,8 @@ def markdown(
     eigenen Markdown herausfiltert und in denen das Aktenzeichen liegt. Wer das
     nackte Engine-Markdown will, nimmt den Python-Weg (`huelle["markdown"]`).
 
-    Nur der Text. Strukturliste, Bilder und die Rohantworten gibt es ueber den
-    Python-Weg (`huelle["content_list"]`, `huelle.images`, `huelle.raw`) — sie
+    Nur der Text. Seiten und Bloecke, Bilder und die Rohantworten gibt es ueber
+    den Python-Weg (`huelle["middle_json"]`, `huelle.images`, `huelle.raw`) — sie
     auch noch ueber die Kommandozeile anzubieten hiesse, die Zugangsschicht ein
     zweites Mal zu bauen, und Binaerdaten haben auf der Standardausgabe ohnehin
     nichts zu suchen.

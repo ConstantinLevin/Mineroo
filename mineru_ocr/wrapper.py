@@ -35,7 +35,7 @@ from .errors import ConfigurationError, DocumentNotFound, IncompleteResultError
 
 F = TypeVar("F")
 """Der erwartete Typ eines Feldes im gespeicherten Ergebnis (`OCRWrapper._feld`)
-— `str` fuer `markdown`, `list` fuer `content_list`, `dict` fuer `images`."""
+— `dict` fuer `images`."""
 
 
 class OCRWrapper:
@@ -133,14 +133,14 @@ class OCRWrapper:
     def __getitem__(self, name: str) -> Any:
         """Ein Element des gespeicherten Ergebnisses, unveraendert.
 
-        `huelle["markdown"]` ist `huelle.raw["markdown"]`, `huelle["content_list"]`
-        ist `huelle.raw["content_list"]`, und so fort fuer jedes Element, das
-        `assembly.assemble` erzeugt: `images`, `middle`, `layout_pdfs`,
-        `envelopes`, `extras` — und alles, was spaeter dazukommt, ohne dass hier
-        etwas nachgetragen werden muesste.
+        `huelle["markdown"]` ist `huelle.raw["markdown"]`, `huelle["middle_json"]`
+        ist `huelle.raw["middle_json"]`, und so fort fuer jedes Element, das
+        `assembly.assemble` erzeugt: `markdown_full`, `structured_content`,
+        `model_output`, `images`, `envelopes`, `extras` — und alles, was spaeter
+        dazukommt, ohne dass hier etwas nachgetragen werden muesste.
 
         WARUM EIN ZUGANG STATT EINES GETTERS JE FELD: Hier standen vorher
-        `markdown` und `content_list` als eigene Eigenschaften. Beide taten
+        `markdown` und die Strukturliste als eigene Eigenschaften. Beide taten
         nichts anderes, als ein Feld durchzureichen — sie waren eine
         handverlesene Auswahl aus dem, was ohnehin vollstaendig da ist, und jede
         solche Auswahl ist eine Aussage darueber, was wichtig sei. Diese Aussage
@@ -164,7 +164,7 @@ class OCRWrapper:
     def __contains__(self, name: str) -> bool:
         """Ob das gespeicherte Ergebnis dieses Element traegt.
 
-        Damit `if "layout_pdfs" in huelle` moeglich ist, ohne den `KeyError` aus
+        Damit `if "markdown_full" in huelle` moeglich ist, ohne den `KeyError` aus
         `__getitem__` als Steuerfluss zu benutzen.
         """
         return name in self._ergebnis()
@@ -172,6 +172,10 @@ class OCRWrapper:
     @property
     def images(self) -> dict[str, bytes]:
         """Die Bilder des Dokuments.
+
+        Jedes Bild steht unter dem Verweis, der im Text auf es zeigt, etwa
+        `images/teilstueck_0/page_0_image_2.jpg` (`assembly.assemble` gibt
+        jedem Teilstueck seinen eigenen Namensraum).
 
         Aus Base64 zurueckgewandelt: In der Datenbank liegen sie als
         Zeichenketten, weil `jsonb` keine Bytes kennt. Die Wandlung ist
@@ -293,15 +297,15 @@ class OCRWrapper:
         beantworteten sie mit einer Voreinstellung. Das ist eine redaktionelle
         Entscheidung, und sie gehoert dem, der das Ergebnis benutzt, nicht dem,
         der es aufbereitet. Wer eine Auswahl braucht, baut sie aus
-        `self["markdown"]` und `self["content_list"]` — an der Stelle, an der er
-        weiss, wofuer.
+        `self["markdown"]`, `self["markdown_full"]` und den Bloecken in
+        `self["middle_json"]` — an der Stelle, an der er weiss, wofuer.
 
         Raises:
             IncompleteResultError: Die Zeile hat noch kein Ergebnis — oder das
                 gespeicherte Ergebnis ist beschaedigt und laesst sich nicht ganz
-                darstellen (`markdown` mit falschem Typ, `content_list` keine
-                Liste oder mit einem Eintrag, der kein Dict ist, oder beide
-                Felder fehlen). Eine halbe Ausgabe gibt es nicht: Sie saehe
+                darstellen (`markdown` mit falschem Typ, `middle_json` keine
+                Liste oder mit einem Eintrag ohne Seiten, oder beide Felder
+                fehlen). Eine halbe Ausgabe gibt es nicht: Sie saehe
                 vollstaendig aus. Was da ist, steht unveraendert in `raw`.
         """
         return assembly.rendered_markdown(self._ergebnis())

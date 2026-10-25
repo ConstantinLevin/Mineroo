@@ -229,10 +229,10 @@ async def process_document(
        feststeht, was wirklich geliefert wurde — `iter_chunks` darf unterwegs
        halbieren.
 
-       Dann `assembly.assemble`: Text in Dokumentreihenfolge, Strukturliste mit
-       den Seitenzahlen DES ORIGINALS, Bilder vereinigt, alles Uebrige mit. Das
-       Ergebnis ist EIN Dokument — am Ergebnis ist nicht mehr ablesbar, ob und wo
-       geschnitten wurde, und genau so ist es gewollt: Rein geht das ganze
+       Dann `assembly.assemble`: Text in Dokumentreihenfolge, die Seiten des
+       Middle-JSON mit den Seitenzahlen DES ORIGINALS, die Bilder jedes
+       Teilstuecks in seinem eigenen Namensraum samt ihren Verweisen, alles
+       Uebrige mit. Das Ergebnis ist EIN Dokument: Rein geht das ganze
        Dokument, raus kommt das ganze Dokument.
 
        Dass hier zusammengesetzt wird und nicht spaeter beim Lesen, ist keine
@@ -750,9 +750,8 @@ def _ergebnis_fuer_endzustand(
 
     Warum es diese Funktion gibt: Der Fehlerpfad rief frueher unmittelbar
     `assembly.assemble(teile)`. Das ist genau der Aufruf, der im Erfolgspfad
-    geworfen haben kann — ein `content_list`-Eintrag mit nicht ganzzahligem
-    `page_idx`, ein Eintrag, der kein Dict ist, ein `markdown`, das als JSON-null
-    ankam. War der urspruengliche Fehler dieser Wurf, warf derselbe Aufruf im
+    geworfen haben kann — eine Seite mit nicht ganzzahligem `page_idx`, ein
+    Eintrag in unerwarteter Form. War der urspruengliche Fehler dieser Wurf, warf derselbe Aufruf im
     Fehlerpfad sofort wieder, die Ausnahme verliess den Handler, und
     `write_terminal_async` lief NIE.
 
@@ -826,7 +825,7 @@ def _rohfassung_der_teile(
     `_ergebnis_fuer_endzustand` sagt es dem Leser.
 
     Die Form ist bewusst eine ANDERE als die des Erfolgspfads — `chunks` statt
-    `markdown`/`content_list` auf oberster Ebene. Wer diese Zeile spaeter liest,
+    `markdown`/`middle_json` auf oberster Ebene. Wer diese Zeile spaeter liest,
     soll nicht auf den ersten Blick ein gewoehnliches Ergebnis sehen, das nur
     seltsam aussieht.
 
@@ -844,11 +843,13 @@ def _rohfassung_der_teile(
                     "last_page": _json_faehig(getattr(teil.chunk, "last_page", None)),
                 },
                 "markdown": _json_faehig(getattr(teil, "markdown", None)),
-                "content_list": _json_faehig(getattr(teil, "content_list", None)),
+                "markdown_full": _json_faehig(getattr(teil, "markdown_full", None)),
+                "middle_json": _json_faehig(getattr(teil, "middle_json", None)),
+                "structured_content": _json_faehig(
+                    getattr(teil, "structured_content", None)
+                ),
+                "model_output": _json_faehig(getattr(teil, "model_output", None)),
                 "images": _json_faehig(getattr(teil, "images", None)),
-                "middle": _json_faehig(getattr(teil, "middle", None)),
-                "layout_pdf": _json_faehig(getattr(teil, "layout_pdf", None)),
-                "span_pdf": _json_faehig(getattr(teil, "span_pdf", None)),
                 "envelope": _json_faehig(getattr(teil, "envelope", None)),
                 "extras": _json_faehig(getattr(teil, "extras", None)),
                 "nummer": nummer,

@@ -212,7 +212,7 @@ async def test_fertiges_dokument_gibt_null(
             async_conn,
             sha256=huelle.sha256,
             status=zustand,
-            raw={"markdown": "Text", "content_list": [], "images": {}},
+            raw={"markdown": "Text", "middle_json": [], "images": {}},
             endpoint_id="testendpoint",
         )
         assert cli.invoke(app, ["wait", huelle.sha256]).exit_code == 0, zustand
@@ -626,7 +626,7 @@ async def test_json_traegt_kein_raw(
         async_conn,
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
-        raw={"markdown": "x" * 5000, "content_list": [], "images": {}},
+        raw={"markdown": "x" * 5000, "middle_json": [], "images": {}},
         endpoint_id="testendpoint",
     )
     ergebnis = cli.invoke(app, ["show", huelle.sha256, "--json"])
@@ -696,7 +696,7 @@ async def test_hash_und_pfad_werden_gleich_aufgeloest(
         async_conn,
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
-        raw={"markdown": "derselbe Text", "content_list": [], "images": {}},
+        raw={"markdown": "derselbe Text", "middle_json": [], "images": {}},
         endpoint_id="testendpoint",
     )
 
@@ -765,7 +765,7 @@ async def test_show_zeigt_was_document_sagt_und_raw_die_vollstaendige_antwort(
     """`show` zeigt den Stand aus `document()` ohne `raw`; `show --raw` gibt die
     vollstaendige Antwort als JSON aus, auch ohne `--json`."""
     huelle = _anlegen(db_conn, tmp_path, "fertig.png", _test_datenbank)
-    antwort = {"markdown": "ganz", "content_list": [], "images": {}, "extras": {"a": [1]}}
+    antwort = {"markdown": "ganz", "middle_json": [], "images": {}, "extras": {"a": [1]}}
     await write_terminal_async(
         async_conn,
         sha256=huelle.sha256,
@@ -1597,7 +1597,7 @@ async def test_markdown_schreibt_in_eine_datei(
         async_conn,
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
-        raw={"markdown": "Der ganze Text", "content_list": [], "images": {}},
+        raw={"markdown": "Der ganze Text", "middle_json": [], "images": {}},
         endpoint_id="testendpoint",
     )
 
@@ -1628,7 +1628,7 @@ async def test_markdown_meldet_eine_beschaedigte_zeile_statt_sie_auszugeben(
     `markdown` kaeme, fehlte vollstaendig, und nichts sagte es. Die Datei sah
     aus wie ein kurzes Dokument.
 
-    Der Fliesstext steht hier als `content_list`-Eintrag vom Typ `text` und
+    Der Fliesstext steht hier als Block vom Typ `text` im Middle-JSON und
     NICHT in `markdown`, und das ist der Kern des Tests: Ein Typ, den
     `rendered_markdown` nicht anhaengt, weil er normalerweise schon im Markdown
     steht. Faellt das Markdown weg, faellt er lautlos mit weg.
@@ -1640,9 +1640,28 @@ async def test_markdown_meldet_eine_beschaedigte_zeile_statt_sie_auszugeben(
         status=DocumentStatus.DONE,
         raw={
             "markdown": None,
-            "content_list": [
-                {"type": "header", "text": "Aktenzeichen 123/456/7890", "page_idx": 0},
-                {"type": "text", "text": "Der ganze Fliesstext.", "page_idx": 0},
+            "middle_json": [
+                {
+                    "pages": [
+                        {
+                            "page_idx": 0,
+                            "blocks": [
+                                {
+                                    "type": "header",
+                                    "index": 0,
+                                    "content": [
+                                        {"type": "text", "content": "Aktenzeichen 123/456/7890"}
+                                    ],
+                                },
+                                {
+                                    "type": "text",
+                                    "index": 1,
+                                    "content": [{"type": "text", "content": "Der ganze Fliesstext."}],
+                                },
+                            ],
+                        }
+                    ]
+                }
             ],
             "images": {},
         },
@@ -1674,7 +1693,7 @@ async def test_markdown_meldet_auch_ein_FEHLENDES_pflichtfeld(
     Der Fall ist real und nicht konstruiert: Er entstand daraus, dass die erste
     Fassung der Pruefung ein einzeln fehlendes Feld DULDETE — mit einer
     Begruendung („aeltere Fassung"), die nie geprueft war und sich als falsch
-    erwiesen hat. Ohne `content_list` fehlt das Aktenzeichen, und die Ausgabe
+    erwiesen hat. Ohne `middle_json` fehlt das Aktenzeichen, und die Ausgabe
     saehe vollstaendig aus.
     """
     huelle = _anlegen(db_conn, tmp_path, "ohne_liste.png", _test_datenbank)
@@ -1690,4 +1709,4 @@ async def test_markdown_meldet_auch_ein_FEHLENDES_pflichtfeld(
     ergebnis = cli.invoke(app, ["markdown", huelle.sha256, "--out", str(ziel)])
     assert ergebnis.exit_code == 1
     assert not ziel.exists()
-    assert "content_list" in ergebnis.output
+    assert "middle_json" in ergebnis.output

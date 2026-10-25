@@ -22,6 +22,7 @@ import pytest
 from PIL import Image
 from psycopg_pool import AsyncConnectionPool
 
+import ersatz_antworten as ersatz
 from mineru_ocr import db as db_modul
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, get_document, insert_input, write_terminal_async
@@ -120,31 +121,12 @@ class FalscherRunPod:
         return self.kontostand
 
 
-def _fertige_antwort(
-    markdown: str = "Text", content_list: list[dict[str, Any]] | None = None
-) -> dict[str, Any]:
-    """Eine COMPLETED-Antwort in der Form der echten Antworten."""
-    return {
-        "id": "erfunden",
-        "status": "COMPLETED",
-        "workerId": "wrk",
-        "delayTime": 1,
-        "executionTime": 2,
-        "output": {
-            "ok": True,
-            "results": [
-                {
-                    "basename": "doc",
-                    "markdown": markdown,
-                    "content_list": content_list
-                    if content_list is not None
-                    else [{"type": "text", "text": markdown, "page_idx": 0}],
-                    "images": {},
-                    "middle": {"_backend": "vlm"},
-                }
-            ],
-        },
-    }
+def _fertige_antwort(text: str = "Text", *, page_idx: Any = 0) -> dict[str, Any]:
+    """Eine COMPLETED-Antwort des MinerU-4-Workers: eine Seite, darauf ein
+    Textblock mit `text` (ohne Text: eine Seite ohne Block). Bauform und Quellen
+    stehen in `ersatz_antworten`."""
+    seite = ersatz.seite(page_idx, [ersatz.text_block(0, text)] if text else [])
+    return ersatz.tarball_antwort(ersatz.dokument_dateien(ersatz.middle_json([seite])))
 
 
 def _pdf(seiten: int) -> bytes:
@@ -659,7 +641,7 @@ async def test_seitenzahl_steht_auch_bei_failed(
     "antwort, erwartet",
     [
         (_fertige_antwort("Text"), DocumentStatus.DONE),
-        (_fertige_antwort("", content_list=[]), DocumentStatus.EMPTY),
+        (_fertige_antwort(""), DocumentStatus.EMPTY),
     ],
 )
 async def test_eingabe_wird_mit_dem_ergebnis_geloescht(
@@ -980,18 +962,17 @@ async def test_ergebnis_ist_zusammengesetzt(
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    """Was geschrieben wird, ist EIN Dokument: Text in Reihenfolge, Seitenzahlen
-    des Originals, Bilder vereinigt. Am Ergebnis ist nicht ablesbar, ob
-    geschnitten wurde."""
+    """Was geschrieben wird, ist EIN Dokument: Text in Reihenfolge, die Seiten
+    des Middle-JSON mit den Seitenzahlen des Originals."""
     eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
     sha, _ = _anlegen(db_conn, tmp_path, _pdf(3))
 
     # Drei Teilstuecke, jedes mit teilstueck-lokalem page_idx 0.
     runpod = FalscherRunPod(
         [
-            _fertige_antwort("Seite A", [{"type": "text", "text": "A", "page_idx": 0}]),
-            _fertige_antwort("Seite B", [{"type": "text", "text": "B", "page_idx": 0}]),
-            _fertige_antwort("Seite C", [{"type": "text", "text": "C", "page_idx": 0}]),
+            _fertige_antwort("Seite A"),
+            _fertige_antwort("Seite B"),
+            _fertige_antwort("Seite C"),
         ]
     )
     await process_document(sha, settings=eng, runpod=runpod, pool=pool)
@@ -1001,7 +982,9 @@ async def test_ergebnis_ist_zusammengesetzt(
     assert zeile.raw is not None
     assert zeile.raw["markdown"] == "Seite A\n\nSeite B\n\nSeite C"
     # DIE Korrektur, um die es geht: aus dreimal „Seite 0" werden 0, 1, 2.
-    assert [e["page_idx"] for e in zeile.raw["content_list"]] == [0, 1, 2]
+    assert [
+        [s["page_idx"] for s in middle["pages"]] for middle in zeile.raw["middle_json"]
+    ] == [[0], [1], [2]]
     # Und es gibt kein Feld, das die Teilung noch verriete.
     assert "chunks" not in zeile.raw
     assert "chunk_plan" not in zeile.raw
@@ -1023,7 +1006,7 @@ async def test_leeres_ergebnis_wird_empty(
     sha, _ = _anlegen(
         db_conn, tmp_path, b"leerbild", name="a.png", typ=DocumentType.PNG
     )
-    runpod = FalscherRunPod([_fertige_antwort("", [])])
+    runpod = FalscherRunPod([_fertige_antwort("")])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     zeile = get_document(db_conn, sha)
@@ -1562,10 +1545,7 @@ async def test_fehlerpfad_schreibt_auch_wenn_das_zusammensetzen_scheitert(
 
     runpod = FalscherRunPod(
         [
-            _fertige_antwort(
-                "Bezahlt und angekommen",
-                content_list=[{"type": "text", "text": "x", "page_idx": 1.5}],
-            )
+            _fertige_antwort("Bezahlt und angekommen", page_idx=1.5)
         ]
     )
     with pytest.raises(TerminalRunPodError):
@@ -1579,7 +1559,7 @@ async def test_fehlerpfad_schreibt_auch_wenn_das_zusammensetzen_scheitert(
     # Das Bezahlte ist in der Notfassung erhalten, unbearbeitet.
     assert "assembly_failed" in zeile.raw
     assert zeile.raw["chunks"][0]["markdown"] == "Bezahlt und angekommen"
-    assert zeile.raw["chunks"][0]["content_list"][0]["page_idx"] == 1.5
+    assert zeile.raw["chunks"][0]["middle_json"]["pages"][0]["page_idx"] == 1.5
     # Und der Leser sieht, dass er die Notfassung vor sich hat.
     assert any(v["kind"] == "zusammensetzen_gescheitert" for v in zeile.notes)
 
@@ -1617,8 +1597,8 @@ async def test_bezahlte_antwort_mit_formfehler_wird_aufgehoben(
         "output": {
             "ok": True,
             "results": [
-                {"markdown": "Erstes Ergebnis", "content_list": []},
-                {"markdown": "Zweites Ergebnis", "content_list": []},
+                {"markdown": "Erstes Ergebnis"},
+                {"markdown": "Zweites Ergebnis"},
             ],
         },
     }

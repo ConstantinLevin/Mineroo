@@ -352,8 +352,8 @@ class IncompleteResultError(MineruOcrError):
 
         Die Zeile ist BESCHAEDIGT — ein Feld des gespeicherten Ergebnisses hat
         einen anderen Typ als zugesichert (der haeufigste Fall ist JSON-`null`),
-        ein `content_list`-Eintrag ist kein Dict, oder das Ergebnis traegt
-        weder `markdown` noch `content_list` und ist damit gar kein
+        ein Eintrag von `middle_json` traegt keine Seiten, oder das Ergebnis
+        traegt weder `markdown` noch `middle_json` und ist damit gar kein
         zusammengesetztes Ergebnis. Geworfen wird auch hier, statt einen leeren
         Wert zu liefern: Ein leeres Feld sieht aus wie ein leeres Dokument, und
         genau daran ist die Beschaedigung sonst nicht mehr zu erkennen.

@@ -30,6 +30,7 @@ from procrastinate.jobs import Job
 from procrastinate.manager import JobManager
 from psycopg_pool import NullConnectionPool
 
+import ersatz_antworten as ersatz
 from mineru_ocr import config, daemon, db, tasks
 from mineru_ocr.client import OCRClient
 from mineru_ocr.config import Settings
@@ -141,22 +142,9 @@ class ProtokollRunPod:
 
 
 def _fertig(markdown: str = "Text") -> dict[str, Any]:
-    return {
-        "id": "erfunden",
-        "status": "COMPLETED",
-        "workerId": "wrk",
-        "output": {
-            "ok": True,
-            "results": [
-                {
-                    "markdown": markdown,
-                    "content_list": [{"type": "text", "text": markdown, "page_idx": 0}],
-                    "images": {},
-                    "middle": {},
-                }
-            ],
-        },
-    }
+    """Eine COMPLETED-Antwort des MinerU-4-Workers um eine Seite mit `markdown`
+    (Bauform und Quellen: `ersatz_antworten`)."""
+    return ersatz.fertige_antwort(markdown)
 
 
 PNG_KOPF = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"

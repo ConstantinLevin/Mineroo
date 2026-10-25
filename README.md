@@ -171,7 +171,7 @@ with OCRClient() as client:
     # fertig; eine Frist (`timeout=`) nennt im Fehler die noch offenen Hashes.
     print(fertig.rendered_markdown)  # das GANZE Dokument als Markdown
     print(fertig["markdown"])        # das nackte Markdown der Engine
-    print(fertig["content_list"])    # jeder Block einzeln, mit type und page_idx
+    print(fertig["middle_json"])     # je Teilstueck MinerUs Seiten mit ihren Bloecken
     print(fertig.raw)                # die vollstaendige Antwort, ungefiltert
 
     antwort = client.ocr(b"...")     # Abschicken und Warten in einem Zug
