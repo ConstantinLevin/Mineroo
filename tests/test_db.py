@@ -1464,6 +1464,12 @@ async def test_die_frist_begrenzt_auch_das_verbinden(
         ("dbname=gibtesnicht connect_timeout=5", 2.0, 2),
         ("dbname=gibtesnicht connect_timeout=5", None, None),
         ("dbname=gibtesnicht", float("inf"), None),
+        # Null heisst bei libpq „ohne Grenze" — dann begrenzt die Frist.
+        ("dbname=gibtesnicht connect_timeout=0", 3.0, 3),
+        # Laesst sich die Vorgabe oder die ganze Zeichenkette nicht lesen, bleibt
+        # es beim Rest der Frist; was falsch ist, meldet das Verbinden selbst.
+        ("dbname=gibtesnicht connect_timeout=unsinn", 3.0, 3),
+        ("dbname='gibtesnicht", 3.0, 3),
     ]
     for dsn, frist, erwartet in faelle:
         protokoll: list[dict[str, Any]] = []
