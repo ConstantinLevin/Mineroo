@@ -128,7 +128,12 @@ Worker, ein Worker ohne Umgebung, keine Rechenzentren in der Antwort, kein
 erwarteter Tag —, heißt „nicht prüfbar" und ausdrücklich nicht „in Ordnung".
 
 Neun Kommandos gibt es: `setup`, `daemon`, `ocr`, `status`, `show`, `wait`,
-`markdown`, `retry`, `preflight`. Die Exit-Codes sind belegt (0/1/2/3).
+`markdown`, `retry`, `preflight`. Die Exit-Codes sind belegt (0/1/2/3/4, 130 bei
+Strg-C). `wait ZIEL… [--timeout S] [--json]` wartet auf viele und schreibt je
+Dokument eine Zeile, sobald es endgültig ist; es endet mit 0, wenn alle `done` oder
+`empty` sind, mit 3, wenn eines `failed` oder `input_error` ist, mit 4, wenn nach
+Ablauf der Frist noch eines offen ist, und mit 1 bei einem Betriebsfehler; bei
+mehreren gilt der schwerste, 1 vor 4 vor 3 vor 0.
 
 **Pfade kennt nur die CLI.** Sie liest Dateien und Ordner (in Ordnern über das
 Muster `--glob`), hasht sie und nennt in ihrer Ausgabe die Zuordnung von Pfad zu
@@ -158,6 +163,8 @@ with OCRClient() as client:
     print(client.status())
 
     fertig = client.wait(h)          # oder spaeter, auch aus einem anderen Prozess
+    # Fuer viele: `wait_all(hashes)` in Reihenfolge, `as_completed(hashes)` sobald
+    # fertig; eine Frist (`timeout=`) nennt im Fehler die noch offenen Hashes.
     print(fertig.rendered_markdown)  # das GANZE Dokument als Markdown
     print(fertig["markdown"])        # das nackte Markdown der Engine
     print(fertig["content_list"])    # jeder Block einzeln, mit type und page_idx

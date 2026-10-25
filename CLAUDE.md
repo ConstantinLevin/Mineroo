@@ -117,8 +117,17 @@ läuft: das Image von Template und Workern gegen den erwarteten Tag, die
 Endpoint-Variablen nach Wert an der Umgebung aller zuletzt gelaufenen Worker (auch
 der beendeten), dass alle Rechenzentren in der zulässigen Liste liegen, und die
 Sollwerte des Endpoints; FlashBoot wird berichtet. Was sich nicht feststellen lässt,
-heißt „nicht prüfbar“, nie „in Ordnung“. Die Exit-Codes sind belegt (0/1/2/3) und
-werden von `cli.py` bewusst gesetzt.
+heißt „nicht prüfbar“, nie „in Ordnung“. Die Exit-Codes sind belegt (0/1/2/3/4,
+dazu 130 bei Strg-C) und werden von `cli.py` bewusst gesetzt.
+
+`wait ZIEL… [--timeout S] [--json]` wartet auf viele (`OCRClient.as_completed`)
+und schreibt je Dokument eine Zeile, sobald es endgültig ist (mit `--json` eine
+JSON-Zeile ohne `raw`). Exit-Code 0, wenn alle `done` oder `empty` sind; 3, wenn
+eines `failed` oder `input_error` ist; **4, wenn nach Ablauf der Frist noch eines
+offen ist** (die offenen nennt stderr); 1 bei einem Betriebsfehler, auch einem
+unbekannten Hash; 130 bei Strg-C. Bei mehreren gilt der schwerste, 1 vor 4 vor 3
+vor 0: 4 verlangt vom Aufrufer eine Handlung (später erneut warten), die
+Fehlschläge stehen ohnehin in den Zeilen.
 
 ### Konfiguration — Endpoint, Datenbank und Sollwerte stehen nicht im Code
 
@@ -161,7 +170,8 @@ GPU-Speicheranteils (`MINERU_VIRTUAL_VRAM_SIZE`) ist bis zur Messung offen: Der
 Preflight berichtet den Ist-Wert und bewertet ihn als „nicht prüfbar“.
 
 **Pfade kennt nur die CLI.** Die Bibliothek nimmt Bytes und gibt Hashes
-(`OCRClient.ocr_start(bytes | Sequence[bytes])`, `ocr`, `wait`, `get`, `document`);
+(`OCRClient.ocr_start(bytes | Sequence[bytes])`, `ocr`, `wait`, `wait_all`,
+`as_completed`, `get`, `document`);
 `cli.py` liest Dateien und Ordner, hasht sie und nennt die Zuordnung von Pfad zu
 Hash. `ocr --json` gibt je Dokument Hash, Zustand (`null`, solange es offen ist)
 und ob eingereiht, dazu die übersprungenen Dateien. `show` zeigt, was `document()`
@@ -242,9 +252,9 @@ Was daraus folgt und nicht aus einer einzelnen Datei hervorgeht:
   abgebrochene bleiben stehen; `retry` braucht sie.
 - **Ein Client haelt zwischen zwei Aufrufen keine Procrastinate-Verbindung.**
   `list_jobs`, `list_tasks` und `retry_job_by_id` laufen synchron ueber seine App,
-  mit je einer kurzlebigen Verbindung. Je Agent bleibt so eine Verbindung: die
-  des Clients, auch waehrend `wait` (das laeuft auf ihr; die Spec rechnet mit
-  bis zu zwei, gemessen ist eine).
+  mit je einer kurzlebigen Verbindung. Je Agent bleiben so ein bis zwei
+  Verbindungen: die des Clients und, solange er wartet, die eigene der
+  Warteschleife (siehe „Warten“).
   `client._synchron_ausfuehren` gibt es nur noch fuer die kurzen Lesefragen an
   RunPod.
 - **Der Client schliesst seinen Pool selbst**, weil `app.close()` einen uebergebenen
@@ -274,7 +284,22 @@ Gelesen wird beides in **einer** Anweisung (`db.read_states`, ein `LEFT JOIN`
 offen, keins von beiden heißt unbekannt. Zwei Abfragen nacheinander (erst
 `documents`, dann `inputs`) meldeten ein Dokument, dessen Job genau dazwischen
 fertig wird, fälschlich als unbekannt. Das Warten (`db.wait_for_terminal`) fragt
-Procrastinate nicht und lädt kein `raw`.
+Procrastinate nicht und lädt weder `raw` noch `content`.
+
+**Warten** ist eine Schleife, einmal als sync- und einmal als async-Generator
+(`db.wait_for_terminal`, `db.wait_for_terminal_async`), mit einem gemeinsamen Kern
+ohne Ein- und Ausgabe (`db._Warteplan`). Sie läuft auf einer **eigenen**
+`autocommit`-Verbindung je Aufruf (`application_name` `mineru-ocr wait`), nie aus
+einem Pool (der hebt kein `LISTEN` auf) und nie auf der des Clients (dort wüchse
+der Rückstau an Signalen). Zuerst `LISTEN doc_done`, dann alle offenen in einer
+Anweisung lesen; ein unbekannter Hash wird sofort gemeldet. Die Signale werden mit
+`notifies(timeout=…, stop_after=1)` **ohne `break`** bis zum Ende des Pakets
+gelesen, sonst gehen die übrigen eines Pakets verloren; im Takt
+(`wait_poll_seconds`) werden alle offenen gelesen. Nach einem wiederholbaren
+Abbruch wird neu verbunden und neu angefangen, nach einem Zugangsfehler nicht. Die
+Frist gilt für den ganzen Aufruf, ihr `WaitTimeoutError` (ein `TimeoutError`)
+nennt die offenen Hashes; Frist und Strg-C fassen keinen Job an. Der Client
+(`wait`, `wait_all`, `as_completed`) liefert daraus Hüllen.
 
 „Läuft gerade" wird aus dem Procrastinate-Job **gelesen**, dessen Kennung an der
 Eingabe steht (`inputs.job_id`, `list_jobs(id=…)`), von `OCRClient.document` und

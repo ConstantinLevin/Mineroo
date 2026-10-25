@@ -20,12 +20,17 @@ Die Exit-Codes sind Teil des Vertrags, weil in einer Shell darauf verzweigt wird
     2  Aufruffehler — falsche Argumente oder Schalter; auch ein Pfad, den typer
        schon beim Entgegennehmen ablehnt (etwa eine Datei ohne Leserecht, dann
        wird NICHTS eingereiht). Setzt typer selbst.
-    3  Nur bei `wait` und `markdown`: Das Dokument ist endgueltig, aber NICHT
+    3  Nur bei `wait` und `markdown`: Ein Dokument ist endgueltig, aber NICHT
        erfolgreich (`failed` oder `input_error`). Ein eigener Code, weil das
        weder ein Erfolg noch ein Fehler DES WERKZEUGS ist — das Werkzeug hat
        einwandfrei gearbeitet, das Ergebnis ist nur schlecht. Wer beides auf 1
        wirft, kann in einer Schleife nicht mehr zwischen „kaputtes Dokument" und
        „kaputte Einrichtung" unterscheiden.
+    4  Nur bei `wait`: Nach Ablauf der Frist ist noch ein Dokument offen. Der
+       Aufrufer wartet spaeter erneut; die Dokumente laufen weiter.
+    130 Strg-C (setzt typer). Beendet nur das Warten bzw. den Lauf.
+
+Treffen bei `wait` mehrere zu, gilt der schwerste: 1 vor 4 vor 3 vor 0.
 
 Gesetzt werden sie mit `raise typer.Exit(code=…)`.
 
@@ -65,6 +70,7 @@ from .errors import (
     MineruOcrError,
     TooLargeError,
     UnsupportedTypeError,
+    WaitTimeoutError,
 )
 
 app = typer.Typer(
@@ -488,30 +494,54 @@ def show(
 
 @app.command()
 def wait(
-    target: Annotated[str, typer.Argument(help="Hash oder Pfad.")],
-    timeout: Annotated[float | None, typer.Option(help="Sekunden; ohne Angabe unbegrenzt.")] = None,
+    targets: Annotated[list[str], typer.Argument(help="Hashes oder Pfade.")],
+    timeout: Annotated[float | None, typer.Option(help="Sekunden fuer alle zusammen; ohne Angabe unbegrenzt.")] = None,
+    json_out: Annotated[bool, typer.Option("--json", help="Je Dokument eine JSON-Zeile.")] = False,
 ) -> None:
-    """Wartet, bis ein Dokument endgueltig ist.
+    """Wartet, bis die Dokumente endgueltig sind, und nennt jedes, sobald es das ist.
 
-    Exit-Code 0 bei `done` und `empty`, 3 bei `failed` und `input_error`,
-    1 bei Ablauf der Wartezeit.
+    Ruft `OCRClient.as_completed`: Je Dokument steht eine Zeile auf stdout, sobald
+    es endgueltig ist (`HASH: ZUSTAND`, mit `--json` eine JSON-Zeile mit seinen
+    Angaben, ohne `raw`). Ein gescheitertes beendet das Warten auf die uebrigen
+    nicht. Die Frist gilt fuer alle zusammen; nach ihrem Ablauf nennt stderr die
+    noch offenen. Frist und Strg-C beenden nur das Warten, kein Job wird
+    angefasst.
+
+    Exit-Code: 0, wenn alle `done` oder `empty` sind; 3, wenn eines `failed` oder
+    `input_error` ist; 4, wenn nach Ablauf der Frist noch eines offen ist; 1 bei
+    einem Betriebsfehler (auch ein unbekannter Hash, sofort gemeldet); 130 bei
+    Strg-C. Bei mehreren gilt der schwerste, 1 vor 4 vor 3 vor 0.
     """
+    code = 0
     try:
         with OCRClient(preflight=False) as klient:
-            huelle = klient.wait(_ziel(target), timeout=timeout)
-    except TimeoutError as fehler:
-        _betriebsfehler(fehler)
+            hashes = [_ziel(target) for target in targets]
+            try:
+                for huelle in klient.as_completed(hashes, timeout=timeout):
+                    if json_out:
+                        typer.echo(
+                            json_modul.dumps(huelle.to_dict(), ensure_ascii=False, default=str)
+                        )
+                    else:
+                        typer.echo(f"{huelle.sha256}: {huelle.status.value}")
+                    if not huelle.success:
+                        # Weder ein Erfolg noch ein Fehler DES WERKZEUGS: Es hat
+                        # einwandfrei gearbeitet, das Ergebnis ist nur schlecht.
+                        code = 3
+            except WaitTimeoutError as fehler:
+                # 4 vor 3: Es verlangt eine Handlung (spaeter erneut warten); die
+                # Fehlschlaege stehen ohnehin in den Zeilen.
+                typer.echo(
+                    f"Nach Ablauf der Frist ({timeout} s) noch offen "
+                    f"({len(fehler.pending)}): "
+                    + " ".join(fehler.pending),
+                    err=True,
+                )
+                code = 4
     except MineruOcrError as fehler:
         _betriebsfehler(fehler)
-
-    typer.echo(f"{huelle.sha256}: {huelle.status.value}")
-    if not huelle.success:
-        # Ein eigener Code, weil das weder ein Erfolg noch ein Fehler DES
-        # WERKZEUGS ist: Das Werkzeug hat einwandfrei gearbeitet, das Ergebnis
-        # ist nur schlecht. Wer beides auf 1 wirft, kann in einer Schleife nicht
-        # mehr zwischen „kaputtes Dokument" und „kaputte Einrichtung"
-        # unterscheiden.
-        raise typer.Exit(code=3)
+    if code:
+        raise typer.Exit(code=code)
 
 
 @app.command()

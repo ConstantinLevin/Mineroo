@@ -251,6 +251,148 @@ async def test_gescheitertes_dokument_gibt_drei(
         assert cli.invoke(app, ["markdown", huelle.sha256]).exit_code == 3, zustand
 
 
+async def _endgueltig(
+    async_conn: psycopg.AsyncConnection[Any],
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    dsn: str,
+    name: str,
+    zustand: DocumentStatus,
+) -> OCRWrapper:
+    """Eine Datei mit Endergebnis `zustand`, fuer die Tests von `wait`."""
+    huelle = _anlegen(db_conn, tmp_path, name, dsn)
+    await write_terminal_async(
+        async_conn,
+        sha256=huelle.sha256,
+        status=zustand,
+        raw={"markdown": "Text"},
+        endpoint_id="testendpoint",
+    )
+    return huelle
+
+
+def _offen(db_conn: psycopg.Connection[Any], tmp_path: Path, name: str) -> str:
+    """Eine Datei, deren Eingabe steht und die kein Ergebnis hat: offen."""
+    pfad, sha256 = _datei(tmp_path, name)
+    db.insert_input(db_conn, sha256=sha256, content=pfad.read_bytes())
+    return sha256
+
+
+async def test_wait_wartet_auf_viele_und_gibt_mit_json_je_dokument_eine_zeile(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    """`wait ZIEL…` nimmt Hashes und Pfade. Mit `--json` steht je Dokument eine
+    JSON-Zeile auf stdout, ohne `raw`; alle `done` oder `empty` heisst 0."""
+    fertig = await _endgueltig(
+        async_conn, db_conn, tmp_path, _test_datenbank, "fertig.png", DocumentStatus.DONE
+    )
+    leer = await _endgueltig(
+        async_conn, db_conn, tmp_path, _test_datenbank, "leer.png", DocumentStatus.EMPTY
+    )
+
+    ergebnis = cli.invoke(
+        app, ["wait", fertig.sha256, str(tmp_path / "leer.png"), "--json"]
+    )
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    zeilen = [json.loads(zeile) for zeile in ergebnis.stdout.splitlines()]
+    assert sorted((z["sha256"], z["status"]) for z in zeilen) == sorted(
+        [(fertig.sha256, "done"), (leer.sha256, "empty")]
+    )
+    assert all("raw" not in z for z in zeilen)
+
+
+async def test_wait_ohne_json_nennt_je_dokument_hash_und_zustand(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    fertig = await _endgueltig(
+        async_conn, db_conn, tmp_path, _test_datenbank, "fertig.png", DocumentStatus.DONE
+    )
+    ergebnis = cli.invoke(app, ["wait", fertig.sha256])
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert ergebnis.stdout == f"{fertig.sha256}: done\n"
+
+
+async def test_wait_endet_mit_drei_wenn_eines_scheiterte(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    """Ein gescheitertes Dokument beendet das Warten auf die uebrigen nicht; jedes
+    hat seine Zeile, und der Code ist 3."""
+    fertig = await _endgueltig(
+        async_conn, db_conn, tmp_path, _test_datenbank, "fertig.png", DocumentStatus.DONE
+    )
+    kaputt = await _endgueltig(
+        async_conn, db_conn, tmp_path, _test_datenbank, "kaputt.png", DocumentStatus.INPUT_ERROR
+    )
+
+    ergebnis = cli.invoke(app, ["wait", kaputt.sha256, fertig.sha256, "--json"])
+
+    assert ergebnis.exit_code == 3, ergebnis.output
+    assert len(ergebnis.stdout.splitlines()) == 2
+
+
+async def test_wait_endet_mit_vier_wenn_nach_der_frist_eines_offen_ist(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    """Nach Ablauf der Frist offen schlaegt gescheitert: 4 vor 3, denn 4 verlangt
+    eine Handlung (spaeter erneut warten), die Fehlschlaege stehen in den Zeilen.
+    Die offenen nennt stderr; auf stdout stehen nur die endgueltigen."""
+    kaputt = await _endgueltig(
+        async_conn, db_conn, tmp_path, _test_datenbank, "kaputt.png", DocumentStatus.FAILED
+    )
+    offen = _offen(db_conn, tmp_path, "offen.png")
+
+    ergebnis = cli.invoke(
+        app, ["wait", kaputt.sha256, offen, "--timeout", "0.5", "--json"]
+    )
+
+    assert ergebnis.exit_code == 4, ergebnis.output
+    assert [json.loads(z)["sha256"] for z in ergebnis.stdout.splitlines()] == [kaputt.sha256]
+    assert offen in ergebnis.stderr
+
+
+async def test_wait_betriebsfehler_schlaegt_alles(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+) -> None:
+    """Ein Betriebsfehler — hier ein unbekannter Hash, sofort gemeldet — ist 1,
+    auch wenn ein anderes Dokument nach der Frist offen waere."""
+    offen = _offen(db_conn, tmp_path, "offen.png")
+    ergebnis = cli.invoke(app, ["wait", offen, "f" * 64, "--timeout", "0.5"])
+    assert ergebnis.exit_code == 1
+    assert "f" * 64 in ergebnis.stderr
+
+
+def test_wait_endet_bei_strg_c_mit_130(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    offen = _offen(db_conn, tmp_path, "offen.png")
+
+    def unterbrochen(self: Any, hashes: Any, timeout: Any = None) -> Any:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(client_modul.OCRClient, "as_completed", unterbrochen)
+    ergebnis = cli.invoke(app, ["wait", offen])
+    assert ergebnis.exit_code == 130
+
+
 def test_betriebsfehler_gibt_eins(
     cli: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
