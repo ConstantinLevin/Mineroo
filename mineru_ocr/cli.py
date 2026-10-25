@@ -144,6 +144,14 @@ def _ziel(target: str) -> str:
         ) from fehler
 
 
+def _pfad_zeigen(pfad: str) -> str:
+    """Ein Pfad fuer eine Zeile der Textausgabe. Traegt er ein Zeichen, das sich
+    nicht drucken laesst (etwa einen Zeilenumbruch), erscheint er als
+    Python-Literal: Sonst stuende eine zweite Zeile da, die wie das Ergebnis eines
+    anderen Dokuments aussieht."""
+    return pfad if pfad.isprintable() else repr(pfad)
+
+
 def _lesen(datei: Path) -> bytes:
     """Liest eine Datei, nachdem sie die Vorpruefung bestanden hat.
 
@@ -515,11 +523,10 @@ def wait(
     Frist, die keine Zahl ab null ist; 130 bei Strg-C. Bei mehreren gilt der
     schwerste, 1 vor 4 vor 3 vor 0.
     """
-    if timeout is not None and not timeout >= 0:
-        # `nan` liefe nie ab, eine negative Frist ist ein Irrtum.
-        raise typer.BadParameter(
-            f"Sekunden ab null erwartet, nicht {timeout!r}.", param_hint="--timeout"
-        )
+    try:
+        db.check_wait_timeout(timeout)
+    except ValueError as fehler:
+        raise typer.BadParameter(str(fehler), param_hint="--timeout") from fehler
     code = 0
     try:
         with OCRClient(preflight=False) as klient:
@@ -541,7 +548,10 @@ def wait(
                     else:
                         typer.echo(
                             "  ".join(
-                                [f"{huelle.sha256}: {huelle.status.value}", *pfade[huelle.sha256]]
+                                [
+                                    f"{huelle.sha256}: {huelle.status.value}",
+                                    *map(_pfad_zeigen, pfade[huelle.sha256]),
+                                ]
                             )
                         )
                     if not huelle.success:

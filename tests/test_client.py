@@ -1617,6 +1617,18 @@ def test_wait_all_und_as_completed_nehmen_eine_folge_von_hashes(
         offener_client.as_completed(b"f" * 64)  # type: ignore[arg-type]
 
 
+def test_eine_frist_die_keine_zahl_ab_null_ist_wird_beim_aufruf_abgewiesen(
+    offener_client: OCRClient,
+) -> None:
+    """`nan` liefe nie ab, eine negative Frist ist ein Irrtum. Das sagt der Aufruf
+    selbst, auch bei `as_completed`, nicht erst das erste Weiterschalten."""
+    for frist in (float("nan"), -1.0):
+        with pytest.raises(ValueError, match="Frist"):
+            offener_client.as_completed(["f" * 64], timeout=frist)
+        with pytest.raises(ValueError, match="Frist"):
+            offener_client.wait_all(["f" * 64], timeout=frist)
+
+
 def test_warten_auf_einem_nicht_betretenen_client_wirft_beim_aufruf(
     _test_datenbank: str,
 ) -> None:

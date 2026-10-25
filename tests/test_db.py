@@ -998,7 +998,9 @@ def _nach_der_ersten_lesung(dsn: str, arbeit: Callable[[], object]) -> threading
     durch Neuverbinden heilt; davor ist er ein Betriebsfehler des Aufrufs. Eine
     feste Pause liesse den Test davon abhaengen, wie schnell die Maschine
     verbindet. Gelesen ist, sobald `pg_stat_activity` fuer die Warte-Verbindung
-    die Anweisung ueber `documents` und `inputs` als letzte nennt."""
+    die Anweisung ueber `documents` und `inputs` als letzte nennt und die
+    Verbindung wieder ruht (`idle`): Waehrend die Anweisung laeuft, steht sie dort
+    schon, ist aber noch nicht gelesen."""
 
     def lauf() -> None:
         with psycopg.connect(dsn, autocommit=True) as beobachter:
@@ -1007,7 +1009,7 @@ def _nach_der_ersten_lesung(dsn: str, arbeit: Callable[[], object]) -> threading
                 zeile = beobachter.execute(
                     "SELECT count(*) FROM pg_stat_activity "
                     "WHERE datname = current_database() AND application_name = %s "
-                    "AND query LIKE %s",
+                    "AND state = 'idle' AND query LIKE %s",
                     (WAIT_APPLICATION_NAME, "%LEFT JOIN inputs%"),
                 ).fetchone()
                 if zeile is not None and zeile[0]:
@@ -1395,13 +1397,16 @@ async def test_ein_wiederkehrender_abbruch_haelt_die_frist_und_bestuermt_die_dat
     ein `statement_timeout`, den die Lesung reisst), verbindet die Schleife nicht
     im Leerlauf neu: Vor jedem neuen Versuch wartet sie kurz, und die Frist endet
     das Warten mit `WaitTimeoutError`. Mehr als eine Handvoll Versuche in einer
-    Sekunde waeren ein Sturm auf die Datenbank."""
+    Sekunde waeren ein Sturm auf die Datenbank. Nach Ablauf der Frist beginnt
+    kein Versuch mehr: Er hielte das Warten ueber die Frist hinaus."""
     from mineru_ocr import db
 
     verbindungen = {"n": 0}
     lesungen = {"n": 0}
+    versuche: list[float] = []
 
     def zaehlen() -> None:
+        versuche.append(time.monotonic())
         verbindungen["n"] += 1
         if verbindungen["n"] > 50:
             raise RuntimeError("Sturm: mehr als 50 Verbindungen")
@@ -1440,27 +1445,41 @@ async def test_ein_wiederkehrender_abbruch_haelt_die_frist_und_bestuermt_die_dat
     assert fehler.pending == (HASH,)
     assert time.monotonic() - begonnen < 2.0
     assert verbindungen["n"] <= 5
+    assert max(versuche) < begonnen + 1.0
 
 
 @ARTEN
-async def test_die_frist_begrenzt_auch_das_verbinden(art: str) -> None:
+async def test_die_frist_begrenzt_auch_das_verbinden(
+    art: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Antwortet der Rechner der Datenbank gar nicht (die Route ist weg), haengt
-    das Verbinden nicht bis zur Voreinstellung des Betriebssystems: Die Frist
-    begrenzt es. 192.0.2.1 ist eine Dokumentationsadresse (RFC 5737), unter der
-    niemand antwortet. Das erste Verbinden scheitert, also `DatabaseError`."""
-    ergebnis: dict[str, BaseException | None] = {}
-
-    def lauf() -> None:
-        ergebnis["fehler"] = asyncio.run(
-            _warten(art, "host=192.0.2.1 port=5432 dbname=x user=x", [HASH], timeout=1.0)
-        )[1]
-
-    faden = threading.Thread(target=lauf, daemon=True)
-    faden.start()
-    faden.join(timeout=8.0)
-
-    assert not faden.is_alive(), "das Verbinden haelt die Frist nicht"
-    assert isinstance(ergebnis["fehler"], DatabaseError)
+    das Verbinden nicht bis zur Voreinstellung des Betriebssystems: Es bekommt
+    den Rest der Frist als `connect_timeout` — aber nie mehr als einen kuerzeren,
+    den die Verbindungszeichenkette schon nennt. Ohne Frist bleibt es bei der
+    Verbindungszeichenkette. Das erste Verbinden scheitert hier, also
+    `DatabaseError`."""
+    faelle = [
+        ("dbname=gibtesnicht", 3.0, 3),
+        ("dbname=gibtesnicht connect_timeout=5", 600.0, 5),
+        ("dbname=gibtesnicht connect_timeout=5", 2.0, 2),
+        ("dbname=gibtesnicht connect_timeout=5", None, None),
+        ("dbname=gibtesnicht", float("inf"), None),
+    ]
+    for dsn, frist, erwartet in faelle:
+        protokoll: list[dict[str, Any]] = []
+        with monkeypatch.context() as ersetzt:
+            _warte_verbinden_ersetzen(
+                ersetzt,
+                art,
+                lambda n: psycopg.OperationalError("connection failed: timeout expired"),
+                protokoll=protokoll,
+            )
+            _, fehler = await _warten(art, dsn, [HASH], timeout=frist)
+        assert isinstance(fehler, DatabaseError), (dsn, frist, fehler)
+        assert [angaben.get("connect_timeout") for angaben in protokoll] == [erwartet], (
+            dsn,
+            frist,
+        )
 
 
 @ARTEN
@@ -1499,18 +1518,23 @@ def _warte_verbinden_ersetzen(
     monkeypatch: pytest.MonkeyPatch,
     art: str,
     ersatz: Callable[[int], BaseException | None],
+    *,
+    protokoll: list[dict[str, Any]] | None = None,
 ) -> dict[str, int]:
     """Ersetzt psycopgs Verbinden fuer die Warte-Verbindungen (erkannt an ihrem
     `application_name`): Jeder Versuch wird gezaehlt, und `ersatz(n)` gibt fuer
     den n-ten Versuch den Fehler zurueck, mit dem er scheitert, oder None. Alle
     anderen Verbindungen des Tests gehen unveraendert durch. So laeuft der Fehler
-    durch dieselbe Uebersetzung wie ein echter."""
+    durch dieselbe Uebersetzung wie ein echter. In `protokoll` landen die
+    Angaben jedes Versuchs."""
     aufrufe = {"n": 0}
 
     def pruefen(angaben: dict[str, Any]) -> None:
         if angaben.get("application_name") != WAIT_APPLICATION_NAME:
             return
         aufrufe["n"] += 1
+        if protokoll is not None:
+            protokoll.append(angaben)
         fehler = ersatz(aufrufe["n"])
         if fehler is not None:
             raise fehler
@@ -1680,8 +1704,8 @@ def test_strg_c_beendet_nur_das_warten(
         raise KeyboardInterrupt
 
     bisher = signal.signal(signal.SIGALRM, unterbrechen)
-    begonnen = time.monotonic()
     try:
+        gestellt = time.monotonic()
         signal.setitimer(signal.ITIMER_REAL, 0.5)
         with pytest.raises(KeyboardInterrupt):
             for _ in wait_for_terminal(_test_datenbank, [HASH], poll_seconds=60.0):
@@ -1690,7 +1714,10 @@ def test_strg_c_beendet_nur_das_warten(
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, bisher)
 
-    assert time.monotonic() - begonnen < 2.0
+    # Gemessen ab dem Signal, nicht ab dem Beginn des Wartens: Die Grenze laesst
+    # einer belasteten Maschine Luft und haelt doch „nach Bruchteilen einer
+    # Sekunde".
+    assert time.monotonic() - (gestellt + 0.5) < 0.5
     assert _warte_verbindungen(_test_datenbank) == 0
     assert _bestand(db_conn) == vorher
 
@@ -1716,7 +1743,7 @@ async def test_abbrechen_beendet_nur_das_async_warten(
     with pytest.raises(asyncio.CancelledError):
         await aufgabe
 
-    assert time.monotonic() - begonnen < 1.0
+    assert time.monotonic() - begonnen < 0.5
     assert _warte_verbindungen(_test_datenbank) == 0
     assert _bestand(db_conn) == vorher
 

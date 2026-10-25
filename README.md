@@ -132,7 +132,8 @@ Neun Kommandos gibt es: `setup`, `daemon`, `ocr`, `status`, `show`, `wait`,
 Strg-C). `wait ZIEL… [--timeout S] [--json]` wartet auf viele und schreibt je
 Dokument eine Zeile, sobald es endgültig ist, mit dem Pfad, wenn das Ziel einer war; es endet mit 0, wenn alle `done` oder
 `empty` sind, mit 3, wenn eines `failed` oder `input_error` ist, mit 4, wenn nach
-Ablauf der Frist noch eines offen ist, und mit 1 bei einem Betriebsfehler; bei
+Ablauf der Frist noch eines offen ist, mit 1 bei einem Betriebsfehler und mit 2
+bei einer Frist, die keine Zahl ab null ist; bei
 mehreren gilt der schwerste, 1 vor 4 vor 3 vor 0.
 
 **Pfade kennt nur die CLI.** Sie liest Dateien und Ordner (in Ordnern über das

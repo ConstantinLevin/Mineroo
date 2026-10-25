@@ -38,6 +38,7 @@ from datetime import datetime
 from typing import Any, Final
 
 import psycopg
+import psycopg.conninfo
 import psycopg.sql
 from procrastinate.jobs import Job
 from psycopg.rows import class_row, dict_row
@@ -1487,6 +1488,22 @@ aus der Pause heilt das erneute Lesen. Die Frist kuerzt sie, und ist sie
 abgelaufen, endet das Warten statt des naechsten Versuchs."""
 
 
+def check_wait_timeout(timeout: float | None) -> None:
+    """Prueft eine Frist fuers Warten, an EINER Stelle fuer Schleife, Client und
+    CLI.
+
+    Raises:
+        ValueError: Die Frist ist `nan` (sie liefe nie ab, denn jeder Vergleich
+            damit ist falsch) oder negativ (ein Irrtum des Aufrufers). None heisst
+            unbegrenzt, `inf` ebenso.
+    """
+    if timeout is not None and not timeout >= 0:
+        raise ValueError(
+            f"Die Frist muss eine Zahl von Sekunden ab null sein oder None "
+            f"(unbegrenzt), nicht {timeout!r}."
+        )
+
+
 class _Warteplan:
     """Der Kern der Warteschleife, ohne Ein- und Ausgabe.
 
@@ -1507,13 +1524,7 @@ class _Warteplan:
                 "Erwartet wird eine Folge von Hashes, nicht ein einzelner Hash als "
                 "Zeichenkette: `[sha256]` statt `sha256`."
             )
-        if timeout is not None and not timeout >= 0:
-            # `nan` liefe nie ab (jeder Vergleich damit ist falsch), eine
-            # negative Frist ist ein Irrtum des Aufrufers.
-            raise ValueError(
-                f"Die Frist muss eine Zahl von Sekunden ab null sein oder None "
-                f"(unbegrenzt), nicht {timeout!r}."
-            )
+        check_wait_timeout(timeout)
         self.offen: dict[str, None] = dict.fromkeys(hashes)
         """Die offenen Hashes in der Reihenfolge der Frage, jeder einmal."""
         self.frist = timeout
@@ -1641,7 +1652,9 @@ def _warte_verbindung(
         DatabaseError: Die Instanz antwortet nicht. Wiederholbar.
         ConfigurationError: Der Zugang taugt nicht.
     """
-    return _verbinden(dsn, "Warte-Verbindung oeffnen", **_warte_angaben(connect_timeout))
+    return _verbinden(
+        dsn, "Warte-Verbindung oeffnen", **_warte_angaben(dsn, connect_timeout)
+    )
 
 
 async def _warte_verbindung_async(
@@ -1649,16 +1662,28 @@ async def _warte_verbindung_async(
 ) -> psycopg.AsyncConnection[Any]:
     """Dasselbe wie `_warte_verbindung`, asynchron."""
     return await _verbinden_async(
-        dsn, "Warte-Verbindung oeffnen", **_warte_angaben(connect_timeout)
+        dsn, "Warte-Verbindung oeffnen", **_warte_angaben(dsn, connect_timeout)
     )
 
 
-def _warte_angaben(connect_timeout: int | None) -> dict[str, Any]:
+def _warte_angaben(dsn: str, connect_timeout: int | None) -> dict[str, Any]:
     """Was eine Warte-Verbindung von anderen unterscheidet: ihr Name in
-    `pg_stat_activity` und, mit Frist, die Grenze fuers Verbinden."""
+    `pg_stat_activity` und, mit Frist, die Grenze fuers Verbinden.
+
+    Nennt die Verbindungszeichenkette schon einen kuerzeren `connect_timeout`,
+    bleibt der: Eine Angabe neben der Zeichenkette ginge bei psycopg vor, und
+    eine lange Frist machte sonst aus fuenf Sekunden je Versuch zehn Minuten.
+    """
     angaben: dict[str, Any] = {"application_name": WAIT_APPLICATION_NAME}
-    if connect_timeout is not None:
-        angaben["connect_timeout"] = connect_timeout
+    if connect_timeout is None:
+        return angaben
+    try:
+        vorgabe = int(psycopg.conninfo.conninfo_to_dict(dsn).get("connect_timeout") or 0)
+    except (psycopg.Error, ValueError, TypeError):
+        # Eine Zeichenkette, die sich nicht lesen laesst, meldet das Verbinden
+        # selbst; hier bleibt es beim Rest der Frist.
+        vorgabe = 0
+    angaben["connect_timeout"] = min(connect_timeout, vorgabe) if vorgabe > 0 else connect_timeout
     return angaben
 
 
@@ -1749,6 +1774,8 @@ def wait_for_terminal(
         WaitTimeoutError: Die Frist lief ab; er nennt die noch offenen Hashes.
         DatabaseError: Die Instanz antwortet schon beim ersten Verbinden nicht.
         ConfigurationError: Der Zugang taugt nicht.
+        ValueError: Die Frist ist `nan` oder negativ (`check_wait_timeout`).
+        TypeError: `hashes` ist ein einzelner Hash.
 
     Eine Frist und Strg-C beenden nur das Warten: Die Schleife liest nur und fasst
     nie einen Job oder ein Dokument an. Strg-C kommt nach Bruchteilen einer
@@ -1759,6 +1786,10 @@ def wait_for_terminal(
     """
     plan = _Warteplan(hashes, timeout, poll_seconds)
     while plan.offen:
+        if plan.angefangen and plan.abgelaufen():
+            # Nach einer Pause bis zur Frist kein neuer Versuch: Er hielte das
+            # Warten bis zu seinem `connect_timeout` ueber die Frist hinaus.
+            plan.frist_melden()
         try:
             conn = _warte_verbindung(dsn, connect_timeout=plan.verbindungsfrist())
         except DatabaseError:
@@ -1809,6 +1840,8 @@ async def wait_for_terminal_async(
     """
     plan = _Warteplan(hashes, timeout, poll_seconds)
     while plan.offen:
+        if plan.angefangen and plan.abgelaufen():
+            plan.frist_melden()
         try:
             conn = await _warte_verbindung_async(
                 dsn, connect_timeout=plan.verbindungsfrist()

@@ -357,6 +357,28 @@ async def test_wait_nennt_in_jeder_zeile_den_pfad_ihres_ziels(
     assert json.loads(nur_hash.stdout)["paths"] == []
 
 
+async def test_wait_ein_zeilenumbruch_im_dateinamen_faelscht_keine_zeile(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    """Ein Dateiname darf einen Zeilenumbruch tragen. In der Textausgabe stuende
+    sonst eine zweite Zeile, die wie das Ergebnis eines anderen Dokuments
+    aussieht; ein solcher Pfad erscheint deshalb maskiert, als Python-Literal."""
+    name = "a\n" + "b" * 64 + ": done.png"
+    huelle = await _endgueltig(
+        async_conn, db_conn, tmp_path, _test_datenbank, name, DocumentStatus.DONE
+    )
+    pfad = str(tmp_path / name)
+
+    ergebnis = cli.invoke(app, ["wait", pfad])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert ergebnis.stdout == f"{huelle.sha256}: done  {pfad!r}\n"
+
+
 async def test_wait_endet_mit_drei_wenn_eines_scheiterte(
     cli: CliRunner,
     db_conn: psycopg.Connection[Any],

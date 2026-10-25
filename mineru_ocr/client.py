@@ -851,6 +851,7 @@ class OCRClient:
         Raises:
             DocumentNotFound: Weder Ergebnis noch Eingabe — sofort, nicht nach
                 Ablauf.
+            ValueError: Die Frist ist `nan` oder negativ.
             WaitTimeoutError: Die Zeit lief ab (ein `TimeoutError`); er nennt den
                 Hash. Sagt nichts ueber das Dokument, nur ueber die Geduld.
 
@@ -881,13 +882,14 @@ class OCRClient:
 
         Raises:
             TypeError: `hashes` ist ein einzelner Hash, oder ein Element ist kein
-                Hash (etwa ein Pfad).
+                Hash (etwa ein `Path`).
+            ValueError: Die Frist ist `nan` oder negativ.
             DocumentNotFound: Ein Hash ist unbekannt — sofort.
             WaitTimeoutError: Die Frist lief ab; `pending` nennt die offenen.
 
         Kosten: keine.
         """
-        gefragt = self._hashes_pruefen(hashes)
+        gefragt = self._hashes_pruefen(hashes, timeout)
         fertig = {huelle.sha256: huelle for huelle in self._fertige(gefragt, timeout)}
         return [fertig[sha256] for sha256 in gefragt]
 
@@ -913,17 +915,22 @@ class OCRClient:
 
         Raises:
             TypeError: Sofort beim Aufruf, wie bei `wait_all`.
+            ValueError: Sofort beim Aufruf: Die Frist ist `nan` oder negativ.
             DocumentNotFound: Beim ersten Weiterschalten, wenn ein Hash unbekannt
                 ist — bevor irgendein Dokument geliefert wird.
             WaitTimeoutError: Die Frist lief ab; `pending` nennt die offenen.
 
         Kosten: keine.
         """
-        return self._fertige(self._hashes_pruefen(hashes), timeout)
+        return self._fertige(self._hashes_pruefen(hashes, timeout), timeout)
 
-    def _hashes_pruefen(self, hashes: Sequence[str]) -> list[str]:
-        """Die gefragten Hashes als Liste; weist einen einzelnen Hash und Pfade
-        ab, und prueft, dass der Client betreten ist."""
+    def _hashes_pruefen(
+        self, hashes: Sequence[str], timeout: float | None
+    ) -> list[str]:
+        """Die gefragten Hashes als Liste; weist einen einzelnen Hash, Pfade und
+        eine unbrauchbare Frist ab, und prueft, dass der Client betreten ist —
+        alles beim Aufruf, auch fuer den Iterator von `as_completed`."""
+        db.check_wait_timeout(timeout)
         if isinstance(hashes, (str, bytes)) or not isinstance(hashes, Iterable):
             raise TypeError(
                 "Erwartet wird eine Folge von Hashes, nicht "

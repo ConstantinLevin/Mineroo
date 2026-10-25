@@ -127,7 +127,8 @@ JSON-Zeile ohne `raw`); war ein Ziel ein Pfad, nennt die Zeile ihn mit (in JSON
 werden. Exit-Code 0, wenn alle `done` oder `empty` sind; 3, wenn
 eines `failed` oder `input_error` ist; **4, wenn nach Ablauf der Frist noch eines
 offen ist** (die offenen nennt stderr); 1 bei einem Betriebsfehler, auch einem
-unbekannten Hash; 130 bei Strg-C. Bei mehreren gilt der schwerste, 1 vor 4 vor 3
+unbekannten Hash; 2 bei einer Frist, die keine Zahl ab null ist (`nan`, negativ);
+130 bei Strg-C. Bei mehreren gilt der schwerste, 1 vor 4 vor 3
 vor 0: 4 verlangt vom Aufrufer eine Handlung (später erneut warten), die
 Fehlschläge stehen ohnehin in den Zeilen.
 
