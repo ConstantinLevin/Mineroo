@@ -1477,8 +1477,11 @@ async def test_zweites_signal_beendet_den_daemon_auch_wenn_das_failed_schreiben_
         assert not lauf.done()
         os.kill(os.getpid(), signal_modul.SIGTERM)
 
+        # `await lauf` und nicht `asyncio.wait`: Ein Daemon, der beim
+        # Herunterfahren mit einem Fehler endet, soll den Test scheitern lassen
+        # und nicht als sauberes Ende durchgehen.
         async with asyncio.timeout(8.0):
-            await asyncio.wait([lauf])
+            await lauf
 
         # Wie `asyncio.run` beim Abbau des Prozesses: Was dann noch laeuft (in
         # der Nachfrist bleibt der Job-Task zurueck), wird EINMAL abgebrochen

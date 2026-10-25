@@ -134,3 +134,44 @@ async def test_zwei_abbrueche_vor_dem_warten_lassen_die_arbeit_nicht_anlaufen() 
         await asyncio.wait_for(lauf, timeout=5)
     await asyncio.sleep(0)
     assert not begonnen.is_set()
+
+
+async def test_nach_dem_zweiten_abbruch_wird_aufs_aufraeumen_nur_befristet_gewartet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Haelt die Arbeit auch ihren eigenen Abbruch hin (psycopg wartet danach
+    auf die Antwort des Servers, und ein unerreichbarer Server antwortet nie),
+    kommt der zweite Abbruch nach `AUFRAEUMFRIST_SEKUNDEN` trotzdem heraus.
+    Ohne Frist hielte das den Daemon trotz des zweiten Signals fest."""
+    from mineru_ocr import abbruch
+
+    monkeypatch.setattr(abbruch, "AUFRAEUMFRIST_SEKUNDEN", 0.2)
+    begonnen = asyncio.Event()
+    freigabe = asyncio.Event()
+
+    innere: list[asyncio.Task[None]] = []
+
+    async def arbeit() -> None:
+        aufgabe = asyncio.current_task()
+        assert aufgabe is not None
+        innere.append(aufgabe)
+        begonnen.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await freigabe.wait()  # raeumt erst auf, wenn der Server antwortet
+            raise
+
+    lauf = asyncio.ensure_future(abwarten_bis_zum_zweiten_abbruch(arbeit()))
+    await begonnen.wait()
+    lauf.cancel()
+    await asyncio.sleep(0)
+    lauf.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(lauf), timeout=2)
+        # Herausgekommen, obwohl die Arbeit noch aufraeumt.
+        assert not innere[0].done()
+    finally:
+        freigabe.set()
+        await asyncio.wait([lauf, *innere])
