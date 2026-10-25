@@ -1622,15 +1622,18 @@ async def test_document_meldet_endzustand_offen_samt_job_und_unbekannt_ohne_raw(
     unterscheidet, das noch dauert: Endzustand, oder offen mit dem Zustand seines
     Jobs (wartet, laeuft, ohne Ergebnis beendet), oder unbekannt. `raw` wird
     dabei nie gelesen."""
-    gelesen: list[bool] = []
-    echtes_lesen = db.get_document
+    # Mitgeschrieben wird an der Grenze zur Datenbank, nicht an einer Funktion
+    # von `db`: Welche Funktion `document()` benutzt, ist seine Sache, ob eine
+    # Anweisung die Spalte `raw` liest, nicht.
+    anweisungen: list[str] = []
+    echt = psycopg.Cursor.execute
 
-    def merkt(conn: Any, sha256: str, *, with_raw: bool = True) -> Any:
-        gelesen.append(with_raw)
-        return echtes_lesen(conn, sha256, with_raw=with_raw)
+    def mitschreiben(self: Any, query: Any, *args: Any, **kwargs: Any) -> Any:
+        anweisungen.append(str(query))
+        return echt(self, query, *args, **kwargs)
 
     h = _abschicken(offener_client, "nachsehen")
-    monkeypatch.setattr(db, "get_document", merkt)
+    monkeypatch.setattr(psycopg.Cursor, "execute", mitschreiben)
 
     wartet = offener_client.document(h)
     assert wartet.phase is Phase.WAITING
@@ -1659,7 +1662,13 @@ async def test_document_meldet_endzustand_offen_samt_job_und_unbekannt_ohne_raw(
 
     with pytest.raises(DocumentNotFound):
         offener_client.document("e" * 64)
-    assert not any(gelesen), "document() hat raw gelesen"
+    lesend = [a for a in anweisungen if "documents" in a]
+    assert lesend, "document() hat documents gar nicht gelesen"
+    for anweisung in lesend:
+        ohne_platzhalter = anweisung.replace("NULL::jsonb AS raw", "").replace(
+            "raw_loaded", ""
+        )
+        assert "raw" not in ohne_platzhalter, f"document() liest raw: {anweisung}"
 
 
 async def test_retry_failed_nimmt_nur_failed(
