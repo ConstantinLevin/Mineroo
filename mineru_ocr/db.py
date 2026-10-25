@@ -238,9 +238,11 @@ class Phase(enum.Enum):
 
     Der seltene Fall: harter Abschuss im Schreibfenster, oder Abbruch beim
     Herunterfahren (`aborted`). Er ist KEIN Datenfehler, sondern genau der
-    Zustand, den das Ein-Buch-Modell erwartet — und er heilt von selbst: Beim
-    naechsten Einreihen laeuft das Dokument schlicht von vorn. „es wird dann
-    ncohmal und das wars wenns nicht fertig ist ists gefailed" (Plan 2.4).
+    Zustand, den das Ein-Buch-Modell erwartet. Einreihen heilt ihn NICHT:
+    `OCRClient.ocr_start` fasst eine vorhandene Zeile `new` nicht an, sie gilt als
+    unterwegs. Den Rueckweg (Wiedervorlage auf Procrastinates Weg) bringt das
+    Ticket #26. „es wird dann ncohmal und das wars wenns nicht fertig ist ists
+    gefailed" (Plan 2.4).
     """
 
 

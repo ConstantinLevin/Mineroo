@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
-from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
 from datetime import datetime
 from types import TracebackType
 from typing import Any, Final, TypeVar, overload
@@ -55,6 +55,15 @@ das SAGT: auf diesem Logger, nicht per Ausnahme. Die Kommandozeile leitet die
 Warnungen des Pakets auf stderr (`cli._FehlerAusgabe`)."""
 
 T = TypeVar("T")
+
+
+def _nimmt_bytes(wert: object) -> str:
+    """Die Meldung, wenn `ocr_start` etwas anderes als Bytes bekommt."""
+    return (
+        f"ocr_start nimmt Bytes, nicht {type(wert).__name__}. "
+        f"Pfade und Text kennt die Bibliothek nicht: Wer eine Datei "
+        f"abschicken will, liest sie und reicht ihre Bytes herein."
+    )
 
 
 class _SchonUnterwegs(Exception):
@@ -645,14 +654,20 @@ class OCRClient:
         Kosten: keine unmittelbar. Mittelbar: alles, was der Daemon danach tut.
         """
         einzeln = isinstance(data, bytes)
-        dokumente: list[bytes] = [data] if isinstance(data, bytes) else list(data)
+        if isinstance(data, bytes):
+            dokumente: list[bytes] = [data]
+        elif isinstance(data, (str, bytearray, memoryview)) or not isinstance(
+            data, Iterable
+        ):
+            # Eine Zeichenkette, ein Puffer oder ein Pfad ist KEINE Folge von
+            # Dokumenten; `list(...)` machte aus einem `bytearray` eine Liste
+            # von Zahlen und aus einem Pfad eine unverstaendliche Meldung.
+            raise TypeError(_nimmt_bytes(data))
+        else:
+            dokumente = list(data)
         for dokument in dokumente:
             if not isinstance(dokument, bytes):
-                raise TypeError(
-                    f"ocr_start nimmt Bytes, nicht {type(dokument).__name__}. "
-                    f"Pfade und Text kennt die Bibliothek nicht: Wer eine Datei "
-                    f"abschicken will, liest sie und reicht ihre Bytes herein."
-                )
+                raise TypeError(_nimmt_bytes(dokument))
         # ERST ALLES PRUEFEN, DANN EINREIHEN.
         vorbereitet = [core.prepare(dokument, self._settings) for dokument in dokumente]
 
@@ -828,8 +843,9 @@ class OCRClient:
         von 3.9.0 belegt und fuer 3.10.0 unveraendert, Feature-Verifikation Punkt 19):
 
         Es nimmt nur Jobs in `doing` oder `failed`. Ein `aborted`-Job — etwa vom
-        Herunterfahren — wird ABGEWIESEN. Sein Heilungsweg ist `ocr_start`, nicht
-        diese Methode; deshalb ueberspringt sie solche Dokumente und zaehlt sie
+        Herunterfahren — wird ABGEWIESEN. Sein Heilungsweg ist nicht diese Methode
+        (`ocr_start` fasst eine vorhandene Zeile `new` nicht an; den Rueckweg bringt
+        das Ticket #26); deshalb ueberspringt sie solche Dokumente und zaehlt sie
         im Rueckgabewert nicht mit, statt sie mit einer Ausnahme aufzuhalten.
 
         Und jede Wiedervorlage erhoeht `attempts`. Ein Retry von Hand auf einen
@@ -886,7 +902,8 @@ class OCRClient:
                 # NUR Procrastinates eigene Ablehnung wird uebergangen.
                 # Ein `aborted`-Job wird vom Werkzeug ABGEWIESEN (am
                 # Objekt belegt, Feature-Verifikation Punkt 19). Sein
-                # Heilungsweg ist `ocr_start`, nicht diese Methode —
+                # Heilungsweg ist nicht diese Methode (den Rueckweg
+                # bringt #26; `ocr_start` fasst die Zeile nicht an) —
                 # also uebergehen und NICHT mitzaehlen, statt mit einer
                 # Ausnahme den ganzen Stapel aufzuhalten.
                 #
@@ -1043,6 +1060,11 @@ class OCRClient:
 
     def _zeile(self, sha256: str) -> db.DocumentRow:
         """Die Zeile zu einem Hash, ohne `raw` — oder `DocumentNotFound`."""
+        if not isinstance(sha256, str):
+            raise TypeError(
+                f"Angenommen wird der sha256 als Zeichenkette, nicht "
+                f"{type(sha256).__name__}. Pfade kennt die Bibliothek nicht."
+            )
         zeile = db.get_document(self.conn, sha256, with_raw=False)
         if zeile is None:
             raise DocumentNotFound(

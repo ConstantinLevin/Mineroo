@@ -14,8 +14,7 @@ import pytest
 from psycopg_pool import NullConnectionPool
 
 from mineru_ocr import client as client_modul
-from mineru_ocr import config, core, tasks
-from mineru_ocr import db as db_modul
+from mineru_ocr import config, core, db, tasks
 from mineru_ocr.client import OCRClient
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, write_terminal_async
@@ -174,7 +173,7 @@ def _lebendigkeit_unlesbar(monkeypatch: pytest.MonkeyPatch) -> None:
         except OSError as ursache:
             raise DatabaseError("procrastinate_workers sieht anders aus") from ursache
 
-    monkeypatch.setattr(db_modul, "worker_heartbeats", kaputt)
+    monkeypatch.setattr(db, "worker_heartbeats", kaputt)
 
 
 def _warnungen_des_clients(caplog: pytest.LogCaptureFixture) -> int:
@@ -860,6 +859,63 @@ def test_status_meldet_den_daemon_als_unbekannt_wenn_die_lebendigkeit_nicht_lesb
     assert "documents" in uebersicht
 
 
+def test_ocr_start_warnt_ohne_daemon_nur_einmal_je_client(
+    offener_client: OCRClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Die Kommandozeile ruft `ocr_start` je Datei; dieselbe Warnung dreissigtausend
+    Mal liesse die eigentlichen Meldungen darin untergehen. Der Client sagt es
+    einmal."""
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        offener_client.ocr_start(_png("a"))
+        offener_client.ocr_start(_png("b"))
+        offener_client.ocr_start([_png("c"), _png("d")])
+
+    assert caplog.text.count("kein Daemon") == 1
+
+
+def test_ocr_start_wenn_ein_anderer_schneller_war_legt_nichts_an(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zwischen dem Nachsehen und dem Anlegen kann ein anderer Aufrufer dasselbe
+    Dokument anlegen. Dann ist es unterwegs, und dieser Aufruf fasst weder die
+    Eingabe noch einen Job an."""
+    echtes_anlegen = db.insert_document
+
+    def anderer_war_schneller(_conn: Any, **angaben: Any) -> bool:
+        echtes_anlegen(db_conn, **angaben)  # der andere, auf seiner Verbindung
+        return False
+
+    monkeypatch.setattr(db, "insert_document", anderer_war_schneller)
+
+    gereicht = offener_client.ocr_start(_png("rennen"))
+
+    assert gereicht.queued is False
+    assert gereicht.status is DocumentStatus.NEW
+    assert _zaehlen(db_conn, "documents") == 1
+    assert _zaehlen(db_conn, "inputs") == 0
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 0
+
+
+def test_ocr_start_wenn_der_job_schon_besteht_rollt_alles_zurueck(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Besteht zum Hash schon ein Job (`queueing_lock`), wird Zeile und Eingabe
+    dieses Aufrufs nicht stehen gelassen: sonst gaebe es eine Zeile `new`, die
+    niemand je anfasst."""
+    monkeypatch.setattr(tasks, "enqueue_document", lambda *_a, **_k: False)
+
+    gereicht = offener_client.ocr_start(_png("schon da"))
+
+    assert gereicht.queued is False
+    assert gereicht.status is DocumentStatus.NEW
+    assert _zaehlen(db_conn, "documents") == 0
+    assert _zaehlen(db_conn, "inputs") == 0
+
+
 def test_ocr_start_warnt_nicht_bei_laufendem_daemon(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
@@ -1145,6 +1201,25 @@ def test_ocr_start_weist_pfade_und_text_ab_statt_sie_zu_lesen(
     with pytest.raises(TypeError, match="Bytes"):
         offener_client.ocr_start([_png("gut"), "scan.pdf"])  # type: ignore[list-item]
     assert _zaehlen(db_conn, "documents") == 0
+
+
+@pytest.mark.parametrize(
+    "falsch", [Path("scan.pdf"), None, 5, bytearray(b"x"), memoryview(b"x")]
+)
+def test_ocr_start_nennt_bei_jedem_falschen_typ_dieselbe_klare_auskunft(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any], falsch: Any
+) -> None:
+    """Auch ein Pfad, `None`, eine Zahl oder ein veraenderlicher Puffer gibt die
+    Auskunft „nimmt Bytes", nicht ein „nicht iterierbar" oder eine Liste von
+    Zahlen."""
+    with pytest.raises(TypeError, match="ocr_start nimmt Bytes"):
+        offener_client.ocr_start(falsch)
+    assert _zaehlen(db_conn, "documents") == 0
+
+
+def test_get_nimmt_einen_hash_und_keinen_pfad(offener_client: OCRClient) -> None:
+    with pytest.raises(TypeError, match="sha256"):
+        offener_client.get(Path("scan.pdf"))  # type: ignore[arg-type]
 
 
 def test_die_bibliothek_kennt_keine_pfade() -> None:

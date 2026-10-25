@@ -260,10 +260,10 @@ async def process_document(
         asyncio.CancelledError: Der Daemon faehrt herunter. Wird weitergeworfen,
             nicht verschluckt; vorher geht `/cancel` fuer den RunPod-Job hinaus,
             auf den gerade gewartet wird. Der Job endet dann `aborted`, die
-            Zeile bleibt `new`, und das Dokument laeuft beim naechsten
-            Einreihen von vorn. Es gibt fuer `aborted` ausdruecklich kein
-            Retry-Bordmittel (Feature-Verifikation Punkt 19) — das erneute
-            Einreihen IST der Heilungsweg.
+            Zeile bleibt `new`. Es gibt fuer `aborted` ausdruecklich kein
+            Retry-Bordmittel (Feature-Verifikation Punkt 19), und `ocr_start`
+            fasst eine vorhandene Zeile `new` nicht an — den Rueckweg bringt
+            das Ticket #26.
 
     Endet das Warten auf einen Job mit einem Fehler, bei dem er bei RunPod
     weiterlaufen kann (jeder ausser der Zeitueberschreitung, nach der der Client
