@@ -1284,14 +1284,52 @@ async def test_die_schemapruefung_beim_start_haelt_die_ereignisschleife_nicht_an
     hielte eine haengende Datenbank die ganze Schleife an, und kein
     `wait_for` und kein Abbruch kaemen durch."""
 
+    import threading
+
+    freigabe = threading.Event()
+    zurueck = threading.Event()
+
     def haengt(_conn: Any) -> None:
-        time.sleep(1.0)
+        freigabe.wait(10)
+        zurueck.set()
 
     monkeypatch.setattr(db, "check_schema", haengt)
-    beginn = time.monotonic()
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(daemon.run(int_settings), timeout=0.1)
-    assert time.monotonic() - beginn < 0.8
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(daemon.run(int_settings), timeout=0.1)
+        # Ohne Uhr: Der Abbruch kam durch, waehrend die Pruefung noch haengt.
+        assert not zurueck.is_set()
+    finally:
+        freigabe.set()
+    assert zurueck.wait(10)
+
+
+async def test_die_schemapruefung_beim_start_hat_eine_frist(
+    int_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ein abgebrochener Start laesst den Faden der Pruefung weiterlaufen, bis die
+    Datenbank antwortet; ohne Frist hinge er (und `asyncio.run` beim Beenden)
+    so lange wie die Datenbank. Verbindungsaufbau und Abfragen sind begrenzt."""
+    gesehen: dict[str, Any] = {}
+    echtes_verbinden = db.connect
+
+    def verbinden(dsn: str) -> Any:
+        gesehen["connect_timeout"] = psycopg.conninfo.conninfo_to_dict(dsn).get(
+            "connect_timeout"
+        )
+        return echtes_verbinden(dsn)
+
+    def pruefen(conn: Any) -> None:
+        zeile = conn.execute("SHOW statement_timeout").fetchone()
+        gesehen["statement_timeout"] = zeile[0] if zeile else None
+        raise DatabaseError("Abbruch nach dem Nachsehen")
+
+    monkeypatch.setattr(db, "connect", verbinden)
+    monkeypatch.setattr(db, "check_schema", pruefen)
+    with pytest.raises(DatabaseError):
+        await asyncio.wait_for(daemon.run(int_settings), timeout=10)
+    assert gesehen["connect_timeout"] == str(daemon.SCHEMA_PRUEFUNG_FRIST_SEKUNDEN)
+    assert gesehen["statement_timeout"] == f"{daemon.SCHEMA_PRUEFUNG_FRIST_SEKUNDEN}s"
 
 
 def test_main_uebersetzt_in_exit_codes(int_settings: Settings) -> None:

@@ -6,6 +6,7 @@ verzweigt wird. Eine Zusage ohne Test ist eine Absichtserklärung.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import inspect
 import json
@@ -166,6 +167,35 @@ def test_preflight_laeuft_auch_auf_einer_alten_tabelle(
     `documents` noch `inputs`, also haelt ihn deren Form nicht auf."""
     ergebnis = cli.invoke(app, ["preflight"])
     assert ergebnis.exit_code == 0, ergebnis.output
+
+
+def test_preflight_laeuft_auch_vor_setup(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    _test_datenbank: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Vor `setup` fehlen `documents`, `inputs` und Procrastinates Tabellen.
+    `preflight` laeuft trotzdem durch: Ob ein Daemon lebt, ist dann „nicht
+    pruefbar", kein Abbruch. Das leere Schema stellt eine Datenbank ohne
+    `setup` dar."""
+    db_conn.execute("CREATE SCHEMA IF NOT EXISTS leer_fuer_preflight")
+    leer = _test_datenbank + " options='-csearch_path=leer_fuer_preflight'"
+    bisher = Settings.load  # schon von `cli` auf die Test-Datenbank gebogen
+
+    def auf_leeres_schema(**angaben: Any) -> Settings:
+        return dataclasses.replace(bisher(**angaben), db_dsn=leer)
+
+    monkeypatch.setattr(Settings, "load", staticmethod(auf_leeres_schema))
+    try:
+        ergebnis = cli.invoke(app, ["preflight", "--json"])
+    finally:
+        db_conn.execute("DROP SCHEMA leer_fuer_preflight")
+    assert ergebnis.exit_code == 0, ergebnis.output
+    (daemon_punkt,) = [
+        e for e in json.loads(ergebnis.stdout)["checks"] if e["punkt"] == "daemon"
+    ]
+    assert daemon_punkt["bewertung"] == "nicht_pruefbar"
 
 
 async def test_fertiges_dokument_gibt_null(

@@ -260,7 +260,7 @@ class OCRClient:
             min_balance_start_usd=min_balance,
         )
         self._preflight_gewuenscht = preflight
-        self._schema_pruefen = schema_check
+        self._schema_pruefung_gewuenscht = schema_check
         self._conn: psycopg.Connection[Any] | None = None
         self._app: procrastinate.App | None = None
         self._pool: NullConnectionPool[psycopg.Connection[Any]] | None = None
@@ -278,7 +278,7 @@ class OCRClient:
             # Ein fehlendes Schema oder eine Tabelle aus der Zeit vor dem letzten
             # Update meldet sich hier mit dem Weg, den die Meldung nennt, nicht
             # spaeter als `UndefinedTable` oder `ValueError` beim Lesen.
-            if self._schema_pruefen:
+            if self._schema_pruefung_gewuenscht:
                 db.check_schema(self._conn)
             # Ein Pool OHNE stehende Verbindungen (`NullConnectionPool`,
             # `max_size=1`, ein Hintergrund-Faden): Er hat nichts auf Vorrat und

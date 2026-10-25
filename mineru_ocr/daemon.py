@@ -33,7 +33,9 @@ import asyncio
 import logging
 import signal
 from collections.abc import Awaitable, Sequence
-from typing import Any, TypeVar
+from typing import Any, Final, TypeVar
+
+import psycopg
 
 from . import config, db, tasks
 from .config import Settings
@@ -46,9 +48,20 @@ Schliessen der Betriebsmittel (liefert nichts) — daher generisch."""
 log = logging.getLogger("mineru_ocr.daemon")
 
 
+SCHEMA_PRUEFUNG_FRIST_SEKUNDEN: Final = 10
+"""Frist fuer Verbindungsaufbau und jede Abfrage der Schemapruefung beim Start.
+
+Die Pruefung laeuft in einem Faden, damit eine haengende Datenbank die Schleife
+nicht anhaelt. Einen Faden kann ein Abbruch aber nicht beenden: Ohne Frist liefe
+er weiter, solange die Datenbank schweigt, und `asyncio.run` wartete beim
+Beenden auf ihn. Mit Frist endet er spaetestens danach mit einem Fehler."""
+
+
 def _schema_pruefen(dsn: str) -> None:
     """`db.check_schema` auf einer eigenen kurzen Verbindung, fuer den Start."""
-    with db.connect(dsn) as conn:
+    frist = SCHEMA_PRUEFUNG_FRIST_SEKUNDEN
+    with db.connect(psycopg.conninfo.make_conninfo(dsn, connect_timeout=frist)) as conn:
+        conn.execute(f"SET statement_timeout = '{frist}s'")
         db.check_schema(conn)
 
 
@@ -142,8 +155,8 @@ async def run(
     # Ebenso vorher: Auf einer Tabelle aus der Zeit vor dem letzten Update
     # scheiterte jeder offene Job beim Nachsehen an `DocumentStatus('new')` und
     # endete ohne Ergebnis. Eine kurze synchrone Verbindung, einmal beim Start,
-    # in einem Faden: Haengt die Datenbank, steht sonst die ganze Schleife, und
-    # kein Abbruch kaeme durch.
+    # in einem Faden: Haengt die Datenbank, steht sonst die ganze Schleife. Der
+    # Faden selbst endet spaetestens nach `SCHEMA_PRUEFUNG_FRIST_SEKUNDEN`.
     await asyncio.to_thread(_schema_pruefen, settings.db_dsn)
     app = tasks.build_daemon_app(settings)
     mittel = tasks.worker_context_resources(settings)
