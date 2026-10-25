@@ -1862,8 +1862,13 @@ def test_ocr_weist_eine_folge_von_dokumenten_ab_bevor_es_einreiht(
         offener_client.ocr([_png("a"), _png("b")])  # type: ignore[arg-type]
     # Ein Pfad oder Text ist kein „viele“: Die Meldung sagt, dass die Bibliothek
     # keine Pfade kennt, wie bei `ocr_start`.
-    for falsch in (Path("scan.pdf"), "scan.pdf", bytearray(b"%PDF")):
-        with pytest.raises(TypeError, match="Pfade"):
+    for falsch in (
+        Path("scan.pdf"),
+        "scan.pdf",
+        bytearray(b"%PDF"),
+        memoryview(b"%PDF"),
+    ):
+        with pytest.raises(TypeError, match=r"^ocr nimmt Bytes, nicht .*Pfade"):
             offener_client.ocr(falsch)  # type: ignore[arg-type]
     for tabelle in ("documents", "inputs", "procrastinate_jobs"):
         assert _zaehlen(db_conn, tabelle) == 0, tabelle
@@ -2746,6 +2751,8 @@ async def test_async_ocr_weist_eine_folge_von_dokumenten_ab_bevor_es_einreiht(
     eingereiht und dann abgewiesen (Mineroo#24)."""
     with pytest.raises(TypeError, match="wait_all"):
         await offener_async_client.ocr([_png("a"), _png("b")])  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match=r"^ocr nimmt Bytes, nicht .*Pfade"):
+        await offener_async_client.ocr(Path("scan.pdf"))  # type: ignore[arg-type]
     for tabelle in ("documents", "inputs", "procrastinate_jobs"):
         assert _zaehlen(db_conn, tabelle) == 0, tabelle
 
