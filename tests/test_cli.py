@@ -273,8 +273,10 @@ def test_falsches_argument_gibt_zwei(cli: CliRunner) -> None:
     """Unbekannter Pfad, fehlendes Argument: 2 (von typer gesetzt)."""
     assert cli.invoke(app, ["show"]).exit_code == 2
     assert cli.invoke(app, ["gibtesnicht"]).exit_code == 2
-    # Und `retry` ohne Ziel UND ohne `--failed`: nicht klar, was gemeint ist.
+    # Und `retry` ohne Ziel UND ohne `--all`, oder mit beidem: nicht klar, was
+    # gemeint ist.
     assert cli.invoke(app, ["retry"]).exit_code == 2
+    assert cli.invoke(app, ["retry", "a" * 64, "--all"]).exit_code == 2
 
 
 async def test_markdown_gibt_bei_misserfolg_nichts_aus(
@@ -431,10 +433,13 @@ def test_kommandonamen_folgen_der_python_flaeche() -> None:
 
     for name in ("status", "wait", "preflight"):
         assert hasattr(OCRClient, name), name
-    # `ocr` heisst wie `OCRClient.ocr` und `ocr_start`, `retry` wie `retry_failed`.
+    # `ocr` heisst wie `OCRClient.ocr` und `ocr_start`, `retry` wie `retry` und
+    # `retry_all`.
     assert hasattr(OCRClient, "ocr")
     assert hasattr(OCRClient, "ocr_start")
-    assert hasattr(OCRClient, "retry_failed")
+    assert hasattr(OCRClient, "retry")
+    assert hasattr(OCRClient, "retry_all")
+    assert not hasattr(OCRClient, "retry_failed")
 
 
 async def test_hash_und_pfad_werden_gleich_aufgeloest(
@@ -1217,13 +1222,12 @@ async def test_retry_fragt_vor_dem_geldausgeben(
     _test_datenbank: str,
     tmp_path: Path,
 ) -> None:
-    """`retry` sagt, um wie viele Dokumente es geht, und fragt nach.
+    """`retry` fragt nach, bevor es Geld ausgibt, und sagt danach, was es tat.
 
     Jedes wieder vorgelegte Dokument wird VOLLSTAENDIG neu verarbeitet und neu
     bezahlt. Ein Kommando, das das ohne Rueckfrage tut, gibt fremdes Geld aus.
 
-    Und die Gegenprobe im selben Test: Wird die Frage verneint, passiert NICHTS
-    — kein halber Lauf, keine Teilmenge.
+    Und die Gegenprobe im selben Test: Wird die Frage verneint, passiert NICHTS.
     """
     datei, sha = _datei(tmp_path, "teuer.png")
     cli.invoke(app, ["ocr", str(datei)])
@@ -1232,50 +1236,82 @@ async def test_retry_fragt_vor_dem_geldausgeben(
         async_conn, sha256=sha, status=DocumentStatus.FAILED, raw={}, endpoint_id="testendpoint"
     )
 
-    verneint = cli.invoke(app, ["retry", sha], input="n\n")
+    verneint = cli.invoke(app, ["retry", str(datei)], input="n\n")
     assert verneint.exit_code == 0
-    assert "KOSTET" in verneint.output or "kostet Geld" in verneint.output
-    # Nichts passiert: Der Job steht unveraendert auf `failed`.
+    assert "kostet Geld" in verneint.output
+    # Nichts passiert: Der Job steht unveraendert auf `failed`, das Ergebnis auch.
     zustand = db_conn.execute(
         "SELECT status FROM procrastinate_jobs WHERE lock = %s", (sha,)
     ).fetchone()
     assert zustand is not None and zustand[0] == "failed"
+    assert _status(db_conn, sha) == "failed"
 
-    bejaht = cli.invoke(app, ["retry", sha], input="j\ny\n")
-    assert bejaht.exit_code == 0
+    bejaht = cli.invoke(app, ["retry", str(datei)], input="y\n")
+    assert bejaht.exit_code == 0, bejaht.output
+    assert f"{sha} zurueckgesetzt" in bejaht.stdout
     zustand = db_conn.execute(
         "SELECT status FROM procrastinate_jobs WHERE lock = %s", (sha,)
     ).fetchone()
     assert zustand is not None and zustand[0] == "todo"
+    assert _status(db_conn, sha) is None
 
 
-async def test_retry_mit_yes_fragt_nicht(
+def _status(conn: psycopg.Connection[Any], sha: str) -> str | None:
+    zeile = conn.execute("SELECT status FROM documents WHERE sha256 = %s", (sha,)).fetchone()
+    return None if zeile is None else str(zeile[0])
+
+
+def test_retry_mit_yes_fragt_nicht_und_ein_offenes_dokument_ist_unterwegs(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """`--yes` ist der ausdrueckliche Verzicht auf die Rueckfrage — fuer Skripte.
+    Ein offenes Dokument, dessen Job wartet, meldet `retry` als unterwegs und
+    endet mit 0; ein Fehler ist das nicht."""
+    datei, sha = _datei(tmp_path, "skript.png")
+    cli.invoke(app, ["ocr", str(datei)])
+
+    ergebnis = cli.invoke(app, ["retry", sha, "--yes"])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert "Fortfahren" not in ergebnis.output
+    assert f"{sha} unterwegs" in ergebnis.stdout
+    assert _jobs(db_conn) == 1
+
+
+async def test_retry_all_nimmt_jedes_dokument_ohne_gueltiges_ergebnis(
     cli: CliRunner,
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],
-    _test_datenbank: str,
     tmp_path: Path,
 ) -> None:
-    """`--yes` ist der ausdrueckliche Verzicht auf die Rueckfrage — fuer Skripte.
-
-    Ausdruecklich und nicht als Voreinstellung: Wer ihn setzt, hat die Frage
-    schon beantwortet.
-    """
-    datei, sha = _datei(tmp_path, "skript.png")
-    cli.invoke(app, ["ocr", str(datei)])
-    db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
+    """`--all` laesst die Bibliothek auswaehlen: jedes Dokument ohne gueltiges
+    Ergebnis. Gefragt wird einmal, ohne Anzahl, und danach stehen die Zahlen je
+    Ausgang da."""
+    gescheitert_datei, gescheitert = _datei(tmp_path, "gescheitert.png")
+    abgesagt_datei, abgesagt = _datei(tmp_path, "abgesagt.png")
+    for datei in (gescheitert_datei, abgesagt_datei):
+        cli.invoke(app, ["ocr", str(datei)])
     await write_terminal_async(
-        async_conn, sha256=sha, status=DocumentStatus.FAILED, raw={}, endpoint_id="testendpoint"
+        async_conn, sha256=gescheitert, status=DocumentStatus.FAILED, raw={},
+        endpoint_id="testendpoint",
     )
+    for sha, zustand in ((gescheitert, "failed"), (abgesagt, "cancelled")):
+        db_conn.execute(
+            "UPDATE procrastinate_jobs SET status = %s WHERE lock = %s", (zustand, sha)
+        )
 
-    ergebnis = cli.invoke(app, ["retry", sha, "--yes"])
-    assert ergebnis.exit_code == 0
-    assert "1 von 1" in ergebnis.output
+    ergebnis = cli.invoke(app, ["retry", "--all"], input="y\n")
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert "Fortfahren" in ergebnis.output
+    assert f"{gescheitert} zurueckgesetzt" in ergebnis.stdout
+    assert f"{abgesagt} neu eingereiht" in ergebnis.stdout
+    assert "1 zurueckgesetzt, 1 neu eingereiht, 0 unterwegs, 0 mit Ergebnis" in ergebnis.stderr
 
 
-def test_retry_ohne_gescheiterte_tut_nichts(cli: CliRunner) -> None:
+def test_retry_all_ohne_offene_dokumente_tut_nichts(cli: CliRunner) -> None:
     """Nichts zu wiederholen ist kein Fehler — und kostet nichts."""
-    ergebnis = cli.invoke(app, ["retry", "--failed", "--yes"])
+    ergebnis = cli.invoke(app, ["retry", "--all", "--yes"])
     assert ergebnis.exit_code == 0
     assert "Nichts zu wiederholen" in ergebnis.output
 

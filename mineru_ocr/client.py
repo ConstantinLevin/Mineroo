@@ -29,7 +29,6 @@ from types import TracebackType
 from typing import Any, Final, TypeVar, overload
 
 import procrastinate
-import procrastinate.exceptions
 import psycopg
 from procrastinate import utils
 from procrastinate.jobs import Job
@@ -1006,118 +1005,6 @@ class OCRClient:
                         f"Eingabe. Es ist nichts wiederholt worden."
                     )
         return {sha256: self.retry(sha256) for sha256 in ziele}
-
-    def retry_failed(self, target: OCRWrapper | Sequence[OCRWrapper]) -> int:
-        """Legt gescheiterte Dokumente erneut vor. Duenner Durchgriff, kein Eigenbau.
-
-        Benutzt Procrastinates eigenes Werkzeug (`retry_job_by_id`) auf den
-        juengsten Job jedes gescheiterten Dokuments — „sie werden ja einfach von
-        procrastinate dann zurückgesetzt das hat ja tooling dafür" (Plan 2.4).
-
-        Erfasst werden AUSSCHLIESSLICH Dokumente im Zustand `failed`. Nicht
-        `input_error`: Das Nachsehen des Executors deckt den ab, ein so
-        wiedervorgelegter Job taete also nichts — verbrauchte aber einen Versuch
-        aus dem Budget und wuerde im Rueckgabewert als erledigte Arbeit gezaehlt,
-        die nie stattfindet. Ein zu grosses DOCX liesse sich damit scheinbar
-        wiederholen, bliebe `input_error`, und beim naechsten echten Bedarf waere
-        das Budget aufgebraucht. (Der Zustand `failed` und `input_error` zusammen
-        waere „nicht erfolgreich" — hier wird ausdruecklich enger gefiltert.)
-
-        Zwei Eigenheiten des Werkzeugs, die man kennen muss (beide am Objekt der
-        von 3.9.0 belegt und fuer 3.10.0 unveraendert, Feature-Verifikation Punkt 19):
-
-        Es nimmt nur Jobs in `doing` oder `failed`. Ein `aborted`-Job — etwa vom
-        Herunterfahren — wird ABGEWIESEN. Sein Heilungsweg ist nicht diese Methode
-        (`ocr_start` findet die stehende Eingabe und tut nichts; den Rueckweg
-        bringt das Ticket #26); deshalb ueberspringt sie solche Dokumente und
-        zaehlt sie im Rueckgabewert nicht mit, statt sie mit einer Ausnahme
-        aufzuhalten.
-
-        Und jede Wiedervorlage erhoeht `attempts`. Ein Retry von Hand auf einen
-        erschoepften Job ist genau EIN weiterer Versuch, keine neue Dreier-Runde.
-
-        Fuer Einzelfaelle gibt es ausserdem das fertige Handwerkzeug
-        `procrastinate shell` mit `retry`, `cancel` und `list_jobs`. Diese Methode
-        ist Bequemlichkeit fuer den Stapel, kein Ersatz dafuer.
-
-        Args:
-            target: Eine Huelle oder mehrere.
-
-        Returns:
-            Wie viele Jobs tatsaechlich wieder vorgelegt wurden.
-
-        Zusicherung:
-            Der wieder vorgelegte Job verarbeitet das Dokument WIRKLICH neu und
-            ueberschreibt sein `raw`. Das ist kein Nebeneffekt, sondern der Zweck
-            — und der Grund, warum das Nachsehen des Executors `failed` nicht deckt.
-
-        Kosten: JA, mittelbar — jedes wieder vorgelegte Dokument wird erneut
-        verarbeitet und erneut bezahlt.
-        """
-        huellen = [target] if isinstance(target, OCRWrapper) else list(target)
-        # AUSSCHLIESSLICH `failed`, nicht `input_error`: Das Nachsehen des
-        # Executors deckt letzteren ab, ein so wiedervorgelegter Job taete also
-        # nichts — verbrauchte aber einen Versuch aus dem Budget und wuerde hier
-        # als erledigte Arbeit gezaehlt, die nie stattfindet.
-        betroffene = [h for h in huellen if h.status is DocumentStatus.FAILED]
-        if not betroffene:
-            return 0
-
-        app = self._procrastinate
-        erledigt = 0
-        for huelle in betroffene:
-            jobs = sorted(
-                app.job_manager.list_jobs(lock=huelle.sha256),
-                key=lambda j: j.id or 0,
-            )
-            if not jobs:
-                continue
-            juengster = jobs[-1]
-            if juengster.id is None:
-                continue
-            try:
-                app.job_manager.retry_job_by_id(
-                    juengster.id,
-                    utils.utcnow(),
-                    juengster.priority,
-                    juengster.queue,
-                    juengster.lock,
-                )
-            except procrastinate.exceptions.ProcrastinateException as fehler:
-                # NUR Procrastinates eigene Ablehnung wird uebergangen.
-                # Ein `aborted`-Job wird vom Werkzeug ABGEWIESEN (am
-                # Objekt belegt, Feature-Verifikation Punkt 19). Sein
-                # Heilungsweg ist nicht diese Methode (den Rueckweg
-                # bringt #26; `ocr_start` findet die Eingabe) —
-                # also uebergehen und NICHT mitzaehlen, statt mit einer
-                # Ausnahme den ganzen Stapel aufzuhalten.
-                #
-                # FRUEHER STAND HIER `except Exception` — und damit
-                # verschwand JEDER Fehler in diesem `continue`: ein
-                # Datenbank-Aussetzer, ein geloeschter Job, ein
-                # Programmierfehler. Die Kommandozeile uebersetzt die
-                # Differenz zwischen gefundenen und vorgelegten Jobs
-                # anschliessend in „vermutlich abgebrochene Jobs
-                # (`aborted`)". Ein Postgres-Aussetzer waehrend eines
-                # Stapel-Retrys ueber 200 Dokumente erschien damit als
-                # „0 von 200 wieder vorgelegt — vermutlich abgebrochen":
-                # eine Fehldiagnose, die als plausible Auskunft auftritt
-                # und die niemand als falsch erkennen kann.
-                #
-                # Alles, was NICHT von Procrastinate kommt, geht deshalb
-                # jetzt nach oben. Ein lauter Abbruch mitten im Stapel
-                # ist unangenehm; eine stille Falschmeldung ueber den
-                # ganzen Stapel ist schlimmer.
-                log.debug(
-                    "Job %s wurde nicht wieder vorgelegt (%s: %s) — "
-                    "vermutlich `aborted`.",
-                    juengster.id,
-                    type(fehler).__name__,
-                    fehler,
-                )
-                continue
-            erledigt += 1
-        return erledigt
 
     # ----------------------------------------------------------------------
     # Nachsehen

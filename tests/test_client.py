@@ -1653,50 +1653,6 @@ async def test_document_meldet_endzustand_offen_samt_job_und_unbekannt_ohne_raw(
         assert "raw" not in ohne_platzhalter, f"document() liest raw: {anweisung}"
 
 
-async def test_retry_failed_nimmt_nur_failed(
-    offener_client: OCRClient,
-    db_conn: psycopg.Connection[Any],
-    async_conn: psycopg.AsyncConnection[Any],
-) -> None:
-    """`input_error` wird uebersprungen und nicht mitgezaehlt: Ein so
-    wiedervorgelegter Job taete nichts, verbrauchte aber einen Versuch.
-
-    Der Fall ist konkret: Ein zu grosses DOCX liesse sich damit scheinbar
-    wiederholen, bliebe `input_error`, und beim naechsten echten Bedarf waere das
-    Budget aufgebraucht.
-    """
-    _worker_am_leben(db_conn)
-    gescheitert = _abschicken(offener_client, "failed")
-    eingabefehler = _abschicken(offener_client, "input_error")
-    db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
-
-    await write_terminal_async(
-        async_conn, sha256=gescheitert, status=DocumentStatus.FAILED, raw={}, endpoint_id="testendpoint"
-    )
-    await write_terminal_async(
-        async_conn, sha256=eingabefehler, status=DocumentStatus.INPUT_ERROR, raw={}, endpoint_id="testendpoint"
-    )
-
-    assert offener_client.retry_failed(offener_client.get(eingabefehler)) == 0
-    assert offener_client.retry_failed(offener_client.get(gescheitert)) == 1
-
-
-async def test_retry_failed_ueberspringt_aborted(
-    offener_client: OCRClient,
-    db_conn: psycopg.Connection[Any],
-    async_conn: psycopg.AsyncConnection[Any],
-) -> None:
-    """Das Tooling weist `aborted` ab. Uebersprungen und gemeldet, nicht mit einer
-    Ausnahme aufgehalten."""
-    _worker_am_leben(db_conn)
-    h = _abschicken(offener_client, "abgebrochen")
-    db_conn.execute("UPDATE procrastinate_jobs SET status = 'aborted'")
-    await write_terminal_async(async_conn, sha256=h, status=DocumentStatus.FAILED, raw={}, endpoint_id="testendpoint")
-
-    # Kein Absturz, sondern eine ehrliche Null.
-    assert offener_client.retry_failed(offener_client.get(h)) == 0
-
-
 # --- Nachsehen ------------------------------------------------------------
 
 

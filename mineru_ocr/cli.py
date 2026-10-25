@@ -59,14 +59,13 @@ import typer
 from . import core, db, mime
 from .client import OCRClient
 from .config import Settings
-from .db import DocumentStatus
+from .core import RetryOutcome
 from .errors import (
     DocumentNotFound,
     MineruOcrError,
     TooLargeError,
     UnsupportedTypeError,
 )
-from .wrapper import OCRWrapper
 
 app = typer.Typer(
     name="mineru-ocr",
@@ -558,69 +557,72 @@ def markdown(
         typer.echo(text)
 
 
+_AUSGANG: Final = {
+    RetryOutcome.RESET: "zurueckgesetzt",
+    RetryOutcome.REQUEUED: "neu eingereiht",
+    RetryOutcome.UNDERWAY: "unterwegs",
+    RetryOutcome.HAS_RESULT: "mit Ergebnis",
+}
+"""Wie `retry` seine Ausgaenge nennt, in dieser Reihenfolge auch in der Summe."""
+
+
 @app.command()
 def retry(
-    target: Annotated[str | None, typer.Argument(help="Hash oder Pfad; ohne Angabe siehe --failed.")] = None,
-    failed: Annotated[bool, typer.Option(help="Alle gescheiterten Dokumente erneut vorlegen.")] = False,
+    target: Annotated[str | None, typer.Argument(help="Hash oder Pfad; ohne Angabe siehe --all.")] = None,
+    all_: Annotated[bool, typer.Option("--all", help="Jedes Dokument ohne gueltiges Ergebnis.")] = False,
     yes: Annotated[bool, typer.Option("--yes", help="Ohne Rueckfrage ausfuehren.")] = False,
 ) -> None:
-    """Legt gescheiterte Dokumente erneut vor. KOSTET GELD.
+    """Bringt Dokumente ohne gueltiges Ergebnis wieder in Gang. KOSTET GELD.
 
-    Durchgriff auf Procrastinates eigenes Werkzeug. Abgebrochene Jobs (`aborted`,
-    etwa vom Herunterfahren) nimmt es NICHT an — die werden uebersprungen und
-    gemeldet.
+    Mit einem Ziel ruft es `OCRClient.retry`, mit `--all` `OCRClient.retry_all`,
+    das selbst auswaehlt: jedes Dokument ohne gueltiges Ergebnis. Je Dokument:
+    ein gueltiges Ergebnis oder ein wartender oder laufender Job bleibt, wie er
+    ist; ein gescheiterter Job wird zurueckgesetzt; fuer einen abgebrochenen,
+    abgesagten oder fehlenden wird ein neuer eingereiht.
 
-    Jedes wieder vorgelegte Dokument wird vollstaendig neu verarbeitet und neu
-    bezahlt. Das Kommando sagt vorher, um wie viele es geht, und fragt nach —
-    ausser mit `--yes`.
+    Jedes zurueckgesetzte oder neu eingereihte Dokument wird vollstaendig neu
+    verarbeitet und neu bezahlt. Das Kommando fragt deshalb vorher nach — ausser
+    mit `--yes` — und nennt danach je Dokument und in Summe, was geschah.
     """
-    if target is None and not failed:
+    if (target is None) == (not all_):
         typer.echo(
-            "Entweder ein Dokument nennen oder `--failed` fuer alle "
-            "gescheiterten. Ohne beides waere nicht klar, was gemeint ist.",
+            "Entweder ein Dokument nennen oder `--all` fuer jedes ohne gueltiges "
+            "Ergebnis. Mit keinem oder beidem waere nicht klar, was gemeint ist.",
             err=True,
         )
         raise typer.Exit(code=2)
 
     try:
+        sha256 = _ziel(target) if target is not None else None
+        # VOR der Ausgabe von Geld wird gefragt, ohne Anzahl: Was je Dokument
+        # geschieht, entscheidet erst die Bibliothek, in dem einen Aufruf.
+        gemeint = sha256 if sha256 is not None else "Jedes Dokument ohne gueltiges Ergebnis"
+        typer.echo(
+            f"{gemeint}: Ohne gueltiges Ergebnis und ohne laufenden Job wird es "
+            f"VOLLSTAENDIG NEU VERARBEITET — das kostet Geld."
+        )
+        if not yes and not typer.confirm("Fortfahren?"):
+            raise typer.Exit(code=0)
         with OCRClient(preflight=False) as klient:
-            if target is not None:
-                betroffene: list[OCRWrapper] = [klient.get(_ziel(target))]
+            if sha256 is not None:
+                ausgaenge = {sha256: klient.retry(sha256)}
             else:
-                betroffene = [
-                    OCRWrapper.from_row(zeile, klient.conn)
-                    for zeile in db.list_documents(
-                        klient.conn, status=DocumentStatus.FAILED
-                    )
-                ]
-
-            zu_tun = [h for h in betroffene if h.status is DocumentStatus.FAILED]
-            if not zu_tun:
-                typer.echo("Nichts zu wiederholen.")
-                return
-
-            # VOR der Ausgabe von Geld wird gefragt. Jedes wieder vorgelegte
-            # Dokument wird vollstaendig neu verarbeitet und neu bezahlt.
-            typer.echo(
-                f"{len(zu_tun)} Dokument(e) werden erneut vorgelegt und dabei "
-                f"VOLLSTAENDIG NEU VERARBEITET — das kostet Geld."
-            )
-            if not yes and not typer.confirm("Fortfahren?"):
-                raise typer.Exit(code=0)
-
-            anzahl = klient.retry_failed(zu_tun)
+                ausgaenge = klient.retry_all()
     except MineruOcrError as fehler:
         _betriebsfehler(fehler)
 
-    typer.echo(f"{anzahl} von {len(zu_tun)} Job(s) wieder vorgelegt.")
-    if anzahl < len(zu_tun):
-        # Ein `aborted`-Job wird vom Werkzeug abgewiesen. Das wird GESAGT und
-        # nicht stillschweigend weggezaehlt.
-        typer.echo(
-            f"{len(zu_tun) - anzahl} uebersprungen — vermutlich abgebrochene "
-            f"Jobs (`aborted`), die Procrastinates Werkzeug nicht annimmt.",
-            err=True,
-        )
+    if not ausgaenge:
+        typer.echo("Nichts zu wiederholen.", err=True)
+        return
+    for sha, ausgang in ausgaenge.items():
+        typer.echo(f"{sha} {_AUSGANG[ausgang]}")
+    anzahl = {ausgang: 0 for ausgang in _AUSGANG}
+    for ausgang in ausgaenge.values():
+        anzahl[ausgang] += 1
+    typer.echo(
+        ", ".join(f"{anzahl[ausgang]} {name}" for ausgang, name in _AUSGANG.items()),
+        err=True,
+    )
 
 
 @app.command()

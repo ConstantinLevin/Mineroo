@@ -1927,5 +1927,4 @@ def test_retry_all_prueft_erst_alle_hashes(
         with pytest.raises(DocumentNotFound):
             klient.retry_all([sha, "e" * 64])
 
-    (job,) = _jobs_zu(db_conn, sha)
-    assert job.status == "cancelled"
+    assert [job.status for job in _jobs_zu(db_conn, sha)] == ["cancelled"]
