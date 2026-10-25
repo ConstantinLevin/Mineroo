@@ -18,8 +18,7 @@ from __future__ import annotations
 import enum
 import io
 import zipfile
-from pathlib import Path
-from typing import Final
+from typing import BinaryIO, Final
 
 from .errors import UnsupportedTypeError
 
@@ -158,22 +157,26 @@ def _ist_zip(kopf: bytes) -> bool:
     return kopf.startswith(b"PK\x03\x04")
 
 
-def sniff_path(path: Path) -> DocumentType:
-    """Bestimmt den Typ einer Datei auf der Platte.
+def sniff_file(file: BinaryIO) -> DocumentType:
+    """Bestimmt den Typ einer geoeffneten Datei, ohne sie ganz zu lesen.
 
-    Der kanonische Weg. Liest so wenig wie noetig: fuer alle Typen ausser ZIP
-    genuegen die ersten Bytes; bei ZIP wird zusaetzlich das Archivverzeichnis
-    gelesen (nicht das Archiv ausgepackt).
+    Der Weg fuer die Kommandozeile, die Dateien liest: Eine grosse Datei fremden
+    Typs soll nicht erst ganz in den Speicher, um dann abgewiesen zu werden. Liest
+    so wenig wie noetig: fuer alle Typen ausser ZIP genuegen die ersten Bytes; bei
+    ZIP wird zusaetzlich das Archivverzeichnis gelesen (nicht das Archiv
+    ausgepackt). Die Bibliothek selbst kennt keine Pfade — wer eine Datei hat,
+    oeffnet sie und reicht das Dateiobjekt herein.
 
     Args:
-        path: Vorhandene, lesbare Datei.
+        file: Eine zum Lesen geoeffnete, durchsuchbare Datei (`open(..., "rb")`),
+            positioniert am Anfang. Sie bleibt offen; schliessen tut der Aufrufer.
 
     Returns:
         Der erkannte Typ.
 
     Zusicherung:
-        Reiner Lesezugriff, keine Aenderung an der Datei. Gibt niemals einen Typ
-        zurueck, den `DocumentType` nicht kennt — im Zweifel wird geworfen.
+        Reiner Lesezugriff. Gibt niemals einen Typ zurueck, den `DocumentType`
+        nicht kennt — im Zweifel wird geworfen.
 
     Raises:
         UnsupportedTypeError: Die Magic Bytes gehoeren zu keinem unterstuetzten
@@ -186,8 +189,7 @@ def sniff_path(path: Path) -> DocumentType:
 
     Kosten: keine.
     """
-    with path.open("rb") as datei:
-        kopf = datei.read(KOPF_BYTES)
+    kopf = file.read(KOPF_BYTES)
 
     treffer = _typ_aus_kopf(kopf)
     if treffer is not None:
@@ -195,19 +197,18 @@ def sniff_path(path: Path) -> DocumentType:
 
     if _ist_zip(kopf):
         try:
-            with zipfile.ZipFile(path) as archiv:
+            with zipfile.ZipFile(file) as archiv:
                 return _typ_aus_zip(archiv)
         except zipfile.BadZipFile as fehler:
             raise UnsupportedTypeError(
-                f"{path.name} beginnt wie ein ZIP, ist aber keines: {fehler}"
+                f"Beginnt wie ein ZIP, ist aber keines: {fehler}."
             ) from fehler
 
     # Die gelesenen Kopfbytes stehen VOLLSTAENDIG in der Meldung. Wer sie
     # abschneidet, nimmt genau die Angabe weg, mit der man den Typ von Hand
     # nachschlaegt.
     raise UnsupportedTypeError(
-        f"{path.name}: kein unterstuetzter Typ "
-        f"(gelesene Kopfbytes: {kopf!r}, {len(kopf)} Byte)."
+        f"Kein unterstuetzter Typ (gelesene Kopfbytes: {kopf!r}, {len(kopf)} Byte)."
     )
 
 
@@ -215,7 +216,7 @@ def sniff_bytes(data: bytes) -> DocumentType:
     """Bestimmt den Typ eines Byte-Puffers im Speicher.
 
     Der Weg des Abschickens (`OCRClient.ocr_start`, `core.prepare`), das nur
-    Bytes kennt und keine Datei. Verhaelt sich sonst genau wie `sniff_path`, das
+    Bytes kennt und keine Datei. Verhaelt sich sonst genau wie `sniff_file`, das
     die Kommandozeile vor dem Lesen einer Datei benutzt.
 
     Args:
@@ -228,7 +229,7 @@ def sniff_bytes(data: bytes) -> DocumentType:
         Der erkannte Typ.
 
     Raises:
-        UnsupportedTypeError: wie bei `sniff_path`.
+        UnsupportedTypeError: wie bei `sniff_file`.
 
     Kosten: keine.
     """

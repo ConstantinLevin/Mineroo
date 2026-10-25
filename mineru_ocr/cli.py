@@ -138,7 +138,8 @@ def _lesen(datei: Path) -> bytes:
         TooLargeError: Die Datei passt nicht in die Datenbank.
         OSError: Nicht lesbar.
     """
-    mime.sniff_path(datei)
+    with datei.open("rb") as geoeffnet:
+        mime.sniff_file(geoeffnet)
     core.check_size(datei.stat().st_size, datei.name)
     return datei.read_bytes()
 

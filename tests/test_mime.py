@@ -9,7 +9,14 @@ from pathlib import Path
 import pytest
 
 from mineru_ocr.errors import UnsupportedTypeError
-from mineru_ocr.mime import DocumentType, sniff_bytes, sniff_path
+from mineru_ocr.mime import DocumentType, sniff_bytes, sniff_file
+
+
+def sniff_path(pfad: Path) -> DocumentType:
+    """Die Datei oeffnen und `sniff_file` reichen, wie es die Kommandozeile tut."""
+    with pfad.open("rb") as datei:
+        return sniff_file(datei)
+
 
 # Kopfbytes je Typ, so kurz wie moeglich und so lang wie noetig. Sie stammen aus
 # den Formatspezifikationen, nicht aus echten Dateien — eine echte Datei waere

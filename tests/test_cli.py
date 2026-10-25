@@ -627,7 +627,7 @@ def test_ocr_eine_ausdruecklich_genannte_nicht_unterstuetzte_datei_haelt_die_ueb
 
     assert ergebnis.exit_code == 1
     assert "notizen.txt" in ergebnis.stderr
-    assert "kein unterstuetzter Typ" in ergebnis.stderr
+    assert "Kein unterstuetzter Typ" in ergebnis.stderr
     angaben = json.loads(ergebnis.stdout)
     assert [d["path"] for d in angaben["documents"]] == [str(vorn), str(hinten)]
     assert [s["path"] for s in angaben["skipped"]] == [str(schlecht)]

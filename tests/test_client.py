@@ -1147,6 +1147,52 @@ def test_ocr_start_weist_pfade_und_text_ab_statt_sie_zu_lesen(
     assert _zaehlen(db_conn, "documents") == 0
 
 
+def test_die_bibliothek_kennt_keine_pfade() -> None:
+    """Kein Parameter der Bibliothek ist ein Pfad, und die entfallenen Namen gibt
+    es nicht mehr — auch nicht in den Exporten des Pakets.
+
+    Pfade kennt nur die Kommandozeile (`mineru_ocr.cli`); sie ist deshalb die eine
+    Datei, die hier nicht geprueft wird.
+    """
+    import inspect
+
+    import mineru_ocr
+    from mineru_ocr import core, db, mime, wrapper
+
+    for modul in (client_modul, core, wrapper, mime, db):
+        for name, objekt in inspect.getmembers(modul):
+            if name.startswith("_") or getattr(objekt, "__module__", None) != modul.__name__:
+                continue
+            kandidaten = [objekt]
+            if inspect.isclass(objekt):
+                kandidaten = [
+                    m
+                    for n, m in inspect.getmembers(objekt, inspect.isroutine)
+                    if not n.startswith("_") or n == "__init__"
+                ]
+            for funktion in kandidaten:
+                if not callable(funktion):
+                    continue
+                try:
+                    parameter = inspect.signature(funktion).parameters
+                except (TypeError, ValueError):
+                    continue
+                for pname, param in parameter.items():
+                    assert "Path" not in str(param.annotation), (
+                        modul.__name__,
+                        name,
+                        pname,
+                    )
+
+    for entfallen in ("ocr_path", "check_daemon"):
+        assert not hasattr(OCRClient, entfallen), entfallen
+    for entfallen in ("from_path", "from_bytes"):
+        assert not hasattr(OCRWrapper, entfallen), entfallen
+    assert not hasattr(wrapper, "OCRMegaWrapper")
+    assert not hasattr(mineru_ocr, "OCRMegaWrapper")
+    assert "OCRMegaWrapper" not in mineru_ocr.__all__
+
+
 def test_zeile_eingabe_und_job_entstehen_zusammen_oder_gar_nicht(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
