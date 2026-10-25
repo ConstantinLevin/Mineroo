@@ -25,6 +25,7 @@ from mineru_ocr.errors import (
     DocumentNotFound,
     TooLargeError,
     UnsupportedTypeError,
+    WaitTimeoutError,
 )
 from mineru_ocr.wrapper import OCRWrapper
 
@@ -1519,6 +1520,98 @@ def test_wait_auf_unbekannten_hash_wirft_sofort(offener_client: OCRClient) -> No
         offener_client.wait("f" * 64, timeout=30.0)
 
 
+async def test_wait_all_liefert_jeden_endzustand_in_eingabereihenfolge(
+    offener_client: OCRClient, async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """`wait_all` wartet auf alle und liefert sie in der Reihenfolge der Frage,
+    gleich in welcher sie fertig wurden; ein doppelt gefragter Hash steht zweimal
+    da. Jeder Endzustand ist ein Ergebnis, auch `failed` und `input_error`.
+    Gewartet wird nicht auf der Verbindung des Clients: Sie lauscht danach auf
+    keinem Kanal."""
+    hashes = [_abschicken(offener_client, name) for name in ("eins", "zwei", "drei")]
+    zustaende = [DocumentStatus.DONE, DocumentStatus.FAILED, DocumentStatus.INPUT_ERROR]
+    for h, zustand in reversed(list(zip(hashes, zustaende, strict=True))):
+        await write_terminal_async(
+            async_conn, sha256=h, status=zustand, raw={}, endpoint_id="testendpoint"
+        )
+
+    huellen = offener_client.wait_all([*hashes, hashes[0]], timeout=5.0)
+
+    assert all(isinstance(h, OCRWrapper) for h in huellen)
+    assert [h.sha256 for h in huellen] == [*hashes, hashes[0]]
+    assert [h.status for h in huellen] == [*zustaende, DocumentStatus.DONE]
+    assert offener_client.conn.execute("SELECT pg_listening_channels()").fetchall() == []
+
+
+async def test_as_completed_liefert_jedes_sobald_es_fertig_ist(
+    offener_client: OCRClient, async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """`as_completed` liefert jedes Dokument, sobald es endgueltig ist. Ein
+    gescheitertes beendet das Warten auf die uebrigen nicht."""
+    erstes, zweites = _abschicken(offener_client, "spaet"), _abschicken(offener_client, "frueh")
+    await write_terminal_async(
+        async_conn,
+        sha256=zweites,
+        status=DocumentStatus.FAILED,
+        raw={},
+        error="aus",
+        endpoint_id="testendpoint",
+    )
+
+    fertige = offener_client.as_completed([erstes, zweites], timeout=5.0)
+    zuerst = next(fertige)
+    assert (zuerst.sha256, zuerst.status) == (zweites, DocumentStatus.FAILED)
+
+    await write_terminal_async(
+        async_conn, sha256=erstes, status=DocumentStatus.DONE, raw={}, endpoint_id="testendpoint"
+    )
+    danach = next(fertige)
+    assert (danach.sha256, danach.status) == (erstes, DocumentStatus.DONE)
+    with pytest.raises(StopIteration):
+        next(fertige)
+
+
+async def test_wait_all_nennt_bei_ablauf_der_frist_die_offenen(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+) -> None:
+    """Die Frist gilt fuer den ganzen Aufruf; der Fehler ist ein `TimeoutError`
+    und nennt die Hashes, die noch offen sind. Kein Job wird angefasst."""
+    fertig, offen = _abschicken(offener_client, "fertig"), _abschicken(offener_client, "offen")
+    await write_terminal_async(
+        async_conn, sha256=fertig, status=DocumentStatus.DONE, raw={}, endpoint_id="testendpoint"
+    )
+    jobs_vorher = db_conn.execute(
+        "SELECT id, status, attempts FROM procrastinate_jobs ORDER BY id"
+    ).fetchall()
+
+    with pytest.raises(WaitTimeoutError) as fehler:
+        offener_client.wait_all([fertig, offen], timeout=0.5)
+
+    assert isinstance(fehler.value, TimeoutError)
+    assert fehler.value.pending == (offen,)
+    assert db_conn.execute(
+        "SELECT id, status, attempts FROM procrastinate_jobs ORDER BY id"
+    ).fetchall() == jobs_vorher
+
+
+def test_wait_all_und_as_completed_nehmen_eine_folge_von_hashes(
+    offener_client: OCRClient,
+) -> None:
+    """Ein einzelner Hash ist selbst eine Folge von Zeichen; als Folge von Hashes
+    gelesen, wuerde auf vierundsechzig Zeichen gewartet. Fuer einen gibt es
+    `wait`. Pfade kennt die Bibliothek nicht."""
+    with pytest.raises(TypeError, match="wait"):
+        offener_client.wait_all("f" * 64)
+    with pytest.raises(TypeError, match="wait"):
+        offener_client.as_completed("f" * 64)
+    with pytest.raises(TypeError, match="sha256"):
+        offener_client.wait_all([Path("scan.pdf")])  # type: ignore[list-item]
+    with pytest.raises(TypeError, match="sha256"):
+        offener_client.as_completed([Path("scan.pdf")])  # type: ignore[list-item]
+
+
 def test_ocr_liefert_das_ergebnis_eines_treffers_ohne_etwas_einzureihen(
     offener_client: OCRClient, db_conn: psycopg.Connection[Any]
 ) -> None:
@@ -1548,9 +1641,10 @@ def test_ocr_wartet_auf_das_dokument_und_laeuft_in_die_frist(
     """Ohne Daemon wird nichts fertig: Die Frist beendet das Warten, nicht das
     Dokument."""
     _worker_am_leben(db_conn)
-    with pytest.raises(TimeoutError):
+    with pytest.raises(WaitTimeoutError) as fehler:
         offener_client.ocr(_png("wartet"), timeout=0.3)
-    # Das Dokument ist danach weiter unterwegs.
+    # Der Fehler nennt das offene Dokument, und es ist danach weiter unterwegs.
+    assert fehler.value.pending == (_hash(_png("wartet")),)
     assert _zaehlen(db_conn, "procrastinate_jobs") == 1
 
 

@@ -24,7 +24,15 @@ import asyncio
 import concurrent.futures
 import contextlib
 import logging
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Coroutine,
+    Generator,
+    Iterable,
+    Iterator,
+    Sequence,
+)
 from datetime import datetime
 from types import TracebackType
 from typing import Any, Final, TypeVar, overload
@@ -208,8 +216,10 @@ class OCRClient:
     zwei Aufrufen haelt der Client keine Procrastinate-Verbindung. Das Einreihen
     laeuft ueber seine eigene Verbindung (`connection=`), die Abfragen
     (`list_jobs`, `retry_job_by_id`, `list_tasks`) ueber je eine kurzlebige aus
-    dem Pool. Je Agent bleibt so eine Verbindung: die des Clients, auch waehrend
-    `wait` (das laeuft auf ihr; die Spec rechnet mit bis zu zwei, gemessen ist eine).
+    dem Pool. Je Agent bleiben so ein bis zwei Verbindungen: die des Clients und,
+    solange er wartet, die eigene Verbindung der Warteschleife (`wait`, `wait_all`,
+    `as_completed`; je Aufruf eine, nie aus dem Pool, denn ein Pool hebt kein
+    `LISTEN` auf).
 
     Nebenlaeufigkeit: Ein Client gehoert einem Aufrufer, synchron. Wer aus
     mehreren Programmteilen zugreift, nimmt mehrere Clients; die Datenbank
@@ -815,16 +825,20 @@ class OCRClient:
     def wait(self, sha256: str, timeout: float | None = None) -> OCRWrapper:
         """Wartet auf das Endergebnis EINES Dokuments.
 
-        Lauscht auf dem Kanal `doc_done` und fragt zur Sicherheit alle fuenf
-        Sekunden nach; die erste Abfrage kommt VOR dem Lauschen, damit ein
-        bereits fertiges Dokument nicht auf ein Signal wartet, das schon vorbei
-        ist. Das Signal ist Eigenbau — Procrastinate liefert kein „Job
-        fertig"-Signal an aussenstehende Warter (Feature-Verifikation Punkt 10).
+        Fuer viele gibt es `wait_all` und `as_completed`; ein einziges `wait`, das
+        beides naehme, waere unter `mypy --strict` mehrdeutig, denn ein Hash ist
+        selbst eine Folge von Zeichen. Gewartet wird wie dort (`db.wait_for_terminal`):
+        auf einer eigenen Verbindung, erst lauschen auf `doc_done`, dann lesen,
+        damit ein bereits fertiges Dokument nicht auf ein Signal wartet, das schon
+        vorbei ist; im Takt (`settings.wait_poll_seconds`) liest es ohnehin nach.
+        Das Signal ist Eigenbau — Procrastinate liefert kein „Job fertig"-Signal
+        an aussenstehende Warter (Feature-Verifikation Punkt 10).
 
-        Gelesen werden Ergebnis und Eingabe in einer Anweisung
-        (`db.read_states`), ohne `raw`: Ergebnis da heisst fertig, Eingabe da
-        heisst offen, keins von beiden unbekannt. Die Huelle laedt `raw` erst,
-        wenn jemand das Ergebnis will. Procrastinate wird nicht gefragt.
+        Gelesen werden Ergebnis und Eingabe in einer Anweisung, ohne `raw`:
+        Ergebnis da heisst fertig, Eingabe da heisst offen, keins von beiden
+        unbekannt. Die Huelle laedt `raw` erst, wenn jemand das Ergebnis will.
+        Procrastinate wird nicht gefragt, und ob ein Daemon laeuft, aendert am
+        Warten nichts; ohne Daemon endet es erst mit der Frist.
 
         Args:
             sha256: Der Hash des Dokuments, wie `ocr_start` ihn gab.
@@ -838,22 +852,109 @@ class OCRClient:
         Raises:
             DocumentNotFound: Weder Ergebnis noch Eingabe — sofort, nicht nach
                 Ablauf.
-            TimeoutError: Die Zeit lief ab. Sagt nichts ueber das Dokument, nur
-                ueber die Geduld.
+            WaitTimeoutError: Die Zeit lief ab (ein `TimeoutError`); er nennt den
+                Hash. Sagt nichts ueber das Dokument, nur ueber die Geduld.
+
+        Frist und Strg-C beenden nur das Warten; kein Job wird angefasst.
 
         Kosten: keine.
         """
         _hash_pruefen(sha256)
+        (huelle,) = self.wait_all([sha256], timeout=timeout)
+        return huelle
+
+    def wait_all(
+        self, hashes: Sequence[str], timeout: float | None = None
+    ) -> list[OCRWrapper]:
+        """Wartet auf ALLE Dokumente und liefert sie in der Reihenfolge der Frage.
+
+        Wie `as_completed`, nur gesammelt: Ein doppelt gefragter Hash steht
+        zweimal in der Liste. Ein gescheitertes Dokument beendet das Warten auf
+        die uebrigen nicht.
+
+        Args:
+            hashes: Die Hashes, wie `ocr_start` sie gab. Eine Folge, kein
+                einzelner Hash — fuer einen gibt es `wait`.
+            timeout: Sekunden fuer den GANZEN Aufruf, None fuer unbegrenzt.
+
+        Returns:
+            Je gefragtem Hash die Huelle, bei JEDEM Endzustand.
+
+        Raises:
+            TypeError: `hashes` ist ein einzelner Hash, oder ein Element ist kein
+                Hash (etwa ein Pfad).
+            DocumentNotFound: Ein Hash ist unbekannt — sofort.
+            WaitTimeoutError: Die Frist lief ab; `pending` nennt die offenen.
+
+        Kosten: keine.
+        """
+        gefragt = self._hashes_pruefen(hashes)
+        fertig = {huelle.sha256: huelle for huelle in self._fertige(gefragt, timeout)}
+        return [fertig[sha256] for sha256 in gefragt]
+
+    def as_completed(
+        self, hashes: Sequence[str], timeout: float | None = None
+    ) -> Iterator[OCRWrapper]:
+        """Liefert jedes Dokument, sobald es endgueltig ist — in der Reihenfolge,
+        in der sie fertig werden; bereits fertige sofort.
+
+        Jeder Endzustand ist ein Ergebnis, auch `failed` und `input_error`, und
+        ein gescheitertes beendet das Warten auf die uebrigen nicht. Gewartet wird
+        auf EINER eigenen Verbindung fuer den ganzen Aufruf; sie schliesst, wenn
+        der Iterator erschoepft ist, mit einem Fehler endet oder geschlossen wird
+        (`close()`, oder `contextlib.closing` um den Iterator, wer vorher aufhoert).
+
+        Args:
+            hashes: Die Hashes, wie `ocr_start` sie gab. Eine Folge, kein
+                einzelner Hash — fuer einen gibt es `wait`. Doppelte kommen einmal.
+            timeout: Sekunden fuer den GANZEN Aufruf, None fuer unbegrenzt.
+
+        Yields:
+            Je Dokument einmal die Huelle.
+
+        Raises:
+            TypeError: Sofort beim Aufruf, wie bei `wait_all`.
+            DocumentNotFound: Beim ersten Weiterschalten, wenn ein Hash unbekannt
+                ist — bevor irgendein Dokument geliefert wird.
+            WaitTimeoutError: Die Frist lief ab; `pending` nennt die offenen.
+
+        Kosten: keine.
+        """
+        return self._fertige(self._hashes_pruefen(hashes), timeout)
+
+    def _hashes_pruefen(self, hashes: Sequence[str]) -> list[str]:
+        """Die gefragten Hashes als Liste; weist einen einzelnen Hash und Pfade
+        ab, und prueft, dass der Client betreten ist."""
+        if isinstance(hashes, (str, bytes)) or not isinstance(hashes, Iterable):
+            raise TypeError(
+                "Erwartet wird eine Folge von Hashes, nicht "
+                f"{type(hashes).__name__}. Fuer EIN Dokument gibt es `wait(sha256)`."
+            )
+        gefragt = list(hashes)
+        for sha256 in gefragt:
+            _hash_pruefen(sha256)
+        self.conn  # Nicht betreten: der Fehler jetzt, nicht beim ersten Ergebnis.
+        return gefragt
+
+    def _fertige(
+        self, hashes: list[str], timeout: float | None
+    ) -> Generator[OCRWrapper]:
+        """Die Warteschleife (`db.wait_for_terminal`) mit Huellen statt Zeilen.
+
+        Die Huellen halten die Verbindung des Clients, um `raw` bei Bedarf
+        nachzuladen; gewartet wird auf der eigenen Verbindung der Schleife, die
+        mit diesem Generator schliesst.
+        """
         with contextlib.closing(
             db.wait_for_terminal(
                 self._settings.db_dsn,
-                [sha256],
+                hashes,
                 timeout=timeout,
                 poll_seconds=self._settings.wait_poll_seconds,
             )
-        ) as fertige:
-            zeile = next(fertige)
-        return OCRWrapper.from_row(zeile, self.conn)
+        ) as zeilen:
+            for zeile in zeilen:
+                yield OCRWrapper.from_row(zeile, self.conn)
 
     def ocr(self, data: bytes, timeout: float | None = None) -> OCRWrapper:
         """Ein Dokument: abschicken und auf dieses eine warten.
@@ -870,7 +971,9 @@ class OCRClient:
             Die Huelle zum Endzustand, auch bei `failed`.
 
         Raises:
-            TimeoutError: Die Zeit lief ab. Das Dokument bleibt unterwegs.
+            WaitTimeoutError: Die Zeit lief ab (ein `TimeoutError`); er nennt den
+                Hash. Das Dokument bleibt unterwegs — ohne laufenden Daemon wird
+                es erst fertig, wenn einer startet.
 
         Kosten: JA, mittelbar.
         """

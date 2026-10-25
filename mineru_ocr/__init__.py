@@ -18,6 +18,12 @@ kennt nur die Kommandozeile. Der uebliche Weg:
         fertig = client.wait(h)
         print(fertig.rendered_markdown)
 
+        # Auf viele warten: alle in Reihenfolge, oder jedes, sobald es fertig ist.
+        hashes = client.ocr_start([Path(p).read_bytes() for p in ("a.pdf", "b.pdf")])
+        alle = client.wait_all(hashes, timeout=600)
+        for huelle in client.as_completed(hashes):
+            print(huelle.sha256, huelle.status)
+
         # Oder spaeter, ohne zu warten — auch aus einer anderen Sitzung:
         print(client.get(h).rendered_markdown)
 
@@ -69,6 +75,7 @@ from .errors import (
     TooLargeError,
     TransientRunPodError,
     UnsupportedTypeError,
+    WaitTimeoutError,
 )
 from .mime import DocumentType
 from .wrapper import OCRWrapper
@@ -107,6 +114,7 @@ __all__ = [
     "DatabaseError",
     "DocumentNotFound",
     "TerminalOverwriteError",
+    "WaitTimeoutError",
     "IncompleteResultError",
     "FailureKind",
 ]
