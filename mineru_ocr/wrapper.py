@@ -85,11 +85,11 @@ class OCRWrapper:
         return self.row.sha256
 
     @property
-    def size_bytes(self) -> int:
+    def size_bytes(self) -> int | None:
         return self.row.size_bytes
 
     @property
-    def mime(self) -> str:
+    def mime(self) -> str | None:
         return self.row.mime
 
     @property
@@ -120,8 +120,8 @@ class OCRWrapper:
     # Alles Folgende liest aus dem FERTIGEN Ergebnis in der Zeile. Zusammengesetzt
     # wurde es im Executor, vor dem Schreiben — hier wird nichts mehr gefuegt und
     # nichts mehr umgerechnet. Deshalb kann hier auch nichts unvollstaendig sein:
-    # Eine Zeile ist entweder endgueltig, dann ist das Ergebnis ganz, oder sie ist
-    # es nicht, dann gibt es keins.
+    # Eine Huelle gibt es nur zu einem Ergebnis, und die Zeile entsteht erst mit
+    # ihm.
 
     def __getitem__(self, name: str) -> Any:
         """Ein Element des gespeicherten Ergebnisses, unveraendert.
@@ -145,8 +145,8 @@ class OCRWrapper:
         `huelle["images"]` liefert die gespeicherten Zeichenketten.
 
         Raises:
-            IncompleteResultError: Die Zeile hat noch kein Ergebnis (`new`) oder
-                ist gescheitert. Es gibt dann nichts auszugeben — was da ist,
+            IncompleteResultError: Das Dokument ist gescheitert (`failed`,
+                `input_error`). Es gibt dann nichts auszugeben — was da ist,
                 steht in `raw`.
             KeyError: Das Ergebnis traegt dieses Element nicht. Ausdruecklich ein
                 Fehler und kein `None`: Ein stiller Ersatzwert liesse einen
@@ -340,21 +340,8 @@ class OCRWrapper:
         return abbildung
 
     def _angaben(self) -> dict[str, Any]:
-        """Die Angaben der Zeile ohne `raw`."""
-        return {
-            "sha256": self.row.sha256,
-            "size_bytes": self.row.size_bytes,
-            "mime": self.row.mime,
-            "page_count": self.row.page_count,
-            "status": self.row.status.value,
-            "success": self.success,
-            "error": self.row.error,
-            "endpoint_id": self.row.endpoint_id,
-            "image_tag_at_submit": self.row.image_tag_at_submit,
-            "notes": self.row.notes,
-            "created_at": self.row.created_at.isoformat(),
-            "updated_at": self.row.updated_at.isoformat(),
-        }
+        """Die Angaben der Zeile ohne `raw`, dazu `success`."""
+        return {**self.row.angaben(), "success": self.success}
 
     def __repr__(self) -> str:
         return (

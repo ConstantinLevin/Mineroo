@@ -17,7 +17,7 @@ from mineru_ocr import client as client_modul
 from mineru_ocr import config, core, db, tasks
 from mineru_ocr.client import OCRClient
 from mineru_ocr.config import Settings
-from mineru_ocr.db import DocumentStatus, write_terminal_async
+from mineru_ocr.db import DocumentStatus, Phase, write_terminal_async
 from mineru_ocr.errors import (
     ConfigDriftError,
     ConfigurationError,
@@ -787,7 +787,7 @@ async def test_ocr_start_warnt_nicht_wenn_nichts_eingereiht_wird(
     _worker_am_leben(db_conn)
     fertig = _png("fertig")
     h = offener_client.ocr_start(fertig)
-    await write_terminal_async(async_conn, sha256=h, status=DocumentStatus.DONE, raw={})
+    await write_terminal_async(async_conn, sha256=h, status=DocumentStatus.DONE, raw={}, endpoint_id="testendpoint")
     db_conn.execute("DELETE FROM procrastinate_workers")
 
     with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
@@ -814,7 +814,7 @@ def test_ocr_start_warnt_auch_wenn_das_dokument_schon_unterwegs_ist(
         wieder = offener_client.ocr_start(inhalt)
 
     assert wieder.queued is False
-    assert wieder.status is DocumentStatus.NEW
+    assert wieder.status is None and wieder.is_open
     assert _warnungen_des_clients(caplog) == 1
     assert "kein Daemon" in caplog.text
 
@@ -942,24 +942,27 @@ def test_ohne_schluessel_schickt_der_client_ab_und_liest_aber_fragt_runpod_nicht
         assert klient.settings.api_key is None
         h = klient.ocr_start(_png("ohne schluessel"))
         assert h.queued is True
-        assert klient.get(h).status is DocumentStatus.NEW
-        assert klient.document(h) is not None
+        assert klient.document(h).phase is Phase.WAITING
         for frage in ("status", "credit", "account", "workers", "preflight"):
             with pytest.raises(ConfigurationError, match="Kein API-Schluessel"):
                 getattr(klient, frage)()
 
 
-def test_abschicken_ohne_endpoint_wirft_bevor_etwas_angelegt_ist(
+def test_abschicken_braucht_keinen_endpoint(
     _test_datenbank: str,
     db_conn: psycopg.Connection[Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Den Endpoint traegt erst die Ergebniszeile, die der Job am Ende anlegt; das
+    Abschicken legt nur Eingabe und Job an und braucht ihn nicht."""
     monkeypatch.delenv("MINERU_OCR_ENDPOINT_ID")
-    with OCRClient(db_dsn=_test_datenbank, api_key="erfunden", preflight=False) as klient:
-        with pytest.raises(ConfigurationError, match="endpoint_id"):
-            klient.ocr_start([_png("a"), _png("b")])
+    with OCRClient(db_dsn=_test_datenbank, preflight=False) as klient:
+        assert klient.settings.endpoint_id is None
+        gereicht = klient.ocr_start([_png("a"), _png("b")])
+    assert [g.queued for g in gereicht] == [True, True]
     assert _zaehlen(db_conn, "documents") == 0
-    assert _zaehlen(db_conn, "procrastinate_jobs") == 0
+    assert _zaehlen(db_conn, "inputs") == 2
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 2
 
 
 def test_ocr_start_warnt_ohne_daemon_nur_einmal_je_client(
@@ -981,23 +984,23 @@ def test_ocr_start_wenn_ein_anderer_schneller_war_legt_nichts_an(
     db_conn: psycopg.Connection[Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Zwischen dem Nachsehen und dem Anlegen kann ein anderer Aufrufer dasselbe
-    Dokument anlegen. Dann ist es unterwegs, und dieser Aufruf fasst weder die
-    Eingabe noch einen Job an."""
-    echtes_anlegen = db.insert_document
+    """Zwischen dem Nachsehen und dem Ablegen kann ein anderer Aufrufer dieselbe
+    Eingabe ablegen. Dann ist das Dokument unterwegs, und dieser Aufruf legt
+    keinen Job an: Die Eingabe-Tabelle ist die Sperre."""
+    echtes_ablegen = db.insert_input
 
     def anderer_war_schneller(_conn: Any, **angaben: Any) -> bool:
-        echtes_anlegen(db_conn, **angaben)  # der andere, auf seiner Verbindung
+        echtes_ablegen(db_conn, **angaben)  # der andere, auf seiner Verbindung
         return False
 
-    monkeypatch.setattr(db, "insert_document", anderer_war_schneller)
+    monkeypatch.setattr(db, "insert_input", anderer_war_schneller)
 
     gereicht = offener_client.ocr_start(_png("rennen"))
 
     assert gereicht.queued is False
-    assert gereicht.status is DocumentStatus.NEW
-    assert _zaehlen(db_conn, "documents") == 1
-    assert _zaehlen(db_conn, "inputs") == 0
+    assert gereicht.status is None
+    assert _zaehlen(db_conn, "documents") == 0
+    assert _zaehlen(db_conn, "inputs") == 1
     assert _zaehlen(db_conn, "procrastinate_jobs") == 0
 
 
@@ -1006,15 +1009,15 @@ def test_ocr_start_wenn_der_job_schon_besteht_rollt_alles_zurueck(
     db_conn: psycopg.Connection[Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Besteht zum Hash schon ein Job (`queueing_lock`), wird Zeile und Eingabe
-    dieses Aufrufs nicht stehen gelassen: sonst gaebe es eine Zeile `new`, die
-    niemand je anfasst."""
+    """Besteht zum Hash schon ein Job (`queueing_lock`), wird die Eingabe dieses
+    Aufrufs nicht stehen gelassen: sonst gaebe es eine Eingabe ohne eigenen Job,
+    die niemand je anfasst."""
     monkeypatch.setattr(tasks, "enqueue_document", lambda *_a, **_k: False)
 
     gereicht = offener_client.ocr_start(_png("schon da"))
 
     assert gereicht.queued is False
-    assert gereicht.status is DocumentStatus.NEW
+    assert gereicht.status is None
     assert _zaehlen(db_conn, "documents") == 0
     assert _zaehlen(db_conn, "inputs") == 0
 
@@ -1088,7 +1091,20 @@ def test_ocr_start_nimmt_bytes_und_gibt_den_hash(
     ).fetchone()
     assert anzahl is not None and anzahl[0] == 1
     assert h.queued is True
-    assert h.status is DocumentStatus.NEW
+    assert h.status is None
+
+
+def test_ocr_start_legt_nur_die_eingabe_an_und_keine_ergebniszeile(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """„man sagt procrastinate es soll einen job erstelelen, und die zeile anlegen
+    ist teil davon nicht was wir machen": Nach dem Abschicken gibt es Eingabe und
+    Job, aber kein Ergebnis. Die Zeile legt der Job an, wenn er endet."""
+    h = offener_client.ocr_start(_png("nur eingabe"))
+
+    assert _zaehlen(db_conn, "documents") == 0
+    assert _zaehlen(db_conn, "inputs") == 1
+    assert _jobs_zaehlen(db_conn, h) == 1
 
 
 def test_ocr_start_viele_gibt_je_dokument_den_hash_in_eingabereihenfolge(
@@ -1169,7 +1185,7 @@ async def test_ocr_start_faesst_ein_ergebnis_nicht_an(
     fertig = _png("fertig")
     h_fertig = offener_client.ocr_start(fertig)
     await write_terminal_async(
-        async_conn, sha256=h_fertig, status=DocumentStatus.DONE, raw={"markdown": "x"}
+        async_conn, sha256=h_fertig, status=DocumentStatus.DONE, raw={"markdown": "x"}, endpoint_id="testendpoint"
     )
     db_conn.execute("DELETE FROM procrastinate_jobs")
     vorher = db_conn.execute(
@@ -1200,7 +1216,7 @@ async def test_ocr_start_faesst_auch_ein_gescheitertes_dokument_nicht_an(
     inhalt = _png("gescheitert")
     h = offener_client.ocr_start(inhalt)
     await write_terminal_async(
-        async_conn, sha256=h, status=DocumentStatus.FAILED, raw={}, error="aus"
+        async_conn, sha256=h, status=DocumentStatus.FAILED, raw={}, error="aus", endpoint_id="testendpoint"
     )
     db_conn.execute("DELETE FROM procrastinate_jobs")
 
@@ -1215,9 +1231,9 @@ async def test_ocr_start_faesst_auch_ein_gescheitertes_dokument_nicht_an(
 def test_ocr_start_reiht_ein_unterwegs_liegendes_dokument_nicht_nochmal_ein(
     offener_client: OCRClient, db_conn: psycopg.Connection[Any]
 ) -> None:
-    """Eine Zeile `new` heisst unterwegs. Das gilt auch, wenn ihr Job schon
-    endgueltig endete, ohne etwas zu schreiben: Das ist der Fall fuer `retry`, nicht
-    fuer erneutes Abschicken."""
+    """Eine stehende Eingabe ohne Ergebnis heisst unterwegs. Das gilt auch, wenn
+    ihr Job schon endgueltig endete, ohne etwas zu schreiben: Das ist der Fall
+    fuer `retry`, nicht fuer erneutes Abschicken."""
     _worker_am_leben(db_conn)
     inhalt = _png("unterwegs")
     offener_client.ocr_start(inhalt)
@@ -1226,7 +1242,7 @@ def test_ocr_start_reiht_ein_unterwegs_liegendes_dokument_nicht_nochmal_ein(
     wieder = offener_client.ocr_start(inhalt)
 
     assert wieder.queued is False
-    assert wieder.status is DocumentStatus.NEW
+    assert wieder.status is None
     assert _zaehlen(db_conn, "procrastinate_jobs") == 1
 
 
@@ -1242,7 +1258,7 @@ def test_ocr_start_mit_demselben_dokument_mehrfach_reiht_es_einmal_ein(
     assert _zaehlen(db_conn, "procrastinate_jobs") == 1
 
 
-def test_derselbe_inhalt_in_zwei_aufrufen_ist_eine_zeile_und_eine_eingabe(
+def test_derselbe_inhalt_in_zwei_aufrufen_ist_eine_eingabe_und_ein_job(
     offener_client: OCRClient, db_conn: psycopg.Connection[Any]
 ) -> None:
     """Der rohe Byte-Hash ist die Identitaet. Wo die Bytes herkamen, merkt sich
@@ -1252,8 +1268,8 @@ def test_derselbe_inhalt_in_zwei_aufrufen_ist_eine_zeile_und_eine_eingabe(
     zweite = offener_client.ocr_start(inhalt)
 
     assert erste == zweite
-    assert _zaehlen(db_conn, "documents") == 1
     assert _zaehlen(db_conn, "inputs") == 1
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 1
     zeile = db_conn.execute(
         "SELECT content FROM inputs WHERE sha256 = %s", (erste,)
     ).fetchone()
@@ -1274,23 +1290,21 @@ def test_kein_metadaten_normalisierter_hash(
     a, b = offener_client.ocr_start([ohne, mit])
 
     assert a != b
-    assert _zaehlen(db_conn, "documents") == 2
+    assert _zaehlen(db_conn, "inputs") == 2
 
 
 def test_abschicken_oeffnet_keine_pdf(
     offener_client: OCRClient, db_conn: psycopg.Connection[Any]
 ) -> None:
-    """Eine kaputte PDF bricht das Abschicken nicht ab: Sie wird abgelegt, ohne
-    Seitenzahl, und endet im Job als `input_error`. Der Beweis, dass nichts
-    geoeffnet wurde: Bytes, die nach PDF aussehen und sich nicht oeffnen lassen,
-    kommen durch."""
+    """Eine kaputte PDF bricht das Abschicken nicht ab: Sie wird abgelegt und
+    endet im Job als `input_error`. Der Beweis, dass nichts geoeffnet wurde:
+    Bytes, die nach PDF aussehen und sich nicht oeffnen lassen, kommen durch."""
     _worker_am_leben(db_conn)
     kaputt = b"%PDF-1.7\nund dann nur noch Unsinn\n"
     h = offener_client.ocr_start(kaputt)
 
-    huelle = offener_client.get(h)
-    assert huelle.status is DocumentStatus.NEW
-    assert huelle.page_count is None
+    assert h.queued is True
+    assert offener_client.document(h).phase is Phase.WAITING
 
 
 def test_ocr_start_weist_pfade_und_text_ab_statt_sie_zu_lesen(
@@ -1414,26 +1428,27 @@ def test_der_griff_ueberlebt_kopieren_und_pickeln_samt_seiner_angaben() -> None:
     import json
     import pickle
 
-    griff = core.Submitted("ab" * 32, queued=True, status=DocumentStatus.NEW)
+    griff = core.Submitted("ab" * 32, queued=True, status=None)
+    fertig = core.Submitted("cd" * 32, queued=False, status=DocumentStatus.DONE)
 
     for kopie in (copy.copy(griff), copy.deepcopy(griff), pickle.loads(pickle.dumps(griff))):
         assert kopie == "ab" * 32
         assert isinstance(kopie, core.Submitted)
         assert kopie.queued is True
-        assert kopie.status is DocumentStatus.NEW
+        assert kopie.status is None and kopie.is_open
+    assert pickle.loads(pickle.dumps(fertig)).status is DocumentStatus.DONE
     assert json.dumps({"h": griff}) == json.dumps({"h": "ab" * 32})
     als_schluessel: dict[str, int] = {griff: 1}
     assert als_schluessel["ab" * 32] == 1
 
 
-def test_zeile_eingabe_und_job_entstehen_zusammen_oder_gar_nicht(
+def test_eingabe_und_job_entstehen_zusammen_oder_gar_nicht(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Scheitert das Einreihen, bleibt weder die Zeile noch die Eingabe stehen:
-    eine Zeile `new` ohne Job heisst „unterwegs", und niemand wuerde sie je wieder
-    anfassen."""
+    """Scheitert das Einreihen, bleibt die Eingabe nicht stehen: eine Eingabe ohne
+    Job heisst „unterwegs", und niemand wuerde sie je wieder anfassen."""
     _worker_am_leben(db_conn)
 
     def scheitert(*_: Any, **__: Any) -> bool:
@@ -1488,6 +1503,7 @@ async def test_wait_gibt_bei_jedem_endzustand_zurueck(
         status=DocumentStatus.FAILED,
         raw={"markdown": "Teil"},
         error="aus",
+        endpoint_id="testendpoint",
     )
 
     zurueck = offener_client.wait(h, timeout=5.0)
@@ -1557,6 +1573,7 @@ async def test_get_holt_das_ergebnis_ohne_zu_warten_und_laedt_raw_erst_bei_bedar
         sha256=h,
         status=DocumentStatus.DONE,
         raw={"markdown": "steht in der Datenbank", "content_list": [], "images": {}},
+        endpoint_id="testendpoint",
     )
 
     huelle = offener_client.get(h)
@@ -1566,10 +1583,64 @@ async def test_get_holt_das_ergebnis_ohne_zu_warten_und_laedt_raw_erst_bei_bedar
     assert huelle.row.raw_loaded is True
 
 
-def test_get_gibt_auch_ein_offenes_dokument(offener_client: OCRClient) -> None:
-    """Ob das Dokument fertig ist, sagt die Huelle (`status`), nicht `get`."""
+def test_get_eines_offenen_dokuments_sagt_dass_es_noch_kein_ergebnis_hat(
+    offener_client: OCRClient,
+) -> None:
+    """Eine Huelle gibt es nur zu einem Ergebnis. Fuer ein offenes Dokument sagt
+    `get` das, und die Meldung unterscheidet es von einem unbekannten."""
     h = _abschicken(offener_client, "offen")
-    assert offener_client.get(h).status is DocumentStatus.NEW
+    with pytest.raises(DocumentNotFound, match="noch kein Ergebnis"):
+        offener_client.get(h)
+
+
+async def test_document_meldet_endzustand_offen_samt_job_und_unbekannt_ohne_raw(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`document()` ist die eine Stelle, die ein steckendes Dokument von einem
+    unterscheidet, das noch dauert: Endzustand, oder offen mit dem Zustand seines
+    Jobs (wartet, laeuft, ohne Ergebnis beendet), oder unbekannt. `raw` wird
+    dabei nie gelesen."""
+    gelesen: list[bool] = []
+    echtes_lesen = db.get_document
+
+    def merkt(conn: Any, sha256: str, *, with_raw: bool = True) -> Any:
+        gelesen.append(with_raw)
+        return echtes_lesen(conn, sha256, with_raw=with_raw)
+
+    h = _abschicken(offener_client, "nachsehen")
+    monkeypatch.setattr(db, "get_document", merkt)
+
+    wartet = offener_client.document(h)
+    assert wartet.phase is Phase.WAITING
+    assert wartet.row is None and wartet.row_status is None
+    assert wartet.job_status == "todo"
+
+    db_conn.execute("UPDATE procrastinate_jobs SET status = 'doing'")
+    assert offener_client.document(h).phase is Phase.RUNNING
+
+    db_conn.execute("UPDATE procrastinate_jobs SET status = 'aborted'")
+    beendet = offener_client.document(h)
+    assert beendet.phase is Phase.ENDED_WITHOUT_RESULT
+    assert beendet.job_status == "aborted"
+
+    await write_terminal_async(
+        async_conn,
+        sha256=h,
+        status=DocumentStatus.FAILED,
+        raw={"gross": "x" * 1000},
+        endpoint_id="testendpoint",
+    )
+    fertig = offener_client.document(h)
+    assert fertig.phase is Phase.TERMINAL
+    assert fertig.row_status is DocumentStatus.FAILED
+    assert fertig.row is not None and fertig.row.raw is None
+
+    with pytest.raises(DocumentNotFound):
+        offener_client.document("e" * 64)
+    assert not any(gelesen), "document() hat raw gelesen"
 
 
 async def test_retry_failed_nimmt_nur_failed(
@@ -1590,10 +1661,10 @@ async def test_retry_failed_nimmt_nur_failed(
     db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
 
     await write_terminal_async(
-        async_conn, sha256=gescheitert, status=DocumentStatus.FAILED, raw={}
+        async_conn, sha256=gescheitert, status=DocumentStatus.FAILED, raw={}, endpoint_id="testendpoint"
     )
     await write_terminal_async(
-        async_conn, sha256=eingabefehler, status=DocumentStatus.INPUT_ERROR, raw={}
+        async_conn, sha256=eingabefehler, status=DocumentStatus.INPUT_ERROR, raw={}, endpoint_id="testendpoint"
     )
 
     assert offener_client.retry_failed(offener_client.get(eingabefehler)) == 0
@@ -1610,7 +1681,7 @@ async def test_retry_failed_ueberspringt_aborted(
     _worker_am_leben(db_conn)
     h = _abschicken(offener_client, "abgebrochen")
     db_conn.execute("UPDATE procrastinate_jobs SET status = 'aborted'")
-    await write_terminal_async(async_conn, sha256=h, status=DocumentStatus.FAILED, raw={})
+    await write_terminal_async(async_conn, sha256=h, status=DocumentStatus.FAILED, raw={}, endpoint_id="testendpoint")
 
     # Kein Absturz, sondern eine ehrliche Null.
     assert offener_client.retry_failed(offener_client.get(h)) == 0
@@ -1624,8 +1695,9 @@ async def test_status_zaehlt_in_summen(
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],
 ) -> None:
-    """Zwei Abfragen, unabhaengig von der Bestandsgroesse — nicht eine je
-    Dokument.
+    """Wenige Abfragen, unabhaengig von der Bestandsgroesse — nicht eine je
+    Dokument. Einen Zustand `new` gibt es nicht: Offen sind die Dokumente mit
+    Eingabe und ohne Ergebnis.
 
     Bei zehntausend Dokumenten waere die Einzelaufloesung zehntausend Abfragen
     fuer eine Uebersicht, die niemand Dokument fuer Dokument liest.
@@ -1633,19 +1705,20 @@ async def test_status_zaehlt_in_summen(
     _worker_am_leben(db_conn)
     hashes = [_abschicken(offener_client, str(nr)) for nr in range(3)]
     await write_terminal_async(
-        async_conn, sha256=hashes[0], status=DocumentStatus.DONE, raw={}
+        async_conn, sha256=hashes[0], status=DocumentStatus.DONE, raw={}, endpoint_id="testendpoint"
     )
 
     uebersicht = offener_client.status()
     assert uebersicht["documents"]["done"] == 1
-    assert uebersicht["documents"]["new"] == 2
+    assert uebersicht["documents"]["open"] == 2
+    assert "new" not in uebersicht["documents"]
     assert uebersicht["jobs"]["todo"] == 3
     assert uebersicht["daemon_alive"] is True
     assert uebersicht["balance"] == 5.0
-    # Jeder Dokument-Zustand kommt vor, auch mit Null.
+    # Jeder Endzustand kommt vor, auch mit Null, dazu die offenen.
     assert set(uebersicht["documents"]) == {
         z.value for z in DocumentStatus
-    }
+    } | {"open"}
 
 
 def test_credit_wird_live_geholt(

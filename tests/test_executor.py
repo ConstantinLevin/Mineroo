@@ -23,7 +23,7 @@ from PIL import Image
 from psycopg_pool import AsyncConnectionPool
 
 from mineru_ocr.config import Settings
-from mineru_ocr.db import DocumentStatus, get_document, insert_document, insert_input
+from mineru_ocr.db import DocumentStatus, get_document, insert_input, write_terminal_async
 from mineru_ocr.errors import (
     ConfigurationError,
     CorruptDocumentError,
@@ -142,6 +142,20 @@ def _pdf(seiten: int) -> bytes:
         doc.close()
 
 
+_KOPF: dict[DocumentType, bytes] = {
+    DocumentType.PDF: b"%PDF-",
+    DocumentType.PNG: b"\x89PNG\r\n\x1a\n",
+}
+"""Der Dateikopf, an dem der Job den Typ erkennt (`mime.sniff_bytes`)."""
+
+
+def _als(typ: DocumentType, inhalt: bytes) -> bytes:
+    """Die Bytes einer Eingabe vom Typ `typ`: der Inhalt hinter dem Dateikopf,
+    falls er ihn noch nicht traegt. Der Job bestimmt den Typ aus den Bytes."""
+    kopf = _KOPF[typ]
+    return inhalt if inhalt.startswith(kopf) else kopf + inhalt
+
+
 def _anlegen(
     conn: psycopg.Connection[Any],
     tmp_path: Path,
@@ -150,24 +164,26 @@ def _anlegen(
     name: str = "x.pdf",
     typ: DocumentType = DocumentType.PDF,
 ) -> tuple[str, Path]:
-    """Legt Zeile und Eingabe an und gibt Hash und einen Pfad zurueck, den es
-    NICHT gibt.
+    """Legt die Eingabe an, wie das Abschicken es tut (keine Ergebniszeile), und
+    gibt Hash und einen Pfad zurueck, den es NICHT gibt.
 
-    Der Pfad ist ein Merkzeichen fuer Tests: Auf der Platte liegt nichts. Liest
-    der Job die Eingabe von dort statt aus `inputs`, findet er nichts, und der
-    Test faellt.
+    Der Inhalt bekommt den Dateikopf seines Typs (`_als`), denn der Job erkennt
+    den Typ an den Bytes. Der Pfad ist ein Merkzeichen fuer Tests: Auf der Platte
+    liegt nichts. Liest der Job die Eingabe von dort statt aus `inputs`, findet
+    er nichts, und der Test faellt.
     """
     pfad = tmp_path / name
-    sha = hashlib.sha256(inhalt).hexdigest()
-    insert_document(
-        conn,
-        sha256=sha,
-        size_bytes=len(inhalt),
-        mime=typ.mime,
-        endpoint_id="testendpoint",
-    )
-    insert_input(conn, sha256=sha, content=inhalt)
+    daten = _als(typ, inhalt)
+    sha = hashlib.sha256(daten).hexdigest()
+    insert_input(conn, sha256=sha, content=daten)
     return sha, pfad
+
+
+def _eingabe_steht(conn: psycopg.Connection[Any], sha: str) -> bool:
+    return (
+        conn.execute("SELECT 1 FROM inputs WHERE sha256 = %s", (sha,)).fetchone()
+        is not None
+    )
 
 
 @pytest.fixture
@@ -208,9 +224,9 @@ async def test_guard_haelt_fertige_dokumente_an(
 ) -> None:
     """Bei `done`, `empty` und `input_error` kehrt der Ablauf sofort zurueck und
     schickt NICHTS ab — sonst waere ein Wiederlauf nach dem finalen Schreiben ein
-    vollstaendig neu bezahltes Dokument."""
-    from mineru_ocr.db import write_terminal_async
-
+    vollstaendig neu bezahltes Dokument. Eine Eingabe, die neben dem Ergebnis
+    wieder steht (ein Abschicken genau im Augenblick des Endschreibens), loescht
+    er dabei."""
     for nr, status in enumerate(
         [DocumentStatus.DONE, DocumentStatus.EMPTY, DocumentStatus.INPUT_ERROR]
     ):
@@ -219,8 +235,10 @@ async def test_guard_haelt_fertige_dokumente_an(
             typ=DocumentType.PNG,
         )
         await write_terminal_async(
-            async_conn, sha256=sha, status=status, raw={"erste": nr}
+            async_conn, sha256=sha, status=status, raw={"erste": nr},
+            endpoint_id="testendpoint",
         )
+        insert_input(db_conn, sha256=sha, content=b"wieder abgelegt")
 
         runpod = FalscherRunPod([_fertige_antwort()])
         await process_document(
@@ -231,6 +249,7 @@ async def test_guard_haelt_fertige_dokumente_an(
         zeile = get_document(db_conn, sha)
         assert zeile is not None
         assert zeile.raw == {"erste": nr}, status
+        assert not _eingabe_steht(db_conn, sha), status
 
 
 async def test_guard_laesst_failed_durch(
@@ -246,8 +265,6 @@ async def test_guard_laesst_failed_durch(
     waere jeder Retry von Hand ein Nichts-Tun, das als Erfolg verbucht wird — und
     ein gescheitertes Dokument koennte nie wieder laufen.
     """
-    from mineru_ocr.db import write_terminal_async
-
     sha, _ = _anlegen(
         db_conn, tmp_path, b"bild", name="a.png", typ=DocumentType.PNG
     )
@@ -257,6 +274,7 @@ async def test_guard_laesst_failed_durch(
         status=DocumentStatus.FAILED,
         raw={"versuch": 1},
         error="damals gescheitert",
+        endpoint_id="testendpoint",
     )
 
     runpod = FalscherRunPod([_fertige_antwort("Jetzt geklappt")])
@@ -289,7 +307,9 @@ async def test_eingabe_kommt_aus_inputs_nicht_von_einem_pfad(
     runpod = FalscherRunPod([_fertige_antwort()])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
-    assert [base64.b64decode(b) for b in runpod.abgesendet] == [b"aus der datenbank"]
+    assert [base64.b64decode(b) for b in runpod.abgesendet] == [
+        _als(DocumentType.PNG, b"aus der datenbank")
+    ]
 
 
 async def test_eingabe_mit_falschem_hash_wird_erkannt(
@@ -550,11 +570,11 @@ async def test_job_bestimmt_die_seitenzahl_und_schreibt_sie_mit_dem_ergebnis(
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    """Die Zeile kommt ohne Seitenzahl in die Welt; der Job zaehlt sie aus den
-    Bytes und schreibt sie mit dem Endergebnis."""
-    sha, _ = _anlegen(db_conn, tmp_path, _pdf(3))
-    vorher = get_document(db_conn, sha)
-    assert vorher is not None and vorher.page_count is None
+    """Vor dem Ende gibt es keine Zeile; der Job zaehlt die Seiten aus den Bytes
+    und schreibt sie mit dem Endergebnis, dazu Typ, Groesse und Endpoint."""
+    inhalt = _pdf(3)
+    sha, _ = _anlegen(db_conn, tmp_path, inhalt)
+    assert get_document(db_conn, sha) is None
 
     await process_document(
         sha,
@@ -567,6 +587,9 @@ async def test_job_bestimmt_die_seitenzahl_und_schreibt_sie_mit_dem_ergebnis(
     assert zeile is not None
     assert zeile.status is DocumentStatus.DONE
     assert zeile.page_count == 3
+    assert zeile.mime == "application/pdf"
+    assert zeile.size_bytes == len(inhalt)
+    assert zeile.endpoint_id == "testendpoint"
 
 
 async def test_seitenzahl_steht_auch_bei_failed(
@@ -667,7 +690,7 @@ async def test_eingabe_bleibt_nach_failed_stehen(
         "SELECT content FROM inputs WHERE sha256 = %s", (sha,)
     ).fetchone()
     assert gelesen is not None
-    assert bytes(gelesen[0]) == b"bild"
+    assert bytes(gelesen[0]) == _als(DocumentType.PNG, b"bild")
 
 
 async def test_wiederholbarer_fehler_laesst_die_eingabe_liegen(
@@ -705,7 +728,7 @@ async def test_nicht_pdf_laeuft_als_ein_teilstueck(
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     assert len(runpod.abgesendet) == 1
-    assert base64.b64decode(runpod.abgesendet[0]) == b"bilddaten"
+    assert base64.b64decode(runpod.abgesendet[0]) == _als(DocumentType.PNG, b"bilddaten")
     zeile = get_document(db_conn, sha)
     assert zeile is not None
     assert zeile.status is DocumentStatus.DONE
@@ -854,7 +877,7 @@ async def test_genau_ein_schreibvorgang(
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    """Zwischen Anlage und Endzustand wird die Zeile GENAU EINMAL beschrieben.
+    """Die Ergebniszeile wird GENAU EINMAL geschrieben: angelegt am Ende.
 
     Das ist die Zusicherung, an der das ganze Ein-Buch-Modell haengt: kein
     Zwischenstand, kein „laeuft gerade", keine Chunk-Zustaende in der Zeile.
@@ -872,12 +895,10 @@ async def test_genau_ein_schreibvorgang(
     """
     eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
     sha, _ = _anlegen(db_conn, tmp_path, _pdf(3))
-    vorher = get_document(db_conn, sha)
-    assert vorher is not None
-    assert vorher.updated_at == vorher.created_at
+    assert get_document(db_conn, sha) is None
 
-    # Ein Zaehler, der JEDES UPDATE auf dieser Zeile mitschreibt — unabhaengig
-    # davon, welche Spalten es anfasst und ob es den Zeitstempel bewegt.
+    # Ein Zaehler, der JEDES Anlegen und Aendern dieser Zeile mitschreibt —
+    # unabhaengig davon, welche Spalten es anfasst.
     db_conn.execute("CREATE TABLE IF NOT EXISTS _schreibzaehler (sha256 text)")
     db_conn.execute("TRUNCATE _schreibzaehler")
     db_conn.execute(
@@ -886,7 +907,7 @@ async def test_genau_ein_schreibvorgang(
         "$$ LANGUAGE plpgsql"
     )
     db_conn.execute(
-        "CREATE OR REPLACE TRIGGER _zaehl_trigger AFTER UPDATE ON documents "
+        "CREATE OR REPLACE TRIGGER _zaehl_trigger AFTER INSERT OR UPDATE ON documents "
         "FOR EACH ROW EXECUTE FUNCTION _zaehle_schreibvorgang()"
     )
     db_conn.commit()
@@ -906,7 +927,6 @@ async def test_genau_ein_schreibvorgang(
 
     nachher = get_document(db_conn, sha)
     assert nachher is not None
-    assert nachher.updated_at > vorher.updated_at
     assert nachher.status is DocumentStatus.DONE
 
 
@@ -1101,12 +1121,11 @@ async def test_wiederholbarer_fehler_laesst_die_zeile_unberuehrt(
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    """Geworfen, nichts geschrieben — die Warteschlange legt neu vor."""
+    """Geworfen, nichts geschrieben — die Warteschlange legt neu vor. Es gibt
+    kein Ergebnis, und die Eingabe steht: Das Dokument bleibt offen."""
     sha, _ = _anlegen(
         db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
     )
-    vorher = get_document(db_conn, sha)
-    assert vorher is not None
 
     runpod = FalscherRunPod([{"id": "j", "status": "TIMED_OUT"}])
     with pytest.raises(TransientRunPodError):
@@ -1114,8 +1133,8 @@ async def test_wiederholbarer_fehler_laesst_die_zeile_unberuehrt(
             sha, settings=exec_settings, runpod=runpod, pool=pool
         )
 
-    nachher = get_document(db_conn, sha)
-    assert nachher == vorher
+    assert get_document(db_conn, sha) is None
+    assert _eingabe_steht(db_conn, sha)
 
 
 async def test_endgueltiger_fehler_schreibt_vor_dem_werfen(
@@ -1544,19 +1563,16 @@ async def test_eingabeprobleme_enden_input_error_nicht_failed(
         kein Endergebnis hat.
 
     Bezahlt ist in beiden Faellen nichts. Und der Unterschied ist nicht bloss
-    Etikett: `input_error` steht im Terminal-Guard und wird nicht wieder
-    angefasst, `failed` ausdruecklich schon — ein Retry von Hand liesse ein
-    Dokument mit unbekanntem MIME-Typ also erneut anlaufen, ohne dass sich
-    daran etwas aendern koennte.
+    Etikett: Bei `input_error` kehrt das Nachsehen des Executors zurueck,
+    `failed` laeuft ausdruecklich neu — ein Retry von Hand liesse ein Dokument
+    mit unbekanntem Typ also erneut anlaufen, ohne dass sich daran etwas aendern
+    koennte. Was sich nicht bestimmen liess, bleibt in der Zeile leer.
     """
-    # 1. Unbekannte MIME-Zeichenkette in der Zeile.
-    sha_mime, _ = _anlegen(
-        db_conn, tmp_path, b"inhalt", name="m.png", typ=DocumentType.PNG
-    )
-    db_conn.execute(
-        "UPDATE documents SET mime = %s WHERE sha256 = %s",
-        ("application/x-gibt-es-nicht", sha_mime),
-    )
+    # 1. Bytes eines Typs, den das Paket nicht kennt (der Job erkennt den Typ
+    # am Inhalt, wie das Abschicken).
+    unbekannt = b"kein bekannter dateikopf"
+    sha_mime = hashlib.sha256(unbekannt).hexdigest()
+    insert_input(db_conn, sha256=sha_mime, content=unbekannt)
     runpod = FalscherRunPod([_fertige_antwort()])
     with pytest.raises(UnsupportedTypeError):
         await process_document(
@@ -1565,10 +1581,12 @@ async def test_eingabeprobleme_enden_input_error_nicht_failed(
     zeile = get_document(db_conn, sha_mime)
     assert zeile is not None
     assert zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.mime is None and zeile.size_bytes == len(unbekannt)
+    assert not _eingabe_steht(db_conn, sha_mime)
     # Und es wurde NICHTS abgesendet.
     assert runpod.abgesendet == []
 
-    # 2. Zur Zeile gibt es keine Eingabe (beschaedigter Bestand).
+    # 2. Zum Job gibt es keine Eingabe (beschaedigter Bestand).
     sha_weg, _ = _anlegen(
         db_conn, tmp_path, b"gleich weg", name="w.png", typ=DocumentType.PNG
     )
@@ -1581,6 +1599,7 @@ async def test_eingabeprobleme_enden_input_error_nicht_failed(
     zeile = get_document(db_conn, sha_weg)
     assert zeile is not None
     assert zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.mime is None and zeile.size_bytes is None
     assert runpod2.abgesendet == []
 
 
@@ -1710,8 +1729,8 @@ async def test_abbruch_wird_durchgereicht(
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    """`CancelledError` wird nicht gefangen: Der Job endet `aborted`, die Zeile
-    bleibt `new` (den Rueckweg bringt das Ticket #26).
+    """`CancelledError` wird nicht gefangen: Der Job endet `aborted`, es entsteht
+    kein Ergebnis, das Dokument bleibt offen (den Rueckweg bringt das Ticket #26).
 
     Der Test faengt einen echten Fehler ab, den man leicht macht: Waere hier
     `except BaseException` statt `except Exception`, wuerde der Abbruch als
@@ -1731,10 +1750,9 @@ async def test_abbruch_wird_durchgereicht(
             sha, settings=exec_settings, runpod=runpod, pool=pool
         )
 
-    # Die Zeile ist unberuehrt — kein `failed`.
-    zeile = get_document(db_conn, sha)
-    assert zeile is not None
-    assert zeile.status is DocumentStatus.NEW
+    # Kein Ergebnis — kein `failed` —, und die Eingabe steht noch.
+    assert get_document(db_conn, sha) is None
+    assert _eingabe_steht(db_conn, sha)
 
 
 async def test_abbruch_beim_warten_bricht_den_runpod_job_ab(
@@ -1748,8 +1766,8 @@ async def test_abbruch_beim_warten_bricht_den_runpod_job_ab(
     weitergeworfen, nicht verschluckt.
 
     Sonst liefe der Job bei RunPod weiter und kostete Geld, ohne dass ihn noch
-    jemand abholt. Die Zeile bleibt `new`; ob und wie neu eingereiht wird, regelt
-    die Warteschlange und nicht dieser Zweig.
+    jemand abholt. Ein Ergebnis entsteht nicht; ob und wie neu eingereiht wird,
+    regelt die Warteschlange und nicht dieser Zweig.
     """
     sha, _ = _anlegen(
         db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
@@ -1768,9 +1786,7 @@ async def test_abbruch_beim_warten_bricht_den_runpod_job_ab(
     assert runpod.abgebrochen == ["job-0"]
     # Erst abgesendet, dann abgebrochen, in dieser Reihenfolge.
     assert runpod.verlauf == ["submit:job-0", "abbrechen:job-0"]
-    zeile = get_document(db_conn, sha)
-    assert zeile is not None
-    assert zeile.status is DocumentStatus.NEW
+    assert get_document(db_conn, sha) is None
 
 
 async def test_misslungener_abbruch_verdeckt_das_herunterfahren_nicht(
@@ -1805,9 +1821,7 @@ async def test_misslungener_abbruch_verdeckt_das_herunterfahren_nicht(
             pool=pool,
         )
 
-    zeile = get_document(db_conn, sha)
-    assert zeile is not None
-    assert zeile.status is DocumentStatus.NEW
+    assert get_document(db_conn, sha) is None
 
 
 async def test_erfolgreicher_job_wird_nicht_abgebrochen(

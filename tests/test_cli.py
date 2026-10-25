@@ -117,21 +117,25 @@ def _datei(
 def _anlegen(
     db_conn: psycopg.Connection[Any], tmp_path: Path, name: str, dsn: str
 ) -> OCRWrapper:
-    """Eine Datei samt Zeile `new` und Eingabe, ohne Job und ohne `ocr`.
+    """Eine Datei samt gescheitertem Ergebnis und Eingabe, ohne Job und ohne `ocr`.
 
-    Fuer die Tests, die ein Ergebnis in die Zeile schreiben und dann ein Kommando
-    ansehen. Die Datei liegt da, damit sich das Kommando auch mit ihrem Pfad
-    aufrufen laesst.
+    Fuer die Tests, die ein Ergebnis schreiben und dann ein Kommando ansehen. Die
+    Zeile legt sonst erst der Job an; hier steht sie von Hand als `failed` da,
+    wie der Job sie bei `failed` hinterlaesst, und die Tests schreiben ihr
+    Ergebnis darueber (`failed` darf ueberschrieben werden). Die Datei liegt da,
+    damit sich das Kommando auch mit ihrem Pfad aufrufen laesst.
     """
     pfad, sha256 = _datei(tmp_path, name)
     inhalt = pfad.read_bytes()
     with db_conn.transaction():
-        db.insert_document(
-            db_conn,
-            sha256=sha256,
-            size_bytes=len(inhalt),
-            mime="image/png",
-            endpoint_id=Settings.load(db_dsn=dsn, api_key=SCHLUESSEL).require_endpoint_id(),
+        db_conn.execute(
+            "INSERT INTO documents (sha256, size_bytes, mime, status, endpoint_id) "
+            "VALUES (%s, %s, 'image/png', 'failed', %s)",
+            (
+                sha256,
+                len(inhalt),
+                Settings.load(db_dsn=dsn, api_key=SCHLUESSEL).require_endpoint_id(),
+            ),
         )
         db.insert_input(db_conn, sha256=sha256, content=inhalt)
     zeile = db.get_document(db_conn, sha256, with_raw=False)
@@ -169,6 +173,7 @@ async def test_fertiges_dokument_gibt_null(
             sha256=huelle.sha256,
             status=zustand,
             raw={"markdown": "Text", "content_list": [], "images": {}},
+            endpoint_id="testendpoint",
         )
         assert cli.invoke(app, ["wait", huelle.sha256]).exit_code == 0, zustand
         ergebnis = cli.invoke(app, ["markdown", huelle.sha256])
@@ -200,6 +205,7 @@ async def test_gescheitertes_dokument_gibt_drei(
             status=zustand,
             raw={"markdown": "Teilstueck"},
             error="aus",
+            endpoint_id="testendpoint",
         )
         assert cli.invoke(app, ["wait", huelle.sha256]).exit_code == 3, zustand
         assert cli.invoke(app, ["markdown", huelle.sha256]).exit_code == 3, zustand
@@ -246,6 +252,7 @@ async def test_markdown_gibt_bei_misserfolg_nichts_aus(
         status=DocumentStatus.FAILED,
         raw={"markdown": "NUR EIN TEILSTUECK"},
         error="mittendrin",
+        endpoint_id="testendpoint",
     )
     ergebnis = cli.invoke(app, ["markdown", huelle.sha256])
     assert ergebnis.exit_code == 3
@@ -338,6 +345,7 @@ async def test_json_traegt_kein_raw(
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
         raw={"markdown": "x" * 5000, "content_list": [], "images": {}},
+        endpoint_id="testendpoint",
     )
     ergebnis = cli.invoke(app, ["show", huelle.sha256, "--json"])
     assert ergebnis.exit_code == 0, ergebnis.output
@@ -404,6 +412,7 @@ async def test_hash_und_pfad_werden_gleich_aufgeloest(
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
         raw={"markdown": "derselbe Text", "content_list": [], "images": {}},
+        endpoint_id="testendpoint",
     )
 
     ueber_hash = cli.invoke(app, ["markdown", huelle.sha256])
@@ -430,8 +439,59 @@ def test_show_zeigt_den_juengsten_job(
     ergebnis = cli.invoke(app, ["show", sha, "--json"])
     assert ergebnis.exit_code == 0, ergebnis.output
     angaben = json.loads(ergebnis.stdout)
+    assert angaben["status"] is None
     assert angaben["phase"] == "waiting"
     assert angaben["job"]["status"] == "todo"
+
+    # Ohne `--json` dasselbe, lesbar: offen, und was der Job tut.
+    text = cli.invoke(app, ["show", sha])
+    assert text.exit_code == 0, text.output
+    assert "offen" in text.stdout and "waiting" in text.stdout
+
+
+def test_show_raw_eines_offenen_dokuments_sagt_dass_es_noch_kein_ergebnis_hat(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    datei, sha = _datei(tmp_path, "offen.png")
+    cli.invoke(app, ["ocr", str(datei)])
+
+    ergebnis = cli.invoke(app, ["show", sha, "--raw"])
+
+    assert ergebnis.exit_code == 1
+    assert ergebnis.stdout == ""
+    assert "noch kein Ergebnis" in ergebnis.stderr
+
+
+async def test_show_zeigt_was_document_sagt_und_raw_die_vollstaendige_antwort(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    """`show` zeigt den Stand aus `document()` ohne `raw`; `show --raw` gibt die
+    vollstaendige Antwort als JSON aus, auch ohne `--json`."""
+    huelle = _anlegen(db_conn, tmp_path, "fertig.png", _test_datenbank)
+    antwort = {"markdown": "ganz", "content_list": [], "images": {}, "extras": {"a": [1]}}
+    await write_terminal_async(
+        async_conn,
+        sha256=huelle.sha256,
+        status=DocumentStatus.DONE,
+        raw=antwort,
+        endpoint_id="testendpoint",
+    )
+
+    stand = json.loads(cli.invoke(app, ["show", huelle.sha256, "--json"]).stdout)
+    assert stand["status"] == "done"
+    assert stand["phase"] == "terminal"
+    assert stand["mime"] == "image/png"
+    assert "raw" not in stand
+
+    ergebnis = cli.invoke(app, ["show", huelle.sha256, "--raw"])
+    assert ergebnis.exit_code == 0, ergebnis.output
+    vollstaendig = json.loads(ergebnis.stdout)
+    assert vollstaendig["raw"] == antwort
+    assert vollstaendig["status"] == "done"
 
 
 def test_status_sagt_wenn_kein_daemon_laeuft(
@@ -532,10 +592,11 @@ def test_ocr_json_nennt_je_dokument_hash_zustand_und_ob_eingereiht(
 ) -> None:
     datei, sha = _datei(tmp_path, "a.png")
 
+    # Offen hat keinen Endzustand: `null`.
     erste = json.loads(cli.invoke(app, ["ocr", str(datei), "--json"]).stdout)
     assert erste == {
         "documents": [
-            {"path": str(datei), "sha256": sha, "status": "new", "queued": True}
+            {"path": str(datei), "sha256": sha, "status": None, "queued": True}
         ],
         "skipped": [],
     }
@@ -543,7 +604,7 @@ def test_ocr_json_nennt_je_dokument_hash_zustand_und_ob_eingereiht(
     # Dasselbe noch einmal: Das Dokument ist unterwegs, es geschieht nichts.
     zweite = json.loads(cli.invoke(app, ["ocr", str(datei), "--json"]).stdout)
     assert zweite["documents"] == [
-        {"path": str(datei), "sha256": sha, "status": "new", "queued": False}
+        {"path": str(datei), "sha256": sha, "status": None, "queued": False}
     ]
     assert _jobs(db_conn) == 1
 
@@ -559,7 +620,7 @@ async def test_ocr_json_nennt_ein_ergebnis_als_treffer_und_reiht_nichts_ein(
     cli.invoke(app, ["ocr", str(datei)])
     db_conn.execute("DELETE FROM procrastinate_jobs")
     await write_terminal_async(
-        async_conn, sha256=sha, status=DocumentStatus.FAILED, raw={}, error="aus"
+        async_conn, sha256=sha, status=DocumentStatus.FAILED, raw={}, error="aus", endpoint_id="testendpoint"
     )
 
     ergebnis = json.loads(cli.invoke(app, ["ocr", str(datei), "--json"]).stdout)
@@ -1016,24 +1077,22 @@ def test_setup_braucht_weder_endpoint_noch_schluessel(
     assert ergebnis.exit_code == 0, ergebnis.output
 
 
-def test_abschicken_verlangt_den_endpoint_und_reiht_ohne_ihn_nichts_ein(
+def test_abschicken_braucht_keinen_endpoint(
     cli_ohne_schluessel: CliRunner,
     db_conn: psycopg.Connection[Any],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Bis die Zeile erst am Ende des Jobs entsteht (#25), traegt sie den Endpoint;
-    der ist Konfiguration, kein Geheimnis, und Abschicken verlangt ihn weiter."""
+    """Den Endpoint traegt erst die Ergebniszeile, die der Job am Ende anlegt;
+    Abschicken reiht auch ohne ihn ein."""
     monkeypatch.delenv("MINERU_OCR_ENDPOINT_ID")
     datei, _ = _datei(tmp_path, "a.png")
 
     ergebnis = cli_ohne_schluessel.invoke(app, ["ocr", str(datei)])
 
-    assert ergebnis.exit_code == 1
-    assert "MINERU_OCR_ENDPOINT_ID" in ergebnis.stderr
-    assert "Traceback" not in ergebnis.output
+    assert ergebnis.exit_code == 0, ergebnis.output
     assert _zaehlen(db_conn, "documents") == 0
-    assert _jobs(db_conn) == 0
+    assert _jobs(db_conn) == 1
 
 
 @pytest.mark.parametrize("kommando", [["status"], ["preflight"]])
@@ -1097,7 +1156,7 @@ async def test_retry_fragt_vor_dem_geldausgeben(
     cli.invoke(app, ["ocr", str(datei)])
     db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
     await write_terminal_async(
-        async_conn, sha256=sha, status=DocumentStatus.FAILED, raw={}
+        async_conn, sha256=sha, status=DocumentStatus.FAILED, raw={}, endpoint_id="testendpoint"
     )
 
     verneint = cli.invoke(app, ["retry", sha], input="n\n")
@@ -1133,7 +1192,7 @@ async def test_retry_mit_yes_fragt_nicht(
     cli.invoke(app, ["ocr", str(datei)])
     db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
     await write_terminal_async(
-        async_conn, sha256=sha, status=DocumentStatus.FAILED, raw={}
+        async_conn, sha256=sha, status=DocumentStatus.FAILED, raw={}, endpoint_id="testendpoint"
     )
 
     ergebnis = cli.invoke(app, ["retry", sha, "--yes"])
@@ -1167,6 +1226,7 @@ async def test_markdown_schreibt_in_eine_datei(
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
         raw={"markdown": "Der ganze Text", "content_list": [], "images": {}},
+        endpoint_id="testendpoint",
     )
 
     ziel = tmp_path / "ergebnis.md"
@@ -1214,6 +1274,7 @@ async def test_markdown_meldet_eine_beschaedigte_zeile_statt_sie_auszugeben(
             ],
             "images": {},
         },
+        endpoint_id="testendpoint",
     )
 
     ziel = tmp_path / "beschaedigt.md"
@@ -1250,6 +1311,7 @@ async def test_markdown_meldet_auch_ein_FEHLENDES_pflichtfeld(
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
         raw={"markdown": "Fliesstext ohne die Randbloecke.", "images": {}},
+        endpoint_id="testendpoint",
     )
 
     ziel = tmp_path / "ohne_liste.md"

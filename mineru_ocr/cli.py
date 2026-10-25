@@ -314,7 +314,11 @@ def ocr(
                         {
                             "path": str(datei),
                             "sha256": str(gereicht),
-                            "status": gereicht.status.value,
+                            # Offen (eingereiht oder schon unterwegs) hat keinen
+                            # Endzustand: `null`, kein erfundenes Wort.
+                            "status": gereicht.status.value
+                            if gereicht.status is not None
+                            else None,
                             "queued": gereicht.queued,
                         }
                     )
@@ -349,7 +353,7 @@ def _ocr_ausgeben(
     else:
         for eintrag in dokumente:
             typer.echo(
-                f"{eintrag['sha256']}  {eintrag['status']:<12} "
+                f"{eintrag['sha256']}  {eintrag['status'] or 'offen':<12} "
                 f"{'eingereiht' if eintrag['queued'] else 'nicht eingereiht':<16} "
                 f"{eintrag['path']}"
             )
@@ -383,9 +387,11 @@ def _grund(fehler: BaseException) -> str:
 def status(
     json_out: Annotated[bool, typer.Option("--json", help="Maschinenlesbar ausgeben.")] = False,
 ) -> None:
-    """Zeigt den Gesamtzustand: Endzustaende, Wartendes, Laufendes, Daemon, Guthaben.
+    """Zeigt den Gesamtzustand: Endzustaende, Offenes, Jobs, Daemon, Guthaben.
 
-    Alles davon ist abgeleitet und nirgends gespeichert. Weist ausserdem offene
+    Alles davon ist abgeleitet und nirgends gespeichert. Offen (`open`) sind die
+    Dokumente, deren Eingabe steht und die noch kein Ergebnis haben; wie viele
+    Jobs warten oder laufen, zeigt die Zeile darunter. Weist ausserdem offene
     Aufruest-Faelle aus — das ist der Weg, auf dem ein zu grosses Dokument zu
     einem Aufgaben-Eintrag wird: Der Bericht zeigt ihn, der Mensch legt ihn an.
 
@@ -429,42 +435,54 @@ def status(
 def show(
     target: Annotated[str, typer.Argument(help="Hash oder Pfad.")],
     json_out: Annotated[bool, typer.Option("--json", help="Maschinenlesbar ausgeben.")] = False,
+    raw: Annotated[bool, typer.Option("--raw", help="Die vollstaendige Antwort als JSON ausgeben.")] = False,
 ) -> None:
-    """Zeigt ein Dokument: Angaben, Zustand und den juengsten Job dazu.
+    """Zeigt, wo ein Dokument steht: Endzustand, oder offen samt seinem Job.
 
-    Der Job-Teil ist die Antwort auf „warum passiert nichts?" — er zeigt, ob das
-    Dokument wartet, laeuft, wie oft es schon versucht wurde, oder ob sein
-    juengster Job endete, ohne etwas zu schreiben.
+    Ruft `OCRClient.document` und laedt dabei `raw` nicht. Der Job-Teil ist die
+    Antwort auf „warum passiert nichts?" — er zeigt, ob ein offenes Dokument
+    wartet, laeuft, wie oft es schon versucht wurde, oder ob sein juengster Job
+    endete, ohne ein Ergebnis zu schreiben (dann hilft `retry`).
+
+    `--raw` gibt die vollstaendige Antwort aus (`OCRClient.get(...).to_dict(
+    raw=True)`), immer als JSON: die Angaben und unter `raw` alles, was MinerU
+    lieferte. Ein offenes Dokument hat noch keine; das Kommando sagt es auf
+    stderr und endet mit Exit-Code 1. Ein unbekannter Hash endet ebenso.
     """
+    if raw:
+        try:
+            with OCRClient(preflight=False) as klient:
+                vollstaendig = klient.get(_ziel(target)).to_dict(raw=True)
+        except MineruOcrError as fehler:
+            _betriebsfehler(fehler)
+        _ausgeben(vollstaendig, True, "")
+        return
+
     try:
         with OCRClient(preflight=False) as klient:
-            sha256 = _ziel(target)
-            huelle = klient.get(sha256)
-            abgeleitet = klient.document(sha256)
-            angaben = huelle.to_dict()
-            angaben["phase"] = abgeleitet.phase.value
-            angaben["job"] = {
-                "id": abgeleitet.job_id,
-                "status": abgeleitet.job_status,
-                "attempts": abgeleitet.attempts,
-                "count": abgeleitet.job_count,
-            }
+            angaben = klient.document(_ziel(target)).to_dict()
     except MineruOcrError as fehler:
         _betriebsfehler(fehler)
 
     zeilen = [
         f"{angaben['sha256']}",
-        f"  Typ:       {angaben['mime']}  {angaben['size_bytes']} Byte"
-        + (f"  {angaben['page_count']} Seiten" if angaben["page_count"] else ""),
-        f"  Zustand:   {angaben['status']}   Phase: {angaben['phase']}",
+        f"  Zustand:   {angaben['status'] or 'offen'}   Phase: {angaben['phase']}",
         f"  Job:       {angaben['job']}",
     ]
-    if angaben["error"]:
-        zeilen.append(f"  Fehler:    {angaben['error']}")
-    if angaben["image_tag_at_submit"]:
-        zeilen.append(f"  Image:     {angaben['image_tag_at_submit']}")
-    for vermerk in angaben["notes"]:
-        zeilen.append(f"  Vermerk:   {vermerk}")
+    if angaben["status"] is not None:
+        # Ein Ergebnis: seine Angaben. Ein offenes Dokument hat keine Zeile.
+        zeilen.insert(
+            1,
+            f"  Typ:       {angaben['mime'] or 'unbekannt'}  "
+            f"{angaben['size_bytes'] if angaben['size_bytes'] is not None else '?'} Byte"
+            + (f"  {angaben['page_count']} Seiten" if angaben["page_count"] else ""),
+        )
+        if angaben["error"]:
+            zeilen.append(f"  Fehler:    {angaben['error']}")
+        if angaben["image_tag_at_submit"]:
+            zeilen.append(f"  Image:     {angaben['image_tag_at_submit']}")
+        for vermerk in angaben["notes"]:
+            zeilen.append(f"  Vermerk:   {vermerk}")
     _ausgeben(angaben, json_out, "\n".join(zeilen))
 
 

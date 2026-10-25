@@ -9,8 +9,9 @@ duenner Adapter darueber, und ein Adapter ist billig zu ersetzen, ein
 durchwachsener Ablauf nicht.
 
 Der Ablauf ist der aus Plan 5.1, und das Entscheidende daran ist, was er NICHT
-tut: Er fasst die Zeile zwischen Anfang und Ende nicht an. Kein Zwischenstand,
-kein „laeuft gerade", keine Chunk-Zustaende. Alles Innere ist innen — „ES KOMEMN
+tut: Es gibt bis zum Ende keine Ergebniszeile, und er legt sie erst dort an.
+Kein Zwischenstand, kein „laeuft gerade", keine Chunk-Zustaende. Alles Innere
+ist innen — „ES KOMEMN
 KEINE CHUNKS IM POSTGRES AN DU KEK Der EXEKUTOR MANAGED DOCH ALLES UND SPEICHERT
 NUR FERTIG" (Plan 2.4).
 
@@ -49,10 +50,9 @@ from .errors import (
     ResultLostError,
     TerminalRunPodError,
     TransientRunPodError,
-    UnsupportedTypeError,
     should_run_again,
 )
-from .mime import DocumentType
+from .mime import sniff_bytes
 from .pdf import PdfReader
 from .runpod import RunPodAccess
 
@@ -109,31 +109,32 @@ async def process_document(
 
     Der Ablauf in der Reihenfolge, in der er stattfindet:
 
-    0. TERMINAL-GUARD. Steht die Zeile bereits auf `done`, `empty` oder
-       `input_error`, kehrt die Funktion sofort zurueck und fasst nichts an. Das
-       ist die Idempotenz, die eine Warteschlange voraussetzt — Tasks KOENNEN
-       mehrfach laufen (Wiederholungen, stalled-Wiederaufnahme; belegt ueber die
-       Mechanik, nicht als Doku-Zitat, Feature-Verifikation Punkt 4). Ohne den
-       Guard wuerde ein Wiederlauf nach dem finalen Schreiben — etwa nach einem
-       Absturz im Fenster zwischen Zeilen-Schreiben und Job-Verbuchung — das
-       fertige Dokument vollstaendig neu bezahlen.
+    0. NACHSEHEN. Gibt es schon ein Ergebnis `done`, `empty` oder
+       `input_error`, loescht die Funktion die Eingabe, falls sie noch da ist,
+       und kehrt zurueck, ohne etwas zu kosten. Das ist die Idempotenz, die eine
+       Warteschlange voraussetzt — Tasks KOENNEN mehrfach laufen
+       (Wiederholungen, stalled-Wiederaufnahme; belegt ueber die Mechanik, nicht
+       als Doku-Zitat, Feature-Verifikation Punkt 4). Ohne das Nachsehen wuerde
+       ein Wiederlauf nach dem Endschreiben — etwa nach einem Absturz im Fenster
+       zwischen Ergebnis und Job-Verbuchung — das fertige Dokument vollstaendig
+       neu bezahlen. Eine Eingabe neben einem Ergebnis entsteht, wenn ein
+       Abschicken sie genau in dem Augenblick neu ablegt, in dem ein Job das
+       Ergebnis schreibt; sie ist zu nichts mehr gut.
 
-       `failed` gehoert AUSDRUECKLICH NICHT in den Guard. Ein per
-       `retry_job_by_id` wieder vorgelegter Job muss das Dokument wirklich neu
-       verarbeiten; stuende `failed` im Guard, waere jeder Retry von Hand ein
-       Nichts-Tun, das als Erfolg verbucht wuerde, und ein gescheitertes Dokument
-       koennte nie wieder laufen.
+       `failed` gehoert AUSDRUECKLICH NICHT dazu. Ein per `retry_job_by_id`
+       wieder vorgelegter Job muss das Dokument wirklich neu verarbeiten;
+       stuende `failed` hier, waere jeder Retry von Hand ein Nichts-Tun, das als
+       Erfolg verbucht wuerde, und ein gescheitertes Dokument koennte nie wieder
+       laufen.
 
-    1. Zeile laden. Ab hier wird sie bis zum Terminal-Schreiben NICHT mehr
-       angefasst.
-
-    2. Eingabe aus `inputs` lesen, ueber den Hash, auf einer eigenen
+    1. Eingabe aus `inputs` lesen, ueber den Hash, auf einer eigenen
        kurzlebigen Verbindung, und den Hash gegenpruefen. Fehlt die Eingabe oder
        weicht der Hash ab, ist der Bestand beschaedigt: `input_error` samt
-       Vermerk. Bezahlte Ergebnisse gehen dabei nicht verloren, weil es an
-       dieser Zeile noch keine gibt.
+       Vermerk. Bezahlte Ergebnisse gehen dabei nicht verloren, weil es noch
+       keine gibt. Typ und Groesse bestimmt der Job aus den Bytes (`mime`); sie
+       gehen mit dem Ergebnis in die Zeile.
 
-    3. Zerlegen, absenden, abholen — alles nur im Arbeitsspeicher. Fuer PDF ueber
+    2. Zerlegen, absenden, abholen — alles nur im Arbeitsspeicher. Fuer PDF ueber
        der Schwelle: `chunking.plan_chunks`, dann `chunking.iter_chunks` mit
        `PdfReader.extract` als Schneider. Fuer alles andere ein einziges
        Teilstueck `Chunk(0, 0)`, das die ganze Datei traegt — es gibt keinen
@@ -149,7 +150,7 @@ async def process_document(
        Je Teilstueck NACHEINANDER: absenden, abfragen bis terminal, SOFORT
        abholen und auspacken (`assembly.unpack_response`), dann das naechste.
 
-       3a. ABHOLEN, BEVOR ETWAS ANDERES GESCHIEHT. Ein fertiges Ergebnis liegt
+       2a. ABHOLEN, BEVOR ETWAS ANDERES GESCHIEHT. Ein fertiges Ergebnis liegt
            auf der Gegenseite nur rund dreissig Minuten bereit; danach antwortet
            `/status` mit 404 und die bezahlte Arbeit ist weg, bevor sie je bei
            uns war. Daraus folgt die Bauart, und sie ist eine ZUSICHERUNG, keine
@@ -163,7 +164,7 @@ async def process_document(
            machten die alten Ad-hoc-Skripte anders: 120 gleichzeitig offene Jobs,
            eingesammelt in einer zweiten Phase.)
 
-       3b. ENDZUSTAND UEBERSETZEN. `await_result` gibt auch `FAILED`,
+       2b. ENDZUSTAND UEBERSETZEN. `await_result` gibt auch `FAILED`,
            `CANCELLED` und `TIMED_OUT` zurueck, ohne zu werfen — das ist Absicht,
            damit die bezahlte Fehlerantwort nicht verlorengeht. Hier wird sie
            bewertet: alles ausser `COMPLETED` wird in `TerminalRunPodError` bzw.
@@ -178,9 +179,9 @@ async def process_document(
        gleichzeitig, und die eigentliche Nebenlaeufigkeit liegt ohnehin
        serverseitig in der Warteschlange von RunPod. Zwei Regler waeren einer zu
        viel — und Teilstuecke eines Dokuments gleichzeitig loszuschicken hiesse,
-       mehrere bezahlte Ergebnisse gleichzeitig zu parken, gegen 3a.
+       mehrere bezahlte Ergebnisse gleichzeitig zu parken, gegen 2a.
 
-    4. ZUSAMMENSETZEN UND SCHREIBEN — ein Vorgang, ein Schreibzugriff.
+    3. ZUSAMMENSETZEN UND SCHREIBEN — ein Vorgang, ein Schreibzugriff.
 
        Erst wird nachgerechnet: `chunking.verify_page_coverage` ueber die
        tatsaechlich gelieferten Teilstuecke gegen `page_count`. Das ist die laute
@@ -201,17 +202,19 @@ async def process_document(
        Wissen in die Datenbank schreiben — also Chunk-Angaben fuehren, gegen die
        Festlegung.
 
-       Dann der eine Schreibvorgang: `raw` bekommt das zusammengesetzte Ergebnis,
-       der Zustand wird `done` oder `empty` (`assembly.is_empty`), das einmal je
-       Lauf gelesene Worker-Image geht als `image_tag_at_submit` mit, Messwerte
-       und Hinweise nach `notes`, und das Wecksignal geht raus.
+       Dann der eine Schreibvorgang, der die Ergebniszeile anlegt (oder eine
+       `failed`-Zeile ueberschreibt): `raw` bekommt das zusammengesetzte
+       Ergebnis, der Zustand wird `done` oder `empty` (`assembly.is_empty`), Typ,
+       Groesse und Seitenzahl aus den Bytes, das einmal je Lauf gelesene
+       Worker-Image als `image_tag_at_submit`, Messwerte und Hinweise nach
+       `notes`; die Eingabe geht, und das Wecksignal geht raus.
 
     Fehler laufen IMMER ueber den Ausnahme-Pfad, und der ist zweigeteilt:
-    Wiederholbare Fehler werden GEWORFEN, ohne die Zeile anzufassen — die
+    Wiederholbare Fehler werden GEWORFEN, ohne etwas zu schreiben — die
     Warteschlange legt den Job erneut vor, das Dokument laeuft von vorn.
     Endgueltige Fehler schreiben ZUERST (`raw` mit dem, was bis dahin ankam, samt
     Fehler-Umschlag, Zustand `failed`, Wecksignal) und werfen DANN. Diese
-    Reihenfolge ist der Grund, warum Job-Endzustand und Zeile immer dieselbe
+    Reihenfolge ist der Grund, warum Job-Endzustand und Ergebnis immer dieselbe
     Wahrheit tragen.
 
     Was ein wiederholbarer Fehler mitten im Dokument KOSTET, steht hier, weil es
@@ -231,18 +234,18 @@ async def process_document(
 
     Args:
         sha256: Welches Dokument. Der Job traegt nichts weiter als diesen Hash;
-            alles andere steht in der Zeile.
+            die Bytes stehen in `inputs`.
         settings: Schwellen, Zeitschranken, Job-Contract-Werte.
         runpod: Der geteilte Zugang. Gehoert dem Daemon, wird hier nur benutzt.
         pool: Verbindungen zur eigenen Datenbank.
 
     Returns:
-        Nichts. Das Ergebnis steht in der Zeile — das ist der ganze Punkt dieser
+        Nichts. Das Ergebnis steht in der Datenbank — das ist der ganze Punkt dieser
         Architektur: Nicht der Rueckgabewert traegt das Ergebnis, sondern die
         Datenbank, und deshalb ueberlebt es jeden Absturz.
 
     Verbindungen:
-        Eine Verbindung wird ZWEIMAL kurz genommen — am Anfang zum Lesen, am Ende
+        Eine Verbindung wird ZWEIMAL kurz genommen — am Anfang zum Nachsehen, am Ende
         zum Schreiben — und dazwischen ZURUECKGEGEBEN. Waehrend des Wartens auf
         RunPod haelt diese Funktion KEINE Verbindung. Das ist keine Feinheit: Ein
         Dokument haengt bis zu fuenfundzwanzig Minuten in seiner Abfrageschleife,
@@ -250,28 +253,28 @@ async def process_document(
         wuerden den Verbindungspool blockieren, waehrend niemand ihn benutzt.
 
     Idempotenz:
-        Ja, ueber den Terminal-Guard — mit der ausdruecklichen und gewollten
+        Ja, ueber das Nachsehen — mit der ausdruecklichen und gewollten
         Ausnahme von `failed`.
 
     Nebenlaeufigkeit:
         Vierundzwanzig Aufrufe gleichzeitig sind der Normalbetrieb, aber nie zwei
         fuer DENSELBEN Hash: Dafuer sorgt der `lock` beim Einreihen. Sollte es
-        doch geschehen, faengt es der Guard beziehungsweise die Zeilensperre in
-        `write_terminal_async`.
+        doch geschehen, faengt es das Nachsehen beziehungsweise das Anlegen mit
+        Sperre in `write_terminal_async`.
 
     Raises:
-        TransientRunPodError: Wiederholbar. Die Zeile bleibt unberuehrt.
-        TerminalRunPodError: Endgueltig. Die Zeile steht bereits auf `failed`,
-            wenn dies geworfen wird.
-        InputError: Endgueltig ohne RunPod-Kontakt. Die Zeile steht bereits auf
-            `input_error`.
+        TransientRunPodError: Wiederholbar. Es wird nichts geschrieben.
+        TerminalRunPodError: Endgueltig. Das Ergebnis steht bereits auf
+            `failed`, wenn dies geworfen wird.
+        InputError: Endgueltig ohne RunPod-Kontakt. Das Ergebnis steht bereits
+            auf `input_error`.
         asyncio.CancelledError: Der Daemon faehrt herunter. Wird weitergeworfen,
             nicht verschluckt; vorher geht `/cancel` fuer den RunPod-Job hinaus,
-            auf den gerade gewartet wird. Der Job endet dann `aborted`, die
-            Zeile bleibt `new`. Es gibt fuer `aborted` ausdruecklich kein
-            Retry-Bordmittel (Feature-Verifikation Punkt 19), und `ocr_start`
-            fasst eine vorhandene Zeile `new` nicht an — den Rueckweg bringt
-            das Ticket #26.
+            auf den gerade gewartet wird. Der Job endet dann `aborted`, es
+            entsteht kein Ergebnis, und die Eingabe bleibt: Das Dokument ist
+            offen. Es gibt fuer `aborted` ausdruecklich kein Retry-Bordmittel
+            (Feature-Verifikation Punkt 19), und erneutes Abschicken findet die
+            Eingabe und tut nichts — den Rueckweg bringt das Ticket #26.
 
     Endet das Warten auf einen Job mit einem Fehler, bei dem er bei RunPod
     weiterlaufen kann (jeder ausser der Zeitueberschreitung, nach der der Client
@@ -282,16 +285,17 @@ async def process_document(
     ausgibt. Ein Dokument mit N Chunks kostet N Parses; ein Wiederanlauf nach
     einem Absturz kostet sie erneut.
     """
-    # --- 0. und 1.: Zeile laden, Terminal-Guard --------------------------
+    # --- 0.: nachsehen, ob es schon ein Ergebnis gibt ---------------------
     # Die Verbindung wird SOFORT wieder zurueckgegeben. Alles Weitere geschieht
     # ohne Verbindung — ein Dokument haengt bis zu fuenfundzwanzig Minuten in
     # seiner Abfrageschleife, und vierundzwanzig gehaltene Verbindungen ueber
     # diese Zeit blockierten den Pool, waehrend niemand ihn benutzt.
+    endpoint = settings.require_endpoint_id()
     async with pool.connection() as conn:
-        zeile = await db.get_document_async(conn, sha256)
-
-    if zeile.status in _GUARD_ZUSTAENDE:
-        return
+        vorhanden = await db.get_status_async(conn, sha256)
+        if vorhanden in _GUARD_ZUSTAENDE:
+            await db.delete_input_async(conn, sha256)
+            return
 
     teile: list[assembly.ChunkArtifacts] = []
     # Bezahlte Antworten, die sich nicht auspacken liessen. Sie gehoeren in
@@ -300,21 +304,24 @@ async def process_document(
     unverwertbar: list[dict[str, Any]] = []
     vermerke: list[dict[str, Any]] = []
     image_tag: str | None = None
-    # Die Seitenzahl bestimmt der Job aus den Bytes; sie geht mit dem Endergebnis
-    # in die Zeile, auch bei `failed`, sobald sie bekannt ist.
+    # Groesse, Typ und Seitenzahl bestimmt der Job aus den Bytes; sie gehen mit
+    # dem Endergebnis in die Zeile, auch bei `failed`, soweit sie bekannt sind.
+    groesse: int | None = None
+    art: str | None = None
     seitenzahl: int | None = None
     begonnen = time.monotonic()
 
     try:
-        # --- 2.: Eingabe lesen und den Hash gegenpruefen -----------------
+        # --- 1.: Eingabe lesen und den Hash gegenpruefen -----------------
         # Aus `inputs`, ueber den Hash, auf einer EIGENEN kurzlebigen Verbindung
         # (siehe `db.read_input_async`) — nicht aus dem Pool des Daemons und
         # nicht von einem Pfad.
         rohbytes = await db.read_input_async(settings.db_dsn, sha256)
         if rohbytes is None:
-            # Eine Zeile ohne Endergebnis hat immer eine Eingabe (beides
-            # schreibt dieselbe Transaktion). Fehlt sie, ist der Bestand
-            # beschaedigt, und ein Wiederlauf fand dieselbe Luecke. Es ist ein
+            # Ein Dokument ohne Endergebnis hat immer eine Eingabe (Abschicken
+            # legt sie mit dem Job an, und nur das Endergebnis loescht sie).
+            # Fehlt sie, ist der Bestand beschaedigt, und ein Wiederlauf faende
+            # dieselbe Luecke. Es ist ein
             # EINGABE-Problem vor jedem Kontakt mit RunPod: bezahlt ist nichts.
             raise CorruptDocumentError(
                 f"Zu {sha256} gibt es keine Eingabe in `inputs`, obwohl das "
@@ -333,9 +340,14 @@ async def process_document(
                 f"verarbeitet. Es wurde nichts bezahlt."
             )
 
-        typ = DocumentType(_typ_aus_mime(zeile.mime))
+        groesse = len(rohbytes)
+        # Am Inhalt, wie beim Abschicken (`core.prepare`); ein Typ, den das Paket
+        # nicht liest, ist `UnsupportedTypeError`, also `input_error` vor jedem
+        # Kontakt mit RunPod.
+        typ = sniff_bytes(rohbytes)
+        art = typ.mime
 
-        # --- 3.: zerlegen, absenden, abholen ----------------------------
+        # --- 2.: zerlegen, absenden, abholen ----------------------------
         # Zuerst wird geprueft, was sich billig ohne RunPod pruefen laesst (eine
         # PDF oeffnen, bei einer Bilddatei nach einem zweiten Bild fragen, bei allem anderen
         # die Groesse gegen die Anfragegrenze). Erst DANACH kommt der erste
@@ -371,7 +383,7 @@ async def process_document(
                     # Passt ungeteilt: Dann gehen die ORIGINAL-Bytes hinaus,
                     # nicht ein neu geschriebener Ausschnitt. Der Chunk deckt
                     # trotzdem den ganzen Seitenbereich ab, damit die
-                    # Gegenrechnung in Schritt 4 aufgeht — es gibt keinen
+                    # Gegenrechnung in Schritt 3 aufgeht — es gibt keinen
                     # Sonderfall „war nicht geschnitten".
                     stuecke = [
                         (chunking.Chunk(first_page=0, last_page=seiten - 1), rohbytes)
@@ -415,7 +427,7 @@ async def process_document(
                 unverwertbar=unverwertbar,
             )
 
-        # --- 4.: nachrechnen, zusammensetzen, EINMAL schreiben ----------
+        # --- 3.: nachrechnen, zusammensetzen, EINMAL schreiben ----------
         if seiten is not None:
             # Die laute Gegenrechnung. Sie steht hier und nicht in `plan_chunks`,
             # weil erst jetzt feststeht, was wirklich geliefert wurde —
@@ -443,6 +455,9 @@ async def process_document(
                 sha256=sha256,
                 status=status,
                 raw=ergebnis,
+                endpoint_id=endpoint,
+                mime=art,
+                size_bytes=groesse,
                 image_tag_at_submit=image_tag,
                 notes=vermerke,
                 page_count=seitenzahl,
@@ -451,11 +466,12 @@ async def process_document(
     except Exception as fehler:
         # `asyncio.CancelledError` erbt von `BaseException` und wird hier
         # ausdruecklich NICHT gefangen: Beim Herunterfahren soll der Job
-        # `aborted` enden und die Zeile `new` bleiben. Sie hier als endgueltigen
-        # Fehler zu schreiben, machte aus jedem Strg-C reihenweise `failed`.
+        # `aborted` enden und das Dokument offen bleiben. Es hier als
+        # endgueltigen Fehler zu schreiben, machte aus jedem Strg-C reihenweise
+        # `failed`.
         if should_run_again(fehler) and not letzter_versuch:
-            # Wiederholbar UND es kommt noch ein Versuch: WERFEN, ohne die Zeile
-            # anzufassen. Die Warteschlange legt den Job erneut vor, das Dokument
+            # Wiederholbar UND es kommt noch ein Versuch: WERFEN, ohne etwas zu
+            # schreiben. Die Warteschlange legt den Job erneut vor, das Dokument
             # laeuft von vorn.
             #
             # `should_run_again` und nicht die Einstufung unmittelbar: Diese
@@ -521,6 +537,9 @@ async def process_document(
                 sha256=sha256,
                 status=status,
                 raw=ergebnis,
+                endpoint_id=endpoint,
+                mime=art,
+                size_bytes=groesse,
                 image_tag_at_submit=image_tag,
                 error=f"{type(fehler).__name__}: {fehler}",
                 notes=vermerke,
@@ -536,7 +555,7 @@ _GUARD_ZUSTAENDE: frozenset[db.DocumentStatus] = frozenset(
         db.DocumentStatus.INPUT_ERROR,
     }
 )
-"""Die Zustaende, bei denen der Executor sofort zurueckkehrt.
+"""Die Ergebnisse, bei denen der Executor die Eingabe loescht und zurueckkehrt.
 
 `FAILED` steht hier AUSDRUECKLICH NICHT. Ein per `retry_job_by_id` wieder
 vorgelegter Job muss das Dokument wirklich neu verarbeiten; stuende `failed`
@@ -696,35 +715,6 @@ def _json_faehig(wert: Any) -> Any:
     if isinstance(wert, (list, tuple)):
         return [_json_faehig(inhalt) for inhalt in wert]
     return {"nicht_json_faehig": repr(wert), "typ": type(wert).__name__}
-
-
-def _typ_aus_mime(mime: str) -> str:
-    """Findet den Typ zur gespeicherten MIME-Zeichenkette.
-
-    Die Zeile speichert die MIME-Zeichenkette und nicht den Typnamen — sie ist
-    das, was ein Mensch beim Nachsehen erkennt. Zurueck kommt man ueber die
-    Tabelle in `mime.py`, die dafuer die einzige Quelle ist.
-    """
-    for typ in DocumentType:
-        if typ.mime == mime:
-            return typ.value
-    # `UnsupportedTypeError` (also ein `InputError`) und NICHT
-    # `TerminalRunPodError`: Diese Stelle liegt VOR jedem Kontakt mit RunPod.
-    # Hier ist noch kein Cent ausgegeben, und `db.py` trennt die beiden
-    # Endzustaende genau daran — `failed` beantwortet „wofuer haben wir
-    # bezahlt?", `input_error` sagt „mit dieser Eingabe konnten wir nichts
-    # anfangen". Ein unbekannter MIME-Typ ist der zweite Fall.
-    #
-    # Praktische Folge, weshalb es nicht bloss Etikett ist: `input_error` steht
-    # im Terminal-Guard und wird nicht wieder angefasst, `failed` ausdruecklich
-    # schon (fuer den Retry von Hand). Ein Dokument, dessen MIME-Typ das
-    # Programm nicht kennt, gehoert in die erste Gruppe — ein Wiederlauf aendert
-    # daran nichts und kostet nur.
-    raise UnsupportedTypeError(
-        f"Die Zeile traegt die MIME-Zeichenkette {mime!r}, zu der es keinen "
-        f"bekannten Typ gibt. Entweder wurde die Zeile von einer aelteren "
-        f"Fassung angelegt, oder die Tabelle in mime.py hat sich geaendert."
-    )
 
 
 async def _image_tag_lesen(
@@ -1010,7 +1000,7 @@ async def _mit_kontopause(
 
 
 def _endzustand_uebersetzen(antwort: dict[str, Any], job_id: str) -> None:
-    """Bewertet den Endzustand eines Jobs — Schritt 3b.
+    """Bewertet den Endzustand eines Jobs — Schritt 2b.
 
     `await_result` gibt auch `FAILED`, `CANCELLED` und `TIMED_OUT` zurueck, ohne
     zu werfen; das ist Absicht, damit die bezahlte Fehlerantwort nicht

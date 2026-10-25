@@ -1,7 +1,7 @@
-"""Die Tabelle: Schreibregeln, Wecksignal, abgeleiteter Zustand.
+"""Die Tabellen: Schreibregeln, Wecksignal, Stand und abgeleiteter Zustand.
 
 Die Tests zum abgeleiteten Zustand sind REIN und brauchen keine Datenbank — sie
-bekommen Zeile und Job-Liste hereingereicht. Das ist der Grund, warum
+bekommen Ergebnis und Job-Liste hereingereicht. Das ist der Grund, warum
 `derive_status` eine reine Funktion ist: Die Regel ist der heikle Teil, die
 Abfrage ist Handwerk.
 """
@@ -25,14 +25,16 @@ from mineru_ocr.db import (
     DocumentRow,
     DocumentStatus,
     Phase,
-    append_note_async,
+    count_open,
     counts_by_status,
+    delete_input_async,
     derive_status,
     get_document,
-    insert_document,
+    get_status_async,
     insert_input,
     list_documents,
     read_input_async,
+    read_states,
     setup,
     wait_for_terminal,
     worker_heartbeats,
@@ -43,8 +45,8 @@ from mineru_ocr.errors import DatabaseError, DocumentNotFound, TerminalOverwrite
 HASH = "a" * 64
 
 
-def _zeile(status: DocumentStatus = DocumentStatus.NEW) -> DocumentRow:
-    """Eine Zeile im Speicher, ohne Datenbank — fuer die reinen Tests."""
+def _zeile(status: DocumentStatus = DocumentStatus.DONE) -> DocumentRow:
+    """Eine Ergebniszeile im Speicher, ohne Datenbank — fuer die reinen Tests."""
     jetzt = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
     return DocumentRow(
         sha256=HASH,
@@ -75,29 +77,52 @@ def _job(kennung: int, status: str, attempts: int = 0) -> Job:
     )
 
 
-def _einfuegen(conn: psycopg.Connection[Any], sha: str = HASH) -> None:
-    insert_document(
+async def _schreiben(
+    conn: psycopg.AsyncConnection[Any],
+    sha: str = HASH,
+    status: DocumentStatus = DocumentStatus.DONE,
+    raw: dict[str, Any] | None = None,
+    **weiter: Any,
+) -> None:
+    """Das Endschreiben des Jobs, mit den Angaben, die jeder Lauf mitgibt."""
+    await write_terminal_async(
         conn,
         sha256=sha,
-        size_bytes=123,
-        mime="application/pdf",
-        endpoint_id="testendpoint",
+        status=status,
+        raw=raw if raw is not None else {},
+        endpoint_id=weiter.pop("endpoint_id", "testendpoint"),
+        **weiter,
+    )
+
+
+def _ergebnis_anlegen(
+    conn: psycopg.Connection[Any],
+    sha: str = HASH,
+    status: DocumentStatus = DocumentStatus.DONE,
+) -> None:
+    """Eine Ergebniszeile von Hand, fuer die synchronen Tests ohne Job."""
+    conn.execute(
+        "INSERT INTO documents (sha256, status, endpoint_id) VALUES (%s, %s, %s)",
+        (sha, status.value, "testendpoint"),
+    )
+
+
+def _eingabe(conn: psycopg.Connection[Any], sha: str = HASH) -> bool:
+    """Ob zu `sha` eine Eingabe steht."""
+    return (
+        conn.execute("SELECT 1 FROM inputs WHERE sha256 = %s", (sha,)).fetchone()
+        is not None
     )
 
 
 # --- rein, ohne Datenbank -------------------------------------------------
 
 
-def test_terminale_zeile_schlaegt_jeden_job() -> None:
-    """Ist die Zeile endgueltig, ist das der Zustand — auch wenn danach noch ein
-    Job auftaucht. Ein fertiges Dokument bleibt fertig."""
-    for status in [
-        DocumentStatus.DONE,
-        DocumentStatus.EMPTY,
-        DocumentStatus.FAILED,
-        DocumentStatus.INPUT_ERROR,
-    ]:
-        abgeleitet = derive_status(_zeile(status), [_job(7, "doing")])
+def test_ergebnis_schlaegt_jeden_job() -> None:
+    """Gibt es ein Ergebnis, ist das der Zustand — auch wenn danach noch ein Job
+    auftaucht. Ein fertiges Dokument bleibt fertig."""
+    for status in DocumentStatus:
+        abgeleitet = derive_status(HASH, _zeile(status), [_job(7, "doing")])
         assert abgeleitet.phase is Phase.TERMINAL, status
         assert abgeleitet.row_status is status
         # Die Job-Angaben werden trotzdem mitgeliefert — sie helfen beim
@@ -106,10 +131,23 @@ def test_terminale_zeile_schlaegt_jeden_job() -> None:
         assert abgeleitet.job_status == "doing"
 
 
-def test_ohne_job_ist_das_dokument_nur_registriert() -> None:
-    """Zeile `new`, keine Jobs: Phase REGISTERED."""
-    abgeleitet = derive_status(_zeile(), [])
-    assert abgeleitet.phase is Phase.REGISTERED
+def test_documents_kennt_nur_endzustaende() -> None:
+    """`new` gibt es nicht mehr: Die Zeile legt der Job an, wenn er endet."""
+    assert {zustand.value for zustand in DocumentStatus} == {
+        "done",
+        "empty",
+        "failed",
+        "input_error",
+    }
+    assert "REGISTERED" not in Phase.__members__
+
+
+def test_offen_ohne_job_ist_ohne_ergebnis_beendet() -> None:
+    """Eingabe da, kein Ergebnis, kein Job: Unterwegs ist nichts mehr, `retry`
+    hilft. Eingabe und Job entstehen in einer Transaktion, es gab also einen."""
+    abgeleitet = derive_status(HASH, None, [])
+    assert abgeleitet.phase is Phase.ENDED_WITHOUT_RESULT
+    assert abgeleitet.row_status is None
     assert abgeleitet.job_id is None
     assert abgeleitet.job_status is None
     assert abgeleitet.attempts is None
@@ -123,36 +161,36 @@ def test_juengster_job_zaehlt_nicht_der_aelteste() -> None:
     Dokument — der aelteste sagt nichts ueber jetzt.
     """
     jobs = [_job(1, "failed"), _job(9, "doing"), _job(5, "succeeded")]
-    abgeleitet = derive_status(_zeile(), jobs)
+    abgeleitet = derive_status(HASH, None, jobs)
     assert abgeleitet.job_id == 9
     assert abgeleitet.phase is Phase.RUNNING
     assert abgeleitet.job_count == 3
 
     # Und die Reihenfolge der Liste darf nichts aendern — sortiert wird hier.
-    umgekehrt = derive_status(_zeile(), list(reversed(jobs)))
+    umgekehrt = derive_status(HASH, None, list(reversed(jobs)))
     assert umgekehrt == abgeleitet
 
 
 def test_wartender_job_ergibt_waiting() -> None:
-    """Zeile `new`, juengster Job `todo`: Phase WAITING."""
-    assert derive_status(_zeile(), [_job(1, "todo")]).phase is Phase.WAITING
+    """Offen, juengster Job `todo`: Phase WAITING."""
+    assert derive_status(HASH, None, [_job(1, "todo")]).phase is Phase.WAITING
 
 
 def test_laufender_job_ergibt_running() -> None:
-    """Zeile `new`, juengster Job `doing`: Phase RUNNING."""
-    assert derive_status(_zeile(), [_job(1, "doing")]).phase is Phase.RUNNING
+    """Offen, juengster Job `doing`: Phase RUNNING."""
+    assert derive_status(HASH, None, [_job(1, "doing")]).phase is Phase.RUNNING
 
 
 def test_beendeter_job_ohne_ergebnis_wird_erkannt() -> None:
-    """Zeile `new`, juengster Job endgueltig: Phase ENDED_WITHOUT_RESULT.
+    """Offen, juengster Job endgueltig: Phase ENDED_WITHOUT_RESULT.
 
     Der Fall nach hartem Abschuss oder Herunterfahren. Kein Datenfehler,
-    sondern genau der Zustand, den das Ein-Buch-Modell erwartet — Einreihen
-    heilt ihn nicht (`ocr_start` fasst eine Zeile `new` nicht an), den Rueckweg
-    bringt das Ticket #26.
+    sondern genau der Zustand, den das Ein-Buch-Modell erwartet — erneutes
+    Abschicken heilt ihn nicht (die Eingabe steht, das Dokument gilt als
+    unterwegs), den Rueckweg bringt das Ticket #26.
     """
     for status in ["succeeded", "failed", "cancelled", "aborted"]:
-        abgeleitet = derive_status(_zeile(), [_job(1, status)])
+        abgeleitet = derive_status(HASH, None, [_job(1, status)])
         assert abgeleitet.phase is Phase.ENDED_WITHOUT_RESULT, status
         assert abgeleitet.job_status == status
 
@@ -165,7 +203,7 @@ def test_unbekannter_job_zustand_gilt_als_wartend() -> None:
     Dokument aus dem Blick, weil es aussaehe, als sei es fertig behandelt.
     WAITING behaelt es im Blick.
     """
-    assert derive_status(_zeile(), [_job(1, "irgendwas_neues")]).phase is Phase.WAITING
+    assert derive_status(HASH, None, [_job(1, "irgendwas_neues")]).phase is Phase.WAITING
 
 
 def test_versuchszaehler_wird_durchgereicht() -> None:
@@ -175,8 +213,27 @@ def test_versuchszaehler_wird_durchgereicht() -> None:
     stalled-Wiederaufnahme und Retry von Hand laufen durch dieselbe SQL-Funktion
     (Feature-Verifikation Punkt 19).
     """
-    abgeleitet = derive_status(_zeile(), [_job(1, "todo", attempts=2)])
+    abgeleitet = derive_status(HASH, None, [_job(1, "todo", attempts=2)])
     assert abgeleitet.attempts == 2
+
+
+def test_stand_als_abbildung_ohne_raw() -> None:
+    """`to_dict` ist die Ausgabe von `show --json`: bei einem Ergebnis dessen
+    Angaben, bei einem offenen Dokument nur Hash, Phase und Job — nie `raw`."""
+    fertig = derive_status(HASH, _zeile(DocumentStatus.DONE), [_job(3, "succeeded")]).to_dict()
+    assert fertig["status"] == "done"
+    assert fertig["phase"] == "terminal"
+    assert fertig["mime"] == "application/pdf"
+    assert fertig["job"] == {"id": 3, "status": "succeeded", "attempts": 0, "count": 1}
+    assert "raw" not in fertig
+
+    offen = derive_status(HASH, None, [_job(4, "todo")]).to_dict()
+    assert offen == {
+        "sha256": HASH,
+        "status": None,
+        "phase": "waiting",
+        "job": {"id": 4, "status": "todo", "attempts": 0, "count": 1},
+    }
 
 
 # --- mit Datenbank --------------------------------------------------------
@@ -196,11 +253,13 @@ def test_setup_ist_mehrfach_aufrufbar(
     zweites `mineru-ocr setup` endete mit einem Absturz, dessen Meldung von
     einem Aufzaehlungstyp handelt, mit dem der Benutzer nie zu tun hatte.
     """
-    _einfuegen(db_conn)
+    _ergebnis_anlegen(db_conn)
+    insert_input(db_conn, sha256="b" * 64, content=b"offen")
     setup(_test_datenbank)
     setup(_test_datenbank)
-    # Und es zerstoert nichts: Die Zeile von vorhin steht noch da.
+    # Und es zerstoert nichts: Ergebnis und Eingabe von vorhin stehen noch da.
     assert get_document(db_conn, HASH) is not None
+    assert _eingabe(db_conn, "b" * 64)
 
 
 @pytest.mark.db
@@ -226,34 +285,55 @@ def test_setup_meldet_abweichendes_schema(
 
 
 @pytest.mark.db
-def test_zweites_einfuegen_ist_ein_nichts_tun(
-    db_conn: psycopg.Connection[Any],
+def test_setup_meldet_ein_documents_aus_der_zeit_mit_new(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
 ) -> None:
-    """Derselbe Hash ein zweites Mal ergibt False und laesst die bestehende
-    Zeile voellig unberuehrt — auch `updated_at`.
-
-    Darauf beruht das Ordner-Szenario: „lässt nochmal durchlaufen weil eh nur
-    läuft was noch fehlt".
-    """
-    assert insert_document(
-        db_conn,
-        sha256=HASH,
-        size_bytes=111,
-        mime="application/pdf",
-        endpoint_id="e1",
+    """Eine Tabelle, die noch `new` kennt, hat dieselben Spalten — und passt doch
+    nicht: Der Job legt die Zeile erst am Ende an. `setup` sagt das samt Abhilfe,
+    statt dass der erste Job daran scheitert."""
+    db_conn.execute(
+        "ALTER TABLE documents DROP CONSTRAINT documents_status_check, "
+        "ADD CONSTRAINT documents_status_check CHECK "
+        "(status IN ('new', 'done', 'empty', 'failed', 'input_error')), "
+        "ALTER COLUMN status SET DEFAULT 'new'"
     )
-    vorher = get_document(db_conn, HASH)
-    assert vorher is not None
+    try:
+        with pytest.raises(DatabaseError) as fehler:
+            setup(_test_datenbank)
+        text = str(fehler.value)
+        assert "documents" in text and "'new'" in text and "setup" in text
+    finally:
+        db_conn.execute(
+            "ALTER TABLE documents DROP CONSTRAINT documents_status_check, "
+            "ADD CONSTRAINT documents_status_check CHECK "
+            "(status IN ('done', 'empty', 'failed', 'input_error')), "
+            "ALTER COLUMN status DROP DEFAULT"
+        )
 
-    assert not insert_document(
-        db_conn,
-        sha256=HASH,
-        size_bytes=999,
-        mime="image/png",
-        endpoint_id="e2",
-    )
-    nachher = get_document(db_conn, HASH)
-    assert nachher == vorher
+    # Einzeln: auch ein `mime` mit NOT NULL ist die alte Form.
+    db_conn.execute("ALTER TABLE documents ALTER COLUMN mime SET NOT NULL")
+    try:
+        with pytest.raises(DatabaseError, match="mime"):
+            setup(_test_datenbank)
+    finally:
+        db_conn.execute("ALTER TABLE documents ALTER COLUMN mime DROP NOT NULL")
+    setup(_test_datenbank)  # wieder in Ordnung
+
+
+@pytest.mark.db
+def test_documents_kennt_keinen_zustand_new(db_conn: psycopg.Connection[Any]) -> None:
+    """Die Datenbank selbst weist `new` ab, und `status` hat keine
+    Voreinstellung, mit der eine Zeile ohne Ergebnis entstehen koennte."""
+    with pytest.raises(psycopg.errors.CheckViolation):
+        db_conn.execute(
+            "INSERT INTO documents (sha256, status, endpoint_id) "
+            "VALUES (%s, 'new', 'e')",
+            (HASH,),
+        )
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        db_conn.execute(
+            "INSERT INTO documents (sha256, endpoint_id) VALUES (%s, 'e')", (HASH,)
+        )
 
 
 @pytest.mark.db
@@ -403,7 +483,6 @@ async def test_eingabe_wird_gespeichert_und_binaer_gelesen(
     base64) an einem Wert auffaellt.
     """
     inhalt = bytes(range(256)) * 40
-    _einfuegen(db_conn)
     assert insert_input(db_conn, sha256=HASH, content=inhalt) is True
 
     gelesen = await read_input_async(_test_datenbank, HASH)
@@ -415,8 +494,8 @@ async def test_eingabe_wird_gespeichert_und_binaer_gelesen(
 def test_zweite_eingabe_zum_selben_hash_ist_ein_nichts_tun(
     db_conn: psycopg.Connection[Any],
 ) -> None:
-    """Derselbe Hash ein zweites Mal ergibt False und aendert nichts."""
-    _einfuegen(db_conn)
+    """Derselbe Hash ein zweites Mal ergibt False und aendert nichts. Die
+    Eingabe-Tabelle ist so die Sperre gegen ein zweites Einreihen."""
     assert insert_input(db_conn, sha256=HASH, content=b"erste") is True
     assert insert_input(db_conn, sha256=HASH, content=b"zweite") is False
     zeile = db_conn.execute(
@@ -424,6 +503,8 @@ def test_zweite_eingabe_zum_selben_hash_ist_ein_nichts_tun(
     ).fetchone()
     assert zeile is not None
     assert bytes(zeile[0]) == b"erste"
+    # Und eine Ergebniszeile legt das Ablegen nicht an.
+    assert get_document(db_conn, HASH) is None
 
 
 @pytest.mark.db
@@ -488,7 +569,6 @@ async def test_lesen_der_eingabe_ist_binaer_und_schliesst_die_eigene_verbindung(
     bis die Verbindung schliesst; ohne `binary=True` ginge der Wert als Hex ueber
     die Leitung, doppelt so gross.
     """
-    _einfuegen(db_conn)
     insert_input(db_conn, sha256=HASH, content=b"x" * 1_000_000)
     beobachter = _beobachten(monkeypatch, fehler=False)
 
@@ -529,13 +609,9 @@ async def test_eingabe_wird_mit_dem_endergebnis_geloescht_ausser_bei_failed(
     }
     for nr, (status, bleibt) in enumerate(erwartet.items()):
         sha = f"{nr:064d}"
-        _einfuegen(db_conn, sha)
         insert_input(db_conn, sha256=sha, content=b"bytes")
-        await write_terminal_async(async_conn, sha256=sha, status=status, raw={})
-        steht = db_conn.execute(
-            "SELECT 1 FROM inputs WHERE sha256 = %s", (sha,)
-        ).fetchone()
-        assert (steht is not None) is bleibt, status
+        await _schreiben(async_conn, sha, status)
+        assert _eingabe(db_conn, sha) is bleibt, status
 
 
 @pytest.mark.db
@@ -550,7 +626,6 @@ async def test_eingabe_und_ergebnis_gehen_in_einer_transaktion(
     DELETE scheitern. Lagen beide Schritte in getrennten Transaktionen, stuende
     das Ergebnis danach trotzdem da.
     """
-    _einfuegen(db_conn)
     insert_input(db_conn, sha256=HASH, content=b"bytes")
     db_conn.execute(
         "CREATE OR REPLACE FUNCTION _loeschen_verbieten() RETURNS trigger AS $$ "
@@ -562,107 +637,88 @@ async def test_eingabe_und_ergebnis_gehen_in_einer_transaktion(
     )
     try:
         with pytest.raises(Exception, match="Loeschen verboten"):
-            await write_terminal_async(
-                async_conn, sha256=HASH, status=DocumentStatus.DONE, raw={"a": 1}
-            )
+            await _schreiben(async_conn, raw={"a": 1})
     finally:
         db_conn.execute("DROP TRIGGER IF EXISTS _loeschen_verbieten_trigger ON inputs")
 
-    zeile = get_document(db_conn, HASH)
-    assert zeile is not None
-    assert zeile.status is DocumentStatus.NEW
-    assert zeile.raw is None
-    assert db_conn.execute(
-        "SELECT 1 FROM inputs WHERE sha256 = %s", (HASH,)
-    ).fetchone() is not None
+    # Kein Ergebnis, die Eingabe steht: Das Dokument ist offen wie vorher.
+    assert get_document(db_conn, HASH) is None
+    assert _eingabe(db_conn)
 
 
-@pytest.mark.db
-async def test_terminal_schreiben_setzt_alles_in_einer_transaktion(
-    db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
-) -> None:
-    """Alles wird in EINEM Schreibvorgang gesetzt — es gibt keinen
-    Zwischenzustand mit `raw` und Status `new`.
+def _schreibvorgaenge_zaehlen(conn: psycopg.Connection[Any]) -> None:
+    """Ein Ausloeser, der jedes Anlegen und Aendern an `documents` mitschreibt.
 
-    DER TEST HAT DIE TRANSAKTIONALITAET NICHT GEPRUEFT, obwohl sein Name sie
-    nennt: Er sah ausschliesslich die Endwerte an. Dieselben Endwerte entstehen
-    auch aus fuenf einzelnen UPDATEs nacheinander — und dazwischen gaebe es
-    genau den Zwischenzustand, den es nicht geben darf.
-
-    Gezaehlt wird jetzt mit einem Ausloeser auf der Tabelle. Das ist die einzige
-    Art, „in einem Schreibvorgang" zu pruefen, ohne dem Code zu glauben, den man
-    prueft.
+    Das ist die einzige Art, „in einem Schreibvorgang" zu pruefen, ohne dem Code
+    zu glauben, den man prueft: Dieselben Endwerte entstehen auch aus fuenf
+    einzelnen Anweisungen nacheinander, und dazwischen gaebe es genau den
+    Zwischenzustand, den es nicht geben darf.
     """
-    _einfuegen(db_conn)
-    vorher = get_document(db_conn, HASH)
-    assert vorher is not None
-
-    db_conn.execute("CREATE TABLE IF NOT EXISTS _schreibzaehler_db (sha256 text)")
-    db_conn.execute("TRUNCATE _schreibzaehler_db")
-    db_conn.execute(
+    conn.execute("CREATE TABLE IF NOT EXISTS _schreibzaehler_db (sha256 text)")
+    conn.execute("TRUNCATE _schreibzaehler_db")
+    conn.execute(
         "CREATE OR REPLACE FUNCTION _zaehle_db_schreibvorgang() RETURNS trigger AS $$ "
         "BEGIN INSERT INTO _schreibzaehler_db VALUES (NEW.sha256); RETURN NEW; END; "
         "$$ LANGUAGE plpgsql"
     )
-    db_conn.execute(
-        "CREATE OR REPLACE TRIGGER _zaehl_db_trigger AFTER UPDATE ON documents "
+    conn.execute(
+        "CREATE OR REPLACE TRIGGER _zaehl_db_trigger AFTER INSERT OR UPDATE ON documents "
         "FOR EACH ROW EXECUTE FUNCTION _zaehle_db_schreibvorgang()"
     )
-    db_conn.commit()
+
+
+def _schreibvorgaenge(conn: psycopg.Connection[Any]) -> int:
+    zaehler = conn.execute(
+        "SELECT count(*) FROM _schreibzaehler_db WHERE sha256 = %s", (HASH,)
+    ).fetchone()
+    assert zaehler is not None
+    return int(zaehler[0])
+
+
+@pytest.mark.db
+async def test_endschreiben_legt_die_zeile_in_einem_schreibvorgang_an(
+    db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """Ohne Zeile legt das Endschreiben sie an, mit allem, in EINEM
+    Schreibvorgang: Ergebnis, Angaben zur Eingabe, Herkunft und Vermerke."""
+    insert_input(db_conn, sha256=HASH, content=b"bytes")
+    _schreibvorgaenge_zaehlen(db_conn)
     try:
-        await write_terminal_async(
+        await _schreiben(
             async_conn,
-            sha256=HASH,
-            status=DocumentStatus.DONE,
             raw={"markdown": "Text", "content_list": []},
+            mime="application/pdf",
+            size_bytes=5,
+            page_count=2,
             image_tag_at_submit=":17d4955b2",
             notes=[{"kind": "hinweis", "at": "2026-08-08"}],
         )
-        zaehler = db_conn.execute(
-            "SELECT count(*) FROM _schreibzaehler_db WHERE sha256 = %s", (HASH,)
-        ).fetchone()
-        assert zaehler is not None
-        assert zaehler[0] == 1, f"{zaehler[0]} Schreibvorgaenge statt genau einem"
+        assert _schreibvorgaenge(db_conn) == 1
     finally:
         db_conn.execute("DROP TRIGGER IF EXISTS _zaehl_db_trigger ON documents")
-        db_conn.commit()
 
-    nachher = get_document(db_conn, HASH)
-    assert nachher is not None
-    assert nachher.status is DocumentStatus.DONE
-    assert nachher.raw == {"markdown": "Text", "content_list": []}
-    assert nachher.image_tag_at_submit == ":17d4955b2"
-    assert nachher.notes == [{"kind": "hinweis", "at": "2026-08-08"}]
-    assert nachher.updated_at > vorher.updated_at
+    zeile = get_document(db_conn, HASH)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    assert zeile.raw == {"markdown": "Text", "content_list": []}
+    assert (zeile.mime, zeile.size_bytes, zeile.page_count) == ("application/pdf", 5, 2)
+    assert zeile.endpoint_id == "testendpoint"
+    assert zeile.image_tag_at_submit == ":17d4955b2"
+    assert zeile.notes == [{"kind": "hinweis", "at": "2026-08-08"}]
+    assert not _eingabe(db_conn)
 
 
 @pytest.mark.db
-async def test_neuer_zustand_wird_abgewiesen(
+async def test_endschreiben_ohne_bekannten_typ_laesst_mime_leer(
     db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
 ) -> None:
-    """`write_terminal_async` mit `new` ist ein Programmierfehler.
-
-    Die Funktion heisst „terminal" — sie mit einem nicht endgueltigen Zustand zu
-    rufen hiesse, die Zeile in einen Zustand zu schreiben, aus dem sie ohnehin
-    kommt, und dabei `raw` zu setzen. Genau der Zwischenzustand, den es nicht
-    geben soll.
-    """
-    _einfuegen(db_conn)
-    with pytest.raises(ValueError):
-        await write_terminal_async(
-            async_conn, sha256=HASH, status=DocumentStatus.NEW, raw={}
-        )
-
-
-@pytest.mark.db
-async def test_schreiben_ohne_zeile_wirft(
-    async_conn: psycopg.AsyncConnection[Any],
-) -> None:
-    """Ein Endergebnis ohne Zeile gibt es nicht."""
-    with pytest.raises(DocumentNotFound):
-        await write_terminal_async(
-            async_conn, sha256="f" * 64, status=DocumentStatus.DONE, raw={}
-        )
+    """Liess sich der Typ nicht bestimmen (oder fehlte die Eingabe), bleiben
+    `mime` und `size_bytes` leer, statt erfunden zu werden."""
+    await _schreiben(async_conn, status=DocumentStatus.INPUT_ERROR, error="kaputt")
+    zeile = get_document(db_conn, HASH)
+    assert zeile is not None
+    assert zeile.mime is None and zeile.size_bytes is None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
 
 
 @pytest.mark.db
@@ -674,21 +730,10 @@ async def test_wecksignal_kommt_bei_jedem_endzustand(
     Weckte es nur bei Erfolg, liefe jeder Warter auf ein gescheitertes Dokument
     bis zum Zeitablauf und wuesste am Ende nicht, ob es scheiterte oder dauert.
     """
-    for nr, status in enumerate(
-        [
-            DocumentStatus.DONE,
-            DocumentStatus.EMPTY,
-            DocumentStatus.FAILED,
-            DocumentStatus.INPUT_ERROR,
-        ]
-    ):
+    for nr, status in enumerate(DocumentStatus):
         sha = f"{nr:064d}"
-        _einfuegen(db_conn, sha)
-
         db_conn.execute("LISTEN doc_done")
-        await write_terminal_async(
-            async_conn, sha256=sha, status=status, raw={"x": nr}
-        )
+        await _schreiben(async_conn, sha, status, raw={"x": nr})
 
         signale = list(db_conn.notifies(timeout=5.0, stop_after=1))
         assert signale, f"kein Signal bei {status.value}"
@@ -706,17 +751,9 @@ async def test_fertiges_dokument_wird_nie_ueberschrieben(
         [DocumentStatus.DONE, DocumentStatus.EMPTY, DocumentStatus.INPUT_ERROR]
     ):
         sha = f"{nr:064d}"
-        _einfuegen(db_conn, sha)
-        await write_terminal_async(
-            async_conn, sha256=sha, status=status, raw={"erste": True}
-        )
+        await _schreiben(async_conn, sha, status, raw={"erste": True})
         with pytest.raises(TerminalOverwriteError):
-            await write_terminal_async(
-                async_conn,
-                sha256=sha,
-                status=DocumentStatus.FAILED,
-                raw={"zweite": True},
-            )
+            await _schreiben(async_conn, sha, DocumentStatus.FAILED, raw={"zweite": True})
         # Und das erste Ergebnis steht unveraendert.
         zeile = get_document(db_conn, sha)
         assert zeile is not None
@@ -728,27 +765,39 @@ async def test_gescheitertes_dokument_darf_ueberschrieben_werden(
     db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
 ) -> None:
     """Auf `failed` schreibt derselbe Aufruf durch — das ist der Wiederanlauf
-    (Plan 4.2) und der Grund, warum der Terminal-Guard `failed` nicht deckt.
-
-    Stuende `failed` im Guard, waere jeder Retry von Hand ein Nichts-Tun, das als
-    Erfolg verbucht wuerde, und ein gescheitertes Dokument koennte nie wieder
-    laufen.
-    """
-    _einfuegen(db_conn)
-    await write_terminal_async(
+    (Plan 4.2) und der Grund, warum das Nachsehen im Executor `failed` nicht
+    deckt. In einem Schreibvorgang, mit der Zeit der ersten Anlage, und die
+    Eingabe, die bei `failed` stand, geht mit dem neuen Ergebnis."""
+    insert_input(db_conn, sha256=HASH, content=b"bytes")
+    await _schreiben(
         async_conn,
-        sha256=HASH,
         status=DocumentStatus.FAILED,
         raw={"versuch": 1},
         error="Zeitablauf",
+        mime="application/pdf",
+        size_bytes=5,
     )
-    await write_terminal_async(
-        async_conn, sha256=HASH, status=DocumentStatus.DONE, raw={"versuch": 2}
-    )
+    vorher = get_document(db_conn, HASH)
+    assert vorher is not None
+    assert _eingabe(db_conn)
+
+    _schreibvorgaenge_zaehlen(db_conn)
+    try:
+        await _schreiben(async_conn, raw={"versuch": 2})
+        assert _schreibvorgaenge(db_conn) == 1
+    finally:
+        db_conn.execute("DROP TRIGGER IF EXISTS _zaehl_db_trigger ON documents")
+
     zeile = get_document(db_conn, HASH)
     assert zeile is not None
     assert zeile.status is DocumentStatus.DONE
     assert zeile.raw == {"versuch": 2}
+    assert zeile.error is None
+    # Was dieser Lauf nicht neu bestimmt hat, bleibt stehen.
+    assert (zeile.mime, zeile.size_bytes) == ("application/pdf", 5)
+    assert zeile.created_at == vorher.created_at
+    assert zeile.updated_at > vorher.updated_at
+    assert not _eingabe(db_conn)
 
 
 @pytest.mark.db
@@ -756,55 +805,60 @@ async def test_gleicher_aufruf_zweimal_ist_unschaedlich(
     db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
 ) -> None:
     """Zweimal derselbe Endzustand wirft nicht — und der ERSTE Schreibvorgang
-    gewinnt.
+    gewinnt. Die Vermerke des zweiten werden angehaengt, und eine Eingabe, die
+    inzwischen wieder abgelegt wurde, geht.
 
     Der Massstab ist der Zustand, nicht der Inhalt: `raw` traegt Job-Kennungen
     und Laufzeiten, ist also bei zwei Laeufen nie gleich. Ein Inhaltsvergleich
     waere immer „abweichend" und machte den harmlosen Wiederlauf nach einem
     Absturz im Schreibfenster zum Fehler.
     """
-    _einfuegen(db_conn)
-    await write_terminal_async(
-        async_conn, sha256=HASH, status=DocumentStatus.DONE, raw={"lauf": 1}
-    )
-    await write_terminal_async(
-        async_conn, sha256=HASH, status=DocumentStatus.DONE, raw={"lauf": 2}
-    )
+    await _schreiben(async_conn, raw={"lauf": 1})
+    insert_input(db_conn, sha256=HASH, content=b"wieder")
+    await _schreiben(async_conn, raw={"lauf": 2}, notes=[{"kind": "zweiter"}])
     zeile = get_document(db_conn, HASH)
     assert zeile is not None
     assert zeile.raw == {"lauf": 1}
+    assert zeile.notes == [{"kind": "zweiter"}]
+    assert not _eingabe(db_conn)
 
 
 @pytest.mark.db
-async def test_notiz_haengt_an_statt_zu_ersetzen(
+async def test_nachsehen_und_eingabe_loeschen_fuer_den_executor(
     db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
 ) -> None:
-    """`append_note_async` verlaengert die Liste und beruehrt sonst nichts."""
-    _einfuegen(db_conn)
-    vorher = get_document(db_conn, HASH)
-    assert vorher is not None
+    """Der Executor liest nur den Zustand (None ohne Ergebnis) und loescht eine
+    Eingabe, die neben einem Ergebnis noch steht."""
+    assert await get_status_async(async_conn, HASH) is None
+    _ergebnis_anlegen(db_conn, status=DocumentStatus.EMPTY)
+    insert_input(db_conn, sha256=HASH, content=b"x")
+    assert await get_status_async(async_conn, HASH) is DocumentStatus.EMPTY
 
-    await append_note_async(async_conn, HASH, {"kind": "erste", "at": "t1"})
-    await append_note_async(async_conn, HASH, {"kind": "zweite", "at": "t2"})
-
-    nachher = get_document(db_conn, HASH)
-    assert nachher is not None
-    assert nachher.notes == [
-        {"kind": "erste", "at": "t1"},
-        {"kind": "zweite", "at": "t2"},
-    ]
-    # Sonst nichts: `notes` ist eine Beobachtung, kein Zustand.
-    assert nachher.status is vorher.status
-    assert nachher.updated_at == vorher.updated_at
+    await delete_input_async(async_conn, HASH)
+    assert not _eingabe(db_conn)
+    await delete_input_async(async_conn, HASH)  # ohne Eingabe ein Nichts-Tun
 
 
 @pytest.mark.db
-async def test_notiz_ohne_zeile_wirft(
-    async_conn: psycopg.AsyncConnection[Any],
-) -> None:
-    """Eine Beobachtung, die ins Leere geschrieben wird, faellt sonst nie auf."""
-    with pytest.raises(DocumentNotFound):
-        await append_note_async(async_conn, "e" * 64, {"kind": "x"})
+def test_stand_kennt_fertig_offen_und_unbekannt(db_conn: psycopg.Connection[Any]) -> None:
+    """Ergebnis da heisst fertig, Eingabe da heisst offen, keins von beiden
+    heisst unbekannt — in der Reihenfolge der Frage, ohne `raw`."""
+    fertig, offen, gescheitert, unbekannt = "1" * 64, "2" * 64, "3" * 64, "4" * 64
+    _ergebnis_anlegen(db_conn, fertig)
+    insert_input(db_conn, sha256=offen, content=b"x")
+    _ergebnis_anlegen(db_conn, gescheitert, DocumentStatus.FAILED)
+    insert_input(db_conn, sha256=gescheitert, content=b"x")
+
+    stand = read_states(db_conn, [unbekannt, offen, fertig, gescheitert])
+    assert [s.sha256 for s in stand] == [unbekannt, offen, fertig, gescheitert]
+    assert stand[0].is_unknown and stand[0].row is None
+    assert stand[1].is_open and stand[1].row is None
+    assert stand[2].is_terminal and stand[2].row is not None
+    assert stand[2].row.status is DocumentStatus.DONE
+    assert stand[2].row.raw_loaded is False
+    # Gescheitert mit stehender Eingabe: Das Ergebnis entscheidet.
+    assert stand[3].is_terminal and stand[3].has_input
+    assert stand[3].row is not None and stand[3].row.status is DocumentStatus.FAILED
 
 
 @pytest.mark.db
@@ -812,16 +866,14 @@ async def test_warten_findet_bereits_fertiges_dokument_sofort(
     db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
 ) -> None:
     """Ist das Dokument schon endgueltig, kehrt `wait_for_terminal` sofort
-    zurueck, statt auf ein Signal zu warten, das schon vorbei ist."""
-    _einfuegen(db_conn)
-    await write_terminal_async(
-        async_conn, sha256=HASH, status=DocumentStatus.DONE, raw={"fertig": True}
-    )
+    zurueck, statt auf ein Signal zu warten, das schon vorbei ist — und laedt
+    dabei `raw` nicht."""
+    await _schreiben(async_conn, raw={"fertig": True})
     begonnen = time.monotonic()
     zeile = wait_for_terminal(db_conn, HASH, timeout=30.0)
     assert time.monotonic() - begonnen < 1.0
     assert zeile.status is DocumentStatus.DONE
-    assert zeile.raw == {"fertig": True}
+    assert zeile.raw is None and zeile.raw_loaded is False
 
 
 @pytest.mark.db
@@ -837,12 +889,12 @@ def test_warten_auf_unbekannten_hash_wirft_sofort(
 
 @pytest.mark.db
 def test_warten_laeuft_ab(db_conn: psycopg.Connection[Any]) -> None:
-    """Bleibt das Dokument `new`, endet das Warten mit TimeoutError.
+    """Bleibt das Dokument offen, endet das Warten mit TimeoutError.
 
     Und die Meldung sagt, was der Zeitablauf bedeutet: etwas ueber die Geduld
     des Wartenden, nichts ueber das Dokument.
     """
-    _einfuegen(db_conn)
+    insert_input(db_conn, sha256=HASH, content=b"x")
     with pytest.raises(TimeoutError) as fehler:
         wait_for_terminal(db_conn, HASH, timeout=1.0, poll_seconds=0.3)
     assert "Geduld" in str(fehler.value)
@@ -855,18 +907,17 @@ def test_warten_faellt_auf_abfragen_zurueck(
     """Auch ohne Signal — etwa bei einem Schreibvorgang von aussen — endet das
     Warten durch die Rueckfallabfrage.
 
-    Geprueft wird das, indem der Zustand mit ROHEM SQL gesetzt wird, ganz ohne
+    Geprueft wird das, indem das Ergebnis mit ROHEM SQL angelegt wird, ganz ohne
     `pg_notify`. Genau so sieht ein Schreibvorgang von Hand an der Datenbank aus,
     und genau dagegen ist die Rueckfallabfrage da.
     """
-    _einfuegen(db_conn)
+    insert_input(db_conn, sha256=HASH, content=b"x")
 
     def spaeter_setzen() -> None:
         time.sleep(0.5)
         with psycopg.connect(_test_datenbank, autocommit=True) as andere:
-            andere.execute(
-                "UPDATE documents SET status = 'done' WHERE sha256 = %s", (HASH,)
-            )
+            _ergebnis_anlegen(andere)
+            andere.execute("DELETE FROM inputs WHERE sha256 = %s", (HASH,))
 
     faden = threading.Thread(target=spaeter_setzen)
     faden.start()
@@ -874,6 +925,74 @@ def test_warten_faellt_auf_abfragen_zurueck(
         zeile = wait_for_terminal(db_conn, HASH, timeout=10.0, poll_seconds=0.2)
     finally:
         faden.join()
+    assert zeile.status is DocumentStatus.DONE
+
+
+class _JobEndetNachDerErstenLesung:
+    """Eine Verbindung, nach deren erster Lesung von `documents` der Job endet.
+
+    Damit faellt der Augenblick, in dem das Ergebnis entsteht und die Eingabe
+    geht, genau hinter die erste Anweisung, die nach einem Ergebnis fragt. Wer
+    `documents` und `inputs` in zwei Anweisungen liest, sieht dort weder
+    Ergebnis noch Eingabe und meldet ein unbekanntes Dokument. Eine Anweisung
+    sieht beide im selben Schnappschuss: zuerst offen, danach fertig.
+    """
+
+    def __init__(self, echte: psycopg.Connection[Any], dsn: str) -> None:
+        self._echte = echte
+        self._dsn = dsn
+        self.ausgeloest = False
+
+    def _danach(self, sql: object) -> None:
+        if self.ausgeloest or "documents" not in str(sql):
+            return
+        self.ausgeloest = True
+        with psycopg.connect(self._dsn, autocommit=True) as job:
+            _ergebnis_anlegen(job)
+            job.execute("DELETE FROM inputs WHERE sha256 = %s", (HASH,))
+            job.execute("SELECT pg_notify('doc_done', %s)", (HASH,))
+
+    def execute(self, sql: Any, *args: Any, **kwargs: Any) -> Any:
+        ergebnis = self._echte.execute(sql, *args, **kwargs)
+        self._danach(sql)
+        return ergebnis
+
+    def cursor(self, *args: Any, **kwargs: Any) -> Any:
+        verbindung = self
+        echter = self._echte.cursor(*args, **kwargs)
+
+        class _Cursor:
+            def __enter__(self) -> Any:
+                echter.__enter__()
+                return self
+
+            def __exit__(self, *fehler: Any) -> None:
+                echter.__exit__(*fehler)
+
+            def execute(self, sql: Any, *a: Any, **k: Any) -> Any:
+                echter.execute(sql, *a, **k)
+                verbindung._danach(sql)
+                return echter
+
+        return _Cursor()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._echte, name)
+
+
+@pytest.mark.db
+def test_warten_haelt_ein_dokument_nicht_fuer_unbekannt_das_zwischen_zwei_lesungen_fertig_wird(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Endet der Job unmittelbar nach der ersten Lesung, liefert das Warten das
+    Ergebnis — und kein `DocumentNotFound`, wie es zwei Abfragen nacheinander
+    (erst `documents`, dann `inputs`) taeten."""
+    insert_input(db_conn, sha256=HASH, content=b"x")
+    verbindung = _JobEndetNachDerErstenLesung(db_conn, _test_datenbank)
+
+    zeile = wait_for_terminal(verbindung, HASH, timeout=10.0, poll_seconds=0.2)  # type: ignore[arg-type]
+
+    assert verbindung.ausgeloest
     assert zeile.status is DocumentStatus.DONE
 
 
@@ -890,10 +1009,7 @@ async def test_liste_laedt_kein_raw(
     fertiges Dokument stillschweigend nichts, und das sieht aus wie ein leeres
     Ergebnis.
     """
-    _einfuegen(db_conn)
-    await write_terminal_async(
-        async_conn, sha256=HASH, status=DocumentStatus.DONE, raw={"gross": "x" * 1000}
-    )
+    await _schreiben(async_conn, raw={"gross": "x" * 1000})
 
     gelistet = list_documents(db_conn)
     assert len(gelistet) == 1
@@ -911,30 +1027,37 @@ async def test_liste_laedt_kein_raw(
 async def test_liste_filtert_nach_zustand(
     db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
 ) -> None:
-    """Der Zustandsfilter waehlt aus, ohne dass der Aufrufer selbst sieben muss."""
-    for nr in range(3):
-        _einfuegen(db_conn, f"{nr:064d}")
-    await write_terminal_async(
-        async_conn, sha256=f"{0:064d}", status=DocumentStatus.DONE, raw={}
-    )
+    """Der Zustandsfilter waehlt aus, ohne dass der Aufrufer selbst sieben muss.
+    Offene Dokumente haben keine Zeile und erscheinen nicht."""
+    await _schreiben(async_conn, f"{0:064d}", DocumentStatus.DONE)
+    await _schreiben(async_conn, f"{1:064d}", DocumentStatus.FAILED)
+    await _schreiben(async_conn, f"{2:064d}", DocumentStatus.FAILED)
+    insert_input(db_conn, sha256=f"{3:064d}", content=b"offen")
 
     assert len(list_documents(db_conn, status=DocumentStatus.DONE)) == 1
-    assert len(list_documents(db_conn, status=DocumentStatus.NEW)) == 2
+    assert len(list_documents(db_conn, status=DocumentStatus.FAILED)) == 2
     assert len(list_documents(db_conn)) == 3
     assert len(list_documents(db_conn, limit=2)) == 2
 
 
 @pytest.mark.db
-def test_zaehlung_kennt_jeden_zustand(db_conn: psycopg.Connection[Any]) -> None:
+async def test_zaehlung_kennt_jeden_zustand_und_die_offenen(
+    db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
+) -> None:
     """Auch Zustaende ohne Zeilen kommen mit Null vor — ein fehlender
     Schluessel wuerde die Statusausgabe genau dann sprengen, wenn alles gut
-    lief."""
+    lief. Offen ist, was eine Eingabe und kein Ergebnis hat; ein gescheitertes
+    Dokument mit stehender Eingabe zaehlt unter `failed`, nicht doppelt."""
     zaehlung = counts_by_status(db_conn)
     assert set(zaehlung) == set(DocumentStatus)
     assert all(anzahl == 0 for anzahl in zaehlung.values())
+    assert count_open(db_conn) == 0
 
-    _einfuegen(db_conn)
-    assert counts_by_status(db_conn)[DocumentStatus.NEW] == 1
+    insert_input(db_conn, sha256="1" * 64, content=b"offen")
+    insert_input(db_conn, sha256="2" * 64, content=b"gescheitert")
+    await _schreiben(async_conn, "2" * 64, DocumentStatus.FAILED)
+    assert count_open(db_conn) == 1
+    assert counts_by_status(db_conn)[DocumentStatus.FAILED] == 1
 
 
 @pytest.mark.db

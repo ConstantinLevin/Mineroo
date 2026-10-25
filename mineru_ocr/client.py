@@ -80,6 +80,7 @@ class _SchonUnterwegs(Exception):
     in der `_abschicken` gerade nichts Neues angelegt hat. Verlaesst die Methode
     nie."""
 
+
 def _synchron_ausfuehren(arbeit: Coroutine[Any, Any, T]) -> T:
     """Fuehrt eine Koroutine aus synchronem Code aus — auch aus einer Schleife.
 
@@ -633,13 +634,18 @@ class OCRClient:
            Grenze findet erst das Schneiden im Job.
         2. Gibt es ein Ergebnis, ist das ein Treffer, AUCH BEI `failed`, und es
            geschieht nichts: Ein gescheitertes Dokument liest nur `retry` neu. Ein
-           Treffer gilt unabhaengig von verlangten Lese-Einstellungen. Eine Zeile
-           `new` heisst „unterwegs", und auch dann geschieht nichts.
-        3. Sonst entstehen Zeile, Eingabe und Job in EINER Transaktion, fuer jedes
-           Dokument in seiner eigenen und nie mehrere in einer: Zwei Aufrufer mit
-           ueberlappenden Mengen in verschiedener Reihenfolge wuerden sich sonst
-           gegenseitig blockieren. Das Signal, das die Worker weckt, geht erst beim
-           Commit hinaus; kein Worker sieht den Job vor seiner Eingabe.
+           Treffer gilt unabhaengig von verlangten Lese-Einstellungen.
+        3. Sonst wird die Eingabe abgelegt (`INSERT INTO inputs … ON CONFLICT DO
+           NOTHING`). Steht sie schon, ist das Dokument unterwegs, und es geschieht
+           nichts weiter; schicken zwei Aufrufer gleichzeitig dieselben Bytes,
+           laesst Postgres den zweiten auf den ersten warten, und danach tut der
+           zweite nichts. Kam sie neu hinein, wird in derselben Transaktion der Job
+           eingereiht. Eine Ergebniszeile legt erst der Job an, wenn er endet.
+           Jedes Dokument in seiner eigenen Transaktion und nie mehrere in einer:
+           Zwei Aufrufer mit ueberlappenden Mengen in verschiedener Reihenfolge
+           wuerden sich sonst gegenseitig blockieren. Das Signal, das die Worker
+           weckt, geht erst beim Commit hinaus; kein Worker sieht den Job vor seiner
+           Eingabe.
 
         Laeuft kein Daemon, wird trotzdem eingereiht, und der Client warnt (auf dem
         Logger `mineru_ocr.client`, Stufe WARNING; einmal je daemonloser Phase und
@@ -667,11 +673,13 @@ class OCRClient:
 
         Raises:
             TypeError: Ein Element ist keine Bytes — meist ein Pfad oder Text.
-            ConfigurationError: Kein Endpoint eingestellt. Es ist dann NICHTS
-                eingereiht worden. Den RunPod-Schluessel braucht Abschicken nicht.
             UnsupportedTypeError: Ein Dokument hat einen Typ, den das Paket nicht
                 liest. Es ist dann NICHTS eingereiht worden.
             TooLargeError: Ein Dokument ist zu gross. Dito.
+
+        Weder Endpoint noch RunPod-Schluessel braucht das Abschicken: Es spricht
+        RunPod nie an, und den Endpoint traegt erst die Ergebniszeile, die der Job
+        anlegt.
 
         Kosten: keine unmittelbar. Mittelbar: alles, was der Daemon danach tut.
         """
@@ -690,17 +698,14 @@ class OCRClient:
         for dokument in dokumente:
             if not isinstance(dokument, bytes):
                 raise TypeError(_nimmt_bytes(dokument))
-        # ERST ALLES PRUEFEN, DANN EINREIHEN. Dazu gehoert der Endpoint: Die Zeile
-        # traegt ihn, bis sie erst am Ende des Jobs entsteht (#25). Der
-        # RunPod-Schluessel gehoert NICHT dazu; Abschicken spricht RunPod nie an.
-        endpoint = self._settings.require_endpoint_id()
+        # ERST ALLES PRUEFEN, DANN EINREIHEN.
         vorbereitet = [core.prepare(dokument, self._settings) for dokument in dokumente]
 
         ergebnisse = [
-            self._abschicken(dokument, bereit, endpoint)
+            self._abschicken(dokument, bereit)
             for dokument, bereit in zip(dokumente, vorbereitet, strict=True)
         ]
-        if any(not e.status.is_terminal for e in ergebnisse):
+        if any(e.status is None for e in ergebnisse):
             # Nur wenn nach dem Aufruf Dokumente offen sind, eingereiht oder schon
             # unterwegs: Die Warnung sagt, dass sie liegen bleiben, und bei lauter
             # fertigen waere das falsch. Ein schon unterwegs liegendes ist dieselbe
@@ -762,14 +767,12 @@ class OCRClient:
             grund,
         )
 
-    def _abschicken(
-        self, data: bytes, bereit: core.Prepared, endpoint_id: str
-    ) -> Submitted:
+    def _abschicken(self, data: bytes, bereit: core.Prepared) -> Submitted:
         """Schickt EIN geprueftes Dokument ab, in seiner eigenen Transaktion.
 
-        Ein Treffer (Zeile da) wird ohne `raw` gelesen und nicht angefasst. Sonst
-        entstehen Zeile, Eingabe und Job zusammen oder gar nicht: Eine Zeile `new`
-        ohne Job hiesse „unterwegs", und niemand wuerde sie je wieder anfassen.
+        Ein Treffer (Ergebnis da) wird ohne `raw` gelesen und nicht angefasst.
+        Sonst entstehen Eingabe und Job zusammen oder gar nicht: Eine Eingabe ohne
+        Job hiesse „unterwegs", und niemand wuerde sie je wieder anfassen.
         """
         sha256 = bereit.sha256
         vorhanden = db.get_document(self.conn, sha256, with_raw=False)
@@ -777,31 +780,23 @@ class OCRClient:
             return Submitted(sha256, queued=False, status=vorhanden.status)
         try:
             with self.conn.transaction():
-                angelegt = db.insert_document(
-                    self.conn,
-                    sha256=sha256,
-                    size_bytes=bereit.size_bytes,
-                    mime=bereit.doc_type.mime,
-                    endpoint_id=endpoint_id,
-                )
-                if not angelegt:
-                    # Ein anderer Aufrufer war zwischen dem Nachsehen und dem
-                    # Anlegen schneller (Postgres hat uns auf ihn warten lassen):
-                    # Das Dokument ist unterwegs, und es bleibt bei seiner Eingabe.
+                if not db.insert_input(self.conn, sha256=sha256, content=data):
+                    # Die Eingabe steht schon: Das Dokument ist unterwegs (oder ein
+                    # anderer Aufrufer war schneller, und Postgres hat uns auf ihn
+                    # warten lassen). Es bleibt bei seiner Eingabe und seinem Job.
                     raise _SchonUnterwegs
-                db.insert_input(self.conn, sha256=sha256, content=data)
                 # EINZELN und in dieser Transaktion: Das Signal an die Worker geht
                 # erst beim Commit hinaus.
                 if not tasks.enqueue_document(self._procrastinate, self.conn, sha256):
                     raise _SchonUnterwegs
         except _SchonUnterwegs:
+            # Steht inzwischen ein Ergebnis da (der Job des anderen endete eben),
+            # ist das der Zustand; sonst ist das Dokument offen.
             jetzt = db.get_document(self.conn, sha256, with_raw=False)
             return Submitted(
-                sha256,
-                queued=False,
-                status=jetzt.status if jetzt is not None else DocumentStatus.NEW,
+                sha256, queued=False, status=jetzt.status if jetzt is not None else None
             )
-        return Submitted(sha256, queued=True, status=DocumentStatus.NEW)
+        return Submitted(sha256, queued=True, status=None)
 
     def wait(self, sha256: str, timeout: float | None = None) -> OCRWrapper:
         """Wartet auf das Endergebnis EINES Dokuments.
@@ -811,6 +806,11 @@ class OCRClient:
         bereits fertiges Dokument nicht auf ein Signal wartet, das schon vorbei
         ist. Das Signal ist Eigenbau — Procrastinate liefert kein „Job
         fertig"-Signal an aussenstehende Warter (Feature-Verifikation Punkt 10).
+
+        Gelesen werden Ergebnis und Eingabe in einer Anweisung
+        (`db.read_states`), ohne `raw`: Ergebnis da heisst fertig, Eingabe da
+        heisst offen, keins von beiden unbekannt. Die Huelle laedt `raw` erst,
+        wenn jemand das Ergebnis will. Procrastinate wird nicht gefragt.
 
         Args:
             sha256: Der Hash des Dokuments, wie `ocr_start` ihn gab.
@@ -822,7 +822,8 @@ class OCRClient:
             ist ein Ergebnis.
 
         Raises:
-            DocumentNotFound: Unbekannter Hash — sofort, nicht nach Ablauf.
+            DocumentNotFound: Weder Ergebnis noch Eingabe — sofort, nicht nach
+                Ablauf.
             TimeoutError: Die Zeit lief ab. Sagt nichts ueber das Dokument, nur
                 ueber die Geduld.
 
@@ -866,7 +867,7 @@ class OCRClient:
         procrastinate dann zurückgesetzt das hat ja tooling dafür" (Plan 2.4).
 
         Erfasst werden AUSSCHLIESSLICH Dokumente im Zustand `failed`. Nicht
-        `input_error`: Der Terminal-Guard des Executors deckt den ab, ein so
+        `input_error`: Das Nachsehen des Executors deckt den ab, ein so
         wiedervorgelegter Job taete also nichts — verbrauchte aber einen Versuch
         aus dem Budget und wuerde im Rueckgabewert als erledigte Arbeit gezaehlt,
         die nie stattfindet. Ein zu grosses DOCX liesse sich damit scheinbar
@@ -879,9 +880,10 @@ class OCRClient:
 
         Es nimmt nur Jobs in `doing` oder `failed`. Ein `aborted`-Job — etwa vom
         Herunterfahren — wird ABGEWIESEN. Sein Heilungsweg ist nicht diese Methode
-        (`ocr_start` fasst eine vorhandene Zeile `new` nicht an; den Rueckweg bringt
-        das Ticket #26); deshalb ueberspringt sie solche Dokumente und zaehlt sie
-        im Rueckgabewert nicht mit, statt sie mit einer Ausnahme aufzuhalten.
+        (`ocr_start` findet die stehende Eingabe und tut nichts; den Rueckweg
+        bringt das Ticket #26); deshalb ueberspringt sie solche Dokumente und
+        zaehlt sie im Rueckgabewert nicht mit, statt sie mit einer Ausnahme
+        aufzuhalten.
 
         Und jede Wiedervorlage erhoeht `attempts`. Ein Retry von Hand auf einen
         erschoepften Job ist genau EIN weiterer Versuch, keine neue Dreier-Runde.
@@ -899,13 +901,13 @@ class OCRClient:
         Zusicherung:
             Der wieder vorgelegte Job verarbeitet das Dokument WIRKLICH neu und
             ueberschreibt sein `raw`. Das ist kein Nebeneffekt, sondern der Zweck
-            — und der Grund, warum der Terminal-Guard `failed` nicht deckt.
+            — und der Grund, warum das Nachsehen des Executors `failed` nicht deckt.
 
         Kosten: JA, mittelbar — jedes wieder vorgelegte Dokument wird erneut
         verarbeitet und erneut bezahlt.
         """
         huellen = [target] if isinstance(target, OCRWrapper) else list(target)
-        # AUSSCHLIESSLICH `failed`, nicht `input_error`: Der Terminal-Guard des
+        # AUSSCHLIESSLICH `failed`, nicht `input_error`: Das Nachsehen des
         # Executors deckt letzteren ab, ein so wiedervorgelegter Job taete also
         # nichts — verbrauchte aber einen Versuch aus dem Budget und wuerde hier
         # als erledigte Arbeit gezaehlt, die nie stattfindet.
@@ -938,7 +940,7 @@ class OCRClient:
                 # Ein `aborted`-Job wird vom Werkzeug ABGEWIESEN (am
                 # Objekt belegt, Feature-Verifikation Punkt 19). Sein
                 # Heilungsweg ist nicht diese Methode (den Rueckweg
-                # bringt #26; `ocr_start` fasst die Zeile nicht an) —
+                # bringt #26; `ocr_start` findet die Eingabe) —
                 # also uebergehen und NICHT mitzaehlen, statt mit einer
                 # Ausnahme den ganzen Stapel aufzuhalten.
                 #
@@ -976,9 +978,11 @@ class OCRClient:
     def status(self) -> dict[str, Any]:
         """Der Gesamtzustand — ABGELEITET, nirgends gespeichert.
 
-        Endzustaende werden aus `documents` gezaehlt; Wartendes und Laufendes
-        kommt aus Procrastinates Job-Tabellen. Nichts davon wird gespiegelt — das
-        ist der ganze Sinn von „ein Buch, nicht zwei" (Plan 2.4).
+        Endzustaende werden aus `documents` gezaehlt, offene Dokumente (Eingabe
+        da, kein Ergebnis) aus `inputs`; wie viele Jobs warten oder laufen, kommt
+        aus Procrastinates Job-Tabellen. Nichts davon wird gespiegelt — das ist
+        der ganze Sinn von „ein Buch, nicht zwei" (Plan 2.4). Einen Zustand `new`
+        gibt es nicht.
 
         AUSSCHLIESSLICH in Summen, nie Dokument fuer Dokument. Das ist keine
         Bequemlichkeit, sondern eine Groessenfrage: Der Bestand hat
@@ -988,18 +992,20 @@ class OCRClient:
         aufloest, macht zehntausend Abfragen fuer eine Uebersicht, die niemand
         Dokument fuer Dokument liest.
 
-        Gezaehlt wird deshalb so: Terminal-Zustaende mit einem `GROUP BY status`
-        ueber `documents` (`db.counts_by_status`), Job-Zustaende mit
-        `list_tasks`/`list_queues`, die fertige Zaehler je Zustand liefern
-        (`todo`, `doing`, `succeeded`, `failed`, `cancelled`, `aborted`). Zwei
-        Abfragen, unabhaengig von der Bestandsgroesse.
+        Gezaehlt wird deshalb so: Endzustaende mit einem `GROUP BY status`
+        ueber `documents` (`db.counts_by_status`), die offenen mit einer Zaehlung
+        ueber `inputs` ohne Ergebnis (`db.count_open`), Job-Zustaende mit
+        `list_tasks`, das fertige Zaehler je Zustand liefert (`todo`, `doing`,
+        `succeeded`, `failed`, `cancelled`, `aborted`). Drei Abfragen,
+        unabhaengig von der Bestandsgroesse.
 
         Die Aufloesung je Dokument gibt es nur fuer ein BENANNTES Dokument —
         `document()` und `get()`. Das ist die richtige Stelle dafuer: Wer ein
         einzelnes Dokument sucht, nennt es.
 
         Returns:
-            Zaehler je Dokument-Zustand, Zaehler je Job-Zustand, die Zahl offener
+            Zaehler je Endzustand und `open` fuer die offenen Dokumente (unter
+            `documents`), Zaehler je Job-Zustand, die Zahl offener
             Aufruest-Faelle, der Kontostand und ob ein Daemon lebt. Beide
             letzten sind nur Auskunft: Sind sie nicht lesbar (RunPod antwortet
             nicht, Procrastinates Worker-Tabelle fehlt), stehen sie als `None`
@@ -1014,12 +1020,13 @@ class OCRClient:
         """
         self._settings.require_api_key()
         zeilen = db.counts_by_status(self.conn)
+        offen = db.count_open(self.conn)
 
         aufgaben = self._procrastinate.job_manager.list_tasks()
 
-        # ZWEI Abfragen, unabhaengig von der Bestandsgroesse: ein `GROUP BY
-        # status` ueber `documents` und `list_tasks`, das fertige Zaehler je
-        # Zustand liefert. Die Aufloesung je Dokument gibt es nur fuer ein
+        # Unabhaengig von der Bestandsgroesse: ein `GROUP BY status` ueber
+        # `documents`, eine Zaehlung ueber `inputs` und `list_tasks`, das fertige
+        # Zaehler je Zustand liefert. Die Aufloesung je Dokument gibt es nur fuer ein
         # BENANNTES Dokument (`document`, `get`) — wer sie fuer alle wollte,
         # braeuchte je Dokument dessen juengsten Job, und dafuer gibt es in
         # Procrastinates Lese-Schnittstelle keinen Filter.
@@ -1058,7 +1065,8 @@ class OCRClient:
 
         return {
             "documents": {
-                zustand.value: anzahl for zustand, anzahl in zeilen.items()
+                **{zustand.value: anzahl for zustand, anzahl in zeilen.items()},
+                "open": offen,
             },
             "jobs": jobs,
             "upgrade_cases": offene_aufruest_faelle[0] if offene_aufruest_faelle else 0,
@@ -1067,18 +1075,26 @@ class OCRClient:
         }
 
     def document(self, sha256: str) -> DerivedStatus:
-        """Der abgeleitete Zustand EINES Dokuments, ueber seinen Hash.
+        """Wo EIN Dokument steht, ueber seinen Hash, ohne `raw` zu laden.
 
-        Liest die Zeile OHNE `raw`: Wer nur den Zustand will, soll nicht die ganze
-        Antwort laden.
+        Gibt es ein Ergebnis, ist es sein Endzustand (`Phase.TERMINAL`, die Zeile
+        ohne `raw` unter `.row`). Sonst ist es offen, und die Phase sagt, was sein
+        juengster Job tut: wartet, laeuft, oder ist ohne Ergebnis zu Ende (dann
+        hilft `retry`). Das ist die eine Stelle, an der man ein steckendes
+        Dokument von einem unterscheidet, das noch dauert; das Warten fragt
+        Procrastinate nicht.
+
+        Ergebnis und Eingabe kommen aus einer Anweisung (`db.read_states`), der
+        Job ueber `list_jobs(queueing_lock=…)`.
 
         Raises:
-            DocumentNotFound: Unbekannt.
-        """
-        zeile = self._zeile(sha256)
+            DocumentNotFound: Unbekannt: weder Ergebnis noch Eingabe.
 
-        jobs = self._procrastinate.job_manager.list_jobs(queueing_lock=zeile.sha256)
-        return db.derive_status(zeile, jobs)
+        Kosten: keine.
+        """
+        stand = self._stand(sha256)
+        jobs = self._procrastinate.job_manager.list_jobs(queueing_lock=sha256)
+        return db.derive_status(sha256, stand.row, jobs)
 
     def get(self, sha256: str) -> OCRWrapper:
         """Holt die Huelle zu einem bereits bekannten Dokument, ohne zu warten.
@@ -1093,23 +1109,33 @@ class OCRClient:
                 Bibliothek nicht.
 
         Raises:
-            DocumentNotFound: Unbekannt. Ob das Dokument fertig ist, sagt die
-                Huelle (`.status`, `.success`) — nicht diese Methode.
+            DocumentNotFound: Es gibt (noch) kein Ergebnis: Das Dokument ist offen
+                oder unbekannt, und die Meldung sagt, welches von beiden. Ob ein
+                Ergebnis gelungen ist, sagt die Huelle (`.status`, `.success`) —
+                nicht diese Methode.
 
         Kosten: keine.
         """
-        return OCRWrapper.from_row(self._zeile(sha256), self.conn)
-
-    def _zeile(self, sha256: str) -> db.DocumentRow:
-        """Die Zeile zu einem Hash, ohne `raw` — oder `DocumentNotFound`."""
-        _hash_pruefen(sha256)
-        zeile = db.get_document(self.conn, sha256, with_raw=False)
-        if zeile is None:
+        stand = self._stand(sha256)
+        if stand.row is None:
             raise DocumentNotFound(
-                f"Kein Dokument zu {sha256!r}. Angenommen wird der sha256, den "
-                f"`ocr_start` zurueckgab (vierundsechzig Zeichen aus 0-9a-f)."
+                f"{sha256} hat noch kein Ergebnis: Es ist abgeschickt und offen. "
+                f"Wo es steht, sagt `document()`; darauf warten `wait()`."
             )
-        return zeile
+        return OCRWrapper.from_row(stand.row, self.conn)
+
+    def _stand(self, sha256: str) -> db.DocumentState:
+        """Ergebnis und Eingabe zu einem Hash, ohne `raw` — oder `DocumentNotFound`,
+        wenn es keins von beiden gibt."""
+        _hash_pruefen(sha256)
+        (stand,) = db.read_states(self.conn, [sha256])
+        if stand.is_unknown:
+            raise DocumentNotFound(
+                f"Kein Dokument zu {sha256!r}: weder Ergebnis noch Eingabe. "
+                f"Angenommen wird der sha256, den `ocr_start` zurueckgab "
+                f"(vierundsechzig Zeichen aus 0-9a-f)."
+            )
+        return stand
 
     def credit(self) -> float:
         """Der Kontostand, live geholt.

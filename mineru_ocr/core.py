@@ -109,14 +109,23 @@ class Submitted(str):
         queued: Ob dieser Aufruf das Dokument eingereiht hat. False bei einem
             Treffer (es gibt ein Ergebnis) und bei einem Dokument, das schon
             unterwegs ist.
-        status: Der Zustand des Dokuments im Augenblick des Abschickens:
-            `NEW`, wenn es nun unterwegs ist, sonst sein Endzustand.
+        status: Der Endzustand des Dokuments im Augenblick des Abschickens, oder
+            None, wenn es offen ist (eingereiht oder schon unterwegs). Einen
+            Zustand fuer „noch kein Ergebnis" gibt es nicht: Die Ergebniszeile
+            legt erst der Job an.
     """
 
     queued: bool
-    status: DocumentStatus
+    status: DocumentStatus | None
 
-    def __new__(cls, sha256: str, *, queued: bool, status: DocumentStatus) -> Submitted:
+    @property
+    def is_open(self) -> bool:
+        """Das Dokument hat noch kein Ergebnis: eingereiht oder schon unterwegs."""
+        return self.status is None
+
+    def __new__(
+        cls, sha256: str, *, queued: bool, status: DocumentStatus | None
+    ) -> Submitted:
         gleich = super().__new__(cls, sha256)
         gleich.queued = queued
         gleich.status = status

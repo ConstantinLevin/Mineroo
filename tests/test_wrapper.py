@@ -28,19 +28,20 @@ PNG_KOPF = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 def _huelle(
     conn: psycopg.Connection[Any], settings: Settings, inhalt: bytes
 ) -> OCRWrapper:
-    """Eine Huelle zu einer frisch angelegten Zeile `new`, ohne das Abschicken.
+    """Eine Huelle zu einem gescheiterten Ergebnis ohne `raw`, ohne Daemon.
 
-    Legt Zeile und Eingabe mit den Funktionen von `db` an, so wie das Abschicken
-    es tut, und liest die Zeile OHNE `raw`: genau die Huelle, die `get()` gibt.
+    Eine Huelle gibt es nur zu einem Ergebnis, und die Zeile legt sonst erst der
+    Job an. Hier steht sie von Hand als `failed` da, mit stehender Eingabe, wie
+    der Job sie bei `failed` hinterlaesst: Die Tests schreiben ihr Ergebnis dann
+    mit `write_terminal_async` darueber, denn `failed` darf ueberschrieben
+    werden. Gelesen wird OHNE `raw`: genau die Huelle, die `get()` gibt.
     """
     sha256 = hashlib.sha256(inhalt).hexdigest()
     with conn.transaction():
-        db.insert_document(
-            conn,
-            sha256=sha256,
-            size_bytes=len(inhalt),
-            mime="image/png",
-            endpoint_id=settings.require_endpoint_id(),
+        conn.execute(
+            "INSERT INTO documents (sha256, size_bytes, mime, status, endpoint_id) "
+            "VALUES (%s, %s, %s, 'failed', %s)",
+            (sha256, len(inhalt), "image/png", settings.require_endpoint_id()),
         )
         db.insert_input(conn, sha256=sha256, content=inhalt)
     zeile = db.get_document(conn, sha256, with_raw=False)
@@ -64,6 +65,7 @@ async def test_success_gilt_auch_fuer_leer(
         sha256=huelle.sha256,
         status=DocumentStatus.EMPTY,
         raw={"markdown": "", "content_list": [], "images": {}},
+        endpoint_id="testendpoint",
     )
     huelle.refresh()
     assert huelle.status is DocumentStatus.EMPTY
@@ -92,6 +94,7 @@ async def test_getter_liefern_das_fertige(
             ],
             "images": {"bild.jpg": base64.b64encode(b"\xff\xd8\xff").decode("ascii")},
         },
+        endpoint_id="testendpoint",
     )
     huelle.refresh()
 
@@ -127,6 +130,7 @@ async def test_fehlendes_images_wird_gemeldet_statt_leer_zu_liefern(
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
         raw={"markdown": "Text.", "content_list": []},
+        endpoint_id="testendpoint",
     )
     huelle.refresh()
 
@@ -168,6 +172,7 @@ async def test_gelistete_zeile_laedt_raw_nach(
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
         raw={"markdown": "steht in raw", "content_list": [], "images": {}},
+        endpoint_id="testendpoint",
     )
 
     # Der Weg ueber die Liste — dort fehlt `raw` absichtlich.
@@ -193,6 +198,7 @@ async def test_raw_wirft_auch_bei_gescheiterten_nicht(
         status=DocumentStatus.FAILED,
         raw={"markdown": "das kam noch an", "failure": {"type": "TerminalRunPodError"}},
         error="TerminalRunPodError: aus",
+        endpoint_id="testendpoint",
     )
     huelle.refresh()
 
@@ -216,6 +222,7 @@ async def test_refresh_verwirft_die_zwischenspeicherung(
         sha256=huelle.sha256,
         status=DocumentStatus.FAILED,
         raw={"markdown": "erster Stand"},
+        endpoint_id="testendpoint",
     )
     huelle.refresh()
     assert huelle.raw["markdown"] == "erster Stand"
@@ -225,6 +232,7 @@ async def test_refresh_verwirft_die_zwischenspeicherung(
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
         raw={"markdown": "zweiter Stand", "content_list": [], "images": {}},
+        endpoint_id="testendpoint",
     )
     # OHNE refresh: der alte Stand. Die Huelle fragt die Datenbank nicht
     # heimlich bei jedem Zugriff — das machte aus einer Schleife ueber tausend
@@ -261,6 +269,7 @@ async def test_rendered_markdown_ist_das_ganze_dokument(
             ],
             "images": {},
         },
+        endpoint_id="testendpoint",
     )
     huelle.refresh()
 
@@ -276,7 +285,7 @@ def test_to_dict_traegt_kein_raw(
     abbildung = huelle.to_dict()
     assert "raw" not in abbildung
     assert abbildung["sha256"] == huelle.sha256
-    assert abbildung["status"] == "new"
+    assert abbildung["status"] == "failed"
     # Und alles ist JSON-faehig — die Ausgabe mit `--json` ist der Zweck.
     import json
 
@@ -293,7 +302,7 @@ async def test_to_dict_mit_raw_traegt_das_vollstaendige_ergebnis(
     huelle = _huelle(db_conn, settings, PNG_KOPF + b"mit raw")
     raw = {"markdown": "Text.", "content_list": [], "images": {}, "extras": {"a": 1}}
     await write_terminal_async(
-        async_conn, sha256=huelle.sha256, status=DocumentStatus.DONE, raw=raw
+        async_conn, sha256=huelle.sha256, status=DocumentStatus.DONE, raw=raw, endpoint_id="testendpoint"
     )
 
     zeile = db.get_document(db_conn, huelle.sha256, with_raw=False)
@@ -314,15 +323,16 @@ async def test_to_dict_mit_raw_beschreibt_dieselbe_zeile_wie_das_raw(
     async_conn: psycopg.AsyncConnection[Any],
     settings: Settings,
 ) -> None:
-    """Wird das Dokument zwischen `get` und `to_dict(raw=True)` fertig, kommt die
-    Abbildung aus der Zeile, aus der auch `raw` stammt: nicht `status` `new` und
-    `success` False neben einer fertigen Antwort."""
+    """Wird das Dokument zwischen `get` und `to_dict(raw=True)` neu fertig (ein
+    `retry` ueber einem gescheiterten), kommt die Abbildung aus der Zeile, aus
+    der auch `raw` stammt: nicht `status` `failed` und `success` False neben
+    einer fertigen Antwort."""
     huelle = _huelle(db_conn, settings, PNG_KOPF + b"fertig dazwischen")
     raw = {"markdown": "Text.", "content_list": [], "images": {}}
     await write_terminal_async(
-        async_conn, sha256=huelle.sha256, status=DocumentStatus.DONE, raw=raw
+        async_conn, sha256=huelle.sha256, status=DocumentStatus.DONE, raw=raw, endpoint_id="testendpoint"
     )
-    assert huelle.row.status is DocumentStatus.NEW
+    assert huelle.row.status is DocumentStatus.FAILED
 
     abbildung = huelle.to_dict(raw=True)
 
@@ -331,10 +341,10 @@ async def test_to_dict_mit_raw_beschreibt_dieselbe_zeile_wie_das_raw(
     assert abbildung["success"] is True
 
 
-def test_to_dict_mit_raw_ohne_ergebnis_traegt_ein_leeres_raw(
+def test_to_dict_mit_raw_ohne_gespeichertes_raw_traegt_ein_leeres_raw(
     db_conn: psycopg.Connection[Any], settings: Settings
 ) -> None:
-    """Ein Dokument ohne Ergebnis hat noch kein `raw`; `raw` selbst wirft dort
+    """Eine Zeile ohne gespeichertes `raw` liefert `{}`; `raw` selbst wirft dort
     nicht, und `to_dict(raw=True)` ebenso wenig."""
     huelle = _huelle(db_conn, settings, PNG_KOPF + b"ohne ergebnis")
     assert huelle.to_dict(raw=True)["raw"] == {}

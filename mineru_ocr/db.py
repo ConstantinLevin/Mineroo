@@ -14,14 +14,15 @@ dokumentierte Lese-Schnittstelle mit. Die EINE Ausnahme steht am Ende dieser
 Datei, ist einzeln benannt und traegt ihre Warnung mit sich.
 
 Die tragende Festlegung des ganzen Datenmodells stammt vom Auftraggeber und
-lautet: EIN Buch, nicht zwei. „DAS IST POSTRGRES DER JOB LINKED AUF DAS DOKUMENT
-DAS ER PROCESSED UND WENN MAN DEN STATUS EINES DOKUMENTS HABEN WILL QUERIED MAN
-NACH DE LETZTEN JOB DER AUF DAS DOKUMENT LINKT" (Plan 2.4). Daraus folgt alles
-Uebrige: Die Zeile kennt nur Endzustaende. Es gibt keinen Zustand `processing`,
-weil „laeuft gerade" bereits in Procrastinates Job-Tabelle steht und ein zweites
-Mal gefuehrt werden muesste. Es gibt keinen Abgleich-Waechter, weil es nichts
-abzugleichen gibt. Zwischen der Anlage einer Zeile und ihrem Endzustand fasst
-NIEMAND sie an.
+lautet: EIN Buch, nicht zwei. Jede Tatsache steht an genau einer Stelle: das
+Ergebnis in `documents`, die offene Eingabe in `inputs`, was wartet oder laeuft
+in Procrastinates Job-Tabelle. „man sagt procrastinate es soll einen job
+erstelelen, und die zeile anlegen ist teil davon nicht was wir machen" (Spec
+Mineroo#1): Die Ergebniszeile legt der Job an, wenn er endet, und sie kennt
+deshalb nur Endzustaende. Es gibt keinen Zustand `new` und keinen `processing`.
+Offen ist ein Dokument, solange seine Eingabe in `inputs` steht und es kein
+Ergebnis hat; „laeuft gerade" steht in der Job-Tabelle und wird nirgends
+gespiegelt. Es gibt keinen Abgleich-Waechter, weil es nichts abzugleichen gibt.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from typing import Any, Final
 
 import psycopg
 from procrastinate.jobs import Job
-from psycopg.rows import class_row
+from psycopg.rows import class_row, dict_row
 from psycopg.types.json import Jsonb
 
 from .config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS, DEFAULT_WAIT_POLL_SECONDS
@@ -74,11 +75,11 @@ weil ein vergessener Zustand dort still zu „laeuft noch" wuerde."""
 SCHEMA_SQL: Final = """
 CREATE TABLE IF NOT EXISTS documents (
     sha256        text PRIMARY KEY,
-    size_bytes    bigint NOT NULL,
-    mime          text NOT NULL,
+    size_bytes    bigint,
+    mime          text,
     page_count    integer,
-    status        text NOT NULL DEFAULT 'new'
-        CHECK (status IN ('new', 'done', 'empty', 'failed', 'input_error')),
+    status        text NOT NULL
+        CHECK (status IN ('done', 'empty', 'failed', 'input_error')),
     raw           jsonb,
     error         text,
     endpoint_id   text NOT NULL,
@@ -130,9 +131,18 @@ base64: verlustfrei wie dieses, aber auf der Platte das 1,03-Fache statt das
 1,37-Fache). Der Job traegt nur den Hash und liest die Eingabe ueber ihn. Mit dem
 Endergebnis loescht der Job die Eingabe in derselben Transaktion, bei `done`,
 `empty` und `input_error`; bei `failed` bleibt sie, damit `retry` etwas zu lesen
-hat. Pfade gibt es in der Datenbank nicht.
+hat. Pfade gibt es in der Datenbank nicht. Die Tabelle ist zugleich das
+Verzeichnis der offenen Dokumente: Abschicken legt nur die Eingabe an, und ihr
+Primaerschluessel ist die Sperre gegen ein zweites Einreihen.
 
-`status` kennt KEIN `processing`. Siehe Modul-Vorspann.
+`status` kennt nur Endzustaende, kein `new` und kein `processing`: Die Zeile
+legt der Job an, wenn er endet (siehe Modul-Vorspann). Deshalb hat die Spalte
+keine Voreinstellung.
+
+`size_bytes` und `mime` bestimmt der Job aus den Bytes der Eingabe. Leer bleiben
+sie nur, wo sie sich nicht bestimmen liessen: `mime` bei einem Typ, den das Paket
+nicht kennt, beide, wenn die Eingabe fehlte. Ein erfundener Wert waere dort eine
+Angabe, die stimmt aussieht und nicht stimmt.
 
 `raw` ist Jurgens „raw section" — und sie steht auf DOKUMENT-Ebene, nicht auf
 Chunk-Ebene. Das ist die tragende Festlegung und der haeufigste Denkfehler beim
@@ -159,8 +169,9 @@ der Executor weiss, welcher Teil welche Seiten trug. Wer das Zusammensetzen auf
 die Leseseite verschiebt, muss dieses Wissen mitschleppen — also doch
 Chunk-Angaben in der Datenbank fuehren, gegen die Festlegung oben.
 
-Geschrieben wird `raw` NUR beim Terminal-Schreiben eines Durchlaufs und
-ueberschrieben nur dann, wenn ein gescheitertes Dokument erneut verarbeitet wird.
+Geschrieben wird `raw` NUR beim Endschreiben eines Durchlaufs, das die Zeile
+anlegt, und ueberschrieben nur dann, wenn ein gescheitertes Dokument erneut
+verarbeitet wird.
 Mengengeruest: rund 0,05 bis 0,1 MB je Seite; bei 30.000 Dokumenten sind das
 Gigabyte, die Postgres auslagert. Der Plattenplatz gehoert vor dem
 grossen Lauf geprueft (Plan 12.5). Warum die Ergebnisse in die Datenbank gehoeren
@@ -182,7 +193,11 @@ verborgene Mechanik lesbar sein.
 
 
 class DocumentStatus(enum.StrEnum):
-    """Die fuenf Zustaende einer Zeile. Vier davon sind endgueltig.
+    """Die vier Zustaende einer Ergebniszeile. Alle sind endgueltig.
+
+    Eine Zeile gibt es erst, wenn der Job endet; „noch kein Ergebnis" ist deshalb
+    kein Zustand der Zeile, sondern ihr Fehlen bei stehender Eingabe (siehe
+    Modul-Vorspann).
 
     Warum `empty` und `input_error` eigene Zustaende sind und nicht Sonderfaelle
     von `done` bzw. `failed`: Ein leeres Ergebnis als Erfolg zu verbuchen ist
@@ -191,9 +206,6 @@ class DocumentStatus(enum.StrEnum):
     wirklich passiert. Und `input_error` von `failed` zu trennen beantwortet die
     Frage „wofuer haben wir bezahlt?": `input_error` hat RunPod nie gesehen.
     """
-
-    NEW = "new"
-    """Angelegt, noch kein Ergebnis. Der EINZIGE nicht endgueltige Zustand."""
 
     DONE = "done"
     """Ergebnis vollstaendig da, mindestens ein Chunk mit Inhalt."""
@@ -207,58 +219,58 @@ class DocumentStatus(enum.StrEnum):
     INPUT_ERROR = "input_error"
     """Vor jedem RunPod-Kontakt aussortiert. Hat nichts gekostet."""
 
-    @property
-    def is_terminal(self) -> bool:
-        """Alles ausser `NEW`."""
-        return self is not DocumentStatus.NEW
-
 
 class Phase(enum.Enum):
     """Wo ein Dokument gerade steht — ABGELEITET, nirgends gespeichert.
 
     Das ist die Antwort auf „ein Buch, nicht zwei": Der Fortschritt eines
-    Dokuments wird aus der Zeile UND dem juengsten verlinkten Job GELESEN, nie in
-    die Zeile gespiegelt. Diese Aufzaehlung existiert nur im Speicher.
+    Dokuments wird aus Ergebniszeile, Eingabe und juengstem verlinkten Job
+    GELESEN, nie gespiegelt. Diese Aufzaehlung existiert nur im Speicher. Ein
+    unbekanntes Dokument hat keine Phase; wer danach fragt, bekommt
+    `DocumentNotFound`.
     """
 
     TERMINAL = "terminal"
-    """Die Zeile ist endgueltig. Welcher Endzustand, sagt `row_status`."""
-
-    REGISTERED = "registered"
-    """Zeile angelegt, aber nie ein Job dazu eingereiht."""
+    """Es gibt ein Ergebnis. Welches, sagt `row_status`."""
 
     WAITING = "waiting"
-    """Juengster Job wartet (`todo`)."""
+    """Offen, juengster Job wartet (`todo`)."""
 
     RUNNING = "running"
-    """Juengster Job laeuft (`doing`)."""
+    """Offen, juengster Job laeuft (`doing`)."""
 
     ENDED_WITHOUT_RESULT = "ended_without_result"
-    """Juengster Job ist endgueltig zu Ende, die Zeile steht aber noch auf `new`.
+    """Offen, aber kein Job ist mehr unterwegs: Der juengste ist endgueltig zu
+    Ende, ohne ein Ergebnis zu schreiben, oder es gibt keinen.
 
-    Der seltene Fall: harter Abschuss im Schreibfenster, oder Abbruch beim
-    Herunterfahren (`aborted`). Er ist KEIN Datenfehler, sondern genau der
-    Zustand, den das Ein-Buch-Modell erwartet. Einreihen heilt ihn NICHT:
-    `OCRClient.ocr_start` fasst eine vorhandene Zeile `new` nicht an, sie gilt als
-    unterwegs. Den Rueckweg (Wiedervorlage auf Procrastinates Weg) bringt das
-    Ticket #26. „es wird dann ncohmal und das wars wenns nicht fertig ist ists
-    gefailed" (Plan 2.4).
+    Der seltene Fall: harter Abschuss im Schreibfenster, Abbruch beim
+    Herunterfahren (`aborted`), ein von Hand abgesagter Job. Er ist KEIN
+    Datenfehler, sondern genau der Zustand, den das Ein-Buch-Modell erwartet.
+    Erneutes Abschicken heilt ihn NICHT: Die Eingabe steht, das Dokument gilt als
+    unterwegs. Der Weg zurueck ist `retry` (Ticket #26). „es wird dann ncohmal
+    und das wars wenns nicht fertig ist ists gefailed" (Plan 2.4).
     """
 
 
 @dataclass(frozen=True)
 class DocumentRow:
-    """Eine Zeile, so wie sie in der Datenbank steht. Reine Daten, keine Logik."""
+    """Eine Ergebniszeile, so wie sie in der Datenbank steht. Reine Daten."""
 
     sha256: str
-    size_bytes: int
-    mime: str
+    size_bytes: int | None
+    """Die Groesse der Eingabe, vom Job bestimmt. None nur, wenn die Eingabe
+    fehlte (siehe SCHEMA_SQL)."""
+
+    mime: str | None
+    """Der Typ der Eingabe, vom Job aus den Bytes bestimmt. None, wenn das Paket
+    den Typ nicht kennt oder die Eingabe fehlte."""
+
     page_count: int | None
     status: DocumentStatus
     raw: dict[str, Any] | None
     """Das zusammengesetzte Gesamtergebnis auf Dokument-Ebene, oder None, solange
-    es keines gibt. EIN Objekt, keine Liste — eine Liste waere die Chunk-Struktur,
-    und die gibt es hier nicht (siehe SCHEMA_SQL)."""
+    es nicht gelesen wurde. EIN Objekt, keine Liste — eine Liste waere die
+    Chunk-Struktur, und die gibt es hier nicht (siehe SCHEMA_SQL)."""
 
     error: str | None
     endpoint_id: str
@@ -279,9 +291,9 @@ class DocumentRow:
         Warum das noetig ist: Die Spalte ist `text` mit einer CHECK-Bedingung und
         kein Postgres-Aufzaehlungstyp, also reicht `class_row` die rohe
         Zeichenkette durch. `DocumentStatus` ist zwar ein `StrEnum` und
-        vergliche sich mit ihr richtig — aber nur beim Vergleich. `row.status.
-        is_terminal` gaebe es an einer Zeichenkette nicht, und der Fehler kaeme
-        erst dort, wo jemand die Eigenschaft benutzt, nicht dort, wo die falsche
+        vergliche sich mit ihr richtig — aber nur beim Vergleich. `row.status is
+        DocumentStatus.DONE` waere an einer Zeichenkette falsch, und der Fehler
+        kaeme erst dort, wo jemand so vergleicht, nicht dort, wo die falsche
         Zeile entstand.
 
         `object.__setattr__`, weil die Klasse eingefroren ist. Das ist der
@@ -290,19 +302,69 @@ class DocumentRow:
         noch zur Erzeugung.
 
         Ohne Fallunterscheidung, und das ist Absicht: `DocumentStatus(x)` gibt
-        fuer ein bereits richtiges Mitglied dasselbe Mitglied zurueck. Eine
-        vorgeschaltete `isinstance`-Pruefung waere fuer die Typpruefung toter
-        Code — sie sieht das Feld als `DocumentStatus` deklariert und den
-        Gegenzweig damit als unerreichbar. Genau das ist die Lage: Nach der
-        Erzeugung IST es einer, waehrend der Erzeugung kann es eine Zeichenkette
-        aus der Datenbank sein.
+        fuer ein bereits richtiges Mitglied dasselbe Mitglied zurueck.
         """
         object.__setattr__(self, "status", DocumentStatus(self.status))
+
+    def angaben(self) -> dict[str, Any]:
+        """Die Angaben der Zeile als einfache Abbildung, ohne `raw`.
+
+        Fuer jede Ausgabe mit `--json`, die nur den Stand braucht: die Huelle
+        (`OCRWrapper.to_dict`) und `DerivedStatus.to_dict` stellen dieselben
+        Angaben mit denselben Schluesseln dar, aus dieser einen Stelle.
+        """
+        return {
+            "sha256": self.sha256,
+            "size_bytes": self.size_bytes,
+            "mime": self.mime,
+            "page_count": self.page_count,
+            "status": self.status.value,
+            "error": self.error,
+            "endpoint_id": self.endpoint_id,
+            "image_tag_at_submit": self.image_tag_at_submit,
+            "notes": self.notes,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True)
+class DocumentState:
+    """Was die Datenbank in EINEM Augenblick ueber ein Dokument weiss.
+
+    Ergebnis da heisst fertig, Eingabe da heisst offen, keins von beiden heisst
+    unbekannt. Beides kommt aus EINER Anweisung (`read_states`), nie aus zweien:
+    Erst `documents`, dann `inputs` zu lesen, meldete ein Dokument, dessen Job
+    genau dazwischen fertig wird, faelschlich als unbekannt.
+    """
+
+    sha256: str
+    row: DocumentRow | None
+    """Die Ergebniszeile ohne `raw` (`raw_loaded` False), None ohne Ergebnis."""
+
+    has_input: bool
+    """Ob die Eingabe in `inputs` steht. Bei `failed` bleibt sie stehen; dann
+    gibt es beides, und das Ergebnis entscheidet."""
+
+    @property
+    def is_terminal(self) -> bool:
+        """Es gibt ein Ergebnis, gleich welches."""
+        return self.row is not None
+
+    @property
+    def is_open(self) -> bool:
+        """Kein Ergebnis, aber eine Eingabe: unterwegs oder liegengeblieben."""
+        return self.row is None and self.has_input
+
+    @property
+    def is_unknown(self) -> bool:
+        """Weder Ergebnis noch Eingabe: nie abgeschickt."""
+        return self.row is None and not self.has_input
 
 
 @dataclass(frozen=True)
 class DerivedStatus:
-    """Der zusammengesetzte Zustand aus Zeile und juengstem Job.
+    """Der zusammengesetzte Stand aus Ergebnis, Eingabe und juengstem Job.
 
     Wird bei jeder Abfrage neu gebildet und nirgends abgelegt. Wer ihn ablegte,
     haette die zweite Buchfuehrung wieder eingefuehrt, gegen die das ganze
@@ -310,8 +372,10 @@ class DerivedStatus:
     """
 
     sha256: str
-    row_status: DocumentStatus
     phase: Phase
+
+    row: DocumentRow | None
+    """Die Ergebniszeile ohne `raw`, None solange das Dokument offen ist."""
 
     job_id: int | None
     """Kennung des juengsten verlinkten Jobs, None wenn es keinen gibt."""
@@ -330,6 +394,30 @@ class DerivedStatus:
     job_count: int
     """Wie viele Jobs es insgesamt zu diesem Dokument gab. Groesser als eins bei
     jedem Wiederanlauf; sichtbar, weil Job-Zeilen nie geloescht werden."""
+
+    @property
+    def row_status(self) -> DocumentStatus | None:
+        """Der Endzustand, None solange das Dokument offen ist."""
+        return self.row.status if self.row is not None else None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Der Stand als einfache Abbildung, ohne `raw` — fuer `show --json`.
+
+        Bei einem Ergebnis stehen dessen Angaben darin (`DocumentRow.angaben`),
+        bei einem offenen Dokument nur Hash, Phase und Job; `status` ist dann
+        None.
+        """
+        abbildung: dict[str, Any] = (
+            self.row.angaben() if self.row is not None else {"sha256": self.sha256, "status": None}
+        )
+        abbildung["phase"] = self.phase.value
+        abbildung["job"] = {
+            "id": self.job_id,
+            "status": self.job_status,
+            "attempts": self.attempts,
+            "count": self.job_count,
+        }
+        return abbildung
 
 
 # --------------------------------------------------------------------------
@@ -529,6 +617,39 @@ def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
                 f"Im Code, aber nicht in der Tabelle: {sorted(fehlend)}. "
                 f"In der Tabelle, aber nicht im Code: {sorted(ueberzaehlig)}."
             )
+        elif tabelle == "documents":
+            # Die Namen stimmen; ob die Tabelle zum Modell passt, sagen sie
+            # nicht. Eine Tabelle aus der Zeit, als das Abschicken die Zeile
+            # anlegte, kennt `new`, setzt es als Voreinstellung und verlangt
+            # `mime` und `size_bytes` — und der Job, der die Zeile jetzt erst am
+            # Ende anlegt, scheiterte daran bei der ersten Eingabe, die fehlt.
+            pruefungen = " ".join(
+                zeile[0]
+                for zeile in conn.execute(
+                    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                    "WHERE conrelid = 'documents'::regclass AND contype = 'c'"
+                ).fetchall()
+            )
+            voreinstellung = conn.execute(
+                "SELECT pg_get_expr(d.adbin, d.adrelid) FROM pg_attrdef d "
+                "JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum "
+                "WHERE d.adrelid = 'documents'::regclass AND a.attname = 'status'"
+            ).fetchone()
+            nullbar_erwartet = {"size_bytes", "mime"}
+            falsch_nicht_null = sorted(
+                name for name in nullbar_erwartet if form[name][1]
+            )
+            if "'new'" in pruefungen or voreinstellung is not None or falsch_nicht_null:
+                abweichungen.append(
+                    "Die Tabelle `documents` hat die erwarteten Spalten, aber die "
+                    "Form aus der Zeit, als das Abschicken die Zeile anlegte: "
+                    "erwartet `status` ohne Voreinstellung und nur mit den "
+                    "Endzustaenden ('done', 'empty', 'failed', 'input_error'), "
+                    "`mime` und `size_bytes` ohne NOT NULL; gefunden die "
+                    f"Pruefungen {pruefungen or '(keine)'}, Voreinstellung "
+                    f"{voreinstellung[0] if voreinstellung else '(keine)'}, "
+                    f"NOT NULL an {falsch_nicht_null or '(keiner)'}."
+                )
         elif tabelle == "inputs":
             # Die Namen stimmen; ob die Form stimmt, sagen sie nicht. Ohne
             # Primaerschluessel scheitert `ON CONFLICT (sha256)` beim ersten
@@ -665,60 +786,6 @@ das Unterscheidungsmerkmal, ohne das „nicht geladen" und „ist leer" dasselbe
 waeren."""
 
 
-def insert_document(
-    conn: psycopg.Connection[Any],
-    *,
-    sha256: str,
-    size_bytes: int,
-    mime: str,
-    endpoint_id: str,
-) -> bool:
-    """Legt eine Zeile an, falls es sie noch nicht gibt.
-
-    Setzt Jurgens Dubletten-Vorgabe auf Datenbank-Ebene um: `INSERT ... ON
-    CONFLICT (sha256) DO NOTHING`. Dieselbe Datei kann nie zweimal existieren,
-    egal wie viele Produzenten sie gleichzeitig einreihen — die Datenbank
-    entscheidet, nicht eine Pruefung im Programm, die zwischen Pruefen und
-    Einfuegen ein Zeitfenster hat.
-
-    Args:
-        conn: Offene Verbindung, gehoert dem Aufrufer.
-        sha256: Roher Byte-Hash.
-        size_bytes: Rohe Groesse.
-        mime: Die MIME-Zeichenkette aus `mime.DocumentType`.
-        endpoint_id: Fuer welchen Endpoint die Zeile gilt.
-
-    Returns:
-        True, wenn eine Zeile angelegt wurde. False, wenn es sie schon gab —
-        DAS IST DER NORMALFALL beim wiederholten Durchlaufen eines Ordners und
-        kein Fehler. Genau darauf beruht Jurgens Ordner-Szenario: „dann später
-        kommt zum ordner noch ein pfad hinzu den tut man einfach dazu und lässt
-        nochmal durchlaufen weil eh nur läuft was noch fehlt" (Plan 2.1).
-
-    Zusicherung:
-        Beruehrt eine BESTEHENDE Zeile in keiner Weise — kein Feld, auch nicht
-        `updated_at`. Ein zweites Einreihen darf ein fertiges Ergebnis nicht
-        anfassen.
-
-    Kosten: keine.
-    """
-    ergebnis = conn.execute(
-        """
-        INSERT INTO documents (
-            sha256, size_bytes, mime, endpoint_id
-        )
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (sha256) DO NOTHING
-        RETURNING sha256
-        """,
-        (sha256, size_bytes, mime, endpoint_id),
-    ).fetchone()
-    # `RETURNING` liefert nur dann eine Zeile, wenn wirklich eingefuegt wurde —
-    # bei `DO NOTHING` kommt nichts. Das ist die verlaessliche Unterscheidung;
-    # `rowcount` haette sie auch, aber `RETURNING` sagt es an der Abfrage selbst.
-    return ergebnis is not None
-
-
 def insert_input(
     conn: psycopg.Connection[Any], *, sha256: str, content: bytes
 ) -> bool:
@@ -732,6 +799,14 @@ def insert_input(
     Der Platzhalter ist `%b`, nicht `%s`: Er schickt den Wert im Binaerformat.
     Ohne ihn ginge ein grosses PDF als escapter Text ueber die Leitung.
 
+    Das ist das ganze Abschicken auf Seiten der Datenbank: Eine Ergebniszeile
+    legt erst der Job an. `ON CONFLICT (sha256) DO NOTHING` macht die Tabelle zur
+    Sperre gegen ein zweites Einreihen: Schicken zwei Aufrufer gleichzeitig
+    dieselben Bytes, laesst Postgres den zweiten am Primaerschluessel auf den
+    ersten warten, und danach fuegt er nichts ein. Eine Pruefung im Programm
+    haette zwischen Pruefen und Einfuegen ein Zeitfenster; die Datenbank hat
+    keines.
+
     Args:
         conn: Offene Verbindung, gehoert dem Aufrufer.
         sha256: Roher Byte-Hash von `content`.
@@ -739,7 +814,8 @@ def insert_input(
 
     Returns:
         True, wenn die Eingabe neu abgelegt wurde; False, wenn es zu diesem Hash
-        schon eine gibt. Dann bleibt die vorhandene unberuehrt.
+        schon eine gibt: Das Dokument ist dann unterwegs (oder gescheitert, und
+        seine Eingabe steht fuer `retry`), und die vorhandene bleibt unberuehrt.
 
     Kosten: keine.
     """
@@ -871,7 +947,7 @@ def list_documents(
 
 
 def counts_by_status(conn: psycopg.Connection[Any]) -> dict[DocumentStatus, int]:
-    """Zaehlt die Zeilen je Zustand. Grundlage von `status()`.
+    """Zaehlt die Ergebniszeilen je Endzustand. Grundlage von `status()`.
 
     Zusicherung:
         Jeder Zustand kommt im Ergebnis vor, auch mit Null. Ein fehlender
@@ -887,54 +963,121 @@ def counts_by_status(conn: psycopg.Connection[Any]) -> dict[DocumentStatus, int]
     return zaehlung
 
 
+def count_open(conn: psycopg.Connection[Any]) -> int:
+    """Zaehlt die offenen Dokumente: Eingabe da, kein Ergebnis.
+
+    Nicht einfach die Zeilen von `inputs`: Bei `failed` bleibt die Eingabe
+    stehen, damit `retry` etwas zu lesen hat, und ein gescheitertes Dokument hat
+    ein Ergebnis. Es zaehlt unter `failed`, nicht zweimal.
+
+    Kosten: keine.
+    """
+    zeile = conn.execute(
+        "SELECT count(*) FROM inputs i "
+        "WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.sha256 = i.sha256)"
+    ).fetchone()
+    return int(zeile[0]) if zeile is not None else 0
+
+
+_ZEILENFELDER: Final = tuple(feld.name for feld in fields(DocumentRow) if feld.name != "sha256")
+"""Die Felder von `DocumentRow` ausser dem Hash, den `read_states` aus der
+gefragten Liste nimmt: Bei einem offenen Dokument sind alle anderen NULL."""
+
+
+def read_states(
+    conn: psycopg.Connection[Any], hashes: Sequence[str]
+) -> list[DocumentState]:
+    """Was die Datenbank ueber diese Dokumente weiss, in EINER Anweisung.
+
+    `documents` und `inputs` werden in derselben Anweisung gelesen, nicht
+    nacheinander. Zwei Abfragen in der Reihenfolge erst `documents`, dann
+    `inputs` meldeten ein Dokument, dessen Job genau dazwischen fertig wird,
+    faelschlich als unbekannt: Die erste saehe noch kein Ergebnis, die zweite
+    keine Eingabe mehr. Eine Anweisung liest beide Tabellen in demselben
+    Schnappschuss.
+
+    Ohne `raw` und ohne `content`: Wer wartet oder nachsieht, braucht den Stand,
+    nicht die Antwort und nicht die Bytes. Procrastinate wird nicht gefragt.
+
+    Args:
+        conn: Offene Verbindung, gehoert dem Aufrufer.
+        hashes: Die gefragten Hashes, in beliebiger Zahl.
+
+    Returns:
+        Je gefragtem Hash ein `DocumentState`, in der Reihenfolge der Frage.
+
+    Kosten: keine.
+    """
+    spalten = ", ".join(
+        "NULL::jsonb AS raw" if name == "raw"
+        else "false AS raw_loaded" if name == "raw_loaded"
+        else f"d.{name}"
+        for name in _ZEILENFELDER
+    )
+    with conn.cursor(row_factory=dict_row) as cur:
+        zeilen = cur.execute(
+            f"SELECT h.sha256, (i.sha256 IS NOT NULL) AS has_input, {spalten} "
+            "FROM unnest(%s::text[]) WITH ORDINALITY AS h(sha256, nr) "
+            "LEFT JOIN documents d ON d.sha256 = h.sha256 "
+            "LEFT JOIN inputs i ON i.sha256 = h.sha256 "
+            "ORDER BY h.nr",
+            (list(hashes),),
+        ).fetchall()
+    stand: list[DocumentState] = []
+    for zeile in zeilen:
+        ergebnis = (
+            None
+            if zeile["status"] is None
+            else DocumentRow(
+                sha256=zeile["sha256"], **{name: zeile[name] for name in _ZEILENFELDER}
+            )
+        )
+        stand.append(
+            DocumentState(
+                sha256=zeile["sha256"], row=ergebnis, has_input=zeile["has_input"]
+            )
+        )
+    return stand
+
+
 # --------------------------------------------------------------------------
 # Lesen und schreiben — asynchron, ausschliesslich der Task
 # --------------------------------------------------------------------------
 
 
-async def get_document_async(
+async def get_status_async(
     conn: psycopg.AsyncConnection[Any], sha256: str
-) -> DocumentRow:
-    """Liest eine Zeile fuer den Executor — OHNE `raw`.
+) -> DocumentStatus | None:
+    """Der Endzustand eines Dokuments fuer den Executor, None ohne Ergebnis.
 
-    Warum ohne: Der Executor braucht Typ und Zustand. `raw` ist bei einem
-    bereits verarbeiteten Dokument zweistellige Megabyte gross, und der einzige
-    Grund, es zu lesen, waere der Terminal-Guard — der aber nur den Zustand
-    braucht. Es mitzuladen hiesse, bei jedem Wiederlauf eines fertigen Dokuments
+    Nur der Zustand, nie `raw`: Der Executor braucht ihn fuer das Nachsehen am
+    Anfang, und `raw` ist bei einem verarbeiteten Dokument zweistellige Megabyte
+    gross. Es mitzuladen hiesse, bei jedem Wiederlauf eines fertigen Dokuments
     das ganze Ergebnis durch die Leitung zu ziehen, um es sofort wegzuwerfen.
 
     Warum es diese Funktion ueberhaupt gibt und der Executor nicht selbst fragt:
     Dieses Modul ist der einzige Ort im Paket, an dem SQL auf `documents` steht
-    (siehe Modul-Vorspann). Eine zweite Stelle waere eine zweite Lesart derselben
-    Tabelle — und die faellt erst auf, wenn die Daten schon falsch sind.
-
-    Args:
-        conn: Offene asynchrone Verbindung, gehoert dem Aufrufer.
-        sha256: Primaerschluessel.
-
-    Returns:
-        Die Zeile mit `raw_loaded = False`.
-
-    Raises:
-        DocumentNotFound: Kein Eintrag. Anders als `get_document` gibt diese
-            Funktion NICHT None zurueck: Ein Job, der auf ein Dokument verweist,
-            das es nicht gibt, ist keine leere Auskunft, sondern ein Widerspruch
-            — die Zeile entsteht beim Einreihen, also vor dem Job.
+    (siehe Modul-Vorspann).
 
     Kosten: keine.
     """
-    async with conn.cursor(row_factory=class_row(DocumentRow)) as cur:
-        await cur.execute(
-            f"SELECT {_SPALTEN_OHNE_RAW} FROM documents WHERE sha256 = %s",
-            (sha256,),
-        )
-        zeile = await cur.fetchone()
-    if zeile is None:
-        raise DocumentNotFound(
-            f"Kein Eintrag zu {sha256}. Der Job verweist auf ein Dokument, das "
-            f"es nicht gibt — die Zeile entsteht beim Einreihen, vor dem Job."
-        )
-    return zeile
+    zeile = await (
+        await conn.execute("SELECT status FROM documents WHERE sha256 = %s", (sha256,))
+    ).fetchone()
+    return None if zeile is None else DocumentStatus(zeile[0])
+
+
+async def delete_input_async(conn: psycopg.AsyncConnection[Any], sha256: str) -> None:
+    """Loescht die Eingabe eines Dokuments, falls sie noch da ist.
+
+    Fuer den Job, der ein Ergebnis `done`, `empty` oder `input_error` vorfindet:
+    Dann ist die Eingabe zu nichts mehr gut. Das geschieht, wenn ein Abschicken
+    die Eingabe genau in dem Augenblick neu anlegte, in dem ein Job das Ergebnis
+    schrieb; der neue Job raeumt sie weg, statt ein zweites Mal zu bezahlen.
+
+    Kosten: keine.
+    """
+    await conn.execute("DELETE FROM inputs WHERE sha256 = %s", (sha256,))
 
 
 async def write_terminal_async(
@@ -943,25 +1086,28 @@ async def write_terminal_async(
     sha256: str,
     status: DocumentStatus,
     raw: dict[str, Any],
+    endpoint_id: str,
+    mime: str | None = None,
+    size_bytes: int | None = None,
     image_tag_at_submit: str | None = None,
     error: str | None = None,
     notes: Sequence[dict[str, Any]] | None = None,
     page_count: int | None = None,
 ) -> None:
-    """Schreibt das Endergebnis eines Durchlaufs und weckt alle Warter.
+    """Legt das Ergebnis eines Durchlaufs an und weckt alle Warter.
 
-    Das ist der EINZIGE Schreibvorgang an einer Zeile zwischen ihrer Anlage und
-    ihrem Endzustand. Er umfasst `raw`, `status`, `error`, angehaengte `notes`,
-    `page_count`, `updated_at`, das Loeschen der Eingabe aus `inputs` (ausser bei
-    `failed`, damit `retry` etwas zu lesen hat) und das Wecksignal in EINER
-    Transaktion — es gibt keinen Zwischenzustand, in dem `raw` geschrieben ist
-    und der Status noch `new` sagt, und keinen, in dem das Ergebnis steht und die
-    Eingabe noch da ist.
+    Das ist der EINZIGE Schreibvorgang an `documents`. Die Ergebniszeile
+    entsteht hier, am Ende des Jobs, und mit ihr in EINER Transaktion: `raw`,
+    `status`, `error`, die Angaben zur Eingabe (`mime`, `size_bytes`,
+    `page_count`), `notes`, das Loeschen der Eingabe aus `inputs` (ausser bei
+    `failed`, damit `retry` etwas zu lesen hat) und das Wecksignal. Es gibt
+    keinen Zwischenzustand, in dem das Ergebnis steht und die Eingabe noch da
+    ist, und keinen, in dem keins von beiden da ist.
 
     Args:
         conn: Offene asynchrone Verbindung, gehoert dem Aufrufer.
-        sha256: Primaerschluessel. Die Zeile muss existieren.
-        status: Ein endgueltiger Zustand. `NEW` ist ein Programmierfehler.
+        sha256: Primaerschluessel.
+        status: Der Endzustand.
         raw: Das zusammengesetzte Gesamtergebnis auf Dokument-Ebene, wie der
             Executor es gebildet hat (siehe SCHEMA_SQL). Bei `failed` und
             `input_error` dasselbe Objekt mit dem, was bis dahin ankam, samt
@@ -970,6 +1116,11 @@ async def write_terminal_async(
             Ohne diesen Wrapper wird eine Abbildung nicht als `jsonb` angepasst,
             sondern als Verbund- oder Feldtyp — und das ist die Spalte mit dem
             bezahlten Ergebnis, nicht die Stelle zum Ausprobieren.
+        endpoint_id: An welchem Endpoint gelesen wurde (aus der Einstellung des
+            Daemons).
+        mime: Der Typ, den der Job aus den Bytes bestimmt hat; None, wenn er
+            sich nicht bestimmen liess.
+        size_bytes: Die Groesse der Eingabe; None, wenn sie fehlte.
         image_tag_at_submit: Welches Worker-Image lief. Der Executor liest es
             einmal je Lauf und reicht es hier durch. Ohne diesen Weg bliebe die
             Spalte fuer immer leer, und die Frage, fuer die sie da ist („war das
@@ -978,11 +1129,11 @@ async def write_terminal_async(
         notes: Anzuhaengende Ereignisse. None haengt nichts an; die Liste wird
             ANGEHAENGT, nie ersetzt.
         page_count: Die Seitenzahl, die der Job aus den Bytes bestimmt hat (nur
-            bei PDF). None laesst eine vorhandene Angabe stehen.
+            bei PDF).
 
     Zusicherung:
-        Nach der Rueckkehr ist die Zeile endgueltig und ein `NOTIFY` auf dem
-        Kanal `doc_done` mit dem sha256 als Nutzlast ist abgesetzt — auch bei
+        Nach der Rueckkehr steht ein Ergebnis da, und ein `NOTIFY` auf dem Kanal
+        `doc_done` mit dem sha256 als Nutzlast ist abgesetzt — auch bei
         `failed` und `input_error`. Das ist wichtiger, als es aussieht: Weckte
         das Signal nur bei Erfolg, liefe jeder Warter auf ein gescheitertes
         Dokument bis zum Zeitablauf, und der Aufrufer wuesste am Ende nicht, ob
@@ -994,21 +1145,20 @@ async def write_terminal_async(
         Rueckfallabfrage.
 
     Idempotenz und die eine erlaubte Ueberschreibung:
-        Zweimal derselbe Aufruf ist unschaedlich.
+        Gibt es noch keine Zeile, wird sie angelegt.
 
-        Steht die Zeile bereits auf `failed`, wird sie UEBERSCHRIEBEN, und das
-        ist gewollt: Ein per `retry_job_by_id` wieder vorgelegter Job verarbeitet
-        das Dokument wirklich neu und schreibt sein Ergebnis (Plan 4.2). Genau
-        deshalb deckt der Terminal-Guard im Executor `failed` ausdruecklich nicht
-        ab — waere `failed` im Guard, waere jeder Retry von Hand ein Nichts-Tun,
-        das als Erfolg verbucht wuerde, und ein gescheitertes Dokument koennte
-        nie wieder laufen.
+        Steht sie auf `failed`, wird sie UEBERSCHRIEBEN, und das ist gewollt: Ein
+        per `retry_job_by_id` wieder vorgelegter Job verarbeitet das Dokument
+        wirklich neu und schreibt sein Ergebnis (Plan 4.2). Genau deshalb deckt
+        das Nachsehen am Anfang des Executors `failed` ausdruecklich nicht ab.
+        `created_at` bleibt dabei, `updated_at` wird neu; `mime` und `size_bytes`
+        bleiben, wo dieser Lauf sie nicht bestimmen konnte.
 
         Steht sie auf `done`, `empty` oder `input_error`, entscheidet der
-        ZUSTAND, und nur er: Ist der uebergebene Zustand derselbe, kehrt die
-        Funktion zurueck, ohne etwas zu tun — insbesondere wird `raw` NICHT
-        ersetzt, der erste Schreibvorgang gewinnt. Ist er ein anderer, fliegt
-        `TerminalOverwriteError`.
+        ZUSTAND, und nur er: Ist der uebergebene Zustand derselbe, bleibt das
+        Ergebnis, wie es ist — insbesondere wird `raw` NICHT ersetzt, der erste
+        Schreibvorgang gewinnt; angehaengt werden nur die Vermerke, und die
+        Eingabe geht. Ist er ein anderer, fliegt `TerminalOverwriteError`.
 
         Warum der Zustand und nicht der Inhalt der Vergleichsmassstab ist: `raw`
         traegt Job-Kennungen und Laufzeiten, ist also bei zwei Laeufen nie gleich —
@@ -1022,138 +1172,119 @@ async def write_terminal_async(
         waere die Luecke, durch die ein bezahltes Ergebnis verschwindet.
 
     Nebenlaeufigkeit:
-        Die Zeile wird gesperrt (`SELECT ... FOR UPDATE`), zwei Tasks auf
-        demselben Hash koennen sich nicht verschraenken. Es SOLLTE ohnehin nie
-        zwei geben (`lock=sha256` beim Einreihen) — die Sperre ist der Guertel
-        zum Hosentraeger.
+        Angelegt wird mit `INSERT … ON CONFLICT DO NOTHING`; gibt es die Zeile
+        schon, wird sie gesperrt (`SELECT … FOR UPDATE`). Zwei Tasks auf
+        demselben Hash koennen sich so nicht verschraenken: Der zweite wartet am
+        Primaerschluessel auf den ersten und sieht danach dessen Ergebnis. Es
+        SOLLTE ohnehin nie zwei geben (`lock=sha256` beim Einreihen) — die
+        Sperre ist der Guertel zum Hosentraeger.
 
     Raises:
-        DocumentNotFound: Kein Eintrag zu diesem Hash.
         TerminalOverwriteError: siehe Idempotenz.
 
     Kosten: keine.
     """
-    if not status.is_terminal:
-        raise ValueError(
-            f"write_terminal_async wurde mit dem Zustand {status.value!r} gerufen. "
-            f"Diese Funktion schreibt ENDzustaende; `new` ist keiner."
-        )
-
+    vermerke = Jsonb(list(notes) if notes else [])
     async with conn.transaction():
-        zeile = await (
+        angelegt = await (
             await conn.execute(
-                "SELECT status FROM documents WHERE sha256 = %s FOR UPDATE",
-                (sha256,),
+                """
+                INSERT INTO documents (
+                    sha256, size_bytes, mime, page_count, status, raw, error,
+                    endpoint_id, image_tag_at_submit, notes
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (sha256) DO NOTHING
+                RETURNING sha256
+                """,
+                (
+                    sha256,
+                    size_bytes,
+                    mime,
+                    page_count,
+                    status.value,
+                    Jsonb(raw),
+                    error,
+                    endpoint_id,
+                    image_tag_at_submit,
+                    vermerke,
+                ),
             )
         ).fetchone()
-        if zeile is None:
-            raise DocumentNotFound(
-                f"Kein Eintrag zu {sha256}. Ein Endergebnis ohne Zeile gibt es "
-                f"nicht — die Zeile entsteht beim Einreihen, nicht hier."
-            )
 
-        vorher = DocumentStatus(zeile[0])
-        if vorher.is_terminal and vorher is not DocumentStatus.FAILED:
-            if vorher is status:
+        if angelegt is None:
+            # Es gibt die Zeile schon. `FOR UPDATE` sperrt sie bis zum Ende dieser
+            # Transaktion; der Zustand, den diese Anweisung liest, ist der
+            # festgeschriebene (READ COMMITTED liest je Anweisung neu).
+            zeile = await (
+                await conn.execute(
+                    "SELECT status FROM documents WHERE sha256 = %s FOR UPDATE",
+                    (sha256,),
+                )
+            ).fetchone()
+            vorher = DocumentStatus(zeile[0]) if zeile is not None else None
+            if vorher is DocumentStatus.FAILED:
+                await conn.execute(
+                    """
+                    UPDATE documents
+                       SET status = %s,
+                           raw = %s,
+                           error = %s,
+                           endpoint_id = %s,
+                           mime = COALESCE(%s, mime),
+                           size_bytes = COALESCE(%s, size_bytes),
+                           image_tag_at_submit = COALESCE(%s, image_tag_at_submit),
+                           page_count = COALESCE(%s, page_count),
+                           notes = notes || %s::jsonb,
+                           updated_at = now()
+                     WHERE sha256 = %s
+                    """,
+                    (
+                        status.value,
+                        Jsonb(raw),
+                        error,
+                        endpoint_id,
+                        mime,
+                        size_bytes,
+                        image_tag_at_submit,
+                        page_count,
+                        vermerke,
+                        sha256,
+                    ),
+                )
+            elif vorher is status:
                 # Derselbe Endzustand ein zweites Mal: Der erste Schreibvorgang
-                # gewinnt, `raw` wird NICHT ersetzt. Das ist der harmlose
-                # Wiederlauf nach einem Absturz im Schreibfenster.
-                #
-                # DIE VERMERKE WERDEN TROTZDEM ANGEHAENGT. Frueher kehrte diese
-                # Stelle vor dem gesamten UPDATE zurueck, und damit fielen auch
-                # `notes` und `image_tag_at_submit` des zweiten Laufs weg — obwohl
-                # der Docstring nur `raw` ausnimmt („insbesondere wird `raw` NICHT
-                # ersetzt") und die Zusicherung am `notes`-Parameter das Gegenteil
-                # sagt: „die Liste wird ANGEHAENGT, nie ersetzt".
-                #
-                # Das ist kein Wortklauben: Genau in diesem Fall — ein zweiter
-                # Lauf, der dasselbe Ergebnis noch einmal erzeugt hat — ist die
-                # Beobachtung, DASS es ihn gab, die einzige Spur davon. Sie
-                # wegzuwerfen macht den harmlosen Wiederlauf unsichtbar, und
-                # unsichtbare Wiederlaeufe sind bezahlte Wiederlaeufe.
-                #
-                # `raw` und `status` bleiben unberuehrt, `updated_at` ebenfalls:
-                # Der Zeitstempel gehoert zum Ergebnis, und das Ergebnis ist das
-                # des ERSTEN Laufs.
+                # gewinnt, `raw`, `status` und `updated_at` bleiben. Die Vermerke
+                # werden trotzdem angehaengt: Genau in diesem Fall ist die
+                # Beobachtung, DASS es einen zweiten Lauf gab, die einzige Spur
+                # davon, und unsichtbare Wiederlaeufe sind bezahlte Wiederlaeufe.
                 if notes:
                     await conn.execute(
                         "UPDATE documents SET notes = notes || %s::jsonb "
                         "WHERE sha256 = %s",
-                        (Jsonb(list(notes)), sha256),
+                        (vermerke, sha256),
                     )
-                return
-            raise TerminalOverwriteError(
-                f"{sha256} steht bereits endgueltig auf {vorher.value!r} und "
-                f"soll auf {status.value!r} geaendert werden. Ein fertiges "
-                f"Dokument wird nie ueberschrieben. Der einzige Zustand, der "
-                f"neu verarbeitet werden darf, ist `failed` — dafuer gibt es "
-                f"retry_job_by_id."
-            )
+            else:
+                raise TerminalOverwriteError(
+                    f"{sha256} steht bereits endgueltig auf "
+                    f"{vorher.value if vorher else '(geloescht)'!r} und soll auf "
+                    f"{status.value!r} geaendert werden. Ein fertiges Dokument "
+                    f"wird nie ueberschrieben. Der einzige Zustand, der neu "
+                    f"verarbeitet werden darf, ist `failed` — dafuer gibt es "
+                    f"retry_job_by_id."
+                )
 
-        await conn.execute(
-            """
-            UPDATE documents
-               SET status = %s,
-                   raw = %s,
-                   error = %s,
-                   image_tag_at_submit = COALESCE(%s, image_tag_at_submit),
-                   page_count = COALESCE(%s, page_count),
-                   notes = notes || %s::jsonb,
-                   updated_at = now()
-             WHERE sha256 = %s
-            """,
-            (
-                status.value,
-                Jsonb(raw),
-                error,
-                image_tag_at_submit,
-                page_count,
-                Jsonb(list(notes) if notes else []),
-                sha256,
-            ),
-        )
-        # Die Eingabe geht mit dem Endergebnis, in DERSELBEN Transaktion: Beides
+        # Die Eingabe geht mit dem Ergebnis, in DERSELBEN Transaktion: Beides
         # gilt oder beides nicht. Bei `failed` bleibt sie stehen, damit `retry`
         # etwas zu lesen hat. Entfernt wird per `DELETE`; fuer den Platz ist das
         # gleich wie ein Leeren des Felds, und Autovacuum gibt ihn frei.
         if status is not DocumentStatus.FAILED:
             await conn.execute("DELETE FROM inputs WHERE sha256 = %s", (sha256,))
         # Das Wecksignal gehoert in DIESELBE Transaktion: Wuerde es davor
-        # abgesetzt, koennte ein Warter aufwachen und die Zeile noch alt
+        # abgesetzt, koennte ein Warter aufwachen und noch kein Ergebnis
         # vorfinden; danach abgesetzt, faellt es bei einem Abbruch zwischen
         # beidem ganz aus. Postgres stellt NOTIFY ohnehin erst beim Commit zu.
         await conn.execute("SELECT pg_notify(%s, %s)", (DONE_CHANNEL, sha256))
-
-
-async def append_note_async(
-    conn: psycopg.AsyncConnection[Any], sha256: str, note: dict[str, Any]
-) -> None:
-    """Haengt ein Ereignis an `notes` an, ohne sonst etwas zu beruehren.
-
-    Der eine Schreibvorgang, der auch an einer noch nicht endgueltigen Zeile
-    erlaubt ist — und die Ausnahme ist eng: `notes` ist ausdruecklich KEIN
-    Zustand, sondern eine Beobachtung. Angehaengt wird immer, ersetzt wird nie.
-
-    Args:
-        note: Sollte mindestens `kind` und `at` tragen, damit die Liste spaeter
-            noch lesbar ist. Die Form wird nicht erzwungen — eine erzwungene Form
-            waere ein zweites Datenmodell, und `notes` ist gerade der Ort fuer
-            das, was noch keines hat.
-
-    Raises:
-        DocumentNotFound: Kein Eintrag zu diesem Hash. Still nichts zu tun waere
-            hier schlechter als zu werfen: Eine Beobachtung, die ins Leere
-            geschrieben wird, faellt sonst nie auf.
-    """
-    ergebnis = await (
-        await conn.execute(
-            "UPDATE documents SET notes = notes || %s::jsonb "
-            "WHERE sha256 = %s RETURNING sha256",
-            (Jsonb([note]), sha256),
-        )
-    ).fetchone()
-    if ergebnis is None:
-        raise DocumentNotFound(f"Kein Eintrag zu {sha256}, Notiz nicht angehaengt.")
 
 
 # --------------------------------------------------------------------------
@@ -1167,13 +1298,18 @@ def wait_for_terminal(
     timeout: float | None = None,
     poll_seconds: float = DEFAULT_WAIT_POLL_SECONDS,
 ) -> DocumentRow:
-    """Wartet, bis ein Dokument endgueltig ist, und gibt die Zeile zurueck.
+    """Wartet, bis ein Dokument ein Ergebnis hat, und gibt die Zeile zurueck.
 
     Das ist Jurgens „awaiten des resultats" als eigene Funktion (Plan 2.3), und
     es ist der Grund, warum das Versprechen dieses Systems eine Datenbank-Zeile
     ist und kein Objekt im Speicher: Auf ein Objekt im Speicher kann man nur
     warten, solange der Prozess lebt. Auf eine Zeile kann man von ueberall
     warten, jederzeit, auch Tage spaeter, auch aus einer anderen Sitzung.
+
+    Gelesen wird der Stand mit `read_states`, also `documents` und `inputs` in
+    EINER Anweisung: Ergebnis da heisst fertig, Eingabe da heisst offen, keins
+    von beiden heisst unbekannt. Procrastinate wird beim Warten nicht gefragt;
+    ob ein Job steckt, sagt `OCRClient.document`.
 
     Der Ablauf hat drei Teile, und jeder deckt eine Luecke der anderen ab:
         1. `LISTEN doc_done`, BEVOR zum ersten Mal gelesen wird.
@@ -1207,14 +1343,15 @@ def wait_for_terminal(
         poll_seconds: Abstand der Rueckfallabfrage.
 
     Returns:
-        Die Zeile in ihrem Endzustand — bei JEDEM Endzustand, auch bei `failed`.
-        Der Aufrufer prueft, welcher es ist. Diese Funktion wirft nicht, weil ein
-        Dokument scheiterte; das Scheitern ist ein Ergebnis, kein Fehler des
-        Wartens.
+        Die Ergebniszeile OHNE `raw` (`raw_loaded` False) — bei JEDEM
+        Endzustand, auch bei `failed`. Wer nur den Zustand braucht, zieht so
+        nicht die ganze Antwort; die Huelle laedt sie nach, wenn jemand sie
+        will. Diese Funktion wirft nicht, weil ein Dokument scheiterte; das
+        Scheitern ist ein Ergebnis, kein Fehler des Wartens.
 
     Raises:
-        DocumentNotFound: Es gibt keine solche Zeile. Kommt SOFORT, nicht nach
-            dem Zeitablauf — auf etwas zu warten, das nie eingereiht wurde, ist
+        DocumentNotFound: Weder Ergebnis noch Eingabe. Kommt SOFORT, nicht nach
+            dem Zeitablauf — auf etwas zu warten, das nie abgeschickt wurde, ist
             immer ein Irrtum des Aufrufers, und ihn zwei Stunden warten zu
             lassen, bevor man es ihm sagt, waere unfreundlich.
         TimeoutError: Die Zeit lief ab. Das Dokument kann trotzdem noch fertig
@@ -1230,28 +1367,29 @@ def wait_for_terminal(
         psycopg.sql.SQL("LISTEN {}").format(psycopg.sql.Identifier(DONE_CHANNEL))
     )
 
-    # Schritt 2: die Erstabfrage. Sie beantwortet zugleich die Frage, ob es die
-    # Zeile ueberhaupt gibt — und die wird SOFORT beantwortet, nicht nach dem
+    # Schritt 2: die Erstabfrage. Sie beantwortet zugleich die Frage, ob es das
+    # Dokument ueberhaupt gibt — und die wird SOFORT beantwortet, nicht nach dem
     # Zeitablauf.
-    zeile = get_document(conn, sha256)
-    if zeile is None:
+    (stand,) = read_states(conn, [sha256])
+    if stand.row is not None:
+        return stand.row
+    if stand.is_unknown:
         raise DocumentNotFound(
-            f"Kein Eintrag zu {sha256}. Auf ein Dokument zu warten, das nie "
-            f"eingereiht wurde, ist immer ein Irrtum des Aufrufers — deshalb "
-            f"kommt die Antwort jetzt und nicht nach Ablauf der Wartezeit."
+            f"Weder Ergebnis noch Eingabe zu {sha256}. Auf ein Dokument zu "
+            f"warten, das nie abgeschickt wurde, ist immer ein Irrtum des "
+            f"Aufrufers — deshalb kommt die Antwort jetzt und nicht nach Ablauf "
+            f"der Wartezeit."
         )
-    if zeile.status.is_terminal:
-        return zeile
 
     ende = None if timeout is None else time.monotonic() + timeout
     while True:
         rest = None if ende is None else ende - time.monotonic()
         if rest is not None and rest <= 0:
             raise TimeoutError(
-                f"{sha256} wurde innerhalb von {timeout} Sekunden nicht "
-                f"endgueltig. Das Dokument kann trotzdem noch fertig werden — "
-                f"der Zeitablauf sagt etwas ueber die Geduld des Wartenden, "
-                f"nichts ueber das Dokument."
+                f"{sha256} hatte innerhalb von {timeout} Sekunden kein Ergebnis. "
+                f"Das Dokument kann trotzdem noch fertig werden — der Zeitablauf "
+                f"sagt etwas ueber die Geduld des Wartenden, nichts ueber das "
+                f"Dokument."
             )
 
         # Schritt 3: auf ein Signal warten, hoechstens aber bis zur naechsten
@@ -1267,9 +1405,9 @@ def wait_for_terminal(
         # und Schreibvorgaenge von aussen. Und es ist zugleich die Pruefung, ob
         # das Signal ueberhaupt zu UNSEREM Dokument gehoerte — auf dem Kanal
         # liegen die Signale aller Dokumente.
-        zeile = get_document(conn, sha256)
-        if zeile is not None and zeile.status.is_terminal:
-            return zeile
+        (stand,) = read_states(conn, [sha256])
+        if stand.row is not None:
+            return stand.row
 
 
 # --------------------------------------------------------------------------
@@ -1277,19 +1415,26 @@ def wait_for_terminal(
 # --------------------------------------------------------------------------
 
 
-def derive_status(row: DocumentRow, jobs: Sequence[Job]) -> DerivedStatus:
-    """Setzt Zeile und Job-Liste zu einem Gesamtbild zusammen. Rein, ohne I/O.
+def derive_status(
+    sha256: str, row: DocumentRow | None, jobs: Sequence[Job]
+) -> DerivedStatus:
+    """Setzt Ergebnis und Job-Liste eines BEKANNTEN Dokuments zu einem Gesamtbild
+    zusammen. Rein, ohne I/O.
+
+    Bekannt heisst: Es hat ein Ergebnis oder eine Eingabe. Ein unbekanntes
+    Dokument hat keine Phase; das stellt der Aufrufer vorher fest
+    (`DocumentState.is_unknown`) und meldet es.
 
     Die Regel, in der Reihenfolge, in der sie angewandt wird:
-        1. Ist die Zeile endgueltig, IST das der Zustand. Es wird dann gar nicht
+        1. Gibt es ein Ergebnis, IST das der Zustand. Es wird dann gar nicht
            mehr auf die Jobs gesehen — ein fertiges Dokument bleibt fertig, auch
            wenn spaeter noch ein Job dazu auftaucht.
-        2. Sonst zaehlt der JUENGSTE Job (hoechste Kennung). „Juengster" und nicht
-           „der Job", weil Job-Zeilen nie geloescht werden und es ueber die Zeit
-           mehrere je Dokument gibt; der aelteste sagt nichts ueber jetzt.
-        3. Gibt es keinen Job, ist das Dokument angelegt und nie eingereiht.
-        4. Ist der juengste Job endgueltig, waehrend die Zeile `new` sagt, ist
-           das `ENDED_WITHOUT_RESULT` — siehe dort.
+        2. Sonst ist es offen, und es zaehlt der JUENGSTE Job (hoechste
+           Kennung). „Juengster" und nicht „der Job", weil Job-Zeilen nie
+           geloescht werden und es ueber die Zeit mehrere je Dokument gibt; der
+           aelteste sagt nichts ueber jetzt.
+        3. Ist der juengste Job endgueltig, oder gibt es keinen, ist kein Job
+           mehr unterwegs: `ENDED_WITHOUT_RESULT` — siehe dort.
 
     Warum das eine reine Funktion mit hereingereichter Job-Liste ist und nicht
     selbst abfragt: So laesst sich die Regel gegen erfundene Job-Listen
@@ -1297,8 +1442,9 @@ def derive_status(row: DocumentRow, jobs: Sequence[Job]) -> DerivedStatus:
     die Abfrage ist Handwerk.
 
     Args:
-        row: Die Zeile.
-        jobs: Alle Jobs mit `queueing_lock == row.sha256`, in beliebiger
+        sha256: Der Hash des Dokuments.
+        row: Die Ergebniszeile, None solange das Dokument offen ist.
+        jobs: Alle Jobs mit `queueing_lock == sha256`, in beliebiger
             Reihenfolge — sortiert wird hier.
 
     Returns:
@@ -1308,25 +1454,25 @@ def derive_status(row: DocumentRow, jobs: Sequence[Job]) -> DerivedStatus:
     """
     anzahl = len(jobs)
 
-    # Regel 1: Ist die Zeile endgueltig, IST das der Zustand. Auf die Jobs wird
-    # dann gar nicht mehr gesehen — mit EINER Ausnahme, die keine Regel bricht:
-    # Die Job-Angaben werden trotzdem mitgeliefert, weil sie beim Nachsehen
-    # helfen („welcher Job hat das geschrieben, im wievielten Versuch?"). Sie
-    # ENTSCHEIDEN nur nichts mehr.
+    # Regel 1: Gibt es ein Ergebnis, IST das der Zustand. Die Job-Angaben werden
+    # trotzdem mitgeliefert, weil sie beim Nachsehen helfen („welcher Job hat
+    # das geschrieben, im wievielten Versuch?"). Sie ENTSCHEIDEN nur nichts mehr.
     juengster = max(jobs, key=lambda job: job.id or 0) if jobs else None
 
-    if row.status.is_terminal:
+    if row is not None:
         phase = Phase.TERMINAL
     elif juengster is None:
-        phase = Phase.REGISTERED
+        # Offen, aber ohne Job: Eingabe und Job entstehen in einer Transaktion,
+        # es gab also einen, und er ist weg. Unterwegs ist nichts mehr.
+        phase = Phase.ENDED_WITHOUT_RESULT
     elif juengster.status == "todo":
         phase = Phase.WAITING
     elif juengster.status == "doing":
         phase = Phase.RUNNING
     elif juengster.status in _TERMINALE_JOB_ZUSTAENDE:
-        # Der Job ist fertig, die Zeile steht aber noch auf `new`: harter
-        # Abschuss im Schreibfenster oder Abbruch beim Herunterfahren. Kein
-        # Datenfehler — der Zustand, den das Ein-Buch-Modell erwartet.
+        # Der Job ist fertig, ein Ergebnis gibt es aber nicht: harter Abschuss
+        # im Schreibfenster oder Abbruch beim Herunterfahren. Kein Datenfehler —
+        # der Zustand, den das Ein-Buch-Modell erwartet.
         phase = Phase.ENDED_WITHOUT_RESULT
     else:
         # Ein Job-Zustand, den Procrastinate erst spaeter eingefuehrt hat. Ihn
@@ -1336,9 +1482,9 @@ def derive_status(row: DocumentRow, jobs: Sequence[Job]) -> DerivedStatus:
         phase = Phase.WAITING
 
     return DerivedStatus(
-        sha256=row.sha256,
-        row_status=row.status,
+        sha256=sha256,
         phase=phase,
+        row=row,
         job_id=juengster.id if juengster else None,
         job_status=juengster.status if juengster else None,
         attempts=juengster.attempts if juengster else None,
@@ -1346,6 +1492,7 @@ def derive_status(row: DocumentRow, jobs: Sequence[Job]) -> DerivedStatus:
     )
 
 
+# --------------------------------------------------------------------------
 # --------------------------------------------------------------------------
 # Die eine undokumentierte Flaeche
 # --------------------------------------------------------------------------

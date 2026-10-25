@@ -154,20 +154,27 @@ def _fertig(markdown: str = "Text") -> dict[str, Any]:
     }
 
 
+PNG_KOPF = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+"""Der Dateikopf, an dem der Job ein PNG erkennt: Den Typ bestimmt er aus den
+Bytes, denn eine Ergebniszeile, die ihn tragen koennte, gibt es vor dem Ende
+nicht."""
+
+
 def _anlegen(conn: psycopg.Connection[Any], tmp_path: Path, name: str) -> str:
-    inhalt = f"inhalt von {name}".encode()
+    """Legt die Eingabe an, wie das Abschicken es tut: keine Ergebniszeile."""
+    inhalt = PNG_KOPF + f"inhalt von {name}".encode()
     pfad = tmp_path / name
     pfad.write_bytes(inhalt)
     sha = hashlib.sha256(inhalt).hexdigest()
-    db.insert_document(
-        conn,
-        sha256=sha,
-        size_bytes=len(inhalt),
-        mime="image/png",
-        endpoint_id="testendpoint",
-    )
     db.insert_input(conn, sha256=sha, content=inhalt)
     return sha
+
+
+def _eingabe_steht(conn: psycopg.Connection[Any], sha: str) -> bool:
+    return (
+        conn.execute("SELECT 1 FROM inputs WHERE sha256 = %s", (sha,)).fetchone()
+        is not None
+    )
 
 
 def _jobs_zu(conn: psycopg.Connection[Any], sha: str) -> list[Job]:
@@ -252,8 +259,7 @@ async def test_dokument_laeuft_vollstaendig_durch(
     assert erzeuger.einreihen(sha) is True
 
     async def fertig() -> bool:
-        zeile = get_document(db_conn, sha)
-        return zeile is not None and zeile.status.is_terminal
+        return get_document(db_conn, sha) is not None
 
     await _daemon_laufen_lassen(int_settings, ProtokollRunPod(), bis=fertig)
 
@@ -266,7 +272,7 @@ async def test_dokument_laeuft_vollstaendig_durch(
     jobs = _jobs_zu(db_conn, sha)
     assert len(jobs) == 1
     assert jobs[0].status == "succeeded"
-    assert derive_status(zeile, jobs).phase is Phase.TERMINAL
+    assert derive_status(sha, zeile, jobs).phase is Phase.TERMINAL
 
 
 async def test_abgeschicktes_dokument_wird_aus_inputs_gelesen(
@@ -292,7 +298,7 @@ async def test_abgeschicktes_dokument_wird_aus_inputs_gelesen(
 
     async def fertig() -> bool:
         gelesen = get_document(db_conn, sha)
-        return gelesen is not None and gelesen.status.is_terminal
+        return gelesen is not None
 
     runpod = ProtokollRunPod()
     await _daemon_laufen_lassen(int_settings, runpod, bis=fertig)
@@ -316,7 +322,7 @@ async def test_nicht_wiederholbarer_fehler_im_ersten_versuch(
 
     async def fertig() -> bool:
         zeile = get_document(db_conn, sha)
-        return zeile is not None and zeile.status.is_terminal
+        return zeile is not None
 
     await _daemon_laufen_lassen(int_settings, runpod, bis=fertig)
 
@@ -393,7 +399,7 @@ async def test_erschoepfte_versuche_enden_failed(
     # alle vier zusichern. Ein wiederholbarer Fehler laesst sie unberuehrt,
     # SOLANGE noch ein Versuch kommt; beim letzten wird geschrieben.
     assert zeile.status is DocumentStatus.FAILED
-    assert derive_status(zeile, jobs).phase is Phase.TERMINAL
+    assert derive_status(sha, zeile, jobs).phase is Phase.TERMINAL
     # Und der Grund steht daneben, sonst saehe die Zeile aus wie ein Ergebnis
     # ohne Anlass.
     assert zeile.raw is not None
@@ -416,7 +422,7 @@ async def test_absturz_mitten_im_dokument_heilt_durch_den_waechter(
     ordentlich beendet. Hier stirbt der Prozess, OHNE das zu tun — der Job bleibt
     auf `doing` stehen, und niemand arbeitet mehr daran. Ohne den Waechter bliebe
     er dort fuer immer liegen, und das Dokument waere unsichtbar verloren: Es
-    stuende auf `new`, saehe aus wie „wartet" und wartete auf niemanden.
+    stuende offen da, saehe aus wie „laeuft" und wartete auf niemanden.
 
     DER HARTE TOD WIRD NACHGESTELLT statt erzeugt, und zwar deterministisch: Ein
     wirklich abgeschossener Prozess braeuchte im Test dreissig Sekunden, bis sein
@@ -446,9 +452,8 @@ async def test_absturz_mitten_im_dokument_heilt_durch_den_waechter(
     jobs = _jobs_zu(db_conn, sha)
     assert len(jobs) == 1
     assert jobs[0].status == "doing"
-    zeile = get_document(db_conn, sha)
-    assert zeile is not None
-    assert zeile.status is DocumentStatus.NEW
+    assert get_document(db_conn, sha) is None
+    assert _eingabe_steht(db_conn, sha)
 
     # Jetzt laeuft ein FRISCHER Daemon. Diesmal antwortet RunPod normal.
     runpod = ProtokollRunPod()
@@ -624,8 +629,9 @@ async def test_abbruch_beim_herunterfahren_heilt_durch_neu_einreihen(
 ) -> None:
     """(e) Job `aborted` (endgueltig, KEIN automatischer Retry — und
     `retry_job_by_id` nimmt `aborted` nicht an, Feature-Verifikation Punkt 19),
-    Zeile bleibt `new`, abgeleiteter Zustand zeigt den beendeten Job; erneutes
-    Einreihen laesst das Dokument durchlaufen und es endet `done`."""
+    kein Ergebnis, die Eingabe steht, abgeleiteter Zustand zeigt den beendeten
+    Job; erneutes Einreihen laesst das Dokument durchlaufen und es endet
+    `done`."""
     sha = _anlegen(db_conn, tmp_path, "e.png")
     erzeuger.einreihen(sha)
 
@@ -637,10 +643,9 @@ async def test_abbruch_beim_herunterfahren_heilt_durch_neu_einreihen(
 
     await _daemon_laufen_lassen(int_settings, haengend, bis=laeuft)
 
-    # Nach dem Herunterfahren: der Job ist beendet, die Zeile unberuehrt.
-    zeile = get_document(db_conn, sha)
-    assert zeile is not None
-    assert zeile.status is DocumentStatus.NEW
+    # Nach dem Herunterfahren: der Job ist beendet, ein Ergebnis gibt es nicht.
+    assert get_document(db_conn, sha) is None
+    assert _eingabe_steht(db_conn, sha)
     jobs = _jobs_zu(db_conn, sha)
     assert jobs[-1].status in ("aborted", "failed", "doing")
 
@@ -685,8 +690,8 @@ async def test_duplikat_waehrend_der_verarbeitung_ist_ein_nichts_tun(
     parallel und bezahlte dasselbe Dokument ein zweites Mal.
 
     Aufbau ohne Zeitrennen: Das Dokument wird zuerst fertig verarbeitet, DANN
-    ein zweiter Job eingereiht. Weil die Zeile dann `done` ist, muss der zweite
-    Job am Guard enden, ohne RunPod auch nur anzufassen.
+    ein zweiter Job eingereiht. Weil das Ergebnis dann `done` ist, muss der
+    zweite Job am Nachsehen enden, ohne RunPod auch nur anzufassen.
     """
     sha = _anlegen(db_conn, tmp_path, "i.png")
     erzeuger.einreihen(sha)
@@ -830,19 +835,18 @@ async def test_ohne_daemon_passiert_nichts_und_das_wird_gesagt(
 
     Die haeufigste Betriebs-Ueberraschung dieses Aufbaus: Alles sieht normal aus,
     nur arbeitet niemand. Der abgeleitete Zustand unterscheidet deshalb
-    ausdruecklich zwischen „nie eingereiht" und „wartet" — und die
+    ausdruecklich zwischen „kein Job mehr unterwegs" und „wartet" — und die
     Worker-Lebenszeichen sagen, ob ueberhaupt jemand da ist.
     """
     sha = _anlegen(db_conn, tmp_path, "leer.png")
 
-    zeile = get_document(db_conn, sha)
-    assert zeile is not None
-    # Vor dem Einreihen: registriert, nie eingereiht.
-    assert derive_status(zeile, _jobs_zu(db_conn, sha)).phase is Phase.REGISTERED
+    # Eingabe ohne Job: Unterwegs ist nichts.
+    assert get_document(db_conn, sha) is None
+    assert derive_status(sha, None, _jobs_zu(db_conn, sha)).phase is Phase.ENDED_WITHOUT_RESULT
 
     erzeuger.einreihen(sha)
     # Danach: wartet — und niemand arbeitet.
-    assert derive_status(zeile, _jobs_zu(db_conn, sha)).phase is Phase.WAITING
+    assert derive_status(sha, None, _jobs_zu(db_conn, sha)).phase is Phase.WAITING
     assert db.worker_heartbeats(db_conn) == []
 
 
@@ -876,8 +880,7 @@ async def test_vom_client_eingereihter_job_wird_vom_daemon_abgearbeitet(
         assert jobs[0].task_name == config.TASK_OCR_DOCUMENT
 
         async def fertig() -> bool:
-            zeile = get_document(db_conn, sha)
-            return zeile is not None and zeile.status.is_terminal
+            return get_document(db_conn, sha) is not None
 
         await _daemon_laufen_lassen(int_settings, ProtokollRunPod(), bis=fertig)
 
@@ -885,6 +888,146 @@ async def test_vom_client_eingereihter_job_wird_vom_daemon_abgearbeitet(
     assert zeile is not None
     assert zeile.status is DocumentStatus.DONE
     assert _jobs_zu(db_conn, sha)[0].status == "succeeded"
+
+
+# --------------------------------------------------------------------------
+# Die Ergebniszeile entsteht am Ende des Jobs
+# --------------------------------------------------------------------------
+
+
+async def test_abschicken_legt_nur_die_eingabe_an_und_der_job_am_ende_die_zeile(
+    db_conn: psycopg.Connection[Any], int_settings: Settings
+) -> None:
+    """Abschicken heisst, Procrastinate einen Job erstellen zu lassen: Danach gibt
+    es Eingabe und Job, aber kein Ergebnis. Die Zeile legt der Job an, wenn er
+    endet, mit Typ, Groesse und Endpoint aus Bytes und Einstellung; die Eingabe
+    geht mit ihr."""
+    inhalt = PNG_KOPF + b"nur die eingabe"
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(inhalt)
+        assert sha.queued is True and sha.status is None
+        assert get_document(db_conn, sha) is None
+        assert _eingabe_steht(db_conn, sha)
+        assert len(_jobs_zu(db_conn, sha)) == 1
+
+        async def fertig() -> bool:
+            return get_document(db_conn, sha) is not None
+
+        await _daemon_laufen_lassen(int_settings, ProtokollRunPod(), bis=fertig)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    assert (zeile.mime, zeile.size_bytes) == ("image/png", len(inhalt))
+    assert zeile.endpoint_id == int_settings.endpoint_id
+    assert not _eingabe_steht(db_conn, sha)
+
+
+async def test_zweites_abschicken_waehrend_der_job_laeuft_legt_keinen_zweiten_an(
+    db_conn: psycopg.Connection[Any], int_settings: Settings
+) -> None:
+    """Waehrend der Job laeuft, steht die Eingabe: Ein zweites Abschicken
+    derselben Bytes findet sie und tut nichts. Frueher war der `queueing_lock` in
+    diesem Augenblick schon frei."""
+    inhalt = PNG_KOPF + b"zweimal waehrend des laufs"
+    haengend = ProtokollRunPod()
+    haengend.freigabe = asyncio.Event()
+    zweites: list[Any] = []
+
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(inhalt)
+
+        async def ablauf() -> bool:
+            if not haengend.gestartet.is_set():
+                return False
+            if not zweites:
+                # Der Job laeuft jetzt bei RunPod: dasselbe noch einmal.
+                assert _jobs_zu(db_conn, sha)[0].status == "doing"
+                zweites.append(klient.ocr_start(inhalt))
+                assert haengend.freigabe is not None
+                haengend.freigabe.set()
+            return get_document(db_conn, sha) is not None
+
+        await _daemon_laufen_lassen(int_settings, haengend, bis=ablauf)
+
+    assert zweites[0] == sha
+    assert zweites[0].queued is False and zweites[0].status is None
+    assert len(_jobs_zu(db_conn, sha)) == 1
+    assert haengend.aufrufe == 1
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+
+
+def test_gleichzeitiges_abschicken_derselben_bytes_legt_einen_job_an(
+    db_conn: psycopg.Connection[Any],
+    int_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zwei Aufrufer schicken gleichzeitig dieselben Bytes: Postgres laesst den
+    zweiten am Primaerschluessel von `inputs` auf den ersten warten, und danach
+    tut der zweite nichts. Ohne Zeitrennen: Der erste haelt seine Transaktion
+    beim Einreihen offen, bis der zweite sicher wartet."""
+    import threading
+
+    inhalt = PNG_KOPF + b"gleichzeitig"
+    echtes_einreihen = tasks.enqueue_document
+    erster_haelt = threading.Event()
+
+    def langsam(app: Any, conn: Any, sha256: str) -> bool:
+        erster_haelt.set()
+        time.sleep(0.5)  # die Eingabe ist abgelegt, aber nicht festgeschrieben
+        return echtes_einreihen(app, conn, sha256)
+
+    monkeypatch.setattr(tasks, "enqueue_document", langsam)
+    ergebnisse: dict[str, Any] = {}
+
+    def abschicken(wer: str) -> None:
+        with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+            ergebnisse[wer] = klient.ocr_start(inhalt)
+
+    erster = threading.Thread(target=abschicken, args=("erster",))
+    erster.start()
+    assert erster_haelt.wait(10)
+    zweiter = threading.Thread(target=abschicken, args=("zweiter",))
+    zweiter.start()
+    erster.join(20)
+    zweiter.join(20)
+
+    assert ergebnisse["erster"].queued is True
+    assert ergebnisse["zweiter"].queued is False
+    assert ergebnisse["zweiter"].status is None
+    sha = ergebnisse["erster"]
+    assert len(_jobs_zu(db_conn, sha)) == 1
+    anzahl = db_conn.execute("SELECT count(*) FROM inputs").fetchone()
+    assert anzahl is not None and anzahl[0] == 1
+
+
+async def test_ein_treffer_auch_failed_legt_nichts_an(
+    db_conn: psycopg.Connection[Any], int_settings: Settings
+) -> None:
+    """Endet das Dokument `failed`, ist erneutes Abschicken ein Treffer: kein
+    Job, die Eingabe bleibt (fuer `retry`), und das Ergebnis unberuehrt."""
+    inhalt = PNG_KOPF + b"scheitert"
+    scheiternd = ProtokollRunPod(
+        lambda nr: {"id": f"job-{nr}", "status": "FAILED", "error": "kaputt"}
+    )
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(inhalt)
+
+        async def fertig() -> bool:
+            return get_document(db_conn, sha) is not None
+
+        await _daemon_laufen_lassen(int_settings, scheiternd, bis=fertig)
+        vorher = get_document(db_conn, sha)
+        jobs_vorher = len(_jobs_zu(db_conn, sha))
+
+        wieder = klient.ocr_start(inhalt)
+
+    assert vorher is not None and vorher.status is DocumentStatus.FAILED
+    assert wieder.queued is False and wieder.status is DocumentStatus.FAILED
+    assert len(_jobs_zu(db_conn, sha)) == jobs_vorher
+    assert _eingabe_steht(db_conn, sha)
+    assert get_document(db_conn, sha) == vorher
 
 
 async def test_daemon_prozess_haelt_genau_eine_app(
@@ -1077,9 +1220,8 @@ async def test_daemon_ohne_endpoint_oder_schluessel_startet_nicht_und_laesst_die
     with pytest.raises(ConfigurationError):
         await asyncio.wait_for(daemon.run(ohne), timeout=10)
 
-    zeile = get_document(db_conn, sha)
-    assert zeile is not None
-    assert zeile.status is DocumentStatus.NEW
+    assert get_document(db_conn, sha) is None
+    assert _eingabe_steht(db_conn, sha)
     assert [job.status for job in _jobs_zu(db_conn, sha)] == ["todo"]
     assert db.worker_heartbeats(db_conn) == []
 
@@ -1313,7 +1455,7 @@ async def test_lange_in_der_warteschlange_ist_kein_grund_aufzugeben(
 
     async def fertig() -> bool:
         zeile = get_document(db_conn, sha)
-        return zeile is not None and zeile.status.is_terminal
+        return zeile is not None
 
     try:
         await _daemon_laufen_lassen(int_settings, runpod, bis=fertig)
