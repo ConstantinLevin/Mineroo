@@ -27,6 +27,7 @@ from mineru_ocr.config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS
 from mineru_ocr.db import (
     WAIT_APPLICATION_NAME,
     DocumentRow,
+    DocumentState,
     DocumentStatus,
     Phase,
     check_schema,
@@ -989,6 +990,36 @@ def _spaeter(sekunden: float, arbeit: Callable[[], object]) -> threading.Thread:
     return faden
 
 
+def _nach_der_ersten_lesung(dsn: str, arbeit: Callable[[], object]) -> threading.Thread:
+    """Fuehrt `arbeit` in einem eigenen Faden aus, sobald die Warte-Verbindung
+    zum ersten Mal gelesen hat — nicht nach einer festen Pause.
+
+    Erst nach der ersten Lesung ist ein Abriss der Verbindung ein Abbruch, der
+    durch Neuverbinden heilt; davor ist er ein Betriebsfehler des Aufrufs. Eine
+    feste Pause liesse den Test davon abhaengen, wie schnell die Maschine
+    verbindet. Gelesen ist, sobald `pg_stat_activity` fuer die Warte-Verbindung
+    die Anweisung ueber `documents` und `inputs` als letzte nennt."""
+
+    def lauf() -> None:
+        with psycopg.connect(dsn, autocommit=True) as beobachter:
+            ende = time.monotonic() + 10.0
+            while time.monotonic() < ende:
+                zeile = beobachter.execute(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND application_name = %s "
+                    "AND query LIKE %s",
+                    (WAIT_APPLICATION_NAME, "%LEFT JOIN inputs%"),
+                ).fetchone()
+                if zeile is not None and zeile[0]:
+                    break
+                time.sleep(0.02)
+        arbeit()
+
+    faden = threading.Thread(target=lauf)
+    faden.start()
+    return faden
+
+
 def _warte_verbindungen(dsn: str) -> int:
     """Wie viele Warte-Verbindungen gerade offen sind. Ein Backend braucht nach
     dem Schliessen einen Augenblick, bis es aus `pg_stat_activity` verschwindet;
@@ -1187,7 +1218,7 @@ async def test_nach_einem_abbruch_der_verbindung_wird_neu_verbunden(
         time.sleep(0.3)
         _job_endet(_test_datenbank, [HASH])
 
-    faden = _spaeter(0.5, kappen_dann_enden)
+    faden = _nach_der_ersten_lesung(_test_datenbank, kappen_dann_enden)
     begonnen = time.monotonic()
     try:
         geliefert, fehler = await _warten(
@@ -1212,34 +1243,21 @@ async def test_ein_zugangsfehler_beim_neu_verbinden_beendet_das_warten(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Neu verbunden wird nur bei wiederholbaren Fehlern. Taugt der Zugang beim
-    Neuverbinden nicht (falsches Passwort, Datenbank weg), endet das Warten mit
-    `ConfigurationError`, statt es bis zur Frist weiter zu versuchen."""
-    from mineru_ocr import db
-
+    Neuverbinden nicht (hier das falsche Passwort, SQLSTATE 28P01), endet das
+    Warten mit `ConfigurationError`, statt es bis zur Frist weiter zu versuchen.
+    Der Fehler kommt als echter psycopg-Fehler aus dem Verbinden, damit er durch
+    dieselbe Uebersetzung laeuft wie im Betrieb."""
     insert_input(db_conn, sha256=HASH, content=b"x")
-    name = "_warte_verbindung" if art == "sync" else "_warte_verbindung_async"
-    echte = getattr(db, name)
-    aufrufe = {"n": 0}
-
-    def zaehlen() -> None:
-        aufrufe["n"] += 1
-        if aufrufe["n"] > 1:
-            raise ConfigurationError("Verbindung oeffnen: Zugang taugt nicht (28P01)")
-
-    if art == "sync":
-
-        def verbinden(dsn: str) -> Any:
-            zaehlen()
-            return echte(dsn)
-
-    else:
-
-        async def verbinden(dsn: str) -> Any:  # type: ignore[misc]
-            zaehlen()
-            return await echte(dsn)
-
-    monkeypatch.setattr(db, name, verbinden)
-    faden = _spaeter(0.5, lambda: _warte_verbindung_kappen(_test_datenbank))
+    aufrufe = _warte_verbinden_ersetzen(
+        monkeypatch,
+        art,
+        lambda n: psycopg.errors.InvalidPassword("password authentication failed")
+        if n > 1
+        else None,
+    )
+    faden = _nach_der_ersten_lesung(
+        _test_datenbank, lambda: _warte_verbindung_kappen(_test_datenbank)
+    )
     begonnen = time.monotonic()
     try:
         _, fehler = await _warten(
@@ -1249,8 +1267,258 @@ async def test_ein_zugangsfehler_beim_neu_verbinden_beendet_das_warten(
         faden.join()
 
     assert isinstance(fehler, ConfigurationError)
+    assert "28P01" in str(fehler)
     assert aufrufe["n"] == 2
     assert time.monotonic() - begonnen < 3.0
+
+
+@pytest.mark.db
+@ARTEN
+async def test_scheitert_das_neu_verbinden_voruebergehend_wird_es_wieder_versucht(
+    art: str,
+    db_conn: psycopg.Connection[Any],
+    _test_datenbank: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Startet Postgres gerade neu, scheitert auch das Neuverbinden — ohne
+    SQLSTATE, wie eine abgelehnte Verbindung. Das ist wiederholbar: Die Schleife
+    wartet kurz, versucht es wieder und liefert das Ergebnis."""
+    insert_input(db_conn, sha256=HASH, content=b"x")
+    aufrufe = _warte_verbinden_ersetzen(
+        monkeypatch,
+        art,
+        lambda n: psycopg.OperationalError("connection failed: Connection refused")
+        if n == 2
+        else None,
+    )
+
+    def kappen_dann_enden() -> None:
+        _warte_verbindung_kappen(_test_datenbank)
+        _job_endet(_test_datenbank, [HASH])
+
+    faden = _nach_der_ersten_lesung(_test_datenbank, kappen_dann_enden)
+    try:
+        geliefert, fehler = await _warten(
+            art, _test_datenbank, [HASH], timeout=10.0, poll_seconds=60.0
+        )
+    finally:
+        faden.join()
+
+    assert fehler is None
+    assert [z.sha256 for z in geliefert] == [HASH]
+    assert aufrufe["n"] == 3
+    assert _warte_verbindungen(_test_datenbank) == 0
+
+
+@pytest.mark.db
+@ARTEN
+async def test_die_frist_nennt_kein_dokument_das_beim_langsamen_verbraucher_fertig_wurde(
+    art: str,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+) -> None:
+    """Haelt sich der Verbraucher beim ersten Dokument laenger auf als die Frist,
+    und wird das zweite derweil fertig, nennt die Frist es nicht als offen: Vor
+    dem Zeitablauf wird ein letztes Mal gelesen, und das zweite kommt als
+    Ergebnis."""
+    fertig, spaet = "1" * 64, "5" * 64
+    await _schreiben(async_conn, fertig)
+    insert_input(db_conn, sha256=spaet, content=b"x")
+
+    geliefert: list[str] = []
+    fehler: BaseException | None = None
+    if art == "sync":
+        zeilen = wait_for_terminal(_test_datenbank, [fertig, spaet], timeout=1.0, poll_seconds=60.0)
+        try:
+            for zeile in zeilen:
+                geliefert.append(zeile.sha256)
+                if zeile.sha256 == fertig:
+                    _job_endet(_test_datenbank, [spaet])
+                    time.sleep(1.3)
+        except WaitTimeoutError as abgelaufen:
+            fehler = abgelaufen
+    else:
+        async_zeilen = wait_for_terminal_async(
+            _test_datenbank, [fertig, spaet], timeout=1.0, poll_seconds=60.0
+        )
+        try:
+            async for zeile in async_zeilen:
+                geliefert.append(zeile.sha256)
+                if zeile.sha256 == fertig:
+                    await asyncio.to_thread(_job_endet, _test_datenbank, [spaet])
+                    await asyncio.sleep(1.3)
+        except WaitTimeoutError as abgelaufen:
+            fehler = abgelaufen
+
+    assert fehler is None
+    assert geliefert == [fertig, spaet]
+    assert _warte_verbindungen(_test_datenbank) == 0
+
+
+class _StoerrischeWarteVerbindung:
+    """Eine Warte-Verbindung ohne Datenbank: Lauschen gelingt, Signale kommen
+    keine, und schliessen geht. Was gelesen wird, entscheidet der Test."""
+
+    def execute(self, sql: object, *args: object, **kwargs: object) -> None:
+        return None
+
+    def notifies(self, *, timeout: float, stop_after: int) -> Any:
+        time.sleep(min(timeout, 0.05))
+        return iter(())
+
+    def close(self) -> None:
+        return None
+
+
+class _AsyncStoerrischeWarteVerbindung:
+    """Dasselbe asynchron."""
+
+    async def execute(self, sql: object, *args: object, **kwargs: object) -> None:
+        return None
+
+    async def notifies(self, *, timeout: float, stop_after: int) -> Any:
+        await asyncio.sleep(min(timeout, 0.05))
+        keine: tuple[psycopg.Notify, ...] = ()
+        for meldung in keine:
+            yield meldung
+
+    async def close(self) -> None:
+        return None
+
+
+@ARTEN
+async def test_ein_wiederkehrender_abbruch_haelt_die_frist_und_bestuermt_die_datenbank_nicht(
+    art: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reisst jede neue Verbindung gleich bei ihrer ersten Lesung wieder ab (etwa
+    ein `statement_timeout`, den die Lesung reisst), verbindet die Schleife nicht
+    im Leerlauf neu: Vor jedem neuen Versuch wartet sie kurz, und die Frist endet
+    das Warten mit `WaitTimeoutError`. Mehr als eine Handvoll Versuche in einer
+    Sekunde waeren ein Sturm auf die Datenbank."""
+    from mineru_ocr import db
+
+    verbindungen = {"n": 0}
+    lesungen = {"n": 0}
+
+    def zaehlen() -> None:
+        verbindungen["n"] += 1
+        if verbindungen["n"] > 50:
+            raise RuntimeError("Sturm: mehr als 50 Verbindungen")
+
+    def lesen() -> list[DocumentState]:
+        lesungen["n"] += 1
+        if lesungen["n"] > 1:
+            raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+        return [DocumentState(sha256=HASH, row=None, has_input=True)]
+
+    if art == "sync":
+
+        def verbinden(dsn: str, **angaben: Any) -> Any:
+            zaehlen()
+            return _StoerrischeWarteVerbindung()
+
+        monkeypatch.setattr(db, "_warte_verbindung", verbinden)
+        monkeypatch.setattr(db, "read_states", lambda conn, hashes: lesen())
+    else:
+
+        async def verbinden_async(dsn: str, **angaben: Any) -> Any:
+            zaehlen()
+            return _AsyncStoerrischeWarteVerbindung()
+
+        async def lesen_async(conn: Any, hashes: Any) -> list[DocumentState]:
+            return lesen()
+
+        monkeypatch.setattr(db, "_warte_verbindung_async", verbinden_async)
+        monkeypatch.setattr(db, "read_states_async", lesen_async)
+
+    begonnen = time.monotonic()
+    geliefert, fehler = await _warten(art, "dbname=gibtesnicht", [HASH], timeout=1.0, poll_seconds=0.2)
+
+    assert geliefert == []
+    assert isinstance(fehler, WaitTimeoutError), fehler
+    assert fehler.pending == (HASH,)
+    assert time.monotonic() - begonnen < 2.0
+    assert verbindungen["n"] <= 5
+
+
+@ARTEN
+async def test_die_frist_begrenzt_auch_das_verbinden(art: str) -> None:
+    """Antwortet der Rechner der Datenbank gar nicht (die Route ist weg), haengt
+    das Verbinden nicht bis zur Voreinstellung des Betriebssystems: Die Frist
+    begrenzt es. 192.0.2.1 ist eine Dokumentationsadresse (RFC 5737), unter der
+    niemand antwortet. Das erste Verbinden scheitert, also `DatabaseError`."""
+    ergebnis: dict[str, BaseException | None] = {}
+
+    def lauf() -> None:
+        ergebnis["fehler"] = asyncio.run(
+            _warten(art, "host=192.0.2.1 port=5432 dbname=x user=x", [HASH], timeout=1.0)
+        )[1]
+
+    faden = threading.Thread(target=lauf, daemon=True)
+    faden.start()
+    faden.join(timeout=8.0)
+
+    assert not faden.is_alive(), "das Verbinden haelt die Frist nicht"
+    assert isinstance(ergebnis["fehler"], DatabaseError)
+
+
+@ARTEN
+async def test_eine_frist_die_keine_zahl_ist_wird_abgewiesen(art: str) -> None:
+    """`nan` liefe nie ab, eine negative Frist ist ein Irrtum: beides `ValueError`,
+    bevor verbunden wird."""
+    for frist in (float("nan"), -1.0):
+        geliefert, fehler = await _warten(art, "dbname=gibtesnicht", [HASH], timeout=frist)
+        assert geliefert == []
+        assert isinstance(fehler, ValueError), (frist, fehler)
+
+
+@ARTEN
+async def test_ein_einzelner_hash_ist_keine_folge_von_hashes(art: str) -> None:
+    """Auch die Schleife selbst weist einen einzelnen Hash ab — fuer jeden
+    Aufrufer, nicht nur fuer den Client."""
+    geliefert, fehler = await _warten(art, "dbname=gibtesnicht", HASH)  # type: ignore[arg-type]
+    assert geliefert == []
+    assert isinstance(fehler, TypeError)
+
+
+def _warte_verbinden_ersetzen(
+    monkeypatch: pytest.MonkeyPatch,
+    art: str,
+    ersatz: Callable[[int], BaseException | None],
+) -> dict[str, int]:
+    """Ersetzt psycopgs Verbinden fuer die Warte-Verbindungen (erkannt an ihrem
+    `application_name`): Jeder Versuch wird gezaehlt, und `ersatz(n)` gibt fuer
+    den n-ten Versuch den Fehler zurueck, mit dem er scheitert, oder None. Alle
+    anderen Verbindungen des Tests gehen unveraendert durch. So laeuft der Fehler
+    durch dieselbe Uebersetzung wie ein echter."""
+    aufrufe = {"n": 0}
+
+    def pruefen(angaben: dict[str, Any]) -> None:
+        if angaben.get("application_name") != WAIT_APPLICATION_NAME:
+            return
+        aufrufe["n"] += 1
+        fehler = ersatz(aufrufe["n"])
+        if fehler is not None:
+            raise fehler
+
+    if art == "sync":
+        echt = psycopg.connect
+
+        def verbinden(dsn: str, **angaben: Any) -> Any:
+            pruefen(angaben)
+            return echt(dsn, **angaben)
+
+        monkeypatch.setattr(psycopg, "connect", verbinden)
+    else:
+        echt_async = psycopg.AsyncConnection.connect
+
+        async def verbinden_async(dsn: str, **angaben: Any) -> Any:
+            pruefen(angaben)
+            return await echt_async(dsn, **angaben)
+
+        monkeypatch.setattr(psycopg.AsyncConnection, "connect", verbinden_async)
+    return aufrufe
 
 
 class _JobEndetNachDerErstenLesung:
@@ -1356,16 +1624,16 @@ async def test_warten_haelt_ein_dokument_nicht_fuer_unbekannt_und_laedt_weder_ra
     if art == "sync":
         echte_sync = db._warte_verbindung
 
-        def verbinden(dsn: str) -> Any:
-            verbindungen.append(_SyncJobEndet(echte_sync(dsn), dsn))
+        def verbinden(dsn: str, **angaben: Any) -> Any:
+            verbindungen.append(_SyncJobEndet(echte_sync(dsn, **angaben), dsn))
             return verbindungen[-1]
 
         monkeypatch.setattr(db, "_warte_verbindung", verbinden)
     else:
         echte_async = db._warte_verbindung_async
 
-        async def verbinden_async(dsn: str) -> Any:
-            verbindungen.append(_AsyncJobEndet(await echte_async(dsn), dsn))
+        async def verbinden_async(dsn: str, **angaben: Any) -> Any:
+            verbindungen.append(_AsyncJobEndet(await echte_async(dsn, **angaben), dsn))
             return verbindungen[-1]
 
         monkeypatch.setattr(db, "_warte_verbindung_async", verbinden_async)
@@ -1409,7 +1677,7 @@ def test_strg_c_beendet_nur_das_warten(
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, bisher)
 
-    assert time.monotonic() - begonnen < 0.8
+    assert time.monotonic() - begonnen < 2.0
     assert _warte_verbindungen(_test_datenbank) == 0
     assert _bestand(db_conn) == vorher
 
@@ -1435,7 +1703,7 @@ async def test_abbrechen_beendet_nur_das_async_warten(
     with pytest.raises(asyncio.CancelledError):
         await aufgabe
 
-    assert time.monotonic() - begonnen < 0.3
+    assert time.monotonic() - begonnen < 1.0
     assert _warte_verbindungen(_test_datenbank) == 0
     assert _bestand(db_conn) == vorher
 

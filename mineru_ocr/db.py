@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import math
 import time
 from collections.abc import AsyncGenerator, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -771,10 +772,7 @@ def connect(dsn: str) -> psycopg.Connection[Any]:
         ConfigurationError: Der Zugang taugt nicht — falsche
             Verbindungszeichenkette, fehlende Rechte, keine solche Datenbank.
     """
-    try:
-        return psycopg.connect(dsn, autocommit=True)
-    except psycopg.Error as fehler:
-        raise _verbindungsfehler_uebersetzen(fehler, "Verbindung oeffnen") from fehler
+    return _verbinden(dsn, "Verbindung oeffnen")
 
 
 async def connect_async(dsn: str) -> psycopg.AsyncConnection[Any]:
@@ -782,10 +780,26 @@ async def connect_async(dsn: str) -> psycopg.AsyncConnection[Any]:
 
     Sonst wie `connect`, einschliesslich `autocommit`.
     """
+    return await _verbinden_async(dsn, "Verbindung oeffnen")
+
+
+def _verbinden(dsn: str, was: str, **angaben: Any) -> psycopg.Connection[Any]:
+    """Das eine Verbinden hinter `connect` und `_warte_verbindung`: `autocommit`
+    an, die uebrigen Angaben an psycopg, ein Fehler uebersetzt."""
     try:
-        return await psycopg.AsyncConnection.connect(dsn, autocommit=True)
+        return psycopg.connect(dsn, autocommit=True, **angaben)
     except psycopg.Error as fehler:
-        raise _verbindungsfehler_uebersetzen(fehler, "Verbindung oeffnen") from fehler
+        raise _verbindungsfehler_uebersetzen(fehler, was) from fehler
+
+
+async def _verbinden_async(
+    dsn: str, was: str, **angaben: Any
+) -> psycopg.AsyncConnection[Any]:
+    """Dasselbe wie `_verbinden`, asynchron."""
+    try:
+        return await psycopg.AsyncConnection.connect(dsn, autocommit=True, **angaben)
+    except psycopg.Error as fehler:
+        raise _verbindungsfehler_uebersetzen(fehler, was) from fehler
 
 
 # --------------------------------------------------------------------------
@@ -1464,11 +1478,13 @@ haengen und welche Verbindung das ist — je Warte-Aufruf genau eine, neben der
 Verbindung des Clients."""
 
 NEUVERBINDEN_PAUSE_SEKUNDEN: Final = 0.5
-"""Wie lange die Schleife wartet, bevor sie nach einem gescheiterten Neuverbinden
-den naechsten Versuch macht. Nach einem Abbruch der Verbindung wird sofort neu
-verbunden; erst wenn das scheitert (die Instanz startet gerade neu), kommt diese
-Pause, damit die Schleife die Datenbank nicht im Leerlauf bestuermt. Die Frist
-kuerzt sie."""
+"""Wie lange die Schleife vor jedem neuen Verbindungsversuch wartet: nach einem
+Abbruch der Verbindung ebenso wie nach einem gescheiterten Neuverbinden (die
+Instanz startet gerade neu). Auch nach einem Abbruch, weil eine Verbindung, die
+gleich bei ihrer ersten Lesung wieder abbricht (etwa an einem
+`statement_timeout`), sonst Hunderte Verbindungen je Sekunde oeffnete. Signale
+aus der Pause heilt das erneute Lesen. Die Frist kuerzt sie, und ist sie
+abgelaufen, endet das Warten statt des naechsten Versuchs."""
 
 
 class _Warteplan:
@@ -1491,11 +1507,18 @@ class _Warteplan:
                 "Erwartet wird eine Folge von Hashes, nicht ein einzelner Hash als "
                 "Zeichenkette: `[sha256]` statt `sha256`."
             )
+        if timeout is not None and not timeout >= 0:
+            # `nan` liefe nie ab (jeder Vergleich damit ist falsch), eine
+            # negative Frist ist ein Irrtum des Aufrufers.
+            raise ValueError(
+                f"Die Frist muss eine Zahl von Sekunden ab null sein oder None "
+                f"(unbegrenzt), nicht {timeout!r}."
+            )
         self.offen: dict[str, None] = dict.fromkeys(hashes)
         """Die offenen Hashes in der Reihenfolge der Frage, jeder einmal."""
-        self.timeout = timeout
+        self.frist = timeout
         self.ende = None if timeout is None else time.monotonic() + timeout
-        self.poll_seconds = poll_seconds
+        self.takt = poll_seconds
         self.naechste_vollabfrage = 0.0
         self.angefangen = False
         """Ob schon einmal gelesen wurde. Davor ist ein Verbindungsfehler ein
@@ -1504,7 +1527,7 @@ class _Warteplan:
 
     def alle(self) -> list[str]:
         """Alle offenen, zum Lesen; der Takt beginnt von vorn."""
-        self.naechste_vollabfrage = time.monotonic() + self.poll_seconds
+        self.naechste_vollabfrage = time.monotonic() + self.takt
         return list(self.offen)
 
     def gemeldet(self, nutzlasten: Iterable[str]) -> list[str]:
@@ -1536,39 +1559,63 @@ class _Warteplan:
                 fertig.append(s.row)
         return fertig
 
-    def _frist_pruefen(self) -> None:
-        if self.ende is not None and time.monotonic() >= self.ende:
-            offen = tuple(self.offen)
-            raise WaitTimeoutError(
-                f"{len(offen)} Dokument(e) hatten innerhalb von {self.timeout} "
-                f"Sekunden kein Ergebnis: {', '.join(offen)}. Sie koennen trotzdem "
-                f"noch fertig werden — der Zeitablauf sagt etwas ueber die Geduld "
-                f"des Wartenden, nichts ueber die Dokumente.",
-                pending=offen,
-                timeout=self.timeout,
-            )
+    def abgelaufen(self) -> bool:
+        """Ob die Frist abgelaufen ist. Dann lesen die Schalen ein letztes Mal alle
+        offenen und rufen `frist_melden`: Was inzwischen fertig ist, ist ein
+        Ergebnis und kein offenes Dokument — auch wenn der Aufrufer sich beim
+        vorigen so lange aufhielt, dass es ohne Signal-Lesung fertig wurde."""
+        return self.ende is not None and time.monotonic() >= self.ende
 
-    def wartezeit(self) -> float:
-        """Wie lange auf Signale gewartet wird: bis zum naechsten Takt, hoechstens
-        bis zur Frist. Null heisst: Der Takt ist faellig, alle offenen lesen.
+    def frist_melden(self) -> None:
+        """Wirft den Zeitablauf, wenn noch Dokumente offen sind.
 
         Raises:
-            WaitTimeoutError: Die Frist ist abgelaufen.
+            WaitTimeoutError: Er nennt die offenen in der Reihenfolge der Frage.
         """
-        self._frist_pruefen()
+        if not self.offen:
+            return
+        offen = tuple(self.offen)
+        raise WaitTimeoutError(
+            f"{len(offen)} Dokument(e) hatten innerhalb von {self.frist} "
+            f"Sekunden kein Ergebnis: {', '.join(offen)}. Sie koennen trotzdem "
+            f"noch fertig werden — der Zeitablauf sagt etwas ueber die Geduld "
+            f"des Wartenden, nichts ueber die Dokumente.",
+            pending=offen,
+            timeout=self.frist,
+        )
+
+    def wartezeit(self) -> float | None:
+        """Wie lange auf Signale gewartet wird: bis zum naechsten Takt, hoechstens
+        bis zur Frist. None heisst: Der Takt ist faellig, alle offenen lesen. Ob
+        die Frist schon ablief, fragt vorher `abgelaufen`."""
         jetzt = time.monotonic()
         bis_takt = self.naechste_vollabfrage - jetzt
         if bis_takt <= 0:
-            return 0.0
-        return bis_takt if self.ende is None else min(bis_takt, self.ende - jetzt)
+            return None
+        if self.ende is None:
+            return bis_takt
+        return max(0.0, min(bis_takt, self.ende - jetzt))
+
+    def verbindungsfrist(self) -> int | None:
+        """Der `connect_timeout` fuer den naechsten Verbindungsversuch: der Rest
+        der Frist in ganzen Sekunden, oder None ohne Frist (dann gilt, was die
+        Verbindungszeichenkette sagt). Ohne sie haenge ein Verbinden zu einem
+        Rechner, der gar nicht antwortet, bis zur Voreinstellung des
+        Betriebssystems, gleich welche Frist der Aufrufer setzte. psycopg hebt
+        Werte unter zwei Sekunden auf zwei an."""
+        if self.ende is None:
+            return None
+        return max(1, math.ceil(self.ende - time.monotonic()))
 
     def pause(self) -> float:
         """Die Pause vor dem naechsten Verbindungsversuch, von der Frist gekuerzt.
 
         Raises:
-            WaitTimeoutError: Die Frist ist abgelaufen.
+            WaitTimeoutError: Die Frist ist abgelaufen. Dann wird nicht mehr
+                verbunden; gelesen werden kann ohne Verbindung nichts mehr.
         """
-        self._frist_pruefen()
+        if self.abgelaufen():
+            self.frist_melden()
         if self.ende is None:
             return NEUVERBINDEN_PAUSE_SEKUNDEN
         return max(0.0, min(NEUVERBINDEN_PAUSE_SEKUNDEN, self.ende - time.monotonic()))
@@ -1579,33 +1626,39 @@ def _lauschen_sql() -> psycopg.sql.Composed:
     return psycopg.sql.SQL("LISTEN {}").format(psycopg.sql.Identifier(DONE_CHANNEL))
 
 
-def _warte_verbindung(dsn: str) -> psycopg.Connection[Any]:
+def _warte_verbindung(
+    dsn: str, *, connect_timeout: int | None = None
+) -> psycopg.Connection[Any]:
     """Oeffnet die EIGENE Verbindung eines sync-Warte-Aufrufs.
 
     `autocommit`, sonst kaemen die Signale erst nach einer Transaktion an. Nie aus
     einem Pool, denn ein Pool hebt kein `LISTEN` auf; nie die Verbindung des
     Clients, denn dort wuechse der Rueckstau an Signalen ueber einen ganzen Lauf.
+    `connect_timeout` ist der Rest der Frist (`_Warteplan.verbindungsfrist`).
 
     Raises:
         DatabaseError: Die Instanz antwortet nicht. Wiederholbar.
         ConfigurationError: Der Zugang taugt nicht.
     """
-    try:
-        return psycopg.connect(
-            dsn, autocommit=True, application_name=WAIT_APPLICATION_NAME
-        )
-    except psycopg.Error as fehler:
-        raise _verbindungsfehler_uebersetzen(fehler, "Warte-Verbindung oeffnen") from fehler
+    return _verbinden(dsn, "Warte-Verbindung oeffnen", **_warte_angaben(connect_timeout))
 
 
-async def _warte_verbindung_async(dsn: str) -> psycopg.AsyncConnection[Any]:
+async def _warte_verbindung_async(
+    dsn: str, *, connect_timeout: int | None = None
+) -> psycopg.AsyncConnection[Any]:
     """Dasselbe wie `_warte_verbindung`, asynchron."""
-    try:
-        return await psycopg.AsyncConnection.connect(
-            dsn, autocommit=True, application_name=WAIT_APPLICATION_NAME
-        )
-    except psycopg.Error as fehler:
-        raise _verbindungsfehler_uebersetzen(fehler, "Warte-Verbindung oeffnen") from fehler
+    return await _verbinden_async(
+        dsn, "Warte-Verbindung oeffnen", **_warte_angaben(connect_timeout)
+    )
+
+
+def _warte_angaben(connect_timeout: int | None) -> dict[str, Any]:
+    """Was eine Warte-Verbindung von anderen unterscheidet: ihr Name in
+    `pg_stat_activity` und, mit Frist, die Grenze fuers Verbinden."""
+    angaben: dict[str, Any] = {"application_name": WAIT_APPLICATION_NAME}
+    if connect_timeout is not None:
+        angaben["connect_timeout"] = connect_timeout
+    return angaben
 
 
 def _abbruch_einordnen(fehler: psycopg.Error, plan: _Warteplan) -> MineruOcrError | None:
@@ -1662,9 +1715,14 @@ def wait_for_terminal(
            (`poll_seconds`) zusaetzlich alle offenen — gegen Schreibvorgaenge von
            Hand und alles, was ein Signal sonst verschlucken kann.
         4. Bei einem wiederholbaren `OperationalError` (die Verbindung riss ab)
-           wird neu verbunden und neu angefangen: wieder lauschen, wieder alles
-           Offene lesen. Signale aus der Luecke heilt das erneute Lesen. Bei einem
+           wird nach einer kurzen Pause (`NEUVERBINDEN_PAUSE_SEKUNDEN`) neu
+           verbunden und neu angefangen: wieder lauschen, wieder alles Offene
+           lesen. Signale aus der Luecke heilt das erneute Lesen. Bei einem
            Zugangsfehler nicht: Der endet das Warten.
+        5. Laeuft die Frist ab, wird ein letztes Mal alles Offene gelesen; was
+           inzwischen fertig ist, kommt als Ergebnis, und nur, was dann noch
+           offen ist, nennt der `WaitTimeoutError`. Auch das Verbinden ist durch
+           den Rest der Frist begrenzt (`connect_timeout`).
 
     NICHT zusaetzlich `add_notify_handler` auf der Verbindung: psycopg warnt zur
     Laufzeit, dass beides zusammen nicht verlaesslich ist.
@@ -1701,7 +1759,7 @@ def wait_for_terminal(
     plan = _Warteplan(hashes, timeout, poll_seconds)
     while plan.offen:
         try:
-            conn = _warte_verbindung(dsn)
+            conn = _warte_verbindung(dsn, connect_timeout=plan.verbindungsfrist())
         except DatabaseError:
             if not plan.angefangen:
                 raise
@@ -1715,8 +1773,12 @@ def wait_for_terminal(
                     yield from plan.auswerten(read_states(conn, zu_lesen))
                 if not plan.offen:
                     return
+                if plan.abgelaufen():
+                    yield from plan.auswerten(read_states(conn, plan.alle()))
+                    plan.frist_melden()
+                    return
                 warte = plan.wartezeit()
-                if warte <= 0:
+                if warte is None:
                     zu_lesen = plan.alle()
                     continue
                 zu_lesen = plan.gemeldet(
@@ -1728,6 +1790,7 @@ def wait_for_terminal(
                 raise weiter from fehler
         finally:
             conn.close()
+        time.sleep(plan.pause())
 
 
 async def wait_for_terminal_async(
@@ -1746,7 +1809,9 @@ async def wait_for_terminal_async(
     plan = _Warteplan(hashes, timeout, poll_seconds)
     while plan.offen:
         try:
-            conn = await _warte_verbindung_async(dsn)
+            conn = await _warte_verbindung_async(
+                dsn, connect_timeout=plan.verbindungsfrist()
+            )
         except DatabaseError:
             if not plan.angefangen:
                 raise
@@ -1761,8 +1826,15 @@ async def wait_for_terminal_async(
                         yield zeile
                 if not plan.offen:
                     return
+                if plan.abgelaufen():
+                    for zeile in plan.auswerten(
+                        await read_states_async(conn, plan.alle())
+                    ):
+                        yield zeile
+                    plan.frist_melden()
+                    return
                 warte = plan.wartezeit()
-                if warte <= 0:
+                if warte is None:
                     zu_lesen = plan.alle()
                     continue
                 zu_lesen = plan.gemeldet(
@@ -1774,6 +1846,7 @@ async def wait_for_terminal_async(
                 raise weiter from fehler
         finally:
             await conn.close()
+        await asyncio.sleep(plan.pause())
 
 
 # --------------------------------------------------------------------------

@@ -122,7 +122,9 @@ dazu 130 bei Strg-C) und werden von `cli.py` bewusst gesetzt.
 
 `wait ZIEL… [--timeout S] [--json]` wartet auf viele (`OCRClient.as_completed`)
 und schreibt je Dokument eine Zeile, sobald es endgültig ist (mit `--json` eine
-JSON-Zeile ohne `raw`). Exit-Code 0, wenn alle `done` oder `empty` sind; 3, wenn
+JSON-Zeile ohne `raw`); war ein Ziel ein Pfad, nennt die Zeile ihn mit (in JSON
+`paths`), denn die Zeilen kommen in der Reihenfolge, in der die Dokumente fertig
+werden. Exit-Code 0, wenn alle `done` oder `empty` sind; 3, wenn
 eines `failed` oder `input_error` ist; **4, wenn nach Ablauf der Frist noch eines
 offen ist** (die offenen nennt stderr); 1 bei einem Betriebsfehler, auch einem
 unbekannten Hash; 130 bei Strg-C. Bei mehreren gilt der schwerste, 1 vor 4 vor 3
@@ -296,9 +298,12 @@ Anweisung lesen; ein unbekannter Hash wird sofort gemeldet. Die Signale werden m
 `notifies(timeout=…, stop_after=1)` **ohne `break`** bis zum Ende des Pakets
 gelesen, sonst gehen die übrigen eines Pakets verloren; im Takt
 (`wait_poll_seconds`) werden alle offenen gelesen. Nach einem wiederholbaren
-Abbruch wird neu verbunden und neu angefangen, nach einem Zugangsfehler nicht. Die
-Frist gilt für den ganzen Aufruf, ihr `WaitTimeoutError` (ein `TimeoutError`)
-nennt die offenen Hashes; Frist und Strg-C fassen keinen Job an. Der Client
+Abbruch wird nach einer kurzen Pause neu verbunden und neu angefangen (ohne die
+Pause bestürmte eine Verbindung, die gleich wieder abbricht, die Datenbank), nach
+einem Zugangsfehler nicht. Die Frist gilt für den ganzen Aufruf, auch fürs
+Verbinden (`connect_timeout`); vor ihrem Ablauf wird ein letztes Mal gelesen, und
+ihr `WaitTimeoutError` (ein `TimeoutError`) nennt die Hashes, die dann noch offen
+sind; Frist und Strg-C fassen keinen Job an. Der Client
 (`wait`, `wait_all`, `as_completed`) liefert daraus Hüllen.
 
 „Läuft gerade" wird aus dem Procrastinate-Job **gelesen**, dessen Kennung an der
