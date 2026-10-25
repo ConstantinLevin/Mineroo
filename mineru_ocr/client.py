@@ -9,22 +9,24 @@ Der Zuschnitt der Methoden stammt aus Jurgens Braindump und trennt zwei Dinge,
 die oft in einem Aufruf verschmelzen: „dann das losschicken ist einfach einen job
 erstellen und das warten auf eine antwort kann dann entweder darin oder am ende
 eine seperate funktion das awaiten des resultats sein" (Plan 2.3). `ocr_start`
-schickt los und kehrt zurueck; `wait` wartet; `ocr` und `ocr_path` sind die
-Bequemlichkeit fuer ein Einzelstueck, die beides hintereinander tut.
+schickt los und kehrt zurueck; `wait` wartet; `ocr` ist die Bequemlichkeit fuer
+ein Einzelstueck, die beides hintereinander tut.
+
+Die Bibliothek nimmt BYTES und gibt HASHES. Pfade kennt sie nicht, sie kennt nur
+die Kommandozeile: Wer Dateien lesen will, liest sie selbst und reicht die Bytes
+herein. Der Hash, den `ocr_start` zurueckgibt, ist der Griff, mit dem es in jedem
+Prozess weitergeht, auch Tage spaeter.
 """
 
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import hashlib
 import logging
-import re
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from datetime import datetime
-from pathlib import Path
 from types import TracebackType
-from typing import Any, Final, TypeVar
+from typing import Any, Final, TypeVar, overload
 
 import procrastinate
 import procrastinate.exceptions
@@ -32,8 +34,9 @@ import psycopg
 from procrastinate import utils
 from psycopg_pool import NullConnectionPool
 
-from . import db, tasks
+from . import core, db, tasks
 from .config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS, MASKE, Settings, ist_geheimnisname
+from .core import Submitted
 from .db import DerivedStatus, DocumentStatus
 from .errors import (
     ConfigDriftError,
@@ -42,26 +45,22 @@ from .errors import (
     DocumentNotFound,
 )
 from .runpod import RunPodClient
-from .wrapper import OCRMegaWrapper, OCRWrapper
+from .wrapper import OCRWrapper
 
 log = logging.getLogger("mineru_ocr.client")
 """Der Logger dieses Moduls.
 
-Er steht hier, weil `ocr_start` ohne laufenden Daemon warnt, statt abzubrechen.
-Fruehere Fassungen bauten die Warnung und warfen sie weg — `client.py` kannte
-`logging` nicht, und gesagt wurde nichts. Die Kommandozeile haengt an diesen
-Logger einen Handler auf stderr (`cli.ocr`)."""
+Er steht hier, weil `ocr_start` ohne laufenden Daemon trotzdem einreiht und
+das SAGT: auf diesem Logger, nicht per Ausnahme. Die Kommandozeile leitet die
+Warnungen des Pakets auf stderr (`cli._FehlerAusgabe`)."""
 
 T = TypeVar("T")
 
-HASH_FORM: Final = re.compile(r"^[0-9a-f]{64}$")
-"""Woran ein Hash von einem Pfad unterschieden wird.
 
-Festgelegt und nicht geraten: vierundsechzig Zeichen aus `[0-9a-f]` sind ein
-Hash, alles andere ist ein Pfad. Ein Verzeichnisname kann diese Form zwar
-annehmen, aber dann sind Hash und Pfad ohnehin dasselbe Dokument oder es gibt
-keins. Dieselbe Regel gilt in `get`, `document` und `wait` — sie steht deshalb
-EINMAL hier und nicht dreimal verstreut."""
+class _SchonUnterwegs(Exception):
+    """Macht aus „das Dokument ist schon unterwegs" einen Rollback der Transaktion,
+    in der `_abschicken` gerade nichts Neues angelegt hat. Verlaesst die Methode
+    nie."""
 
 def _synchron_ausfuehren(arbeit: Coroutine[Any, Any, T]) -> T:
     """Fuehrt eine Koroutine aus synchronem Code aus — auch aus einer Schleife.
@@ -580,80 +579,94 @@ class OCRClient:
     # Arbeit
     # ----------------------------------------------------------------------
 
-    def ocr_start(self, target: OCRWrapper | OCRMegaWrapper) -> OCRWrapper | OCRMegaWrapper:
-        """Reiht alles ein, was noch kein Endergebnis hat. Blockiert nicht.
+    @overload
+    def ocr_start(self, data: bytes) -> Submitted: ...
 
-        Eingereiht wird jede Zeile OHNE endgueltigen Zustand — also alle auf
-        `new`, einschliesslich derer, deren juengster Job endgueltig endete, ohne
-        etwas zu schreiben. Auch die laufen dann schlicht noch einmal: „es wird
-        dann ncohmal und das wars" (Plan 2.4).
+    @overload
+    def ocr_start(self, data: Sequence[bytes]) -> list[Submitted]: ...
+
+    def ocr_start(self, data: bytes | Sequence[bytes]) -> Submitted | list[Submitted]:
+        """Schickt Dokumente ab: Bytes, eines oder viele. Blockiert nicht.
+
+        Je Dokument kommt dessen Hash zurueck, der Griff, mit dem es in jedem
+        Prozess weitergeht (`wait`, `get`, `document`), auch Tage spaeter. Der
+        Hash ist ein `Submitted`: eine Zeichenkette, die zusaetzlich sagt, ob
+        dieser Aufruf das Dokument eingereiht hat und in welchem Zustand es steht.
+
+        Der Ablauf:
+
+        1. Erst werden ALLE uebergebenen Dokumente geprueft, dann wird eingereiht;
+           sonst waeren bei einem abgewiesenen Element die vorderen schon
+           abgeschickt, und der Aufrufer bekaeme eine Ausnahme statt ihrer Hashes.
+           Abgewiesen wird, woraus nichts Neues entstehen kann („nur abschicken
+           wenn etwas neues entstehen soll"): ein Dateityp, den das Paket nicht
+           liest, und ein Ganzdokument-Format oder Bild ueber der Groessengrenze
+           einer Anfrage (`max_payload_bytes`). Eine einzelne PDF-Seite ueber der
+           Grenze findet erst das Schneiden im Job.
+        2. Gibt es ein Ergebnis, ist das ein Treffer, AUCH BEI `failed`, und es
+           geschieht nichts: Ein gescheitertes Dokument liest nur `retry` neu. Ein
+           Treffer gilt unabhaengig von verlangten Lese-Einstellungen. Eine Zeile
+           `new` heisst „unterwegs", und auch dann geschieht nichts.
+        3. Sonst entstehen Zeile, Eingabe und Job in EINER Transaktion, fuer jedes
+           Dokument in seiner eigenen und nie mehrere in einer: Zwei Aufrufer mit
+           ueberlappenden Mengen in verschiedener Reihenfolge wuerden sich sonst
+           gegenseitig blockieren. Das Signal, das die Worker weckt, geht erst beim
+           Commit hinaus; kein Worker sieht den Job vor seiner Eingabe.
+
+        Laeuft kein Daemon, wird trotzdem eingereiht, und der Client warnt (auf dem
+        Logger `mineru_ocr.client`, Stufe WARNING; einmal je daemonloser Phase und
+        nicht je Aufruf, und nur, wenn wirklich etwas eingereiht wurde):
+        Eingereihte Jobs bleiben dann liegen, bis einer startet. Abgebrochen wird
+        deshalb nichts — „das warten ist kuenstlich man wartet auf die datenbank
+        nicht direkt auf den worker der ist ja unabhaengig". Ein Daemon gilt als
+        laufend, wenn ein Worker einen Herzschlag hat, der juenger ist als
+        `config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS`, gemessen an der Uhr der
+        Datenbank; die stehengebliebene Zeile eines abgestuerzten Daemons zaehlt
+        nicht. Den Daemon startet der Betreiber, weder Bibliothek noch
+        Kommandozeile tun es. Ist die Lebendigkeit gar nicht lesbar, steht auch
+        das in der Warnung, und eingereiht ist trotzdem.
 
         Args:
-            target: Eine Huelle oder eine ganze Sammlung.
+            data: Die vollstaendigen Bytes EINES Dokuments, oder eine Folge davon.
+                Keine Pfade und kein Text; das Lesen von Dateien ist Sache der
+                Kommandozeile.
 
         Returns:
-            Dasselbe Objekt, damit sich Aufrufe verketten lassen.
+            Bei Bytes ein `Submitted`, bei einer Folge eine Liste in der
+            Reihenfolge der Eingabe. Dasselbe Dokument zweimal in einer Folge wird
+            einmal eingereiht; beide Eintraege tragen denselben Hash.
 
-        Zusicherung:
-            Kehrt sofort zurueck — der Daemon arbeitet, nicht dieser Aufruf. Wer
-            warten will, nimmt `wait` oder `ocr`.
-
-            Reiht EINZELN ein, nie im Stapel: Ein Stapel mit einem einzigen
-            Konflikt wuerde vollstaendig zurueckgerollt (Feature-Verifikation
-            Punkt 9) — bei dreissigtausend Dokumenten waere ein einziges bereits
-            wartendes genug, damit gar nichts passiert.
-
-            Einzeln heisst bei zehntausend Dokumenten auch zehntausend kleine
-            Einfuege-Vorgaenge. Das ist schnell, aber es ist kein einzelner
-            Aufruf: Der Vorgang ist an jeder Stelle UNTERBRECHBAR, und was schon
-            eingereiht ist, bleibt eingereiht. Ein Abbruch mittendrin ist kein
-            halber Zustand, sondern ein kleinerer — beim naechsten Aufruf laeuft
-            nur noch der Rest.
-
-            Laeuft ein Dokument schon, ist das kein Fehler, sondern der Normalfall
-            beim wiederholten Durchlaufen eines Ordners.
-
-        Verhalten bei fehlendem Daemon: Abschicken haengt nicht vom Daemon ab.
-        Es reiht auch dann ein und WARNT (Logger `mineru_ocr.client`, Stufe
-        WARNING; einmal je daemonloser Phase und nicht je Aufruf); abgebrochen
-        wird nichts. Ein Daemon gilt als laufend, wenn ein
-        Worker einen Herzschlag hat, der juenger ist als
-        `config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS`, gemessen an der Uhr der
-        Datenbank — die stehengebliebene Zeile eines abgestuerzten Daemons zaehlt
-        nicht. Die Jobs liegen bis zum Start eines Daemons in der Datenbank; ihn
-        startet der Betreiber, weder Bibliothek noch Kommandozeile tun es. Ist
-        die Lebendigkeit gar nicht lesbar, steht auch das in der Warnung, und
-        eingereiht wird trotzdem. Gewarnt wird nur, wenn wirklich etwas
-        eingereiht wird.
-
-        Das war frueher anders: Unter `strict` brach das Abschicken ab, mit der
-        Begruendung einer fruehen Festlegung des Eigentuemers („ja natuerlich der
-        client soll dann sterben und errorn"). Sein spaeterer Satz loest sie ab:
-        „das warten ist kuenstlich man wartet auf die datenbank nicht direkt auf
-        den worker der ist ja unabhaengig". Eingereihte Arbeit wartet auf die
-        Datenbank und nicht auf den Worker; ein fehlender Daemon verzoegert sie,
-        verliert sie aber nicht. Die Lebendigkeit ist nur Auskunft — `status` und
-        `preflight` melden sie, die Warnung hier sagt sie beim Abschicken.
+        Raises:
+            TypeError: Ein Element ist keine Bytes — meist ein Pfad oder Text.
+            UnsupportedTypeError: Ein Dokument hat einen Typ, den das Paket nicht
+                liest. Es ist dann NICHTS eingereiht worden.
+            TooLargeError: Ein Dokument ist zu gross. Dito.
 
         Kosten: keine unmittelbar. Mittelbar: alles, was der Daemon danach tut.
         """
-        huellen = [target] if isinstance(target, OCRWrapper) else list(target)
-        # Fertiges wird nicht angefasst. Eingereiht wird jede Zeile OHNE
-        # endgueltigen Zustand — einschliesslich derer, deren juengster Job
-        # endgueltig endete, ohne etwas zu schreiben. Auch die laufen dann
-        # schlicht noch einmal.
-        offene = [huelle for huelle in huellen if not huelle.status.is_terminal]
-        if offene:
-            # Nur wenn wirklich eingereiht wird: Die Warnung sagt, dass die Jobs
-            # liegen bleiben, und bei nichts Einzureihendem waere das falsch.
+        einzeln = isinstance(data, bytes)
+        dokumente: list[bytes] = [data] if isinstance(data, bytes) else list(data)
+        for dokument in dokumente:
+            if not isinstance(dokument, bytes):
+                raise TypeError(
+                    f"ocr_start nimmt Bytes, nicht {type(dokument).__name__}. "
+                    f"Pfade und Text kennt die Bibliothek nicht: Wer eine Datei "
+                    f"abschicken will, liest sie und reicht ihre Bytes herein."
+                )
+        # ERST ALLES PRUEFEN, DANN EINREIHEN.
+        vorbereitet = [core.prepare(dokument, self._settings) for dokument in dokumente]
+
+        ergebnisse = [
+            self._abschicken(dokument, bereit)
+            for dokument, bereit in zip(dokumente, vorbereitet, strict=True)
+        ]
+        if any(e.queued for e in ergebnisse):
+            # Nur wenn wirklich eingereiht wurde: Die Warnung sagt, dass die Jobs
+            # liegen bleiben, und bei nichts Eingereihtem waere das falsch.
             self._ohne_daemon_warnen()
-        for huelle in offene:
-            # EINZELN, nie im Stapel: Ein Stapel mit einem einzigen Konflikt
-            # wuerde vollstaendig zurueckgerollt (Feature-Verifikation Punkt 9).
-            # Bei dreissigtausend Dokumenten waere ein einziges bereits
-            # wartendes genug, damit gar nichts passiert.
-            tasks.enqueue_document(self._procrastinate, self.conn, huelle.sha256)
-        return target
+        if einzeln:
+            return ergebnisse[0]
+        return ergebnisse
 
     def _lebenszeichen(self) -> list[tuple[int, datetime]]:
         """Die Worker mit frischem Herzschlag (`db.worker_heartbeats`).
@@ -670,7 +683,7 @@ class OCRClient:
         return lebende
 
     def _ohne_daemon_warnen(self) -> None:
-        """Warnt vor dem Einreihen, wenn kein Daemon laeuft — einmal je Lage.
+        """Warnt nach dem Einreihen, wenn kein Daemon laeuft — einmal je Lage.
 
         Einmal, weil die Kommandozeile Dokument fuer Dokument einreiht und
         dreissigtausend gleiche Zeilen Laerm waeren. Eine Lage ist die daemonlose
@@ -697,16 +710,51 @@ class OCRClient:
             return
         self._daemon_warnung = lage
         log.warning(
-            "%s. Die Jobs werden eingereiht und bleiben liegen, bis einer startet: "
+            "%s. Die Jobs sind eingereiht und bleiben liegen, bis einer startet: "
             "`mineru-ocr daemon`.",
             grund,
         )
 
-    def wait(
-        self,
-        target: str | OCRWrapper,
-        timeout: float | None = None,
-    ) -> OCRWrapper:
+    def _abschicken(self, data: bytes, bereit: core.Prepared) -> Submitted:
+        """Schickt EIN geprueftes Dokument ab, in seiner eigenen Transaktion.
+
+        Ein Treffer (Zeile da) wird ohne `raw` gelesen und nicht angefasst. Sonst
+        entstehen Zeile, Eingabe und Job zusammen oder gar nicht: Eine Zeile `new`
+        ohne Job hiesse „unterwegs", und niemand wuerde sie je wieder anfassen.
+        """
+        sha256 = bereit.sha256
+        vorhanden = db.get_document(self.conn, sha256, with_raw=False)
+        if vorhanden is not None:
+            return Submitted(sha256, queued=False, status=vorhanden.status)
+        try:
+            with self.conn.transaction():
+                angelegt = db.insert_document(
+                    self.conn,
+                    sha256=sha256,
+                    size_bytes=bereit.size_bytes,
+                    mime=bereit.doc_type.mime,
+                    endpoint_id=self._settings.endpoint_id,
+                )
+                if not angelegt:
+                    # Ein anderer Aufrufer war zwischen dem Nachsehen und dem
+                    # Anlegen schneller (Postgres hat uns auf ihn warten lassen):
+                    # Das Dokument ist unterwegs, und es bleibt bei seiner Eingabe.
+                    raise _SchonUnterwegs
+                db.insert_input(self.conn, sha256=sha256, content=data)
+                # EINZELN und in dieser Transaktion: Das Signal an die Worker geht
+                # erst beim Commit hinaus.
+                if not tasks.enqueue_document(self._procrastinate, self.conn, sha256):
+                    raise _SchonUnterwegs
+        except _SchonUnterwegs:
+            jetzt = db.get_document(self.conn, sha256, with_raw=False)
+            return Submitted(
+                sha256,
+                queued=False,
+                status=jetzt.status if jetzt is not None else DocumentStatus.NEW,
+            )
+        return Submitted(sha256, queued=True, status=DocumentStatus.NEW)
+
+    def wait(self, sha256: str, timeout: float | None = None) -> OCRWrapper:
         """Wartet auf das Endergebnis EINES Dokuments.
 
         Lauscht auf dem Kanal `doc_done` und fragt zur Sicherheit alle fuenf
@@ -716,13 +764,13 @@ class OCRClient:
         fertig"-Signal an aussenstehende Warter (Feature-Verifikation Punkt 10).
 
         Args:
-            target: Hash oder Huelle.
+            sha256: Der Hash des Dokuments, wie `ocr_start` ihn gab.
             timeout: Sekunden, None fuer unbegrenzt.
 
         Returns:
-            Die aufgefrischte Huelle — bei JEDEM Endzustand. Der Aufrufer prueft
-            `.success`. Diese Methode wirft nicht, weil ein Dokument scheiterte;
-            das Scheitern ist ein Ergebnis.
+            Die Huelle — bei JEDEM Endzustand. Der Aufrufer prueft `.success`.
+            Diese Methode wirft nicht, weil ein Dokument scheiterte; das Scheitern
+            ist ein Ergebnis.
 
         Raises:
             DocumentNotFound: Unbekannter Hash — sofort, nicht nach Ablauf.
@@ -731,54 +779,36 @@ class OCRClient:
 
         Kosten: keine.
         """
-        sha256 = target.sha256 if isinstance(target, OCRWrapper) else target
         zeile = db.wait_for_terminal(
             self.conn,
             sha256,
             timeout=timeout,
             poll_seconds=self._settings.wait_poll_seconds,
         )
-        if isinstance(target, OCRWrapper):
-            target.row = zeile
-            target._zwischenspeicher.clear()
-            return target
         return OCRWrapper.from_row(zeile, self.conn)
 
-    def ocr(self, data: bytes | OCRWrapper) -> OCRWrapper:
-        """Ein Einzelstueck aus Bytes: einreihen und warten.
+    def ocr(self, data: bytes, timeout: float | None = None) -> OCRWrapper:
+        """Ein Dokument: abschicken und auf dieses eine warten.
 
-        Ist die Huelle bereits fertig, ist der Aufruf ein Nichts-Tun und kehrt
-        sofort zurueck — Jurgens Regel: „wenn ocrwrapper bereits OCR'd ist dann
-        ist es eine noop" (Plan 2.1).
+        Gibt es schon ein Ergebnis, ist das Abschicken ein Nichts-Tun und das
+        Warten kehrt sofort zurueck — Jurgens Regel: „wenn ocrwrapper bereits OCR'd
+        ist dann ist es eine noop" (Plan 2.1).
 
         Args:
-            data: Bytes oder eine bestehende Huelle.
+            data: Die vollstaendigen Bytes.
+            timeout: Sekunden fuer das Warten, None fuer unbegrenzt.
 
         Returns:
-            Die fertige Huelle.
+            Die Huelle zum Endzustand, auch bei `failed`.
+
+        Raises:
+            TimeoutError: Die Zeit lief ab. Das Dokument bleibt unterwegs.
 
         Kosten: JA, mittelbar.
         """
-        if isinstance(data, OCRWrapper):
-            huelle = data
-        else:
-            huelle = OCRWrapper.from_bytes(data, self.conn, self._settings)
+        return self.wait(self.ocr_start(data), timeout=timeout)
 
-        if huelle.status.is_terminal:
-            # „wenn ocrwrapper bereits OCR'd ist dann ist es eine noop"
-            return huelle
-        self.ocr_start(huelle)
-        return self.wait(huelle)
-
-    def ocr_path(self, path: Path) -> OCRWrapper:
-        """Dasselbe fuer eine Datei auf der Platte."""
-        huelle = OCRWrapper.from_path(path, self.conn, self._settings)
-        if huelle.status.is_terminal:
-            return huelle
-        self.ocr_start(huelle)
-        return self.wait(huelle)
-
-    def retry_failed(self, target: OCRWrapper | OCRMegaWrapper) -> int:
+    def retry_failed(self, target: OCRWrapper | Sequence[OCRWrapper]) -> int:
         """Legt gescheiterte Dokumente erneut vor. Duenner Durchgriff, kein Eigenbau.
 
         Benutzt Procrastinates eigenes Werkzeug (`retry_job_by_id`) auf den
@@ -791,8 +821,8 @@ class OCRClient:
         aus dem Budget und wuerde im Rueckgabewert als erledigte Arbeit gezaehlt,
         die nie stattfindet. Ein zu grosses DOCX liesse sich damit scheinbar
         wiederholen, bliebe `input_error`, und beim naechsten echten Bedarf waere
-        das Budget aufgebraucht. (`OCRMegaWrapper.failed` fasst beide Zustaende
-        zusammen — hier wird ausdruecklich enger gefiltert.)
+        das Budget aufgebraucht. (Der Zustand `failed` und `input_error` zusammen
+        waere „nicht erfolgreich" — hier wird ausdruecklich enger gefiltert.)
 
         Zwei Eigenheiten des Werkzeugs, die man kennen muss (beide am Objekt der
         von 3.9.0 belegt und fuer 3.10.0 unveraendert, Feature-Verifikation Punkt 19):
@@ -810,7 +840,7 @@ class OCRClient:
         ist Bequemlichkeit fuer den Stapel, kein Ersatz dafuer.
 
         Args:
-            target: Eine Huelle oder eine Sammlung.
+            target: Eine Huelle oder mehrere.
 
         Returns:
             Wie viele Jobs tatsaechlich wieder vorgelegt wurden.
@@ -977,33 +1007,31 @@ class OCRClient:
             "daemon_alive": daemon_lebt,
         }
 
-    def document(self, target: str | Path) -> DerivedStatus:
-        """Der abgeleitete Zustand EINES Dokuments, ueber Hash oder Pfad.
+    def document(self, sha256: str) -> DerivedStatus:
+        """Der abgeleitete Zustand EINES Dokuments, ueber seinen Hash.
+
+        Liest die Zeile OHNE `raw`: Wer nur den Zustand will, soll nicht die ganze
+        Antwort laden.
 
         Raises:
             DocumentNotFound: Unbekannt.
         """
-        zeile = self._zeile_finden(target)
+        zeile = self._zeile(sha256)
 
         jobs = self._procrastinate.job_manager.list_jobs(queueing_lock=zeile.sha256)
         return db.derive_status(zeile, jobs)
 
-    def get(self, target: str | Path) -> OCRWrapper:
+    def get(self, sha256: str) -> OCRWrapper:
         """Holt die Huelle zu einem bereits bekannten Dokument, ohne zu warten.
 
         Der Weg von einem Hash zu einem Ergebnis. `document()` gibt den Zustand,
         diese Methode gibt die Sache selbst — Text, Strukturliste, Bilder,
-        Rohbestand. Ohne sie kaeme man an ein fertiges Ergebnis nur ueber `wait`
-        (blockiert) oder ueber einen erneuten Lauf, und die Kommandozeile muesste
-        sich ihre eigene Fassung der Getter bauen.
+        Rohbestand. Die Huelle laedt `raw` erst, wenn jemand es braucht, ueber die
+        Verbindung dieses Clients.
 
         Args:
-            target: Hash oder Pfad. Die Unterscheidung ist festgelegt und nicht
-                geraten: vierundsechzig Zeichen aus `[0-9a-f]` sind ein Hash,
-                alles andere ist ein Pfad. Ein Verzeichnisname kann diese Form
-                zwar annehmen, aber dann sind Hash und Pfad ohnehin dasselbe
-                Dokument oder es gibt keins. Dieselbe Regel gilt in `document`,
-                `wait` und allen Kommandos, die „Hash oder Pfad" annehmen.
+            sha256: Der Hash des Dokuments, wie `ocr_start` ihn gab. Pfade kennt die
+                Bibliothek nicht.
 
         Raises:
             DocumentNotFound: Unbekannt. Ob das Dokument fertig ist, sagt die
@@ -1011,36 +1039,15 @@ class OCRClient:
 
         Kosten: keine.
         """
-        return OCRWrapper.from_row(self._zeile_finden(target), self.conn)
+        return OCRWrapper.from_row(self._zeile(sha256), self.conn)
 
-    def _zeile_finden(self, target: str | Path) -> db.DocumentRow:
-        """Hash ODER Pfad zu einer Zeile — die eine Stelle mit dieser Regel.
-
-        Die Unterscheidung steht als Muster in `HASH_FORM` und nicht dreimal
-        verstreut: `get`, `document` und die Kommandozeile nehmen alle „Hash oder
-        Pfad", und drei Fassungen derselben Regel liefen frueher oder spaeter
-        auseinander.
-        """
-        text = str(target)
-        if HASH_FORM.match(text):
-            sha256 = text
-        else:
-            # Ein Pfad: Die Datenbank kennt keine Pfade, also wird die Datei
-            # gehasht und ueber den Hash gesucht. Gibt es sie nicht, gibt es
-            # auch kein Dokument dazu, das sich so finden liesse.
-            pfad = Path(text)
-            if not pfad.is_file():
-                raise DocumentNotFound(
-                    f"Kein Dokument zu {text!r}: Es ist weder ein sha256 noch "
-                    f"eine lesbare Datei."
-                )
-            with pfad.open("rb") as datei:
-                sha256 = hashlib.file_digest(datei, "sha256").hexdigest()
-        zeile = db.get_document(self.conn, sha256)
+    def _zeile(self, sha256: str) -> db.DocumentRow:
+        """Die Zeile zu einem Hash, ohne `raw` — oder `DocumentNotFound`."""
+        zeile = db.get_document(self.conn, sha256, with_raw=False)
         if zeile is None:
             raise DocumentNotFound(
-                f"Kein Dokument zu {text!r}. Angenommen werden ein sha256 "
-                f"(vierundsechzig Zeichen aus 0-9a-f) oder ein Pfad."
+                f"Kein Dokument zu {sha256!r}. Angenommen wird der sha256, den "
+                f"`ocr_start` zurueckgab (vierundsechzig Zeichen aus 0-9a-f)."
             )
         return zeile
 

@@ -27,35 +27,117 @@ Gesetzt werden sie mit `raise typer.Exit(code=…)`.
 Jedes Kommando, das etwas ausgibt, kennt `--json`. Menschenlesbar ist die
 Voreinstellung; `--json` ist fuer den Fall, dass ein anderes Programm zuhoert.
 
-Die Namen sind die der Python-Flaeche: `ocr` reiht ein wie `OCRClient.ocr_path`,
+Die Namen sind die der Python-Flaeche: `ocr` reiht ein wie `OCRClient.ocr_start`,
 `status` und `wait` heissen wie ihre Methoden. Zwei Vokabulare fuer dieselbe
 Sache waeren dieselbe Doppelung wie zwei Wahrheiten im Verhalten.
+
+PFADE KENNT NUR DIESE DATEI. Die Bibliothek nimmt Bytes und gibt Hashes; die
+Kommandozeile liest Dateien und Ordner, reicht deren Bytes herein und nennt in
+ihrer Ausgabe die Zuordnung von Pfad zu Hash. Ziele fuer `show`, `wait`,
+`markdown` und `retry` sind Hashes oder Pfade, die sie selbst hasht.
+
+Auf der Standardausgabe stehen nur DATEN. Meldungen und Warnungen — auch die der
+Bibliothek, etwa dass kein Daemon laeuft — gehen auf die Fehlerausgabe.
 """
 
 from __future__ import annotations
 
-import contextlib
 import json as json_modul
 import logging
-import sys
-from collections.abc import Iterator
+import re
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 
 import typer
 
-from . import db
+from . import core, db, mime
 from .client import OCRClient
 from .config import Settings
 from .db import DocumentStatus
-from .errors import MineruOcrError, UnsupportedTypeError
-from .wrapper import OCRMegaWrapper, OCRWrapper
+from .errors import (
+    DocumentNotFound,
+    MineruOcrError,
+    TooLargeError,
+    UnsupportedTypeError,
+)
+from .wrapper import OCRWrapper
 
 app = typer.Typer(
     name="mineru-ocr",
     help="OCR-Dienst fuer MinerU auf RunPod: Dokumente rein, Text und Struktur raus.",
     no_args_is_help=True,
 )
+
+HASH_FORM: Final = re.compile(r"^[0-9a-f]{64}$")
+"""Woran die Kommandozeile einen Hash von einem Pfad unterscheidet.
+
+Festgelegt und nicht geraten: vierundsechzig Zeichen aus `[0-9a-f]` sind ein Hash,
+alles andere ist ein Pfad. Die Regel gilt in `show`, `wait`, `markdown` und
+`retry` und steht deshalb EINMAL hier."""
+
+_LOG_NAME: Final = "mineru_ocr"
+
+
+class _FehlerAusgabe(logging.Handler):
+    """Schreibt Log-Meldungen der Bibliothek auf die Fehlerausgabe des Kommandos.
+
+    Ueber `typer.echo(err=True)` und nicht ueber einen `StreamHandler`, der seinen
+    Strom beim Anlegen festhielte: Der Strom wechselt mit jedem Aufruf (im Test mit
+    jedem `invoke`), und ein festgehaltener zeigte auf einen geschlossenen.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        typer.echo(self.format(record), err=True)
+
+
+@app.callback()
+def _vorweg() -> None:
+    """OCR-Dienst fuer MinerU auf RunPod: Dokumente rein, Text und Struktur raus."""
+    # Meldungen und Warnungen der Bibliothek gehen auf stderr (nie auf stdout).
+    # Einmal anmelden, nicht bei jedem Aufruf.
+    logger = logging.getLogger(_LOG_NAME)
+    if not any(isinstance(h, _FehlerAusgabe) for h in logger.handlers):
+        logger.addHandler(_FehlerAusgabe())
+    logger.setLevel(logging.WARNING)
+
+
+def _ziel(target: str) -> str:
+    """Der Hash zu einem Ziel: ein Hash bleibt ein Hash, ein Pfad wird gehasht.
+
+    Die Bibliothek kennt keine Pfade; hier ist die einzige Stelle, die einen in
+    einen Hash verwandelt, und sie benutzt dieselbe Hash-Funktion wie das
+    Abschicken.
+
+    Raises:
+        DocumentNotFound: Weder ein Hash noch eine lesbare Datei.
+    """
+    if HASH_FORM.match(target):
+        return target
+    pfad = Path(target)
+    if not pfad.is_file():
+        raise DocumentNotFound(
+            f"Kein Dokument zu {target!r}: Es ist weder ein sha256 noch eine "
+            f"lesbare Datei."
+        )
+    return core.sha256_of(pfad.read_bytes())
+
+
+def _lesen(datei: Path) -> bytes:
+    """Liest eine Datei, nachdem sie die Vorpruefung bestanden hat.
+
+    Die Vorpruefung steht VOR dem Lesen, weil eine grosse Datei fremden Typs nicht
+    erst ganz in den Speicher soll, um dann abgewiesen zu werden: Der Typ wird am
+    Anfang der Datei erkannt (bei einem ZIP am Verzeichnis), die Groesse am
+    Dateisystem. Die endgueltige Pruefung macht `ocr_start` an den Bytes.
+
+    Raises:
+        UnsupportedTypeError: Der Typ wird nicht unterstuetzt.
+        TooLargeError: Die Datei passt nicht in die Datenbank.
+        OSError: Nicht lesbar.
+    """
+    mime.sniff_path(datei)
+    core.check_size(datei.stat().st_size, datei.name)
+    return datei.read_bytes()
 
 
 def _ausgeben(wert: Any, json_out: bool, text: str) -> None:
@@ -87,27 +169,6 @@ def _daemon_zeile(lebt: bool | None) -> str:
     if lebt is None:
         return "unbekannt"
     return "laeuft" if lebt else "LAEUFT NICHT"
-
-
-@contextlib.contextmanager
-def _warnungen_auf_stderr() -> Iterator[None]:
-    """Leitet die Warnungen des Pakets (Logger `mineru_ocr`) auf stderr.
-
-    Die Bibliothek warnt ueber `logging` und kennt keinen Strom; die Kommandozeile
-    entscheidet, wohin das geht, und zwar auf die FEHLERausgabe wie
-    `_betriebsfehler`: Wer `--json` auswertet oder eine Ausgabe umleitet, hat die
-    Warnung nicht in seinen Daten. Der Handler entsteht erst im Aufruf und nicht
-    beim Import, weil er den Strom FESTHAELT, auf den `sys.stderr` gerade zeigt.
-    """
-    logger = logging.getLogger("mineru_ocr")
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setLevel(logging.WARNING)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    logger.addHandler(handler)
-    try:
-        yield
-    finally:
-        logger.removeHandler(handler)
 
 
 @app.command()
@@ -167,79 +228,102 @@ def daemon(
 def ocr(
     paths: Annotated[list[Path], typer.Argument(help="Dateien oder Verzeichnisse.")],
     glob: Annotated[str, typer.Option(help="Welche Dateien in Verzeichnissen.")] = "**/*",
-    start: Annotated[bool, typer.Option(help="Direkt einreihen (Voreinstellung) oder nur registrieren.")] = True,
     json_out: Annotated[bool, typer.Option("--json", help="Maschinenlesbar ausgeben.")] = False,
 ) -> None:
-    """Registriert Dokumente und reiht sie ein. Blockiert nicht.
+    """Liest Dateien, schickt sie ab und kehrt sofort zurueck. Blockiert nicht.
 
-    Heisst wie die Python-Fassade (`OCRClient.ocr_path`), damit es nicht zwei
-    Vokabulare fuer dieselbe Sache gibt.
+    Die Kommandozeile ist die einzige, die Pfade kennt: Sie liest die Dateien (in
+    Verzeichnissen ueber ein Muster), hasht sie und nennt in der Ausgabe je Datei
+    Pfad, Hash, Zustand und ob dieser Aufruf sie eingereiht hat. Mit `--json` sind
+    das die `documents`, dazu die `skipped`: die uebersprungenen Dateien samt Grund.
+    Ruft je Datei `OCRClient.ocr_start`.
 
-    Verzeichnisse werden durchsucht; nicht unterstuetzte Dateien werden
-    UEBERSPRUNGEN und gezaehlt, statt den Lauf abzubrechen. Ausdruecklich
-    genannte Dateien dagegen werfen bei nicht unterstuetztem Typ — wer eine Datei
-    beim Namen nennt, meint sie.
+    In Verzeichnissen werden nicht unterstuetzte und zu grosse Dateien
+    UEBERSPRUNGEN und gezaehlt, statt den Lauf abzubrechen. Eine ausdruecklich
+    genannte Datei dagegen wird mit Grund gemeldet — wer sie beim Namen nennt,
+    meint sie —, die uebrigen werden trotzdem eingereiht, und das Kommando endet
+    mit Exit-Code 1.
 
     Wiederholtes Aufrufen auf demselben Verzeichnis ist der vorgesehene Gebrauch,
-    kein Missbrauch: Fertiges wird nicht angefasst, nur Fehlendes laeuft.
+    kein Missbrauch: Ein Dokument, zu dem es ein Ergebnis gibt (auch `failed`), oder
+    das schon unterwegs ist, wird nicht angefasst.
 
-    OHNE LAUFENDEN DAEMON wird trotzdem eingereiht: Abschicken haengt nicht vom
-    Daemon ab, die Jobs liegen in der Datenbank, bis einer startet. Das Kommando
-    warnt dann auf stderr (einmal) und beendet mit 0. Den Daemon startet der
-    Betreiber (`mineru-ocr daemon`), das Kommando tut es nicht. Frueher brach es
-    hier ab und kannte dafuer `--strict`; beides entfaellt, siehe
-    `OCRClient.ocr_start`.
-
-    Gibt aus, wie viele Dokumente neu, wie viele bereits vorhanden, wie viele
-    uebersprungen und wie viele eingereiht wurden.
+    Laeuft kein Daemon, wird trotzdem eingereiht: Abschicken haengt nicht vom
+    Daemon ab, die Jobs liegen in der Datenbank, bis einer startet. Die Warnung
+    steht auf stderr (einmal), und das Kommando endet deshalb nicht mit einem
+    Fehler. Den Daemon startet der Betreiber (`mineru-ocr daemon`), das Kommando
+    tut es nicht.
     """
+    dokumente: list[dict[str, Any]] = []
+    uebersprungen: list[dict[str, str]] = []
+    ausdruecklich_fehlgeschlagen = False
+
     try:
-        with _warnungen_auf_stderr(), OCRClient(preflight=False) as klient:
-            huellen: list[OCRWrapper] = []
-            uebersprungen: dict[str, int] = {}
-
+        with OCRClient(preflight=False) as klient:
             for pfad in paths:
-                if pfad.is_dir():
-                    # Verzeichnis: ueberspringen und ZAEHLEN.
-                    sammlung = OCRMegaWrapper.from_dir(
-                        pfad, klient.conn, klient.settings, glob=glob
+                ausdruecklich = not pfad.is_dir()
+                kandidaten = (
+                    [pfad]
+                    if ausdruecklich
+                    else [d for d in sorted(pfad.glob(glob)) if d.is_file()]
+                )
+                for datei in kandidaten:
+                    try:
+                        gereicht = klient.ocr_start(_lesen(datei))
+                    except (UnsupportedTypeError, TooLargeError, OSError) as fehler:
+                        grund = _grund(fehler)
+                        uebersprungen.append(
+                            {"path": str(datei), "reason": grund, "detail": str(fehler)}
+                        )
+                        if ausdruecklich:
+                            # Eine ausdruecklich genannte Datei wird MIT GRUND
+                            # gemeldet; die uebrigen laufen weiter.
+                            typer.echo(f"{datei}: {fehler}", err=True)
+                            ausdruecklich_fehlgeschlagen = True
+                        continue
+                    dokumente.append(
+                        {
+                            "path": str(datei),
+                            "sha256": str(gereicht),
+                            "status": gereicht.status.value,
+                            "queued": gereicht.queued,
+                        }
                     )
-                    huellen.extend(sammlung)
-                    for grund, anzahl in sammlung.stats()["skipped"].items():
-                        uebersprungen[grund] = uebersprungen.get(grund, 0) + anzahl
-                else:
-                    # Ausdruecklich genannte Datei: WIRFT bei falschem Typ.
-                    # Wer eine Datei beim Namen nennt, meint sie.
-                    huellen.append(
-                        OCRWrapper.from_path(pfad, klient.conn, klient.settings)
-                    )
-
-            offen = [h for h in huellen if not h.status.is_terminal]
-            fertig = len(huellen) - len(offen)
-            eingereiht = 0
-            if start and offen:
-                for huelle in offen:
-                    klient.ocr_start(huelle)
-                eingereiht = len(offen)
-
-            ergebnis = {
-                "documents": len(huellen),
-                "already_terminal": fertig,
-                "queued": eingereiht,
-                "skipped": uebersprungen,
-            }
-    except UnsupportedTypeError as fehler:
-        _betriebsfehler(fehler)
     except MineruOcrError as fehler:
         _betriebsfehler(fehler)
 
-    _ausgeben(
-        ergebnis,
-        json_out,
-        f"{ergebnis['documents']} Dokumente, davon {fertig} bereits fertig; "
-        f"{eingereiht} eingereiht"
-        + (f"; uebersprungen: {uebersprungen}" if uebersprungen else ""),
+    if json_out:
+        typer.echo(
+            json_modul.dumps(
+                {"documents": dokumente, "skipped": uebersprungen},
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+    else:
+        for eintrag in dokumente:
+            typer.echo(
+                f"{eintrag['sha256']}  {eintrag['status']:<12} "
+                f"{'eingereiht' if eintrag['queued'] else 'nicht eingereiht':<16} "
+                f"{eintrag['path']}"
+            )
+    eingereiht = sum(1 for e in dokumente if e["queued"])
+    typer.echo(
+        f"{len(dokumente)} Dokumente, davon {eingereiht} eingereiht"
+        + (f"; {len(uebersprungen)} uebersprungen" if uebersprungen else ""),
+        err=True,
     )
+    if ausdruecklich_fehlgeschlagen:
+        raise typer.Exit(code=1)
+
+
+def _grund(fehler: BaseException) -> str:
+    """Der Grund einer uebersprungenen Datei, als Schluessel fuer Zaehler und JSON."""
+    if isinstance(fehler, UnsupportedTypeError):
+        return "nicht_unterstuetzter_typ"
+    if isinstance(fehler, TooLargeError):
+        return "zu_gross"
+    return "nicht_lesbar"
 
 
 @app.command()
@@ -301,8 +385,9 @@ def show(
     """
     try:
         with OCRClient(preflight=False) as klient:
-            huelle = klient.get(target)
-            abgeleitet = klient.document(target)
+            sha256 = _ziel(target)
+            huelle = klient.get(sha256)
+            abgeleitet = klient.document(sha256)
             angaben = huelle.to_dict()
             angaben["phase"] = abgeleitet.phase.value
             angaben["job"] = {
@@ -342,7 +427,7 @@ def wait(
     """
     try:
         with OCRClient(preflight=False) as klient:
-            huelle = klient.wait(klient.get(target).sha256, timeout=timeout)
+            huelle = klient.wait(_ziel(target), timeout=timeout)
     except TimeoutError as fehler:
         _betriebsfehler(fehler)
     except MineruOcrError as fehler:
@@ -382,7 +467,7 @@ def markdown(
     """
     try:
         with OCRClient(preflight=False) as klient:
-            huelle = klient.get(target)
+            huelle = klient.get(_ziel(target))
             if not huelle.success:
                 typer.echo(
                     f"{huelle.sha256} steht auf {huelle.status.value} — "
@@ -412,7 +497,7 @@ def retry(
 
     Durchgriff auf Procrastinates eigenes Werkzeug. Abgebrochene Jobs (`aborted`,
     etwa vom Herunterfahren) nimmt es NICHT an — die werden uebersprungen und
-    gemeldet; ihr Weg ist `ocr` (erneut einreihen).
+    gemeldet.
 
     Jedes wieder vorgelegte Dokument wird vollstaendig neu verarbeitet und neu
     bezahlt. Das Kommando sagt vorher, um wie viele es geht, und fragt nach —
@@ -429,7 +514,7 @@ def retry(
     try:
         with OCRClient(preflight=False) as klient:
             if target is not None:
-                betroffene: list[OCRWrapper] = [klient.get(target)]
+                betroffene: list[OCRWrapper] = [klient.get(_ziel(target))]
             else:
                 betroffene = [
                     OCRWrapper.from_row(zeile, klient.conn)
@@ -452,38 +537,19 @@ def retry(
             if not yes and not typer.confirm("Fortfahren?"):
                 raise typer.Exit(code=0)
 
-            anzahl = klient.retry_failed(
-                zu_tun[0] if len(zu_tun) == 1 else _als_sammlung(zu_tun, klient)
-            )
+            anzahl = klient.retry_failed(zu_tun)
     except MineruOcrError as fehler:
         _betriebsfehler(fehler)
 
     typer.echo(f"{anzahl} von {len(zu_tun)} Job(s) wieder vorgelegt.")
     if anzahl < len(zu_tun):
-        # Ein `aborted`-Job wird vom Werkzeug abgewiesen; sein Weg ist das
-        # erneute Einreihen. Das wird GESAGT und nicht stillschweigend
-        # weggezaehlt.
+        # Ein `aborted`-Job wird vom Werkzeug abgewiesen. Das wird GESAGT und
+        # nicht stillschweigend weggezaehlt.
         typer.echo(
             f"{len(zu_tun) - anzahl} uebersprungen — vermutlich abgebrochene "
-            f"Jobs (`aborted`). Fuer die ist der Weg `mineru-ocr ocr <pfad>`, "
-            f"nicht `retry`.",
+            f"Jobs (`aborted`), die Procrastinates Werkzeug nicht annimmt.",
             err=True,
         )
-
-
-def _als_sammlung(huellen: list[OCRWrapper], klient: OCRClient) -> OCRMegaWrapper:
-    """Fasst schon gelesene Huellen zu einer Sammlung zusammen, ohne neu zu hashen.
-
-    `OCRMegaWrapper.from_paths` liest jede Datei — hier sind die Zeilen aber
-    laengst da, und die Datei kann sogar weg sein. Deshalb wird die Sammlung
-    unmittelbar gefuellt.
-    """
-    sammlung = OCRMegaWrapper.__new__(OCRMegaWrapper)
-    sammlung._conn = klient.conn
-    sammlung._settings = klient.settings
-    sammlung._huellen = {h.sha256: h for h in huellen}
-    sammlung._uebersprungen = {}
-    return sammlung
 
 
 @app.command()

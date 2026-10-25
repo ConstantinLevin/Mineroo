@@ -269,7 +269,7 @@ async def test_dokument_laeuft_vollstaendig_durch(
 
 
 async def test_abgeschicktes_dokument_wird_aus_inputs_gelesen(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger
+    db_conn: psycopg.Connection[Any], int_settings: Settings
 ) -> None:
     """Abschicken legt die Eingabe in `inputs` an, und der Job liest sie von dort.
 
@@ -277,29 +277,30 @@ async def test_abgeschicktes_dokument_wird_aus_inputs_gelesen(
     RunPod ankommen, sind die abgeschickten; nach dem Ergebnis ist die Eingabe
     geloescht; es liegt keine Spool-Datei und kein Pfad dazwischen.
     """
-    from mineru_ocr.wrapper import OCRWrapper
-
     inhalt = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"abgeschickt"
-    huelle = OCRWrapper.from_bytes(inhalt, db_conn, int_settings)
+    with OCRClient(
+        db_dsn=int_settings.db_dsn, api_key="erfunden", preflight=False
+    ) as klient:
+        sha = klient.ocr_start(inhalt)
 
     zeile = db_conn.execute(
-        "SELECT content FROM inputs WHERE sha256 = %s", (huelle.sha256,)
+        "SELECT content FROM inputs WHERE sha256 = %s", (sha,)
     ).fetchone()
     assert zeile is not None and bytes(zeile[0]) == inhalt
-    assert erzeuger.einreihen(huelle.sha256) is True
+    assert len(_jobs_zu(db_conn, sha)) == 1
 
     async def fertig() -> bool:
-        gelesen = get_document(db_conn, huelle.sha256)
+        gelesen = get_document(db_conn, sha)
         return gelesen is not None and gelesen.status.is_terminal
 
     runpod = ProtokollRunPod()
     await _daemon_laufen_lassen(int_settings, runpod, bis=fertig)
 
     assert runpod.dateien == [inhalt]
-    gelesen = get_document(db_conn, huelle.sha256)
+    gelesen = get_document(db_conn, sha)
     assert gelesen is not None and gelesen.status is DocumentStatus.DONE
     assert db_conn.execute(
-        "SELECT 1 FROM inputs WHERE sha256 = %s", (huelle.sha256,)
+        "SELECT 1 FROM inputs WHERE sha256 = %s", (sha,)
     ).fetchone() is None
 
 
@@ -850,7 +851,7 @@ async def test_ohne_daemon_passiert_nichts_und_das_wird_gesagt(
 
 
 async def test_vom_client_eingereihter_job_wird_vom_daemon_abgearbeitet(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, tmp_path: Path
+    db_conn: psycopg.Connection[Any], int_settings: Settings
 ) -> None:
     """Der ganze Weg ueber den echten `OCRClient`: Er reiht per Namen ein (eigene
     App, eigene Verbindung), der Job liegt in der Queue, die der Daemon liest, und
@@ -861,14 +862,12 @@ async def test_vom_client_eingereihter_job_wird_vom_daemon_abgearbeitet(
     Datenbank finden: Name und Queue des Jobs muessen die sein, unter denen der
     Daemon seinen Task angemeldet hat.
     """
-    sha = _anlegen(db_conn, tmp_path, "client.png")
     with OCRClient(
         db_dsn=int_settings.db_dsn,
         api_key="erfunden",
         preflight=False,
-        strict=False,
     ) as klient:
-        klient.ocr_start(klient.get(sha))
+        sha = klient.ocr_start(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"client")
 
         jobs = _jobs_zu(db_conn, sha)
         assert len(jobs) == 1

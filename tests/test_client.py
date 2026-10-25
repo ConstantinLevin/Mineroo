@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -14,7 +16,7 @@ from psycopg_pool import NullConnectionPool
 from mineru_ocr import client as client_modul
 from mineru_ocr import config, tasks
 from mineru_ocr import db as db_modul
-from mineru_ocr.client import HASH_FORM, OCRClient
+from mineru_ocr.client import OCRClient
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, write_terminal_async
 from mineru_ocr.errors import (
@@ -22,8 +24,10 @@ from mineru_ocr.errors import (
     ConfigurationError,
     DatabaseError,
     DocumentNotFound,
+    TooLargeError,
+    UnsupportedTypeError,
 )
-from mineru_ocr.wrapper import OCRMegaWrapper, OCRWrapper
+from mineru_ocr.wrapper import OCRWrapper
 
 pytestmark = pytest.mark.db
 
@@ -136,10 +140,24 @@ def offener_client(
         yield c
 
 
-def _huelle(client: OCRClient, tmp_path: Path, name: str) -> OCRWrapper:
-    pfad = tmp_path / name
-    pfad.write_bytes(PNG_KOPF + name.encode())
-    return OCRWrapper.from_path(pfad, client.conn, client.settings)
+def _png(name: str) -> bytes:
+    """Bytes, die als PNG erkannt werden und je Name ein eigenes Dokument sind."""
+    return PNG_KOPF + name.encode()
+
+
+def _hash(inhalt: bytes) -> str:
+    return hashlib.sha256(inhalt).hexdigest()
+
+
+def _abschicken(client: OCRClient, name: str) -> str:
+    """Schickt ein PNG ab und gibt seinen Hash."""
+    return str(client.ocr_start(_png(name)))
+
+
+def _zaehlen(conn: psycopg.Connection[Any], tabelle: str) -> int:
+    zeile = conn.execute(f"SELECT count(*) FROM {tabelle}").fetchone()
+    assert zeile is not None
+    return int(zeile[0])
 
 
 def _worker_am_leben(conn: psycopg.Connection[Any]) -> None:
@@ -676,21 +694,22 @@ def test_toter_daemon_wird_erkannt(
 def test_ocr_start_reiht_auch_ohne_daemon_ein_und_warnt(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
-    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Abschicken haengt nicht vom Daemon ab: Es reiht ein und warnt.
+    """Abschicken haengt nicht davon ab, ob gerade ein Daemon laeuft.
 
     Der Auftraggeber hat erst verlangt, der Client solle ohne Exekutor „sterben
     und errorn", und das spaeter selbst abgeloest: „das warten ist kuenstlich man
     wartet auf die datenbank nicht direkt auf den worker der ist ja unabhaengig".
-    Der Daemon kann spaeter starten; die Jobs liegen bis dahin in der Datenbank.
+    Ohne Daemon wird eingereiht, abgebrochen wird nichts, und der Client sagt es
+    auf dem Logger statt per Ausnahme.
     """
-    huelle = _huelle(offener_client, tmp_path, "a.png")
-    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
-        offener_client.ocr_start(huelle)
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        gleich = offener_client.ocr_start(_png("a"))
 
-    assert _jobs_zaehlen(db_conn, huelle.sha256) == 1
+    assert gleich.queued is True
+    assert _jobs_zaehlen(db_conn, gleich) == 1
+    assert _zaehlen(db_conn, "inputs") == 1
     assert any("kein Daemon" in eintrag.getMessage() for eintrag in caplog.records)
 
 
@@ -698,45 +717,40 @@ def test_ocr_start_warnt_auch_bei_altem_herzschlag(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
     abgestuerzter_worker: Callable[[], None],
-    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Eine stehengebliebene Worker-Zeile eines abgestuerzten Daemons gilt nicht
     als laufender Daemon: Dieselbe Warnung, dasselbe Einreihen."""
     abgestuerzter_worker()
-    huelle = _huelle(offener_client, tmp_path, "a.png")
-    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
-        offener_client.ocr_start(huelle)
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        h = offener_client.ocr_start(_png("a"))
 
     assert any("kein Daemon" in eintrag.getMessage() for eintrag in caplog.records)
-    assert _jobs_zaehlen(db_conn, huelle.sha256) == 1
+    assert _jobs_zaehlen(db_conn, h) == 1
 
 
 def test_ocr_start_warnt_je_daemonloser_phase_einmal(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
-    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Die Kommandozeile reiht Dokument fuer Dokument ein; bei dreissigtausend
     Dokumenten ohne Daemon waeren dreissigtausend gleiche Zeilen auf stderr
     keine Warnung mehr, sondern Laerm. Gewarnt wird einmal, solange kein Daemon
     laeuft — und erneut, wenn nach einem laufenden wieder keiner da ist."""
-    huellen = [_huelle(offener_client, tmp_path, f"{nr}.png") for nr in range(3)]
-
-    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
-        offener_client.ocr_start(huellen[0])
-        offener_client.ocr_start(huellen[1])
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        offener_client.ocr_start(_png("0"))
+        offener_client.ocr_start(_png("1"))
         assert _warnungen_des_clients(caplog) == 1
 
         # Ein Daemon kommt hoch ...
         _worker_am_leben(db_conn)
-        offener_client.ocr_start(huellen[0])
+        offener_client.ocr_start(_png("2"))
         assert _warnungen_des_clients(caplog) == 1
 
         # ... und faellt wieder aus: Das ist eine neue Lage, und sie wird gesagt.
         db_conn.execute("DELETE FROM procrastinate_workers")
-        offener_client.ocr_start(huellen[2])
+        offener_client.ocr_start(_png("3"))
         assert _warnungen_des_clients(caplog) == 2
 
 
@@ -744,7 +758,6 @@ def test_ocr_start_warnt_je_daemonloser_phase_einmal(
 def test_ocr_start_warnt_erneut_auch_wenn_der_daemon_nur_anderswo_gesehen_wurde(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
-    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
     beobachter: str,
 ) -> None:
@@ -752,38 +765,35 @@ def test_ocr_start_warnt_erneut_auch_wenn_der_daemon_nur_anderswo_gesehen_wurde(
     und `preflight` fragen dieselbe Lebendigkeit. Kommt ein Daemon hoch, wird nur
     dort gesehen und faellt aus, ist das fuer das naechste Abschicken eine NEUE
     daemonlose Phase — und sie wird gesagt."""
-    huellen = [_huelle(offener_client, tmp_path, f"{nr}.png") for nr in range(2)]
-
-    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
-        offener_client.ocr_start(huellen[0])
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        offener_client.ocr_start(_png("0"))
         assert _warnungen_des_clients(caplog) == 1
 
         _worker_am_leben(db_conn)
         getattr(offener_client, beobachter)()  # sieht den Daemon
 
         db_conn.execute("DELETE FROM procrastinate_workers")
-        offener_client.ocr_start(huellen[1])
+        offener_client.ocr_start(_png("1"))
         assert _warnungen_des_clients(caplog) == 2
 
 
 async def test_ocr_start_warnt_nicht_wenn_nichts_eingereiht_wird(
     offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],
-    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Die Warnung sagt „die Jobs werden eingereiht“. Wird nichts eingereiht —
-    eine leere Sammlung, lauter fertige Dokumente —, waere sie falsch."""
-    fertig = _huelle(offener_client, tmp_path, "fertig.png")
-    await write_terminal_async(
-        async_conn, sha256=fertig.sha256, status=DocumentStatus.DONE, raw={}
-    )
-    fertig.refresh()
-    leer = OCRMegaWrapper.from_paths([], offener_client.conn, offener_client.settings)
+    """Die Warnung sagt „die Jobs sind eingereiht“. Wird nichts eingereiht —
+    eine leere Folge, lauter fertige Dokumente —, waere sie falsch."""
+    _worker_am_leben(db_conn)
+    fertig = _png("fertig")
+    h = offener_client.ocr_start(fertig)
+    await write_terminal_async(async_conn, sha256=h, status=DocumentStatus.DONE, raw={})
+    db_conn.execute("DELETE FROM procrastinate_workers")
 
-    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
-        offener_client.ocr_start(leer)
-        offener_client.ocr_start(fertig)
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        assert offener_client.ocr_start([]) == []
+        assert offener_client.ocr_start(fertig).queued is False
 
     assert _warnungen_des_clients(caplog) == 0
 
@@ -791,7 +801,6 @@ async def test_ocr_start_warnt_nicht_wenn_nichts_eingereiht_wird(
 def test_ocr_start_reiht_auch_ein_wenn_die_lebendigkeit_nicht_lesbar_ist(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
-    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -800,12 +809,12 @@ def test_ocr_start_reiht_auch_ein_wenn_die_lebendigkeit_nicht_lesbar_ist(
     `db.worker_heartbeats` — und das Abschicken darf daran nicht haengen."""
 
     _lebendigkeit_unlesbar(monkeypatch)
-    huelle = _huelle(offener_client, tmp_path, "a.png")
 
-    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
-        offener_client.ocr_start(huelle)
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        h = offener_client.ocr_start(_png("a"))
 
-    assert _jobs_zaehlen(db_conn, huelle.sha256) == 1
+    assert h.queued is True
+    assert _jobs_zaehlen(db_conn, h) == 1
     meldungen = [e.getMessage() for e in caplog.records]
     assert any("nicht pruefbar" in m for m in meldungen)
     # Die Ursache steht im Log: Eine weggebrochene Verbindung ist etwas anderes
@@ -816,23 +825,20 @@ def test_ocr_start_reiht_auch_ein_wenn_die_lebendigkeit_nicht_lesbar_ist(
 
 def test_ocr_start_warnt_erneut_wenn_der_grund_wechselt(
     offener_client: OCRClient,
-    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Erst ist die Lebendigkeit nicht lesbar, dann lesbar, aber es laeuft kein
     Daemon: Das sind zwei verschiedene Lagen, und die zweite wird auch gesagt,
     obwohl zwischendurch nie ein Daemon zu sehen war."""
-    huellen = [_huelle(offener_client, tmp_path, f"{nr}.png") for nr in range(3)]
-
-    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
         with monkeypatch.context() as kaputt:
             _lebendigkeit_unlesbar(kaputt)
-            offener_client.ocr_start(huellen[0])
-            offener_client.ocr_start(huellen[1])  # derselbe Grund: still
+            offener_client.ocr_start(_png("0"))
+            offener_client.ocr_start(_png("1"))  # derselbe Grund: still
         assert _warnungen_des_clients(caplog) == 1
 
-        offener_client.ocr_start(huellen[2])  # jetzt lesbar, aber kein Daemon
+        offener_client.ocr_start(_png("2"))  # jetzt lesbar, aber kein Daemon
 
     meldungen = [e.getMessage() for e in caplog.records]
     assert len(meldungen) == 2
@@ -857,13 +863,11 @@ def test_status_meldet_den_daemon_als_unbekannt_wenn_die_lebendigkeit_nicht_lesb
 def test_ocr_start_warnt_nicht_bei_laufendem_daemon(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
-    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     _worker_am_leben(db_conn)
-    huelle = _huelle(offener_client, tmp_path, "a.png")
-    with caplog.at_level("WARNING", logger="mineru_ocr.client"):
-        offener_client.ocr_start(huelle)
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        offener_client.ocr_start(_png("a"))
 
     assert not [e for e in caplog.records if e.name == "mineru_ocr.client"]
 
@@ -908,79 +912,306 @@ def test_status_meldet_den_daemon_nach_dem_alter_des_herzschlags(
 # --- Arbeit ---------------------------------------------------------------
 
 
-def test_ocr_start_blockiert_nicht(
-    offener_client: OCRClient, db_conn: psycopg.Connection[Any], tmp_path: Path
+def test_ocr_start_nimmt_bytes_und_gibt_den_hash(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
 ) -> None:
     """Es reiht ein und kehrt zurueck — „das losschicken ist einfach einen job
-    erstellen"."""
+    erstellen". Zurueck kommt der Hash, der Griff, mit dem es in jedem Prozess
+    weitergeht."""
     _worker_am_leben(db_conn)
-    huelle = _huelle(offener_client, tmp_path, "a.png")
-    zurueck = offener_client.ocr_start(huelle)
+    inhalt = _png("a")
+    h = offener_client.ocr_start(inhalt)
 
-    assert zurueck is huelle
-    assert _jobs_zaehlen(db_conn, huelle.sha256) == 1
+    assert h == _hash(inhalt)
+    assert isinstance(h, str)
+    anzahl = db_conn.execute(
+        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s", (h,)
+    ).fetchone()
+    assert anzahl is not None and anzahl[0] == 1
+    assert h.queued is True
+    assert h.status is DocumentStatus.NEW
 
 
-async def test_ocr_start_faesst_fertiges_nicht_an(
+def test_ocr_start_viele_gibt_je_dokument_den_hash_in_eingabereihenfolge(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    _worker_am_leben(db_conn)
+    inhalte = [_png("c"), _png("a"), _png("b")]
+    hashes = offener_client.ocr_start(inhalte)
+
+    assert hashes == [_hash(i) for i in inhalte]
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 3
+    assert _zaehlen(db_conn, "inputs") == 3
+
+
+def test_ocr_start_prueft_erst_alle_und_reiht_dann_ein(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Bei einem abgewiesenen Element waeren die vorderen sonst schon abgeschickt,
+    und der Aufrufer bekaeme eine Ausnahme statt ihrer Hashes."""
+    _worker_am_leben(db_conn)
+    with pytest.raises(UnsupportedTypeError):
+        offener_client.ocr_start([_png("gut"), b"nur Text, kein Dokument"])
+
+    for tabelle in ("documents", "inputs", "procrastinate_jobs"):
+        assert _zaehlen(db_conn, tabelle) == 0, tabelle
+
+
+def test_ocr_start_weist_ein_bild_ueber_der_groessengrenze_ab_ohne_etwas_einzureihen(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Ein Bild (wie jedes Ganzdokument-Format) laesst sich nicht zerlegen; ueber
+    der Groessengrenze einer Anfrage kann daraus nichts werden. Das weist schon das
+    Abschicken ab, und das vordere, gute Dokument bleibt ebenfalls draussen."""
+    _worker_am_leben(db_conn)
+    zu_gross = PNG_KOPF + b"\x00" * offener_client.settings.max_payload_bytes
+    with pytest.raises(TooLargeError, match="AUFRUESTBAR"):
+        offener_client.ocr_start([_png("gut"), zu_gross])
+
+    for tabelle in ("documents", "inputs", "procrastinate_jobs"):
+        assert _zaehlen(db_conn, tabelle) == 0, tabelle
+
+
+def test_ocr_start_weist_eine_eingabe_ueber_der_ablagegrenze_ab(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auch eine PDF: Ueber `db.MAX_INPUT_BYTES` laesst sich nichts in `inputs`
+    ablegen (Postgres begrenzt ein Feld auf knapp 1 GiB)."""
+    from mineru_ocr import db
+
+    monkeypatch.setattr(db, "MAX_INPUT_BYTES", 50)
+    pdf = b"%PDF-1.7\n" + b"x" * 100
+    with pytest.raises(TooLargeError, match="Datenbank"):
+        offener_client.ocr_start(pdf)
+    assert _zaehlen(db_conn, "documents") == 0
+
+
+def test_ocr_start_prueft_eine_pdf_nicht_gegen_die_groessengrenze_einer_anfrage(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Eine einzelne PDF-Seite ueber der Grenze findet erst das Schneiden im Job;
+    das Abschicken kennt die Seiten nicht und laesst die PDF durch."""
+    _worker_am_leben(db_conn)
+    pdf = b"%PDF-1.7\n" + b"x" * offener_client.settings.max_payload_bytes
+    h = offener_client.ocr_start(pdf)
+    assert h.queued is True
+
+
+async def test_ocr_start_faesst_ein_ergebnis_nicht_an(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],
-    tmp_path: Path,
 ) -> None:
-    """Fertige Dokumente werden nicht eingereiht — sonst waere jedes erneute
+    """Ein Treffer legt nichts an und reiht nichts ein — sonst waere jedes erneute
     Durchlaufen eines Ordners ein vollstaendig neu bezahlter Bestand."""
     _worker_am_leben(db_conn)
-    fertig = _huelle(offener_client, tmp_path, "fertig.png")
-    offen = _huelle(offener_client, tmp_path, "offen.png")
+    fertig = _png("fertig")
+    h_fertig = offener_client.ocr_start(fertig)
     await write_terminal_async(
-        async_conn, sha256=fertig.sha256, status=DocumentStatus.DONE, raw={}
+        async_conn, sha256=h_fertig, status=DocumentStatus.DONE, raw={"markdown": "x"}
     )
-    fertig.refresh()
+    db_conn.execute("DELETE FROM procrastinate_jobs")
+    vorher = db_conn.execute(
+        "SELECT updated_at FROM documents WHERE sha256 = %s", (h_fertig,)
+    ).fetchone()
 
-    offener_client.ocr_start(fertig)
-    offener_client.ocr_start(offen)
+    wieder = offener_client.ocr_start(fertig)
 
-    anzahl = db_conn.execute("SELECT count(*) FROM procrastinate_jobs").fetchone()
-    assert anzahl is not None and anzahl[0] == 1
+    assert wieder == h_fertig
+    assert wieder.queued is False
+    assert wieder.status is DocumentStatus.DONE
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 0
+    assert _zaehlen(db_conn, "inputs") == 0, "die Eingabe darf nicht zurueckkehren"
+    nachher = db_conn.execute(
+        "SELECT updated_at FROM documents WHERE sha256 = %s", (h_fertig,)
+    ).fetchone()
+    assert nachher == vorher
 
 
-async def test_ocr_start_reiht_alles_ohne_endzustand_ein(
+async def test_ocr_start_faesst_auch_ein_gescheitertes_dokument_nicht_an(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],
-    tmp_path: Path,
 ) -> None:
-    """Auch Zeilen, deren juengster Job endgueltig endete, ohne etwas zu
-    schreiben: „es wird dann ncohmal"."""
+    """Auch bei `failed` ist das ein Treffer: Ein gescheitertes Dokument liest nur
+    `retry` neu."""
     _worker_am_leben(db_conn)
-    huelle = _huelle(offener_client, tmp_path, "nochmal.png")
-    offener_client.ocr_start(huelle)
-    # Der Job endet, ohne dass die Zeile geschrieben wird — harter Abschuss im
-    # Schreibfenster. Die Zeile bleibt `new`.
-    db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
-    assert huelle.refresh().status is DocumentStatus.NEW
+    inhalt = _png("gescheitert")
+    h = offener_client.ocr_start(inhalt)
+    await write_terminal_async(
+        async_conn, sha256=h, status=DocumentStatus.FAILED, raw={}, error="aus"
+    )
+    db_conn.execute("DELETE FROM procrastinate_jobs")
 
-    offener_client.ocr_start(huelle)
-    assert _jobs_zaehlen(db_conn, huelle.sha256) == 2
+    wieder = offener_client.ocr_start(inhalt)
+
+    assert wieder.queued is False
+    assert wieder.status is DocumentStatus.FAILED
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 0
+    assert _zaehlen(db_conn, "inputs") == 1, "bei `failed` bleibt die Eingabe"
+
+
+def test_ocr_start_reiht_ein_unterwegs_liegendes_dokument_nicht_nochmal_ein(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Eine Zeile `new` heisst unterwegs. Das gilt auch, wenn ihr Job schon
+    endgueltig endete, ohne etwas zu schreiben: Das ist der Fall fuer `retry`, nicht
+    fuer erneutes Abschicken."""
+    _worker_am_leben(db_conn)
+    inhalt = _png("unterwegs")
+    offener_client.ocr_start(inhalt)
+    db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
+
+    wieder = offener_client.ocr_start(inhalt)
+
+    assert wieder.queued is False
+    assert wieder.status is DocumentStatus.NEW
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 1
+
+
+def test_ocr_start_mit_demselben_dokument_mehrfach_reiht_es_einmal_ein(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    _worker_am_leben(db_conn)
+    inhalt = _png("doppelt")
+    erste, zweite = offener_client.ocr_start([inhalt, inhalt])
+
+    assert erste == zweite
+    assert (erste.queued, zweite.queued) == (True, False)
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 1
+
+
+def test_derselbe_inhalt_in_zwei_aufrufen_ist_eine_zeile_und_eine_eingabe(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Der rohe Byte-Hash ist die Identitaet. Wo die Bytes herkamen, merkt sich
+    nichts: Die Datenbank kennt keine Pfade."""
+    inhalt = _png("gleicher inhalt")
+    erste = offener_client.ocr_start(inhalt)
+    zweite = offener_client.ocr_start(inhalt)
+
+    assert erste == zweite
+    assert _zaehlen(db_conn, "documents") == 1
+    assert _zaehlen(db_conn, "inputs") == 1
+    zeile = db_conn.execute(
+        "SELECT content FROM inputs WHERE sha256 = %s", (erste,)
+    ).fetchone()
+    assert zeile is not None and bytes(zeile[0]) == inhalt
+
+
+def test_kein_metadaten_normalisierter_hash(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Zwei PDFs mit gleichem Seiteninhalt, aber verschiedenen Bytes sind ZWEI
+    Dokumente — es wird nichts wegnormalisiert.
+
+    Ein Normalisierungsfehler waere der unsichtbarste Fehler ueberhaupt: „gilt als
+    fertig, wurde nie erkannt". Deshalb ist der Hash der ROHE Byte-Hash.
+    """
+    ohne = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n"
+    mit = b"%PDF-1.7\n%Zusatz\n1 0 obj\n<<>>\nendobj\n"
+    a, b = offener_client.ocr_start([ohne, mit])
+
+    assert a != b
+    assert _zaehlen(db_conn, "documents") == 2
+
+
+def test_abschicken_oeffnet_keine_pdf(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Eine kaputte PDF bricht das Abschicken nicht ab: Sie wird abgelegt, ohne
+    Seitenzahl, und endet im Job als `input_error`. Der Beweis, dass nichts
+    geoeffnet wurde: Bytes, die nach PDF aussehen und sich nicht oeffnen lassen,
+    kommen durch."""
+    _worker_am_leben(db_conn)
+    kaputt = b"%PDF-1.7\nund dann nur noch Unsinn\n"
+    h = offener_client.ocr_start(kaputt)
+
+    huelle = offener_client.get(h)
+    assert huelle.status is DocumentStatus.NEW
+    assert huelle.page_count is None
+
+
+def test_ocr_start_weist_pfade_und_text_ab_statt_sie_zu_lesen(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Die Bibliothek kennt keine Pfade. Wer einen uebergibt, bekommt eine klare
+    Auskunft statt eines Absturzes tief im Typ-Erkennen — und es ist nichts
+    eingereiht."""
+    with pytest.raises(TypeError, match="Bytes"):
+        offener_client.ocr_start("scan.pdf")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="Bytes"):
+        offener_client.ocr_start([_png("gut"), "scan.pdf"])  # type: ignore[list-item]
+    assert _zaehlen(db_conn, "documents") == 0
+
+
+def test_zeile_eingabe_und_job_entstehen_zusammen_oder_gar_nicht(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scheitert das Einreihen, bleibt weder die Zeile noch die Eingabe stehen:
+    eine Zeile `new` ohne Job heisst „unterwegs", und niemand wuerde sie je wieder
+    anfassen."""
+    _worker_am_leben(db_conn)
+
+    def scheitert(*_: Any, **__: Any) -> bool:
+        raise psycopg.OperationalError("Verbindung weg")
+
+    monkeypatch.setattr(tasks, "enqueue_document", scheitert)
+    with pytest.raises(psycopg.OperationalError):
+        offener_client.ocr_start(_png("atomar"))
+
+    for tabelle in ("documents", "inputs", "procrastinate_jobs"):
+        assert _zaehlen(db_conn, tabelle) == 0, tabelle
+
+
+def test_ocr_start_laedt_kein_raw(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Heute laedt das Registrieren eines fertigen Dokuments sein ganzes `raw` mit;
+    ein erneuter Lauf ueber 30.000 fertige Dokumente zoege so rund 34 GB."""
+    from mineru_ocr import db
+
+    inhalt = _png("fertig")
+    h = _hash(inhalt)
+    db_conn.execute(
+        "INSERT INTO documents (sha256, size_bytes, mime, endpoint_id, status, raw) "
+        "VALUES (%s, 1, 'image/png', 'e', 'done', %s::jsonb)",
+        (h, '{"markdown": "gross"}'),
+    )
+    gelesen: list[bool] = []
+    echtes_lesen = db.get_document
+
+    def merkt(conn: Any, sha256: str, *, with_raw: bool = True) -> Any:
+        gelesen.append(with_raw)
+        return echtes_lesen(conn, sha256, with_raw=with_raw)
+
+    monkeypatch.setattr(db, "get_document", merkt)
+    offener_client.ocr_start(inhalt)
+
+    assert gelesen and not any(gelesen), "das Abschicken hat raw gelesen"
 
 
 async def test_wait_gibt_bei_jedem_endzustand_zurueck(
-    offener_client: OCRClient,
-    async_conn: psycopg.AsyncConnection[Any],
-    tmp_path: Path,
+    offener_client: OCRClient, async_conn: psycopg.AsyncConnection[Any]
 ) -> None:
     """Auch bei `failed` — das Scheitern ist ein Ergebnis, kein Fehler des
     Wartens. Der Aufrufer prueft `.success`."""
-    huelle = _huelle(offener_client, tmp_path, "gescheitert.png")
+    h = _abschicken(offener_client, "gescheitert")
     await write_terminal_async(
         async_conn,
-        sha256=huelle.sha256,
+        sha256=h,
         status=DocumentStatus.FAILED,
         raw={"markdown": "Teil"},
         error="aus",
     )
 
-    zurueck = offener_client.wait(huelle, timeout=5.0)
+    zurueck = offener_client.wait(h, timeout=5.0)
     assert zurueck.status is DocumentStatus.FAILED
     assert zurueck.success is False
 
@@ -992,65 +1223,80 @@ def test_wait_auf_unbekannten_hash_wirft_sofort(offener_client: OCRClient) -> No
         offener_client.wait("f" * 64, timeout=30.0)
 
 
-def test_ziel_ohne_hash_und_ohne_datei_ist_unbekannt(
-    offener_client: OCRClient, tmp_path: Path
+def test_ocr_liefert_das_ergebnis_eines_treffers_ohne_etwas_einzureihen(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
 ) -> None:
-    """Ein Pfad, den es nicht gibt, ist kein Hash und keine Datei, die sich hashen
-    liesse: `DocumentNotFound` mit dieser Auskunft statt eines `FileNotFoundError`."""
-    with pytest.raises(DocumentNotFound, match="weder ein sha256 noch"):
-        offener_client.get(str(tmp_path / "gibt-es-nicht.png"))
-    with pytest.raises(DocumentNotFound, match="weder ein sha256 noch"):
-        offener_client.get(str(tmp_path))
+    """`ocr(data)` ist Abschicken plus Warten auf dieses eine Dokument. Hier ist das
+    Ergebnis schon da (ein Treffer): Das Abschicken tut nichts, das Warten kehrt
+    sofort zurueck."""
+    inhalt = _png("schon da")
+    db_conn.execute(
+        "INSERT INTO documents (sha256, size_bytes, mime, endpoint_id, status, raw) "
+        "VALUES (%s, 1, 'image/png', 'e', 'done', %s::jsonb)",
+        (
+            _hash(inhalt),
+            '{"markdown": "steht da", "content_list": [], "images": {}}',
+        ),
+    )
+
+    ergebnis = offener_client.ocr(inhalt, timeout=5.0)
+
+    assert isinstance(ergebnis, OCRWrapper)
+    assert ergebnis["markdown"] == "steht da"
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 0
 
 
-async def test_get_braucht_keinen_pfad(
+def test_ocr_wartet_auf_das_dokument_und_laeuft_in_die_frist(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Ohne Daemon wird nichts fertig: Die Frist beendet das Warten, nicht das
+    Dokument."""
+    _worker_am_leben(db_conn)
+    with pytest.raises(TimeoutError):
+        offener_client.ocr(_png("wartet"), timeout=0.3)
+    # Das Dokument ist danach weiter unterwegs.
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 1
+
+
+def test_get_und_document_auf_unbekannten_hash_werfen(
     offener_client: OCRClient,
-    async_conn: psycopg.AsyncConnection[Any],
-    tmp_path: Path,
 ) -> None:
-    """`get("<hash>")` liefert die Huelle samt Ergebnis, ohne die Quelldatei
-    anzufassen — sie kann laengst weg sein."""
-    pfad = tmp_path / "verschwindet.png"
-    pfad.write_bytes(PNG_KOPF + b"weg gleich")
-    huelle = OCRWrapper.from_path(pfad, offener_client.conn, offener_client.settings)
+    with pytest.raises(DocumentNotFound):
+        offener_client.get("f" * 64)
+    with pytest.raises(DocumentNotFound):
+        offener_client.document("f" * 64)
+
+
+async def test_get_holt_das_ergebnis_ohne_zu_warten_und_laedt_raw_erst_bei_bedarf(
+    offener_client: OCRClient, async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """`get(h)` gibt die Huelle zu einem bekannten Dokument. Die Huelle des
+    Sync-Clients laedt `raw` bei Bedarf ueber die Verbindung des Clients nach."""
+    h = _abschicken(offener_client, "abholen")
     await write_terminal_async(
         async_conn,
-        sha256=huelle.sha256,
+        sha256=h,
         status=DocumentStatus.DONE,
         raw={"markdown": "steht in der Datenbank", "content_list": [], "images": {}},
     )
-    pfad.unlink()
 
-    ueber_hash = offener_client.get(huelle.sha256)
-    assert ueber_hash["markdown"] == "steht in der Datenbank"
+    huelle = offener_client.get(h)
+
+    assert huelle.row.raw_loaded is False
+    assert huelle["markdown"] == "steht in der Datenbank"
+    assert huelle.row.raw_loaded is True
 
 
-def test_hash_oder_pfad_wird_festgelegt_unterschieden(
-    offener_client: OCRClient, tmp_path: Path
-) -> None:
-    """Die Regel steht als Muster an EINER Stelle und ist nicht geraten.
-
-    Vierundsechzig Zeichen aus `[0-9a-f]` sind ein Hash, alles andere ist ein
-    Pfad. Dieselbe Regel gilt in `get`, `document` und `wait` — drei Fassungen
-    liefen frueher oder spaeter auseinander.
-    """
-    assert HASH_FORM.match("a" * 64)
-    assert not HASH_FORM.match("a" * 63)
-    assert not HASH_FORM.match("A" * 64)  # Grossbuchstaben sind kein sha256-Text
-    assert not HASH_FORM.match("/tmp/x.pdf")
-
-    pfad = tmp_path / "ueber_pfad.png"
-    pfad.write_bytes(PNG_KOPF + b"p")
-    huelle = OCRWrapper.from_path(pfad, offener_client.conn, offener_client.settings)
-    assert offener_client.get(pfad).sha256 == huelle.sha256
-    assert offener_client.get(huelle.sha256).sha256 == huelle.sha256
+def test_get_gibt_auch_ein_offenes_dokument(offener_client: OCRClient) -> None:
+    """Ob das Dokument fertig ist, sagt die Huelle (`status`), nicht `get`."""
+    h = _abschicken(offener_client, "offen")
+    assert offener_client.get(h).status is DocumentStatus.NEW
 
 
 async def test_retry_failed_nimmt_nur_failed(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],
-    tmp_path: Path,
 ) -> None:
     """`input_error` wird uebersprungen und nicht mitgezaehlt: Ein so
     wiedervorgelegter Job taete nichts, verbrauchte aber einen Versuch.
@@ -1060,47 +1306,35 @@ async def test_retry_failed_nimmt_nur_failed(
     Budget aufgebraucht.
     """
     _worker_am_leben(db_conn)
-    gescheitert = _huelle(offener_client, tmp_path, "failed.png")
-    eingabefehler = _huelle(offener_client, tmp_path, "input_error.png")
-    offener_client.ocr_start(gescheitert)
-    offener_client.ocr_start(eingabefehler)
+    gescheitert = _abschicken(offener_client, "failed")
+    eingabefehler = _abschicken(offener_client, "input_error")
     db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
 
     await write_terminal_async(
-        async_conn, sha256=gescheitert.sha256, status=DocumentStatus.FAILED, raw={}
+        async_conn, sha256=gescheitert, status=DocumentStatus.FAILED, raw={}
     )
     await write_terminal_async(
-        async_conn,
-        sha256=eingabefehler.sha256,
-        status=DocumentStatus.INPUT_ERROR,
-        raw={},
+        async_conn, sha256=eingabefehler, status=DocumentStatus.INPUT_ERROR, raw={}
     )
-    gescheitert.refresh()
-    eingabefehler.refresh()
 
-    assert offener_client.retry_failed(eingabefehler) == 0
-    assert offener_client.retry_failed(gescheitert) == 1
+    assert offener_client.retry_failed(offener_client.get(eingabefehler)) == 0
+    assert offener_client.retry_failed(offener_client.get(gescheitert)) == 1
 
 
 async def test_retry_failed_ueberspringt_aborted(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],
-    tmp_path: Path,
 ) -> None:
-    """Das Tooling weist `aborted` ab; der Heilungsweg ist erneutes Einreihen.
-    Uebersprungen und gemeldet, nicht mit einer Ausnahme aufgehalten."""
+    """Das Tooling weist `aborted` ab. Uebersprungen und gemeldet, nicht mit einer
+    Ausnahme aufgehalten."""
     _worker_am_leben(db_conn)
-    huelle = _huelle(offener_client, tmp_path, "abgebrochen.png")
-    offener_client.ocr_start(huelle)
+    h = _abschicken(offener_client, "abgebrochen")
     db_conn.execute("UPDATE procrastinate_jobs SET status = 'aborted'")
-    await write_terminal_async(
-        async_conn, sha256=huelle.sha256, status=DocumentStatus.FAILED, raw={}
-    )
-    huelle.refresh()
+    await write_terminal_async(async_conn, sha256=h, status=DocumentStatus.FAILED, raw={})
 
     # Kein Absturz, sondern eine ehrliche Null.
-    assert offener_client.retry_failed(huelle) == 0
+    assert offener_client.retry_failed(offener_client.get(h)) == 0
 
 
 # --- Nachsehen ------------------------------------------------------------
@@ -1110,7 +1344,6 @@ async def test_status_zaehlt_in_summen(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],
-    tmp_path: Path,
 ) -> None:
     """Zwei Abfragen, unabhaengig von der Bestandsgroesse — nicht eine je
     Dokument.
@@ -1119,12 +1352,9 @@ async def test_status_zaehlt_in_summen(
     fuer eine Uebersicht, die niemand Dokument fuer Dokument liest.
     """
     _worker_am_leben(db_conn)
-    for nr in range(3):
-        huelle = _huelle(offener_client, tmp_path, f"{nr}.png")
-        offener_client.ocr_start(huelle)
-    erste = _huelle(offener_client, tmp_path, "0.png")
+    hashes = [_abschicken(offener_client, str(nr)) for nr in range(3)]
     await write_terminal_async(
-        async_conn, sha256=erste.sha256, status=DocumentStatus.DONE, raw={}
+        async_conn, sha256=hashes[0], status=DocumentStatus.DONE, raw={}
     )
 
     uebersicht = offener_client.status()
@@ -1317,7 +1547,6 @@ def test_client_haelt_zwischen_aufrufen_keine_procrastinate_verbindung(
     _test_datenbank: str,
     db_conn: psycopg.Connection[Any],
     runpod: RunPodAntworten,
-    tmp_path: Path,
 ) -> None:
     """Ein Client haelt EINE Verbindung — seine eigene —, keine fuer Procrastinate.
 
@@ -1338,9 +1567,8 @@ def test_client_haelt_zwischen_aufrufen_keine_procrastinate_verbindung(
     ) as klient:
         assert _verbindungen_erreichen(db_conn, vorher + 1), "nach dem Betreten"
 
-        huelle = _huelle(klient, tmp_path, "a.png")
-        klient.ocr_start(huelle)
-        klient.document(huelle.sha256)
+        h = _abschicken(klient, "a.png")
+        klient.document(h)
         klient.status()
         assert _verbindungen_erreichen(db_conn, vorher + 1), "zwischen den Aufrufen"
 
@@ -1364,7 +1592,6 @@ def test_client_oeffnet_einen_pool_ohne_stehende_verbindungen(
 def test_einreihen_holt_keine_verbindung_aus_dem_pool(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Das Einreihen laeuft ueber die Verbindung des Clients (`connection=`).
@@ -1382,25 +1609,22 @@ def test_einreihen_holt_keine_verbindung_aus_dem_pool(
     monkeypatch.setattr(offener_client._pool, "connection", verboten)
     monkeypatch.setattr(offener_client._pool, "getconn", verboten)
 
-    huelle = _huelle(offener_client, tmp_path, "a.png")
-    offener_client.ocr_start(huelle)
+    h = _abschicken(offener_client, "a.png")
 
     anzahl = db_conn.execute(
-        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s",
-        (huelle.sha256,),
+        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s", (h,)
     ).fetchone()
     assert anzahl is not None and anzahl[0] == 1
 
 
 def test_eingereihter_job_liegt_in_der_queue_des_daemons(
-    offener_client: OCRClient, db_conn: psycopg.Connection[Any], tmp_path: Path
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
 ) -> None:
     """Task-Name und Queue des Jobs sind die Konstanten, unter denen der Daemon
     seinen Task anmeldet. In `default` waere er unsichtbar: kein Fehler, keine
     Meldung, der Job bliebe liegen."""
     _worker_am_leben(db_conn)
-    huelle = _huelle(offener_client, tmp_path, "a.png")
-    offener_client.ocr_start(huelle)
+    h = _abschicken(offener_client, "a.png")
 
     zeile = db_conn.execute(
         "SELECT task_name, queue_name, lock, queueing_lock FROM procrastinate_jobs"
@@ -1408,8 +1632,8 @@ def test_eingereihter_job_liegt_in_der_queue_des_daemons(
     assert zeile == (
         config.TASK_OCR_DOCUMENT,
         config.QUEUE_OCR,
-        huelle.sha256,
-        huelle.sha256,
+        h,
+        h,
     )
 
 

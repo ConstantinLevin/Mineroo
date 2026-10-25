@@ -6,6 +6,7 @@ verzweigt wird. Eine Zusage ohne Test ist eine Absichtserklärung.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import logging
@@ -19,7 +20,7 @@ from typer.testing import CliRunner
 
 from mineru_ocr import cli as cli_modul
 from mineru_ocr import client as client_modul
-from mineru_ocr import db as db_modul
+from mineru_ocr import db
 from mineru_ocr.cli import app
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, write_terminal_async
@@ -86,19 +87,48 @@ def cli(
         "_runpod_fragen",
         lambda settings, was: client_modul._synchron_ausfuehren(was(Zugang())),
     )
-    # Ein lebendes Lebenszeichen, damit `ocr` nicht ohne Daemon warnt.
+    # Ein lebendes Lebenszeichen, damit `ocr` nicht warnt, es laufe kein Daemon.
     db_conn.execute("INSERT INTO procrastinate_workers DEFAULT VALUES")
     return CliRunner()
+
+
+def _datei(
+    ordner: Path, name: str, inhalt: bytes | None = None
+) -> tuple[Path, str]:
+    """Schreibt eine Datei und gibt sie samt dem Hash ihrer Bytes.
+
+    Legt nichts in der Datenbank an: Das tut erst `ocr`.
+    """
+    pfad = ordner / name
+    pfad.parent.mkdir(parents=True, exist_ok=True)
+    inhalt = PNG_KOPF + name.encode() if inhalt is None else inhalt
+    pfad.write_bytes(inhalt)
+    return pfad, hashlib.sha256(inhalt).hexdigest()
 
 
 def _anlegen(
     db_conn: psycopg.Connection[Any], tmp_path: Path, name: str, dsn: str
 ) -> OCRWrapper:
-    pfad = tmp_path / name
-    pfad.write_bytes(PNG_KOPF + name.encode())
-    return OCRWrapper.from_path(
-        pfad, db_conn, Settings.load(db_dsn=dsn, api_key=SCHLUESSEL)
-    )
+    """Eine Datei samt Zeile `new` und Eingabe, ohne Job und ohne `ocr`.
+
+    Fuer die Tests, die ein Ergebnis in die Zeile schreiben und dann ein Kommando
+    ansehen. Die Datei liegt da, damit sich das Kommando auch mit ihrem Pfad
+    aufrufen laesst.
+    """
+    pfad, sha256 = _datei(tmp_path, name)
+    inhalt = pfad.read_bytes()
+    with db_conn.transaction():
+        db.insert_document(
+            db_conn,
+            sha256=sha256,
+            size_bytes=len(inhalt),
+            mime="image/png",
+            endpoint_id=Settings.load(db_dsn=dsn, api_key=SCHLUESSEL).endpoint_id,
+        )
+        db.insert_input(db_conn, sha256=sha256, content=inhalt)
+    zeile = db.get_document(db_conn, sha256, with_raw=False)
+    assert zeile is not None
+    return OCRWrapper.from_row(zeile, db_conn)
 
 
 # --- Exit-Codes -----------------------------------------------------------
@@ -345,8 +375,9 @@ def test_kommandonamen_folgen_der_python_flaeche() -> None:
 
     for name in ("status", "wait", "preflight"):
         assert hasattr(OCRClient, name), name
-    # `ocr` heisst wie `OCRClient.ocr`/`ocr_path`, `retry` wie `retry_failed`.
+    # `ocr` heisst wie `OCRClient.ocr` und `ocr_start`, `retry` wie `retry_failed`.
     assert hasattr(OCRClient, "ocr")
+    assert hasattr(OCRClient, "ocr_start")
     assert hasattr(OCRClient, "retry_failed")
 
 
@@ -385,10 +416,10 @@ def test_show_zeigt_den_juengsten_job(
     Er zeigt, ob das Dokument wartet, laeuft, wie oft es schon versucht wurde,
     oder ob sein juengster Job endete, ohne etwas zu schreiben.
     """
-    huelle = _anlegen(db_conn, tmp_path, "wartend.png", _test_datenbank)
-    cli.invoke(app, ["ocr", str(tmp_path / "wartend.png")])
+    datei, sha = _datei(tmp_path, "wartend.png")
+    cli.invoke(app, ["ocr", str(datei)])
 
-    ergebnis = cli.invoke(app, ["show", huelle.sha256, "--json"])
+    ergebnis = cli.invoke(app, ["show", sha, "--json"])
     assert ergebnis.exit_code == 0, ergebnis.output
     angaben = json.loads(ergebnis.stdout)
     assert angaben["phase"] == "waiting"
@@ -430,7 +461,7 @@ def test_status_sagt_unbekannt_wenn_die_lebendigkeit_nicht_lesbar_ist(
     def kaputt(conn: psycopg.Connection[Any]) -> Any:
         raise DatabaseError("procrastinate_workers sieht anders aus")
 
-    monkeypatch.setattr(db_modul, "worker_heartbeats", kaputt)
+    monkeypatch.setattr(db, "worker_heartbeats", kaputt)
 
     ergebnis = cli.invoke(app, ["status"])
 
@@ -440,28 +471,6 @@ def test_status_sagt_unbekannt_wenn_die_lebendigkeit_nicht_lesbar_ist(
     # Auch der Hinweis „Es laeuft kein Daemon“ bleibt aus: Wer nicht weiss, ob
     # einer laeuft, soll nicht zum Starten eines zweiten aufgefordert werden.
     assert "kein Daemon" not in ergebnis.output
-
-
-def test_ocr_reiht_auch_ohne_daemon_ein_und_warnt_auf_stderr(
-    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
-) -> None:
-    """Abschicken haengt nicht vom Daemon ab: Die Jobs liegen in der Datenbank,
-    bis einer startet. Die Warnung steht auf stderr, damit stdout (und `--json`)
-    sauber bleibt."""
-    db_conn.execute("DELETE FROM procrastinate_workers")
-    for name in ("a.png", "b.png"):
-        (tmp_path / name).write_bytes(PNG_KOPF + name.encode())
-
-    ergebnis = cli.invoke(app, ["ocr", str(tmp_path), "--json"])
-
-    assert ergebnis.exit_code == 0, ergebnis.output
-    assert json.loads(ergebnis.stdout)["queued"] == 2
-    assert "mineru-ocr daemon" in ergebnis.stderr
-    assert "kein Daemon" not in ergebnis.stdout
-    # Einmal, nicht je Dokument.
-    assert ergebnis.stderr.count("kein Daemon") == 1
-    anzahl = db_conn.execute("SELECT count(*) FROM procrastinate_jobs").fetchone()
-    assert anzahl is not None and anzahl[0] == 2
 
 
 def _zaehlen(db_conn: psycopg.Connection[Any], tabelle: str) -> int:
@@ -488,64 +497,288 @@ def test_ocr_ohne_daemon_laesst_keine_eingabe_ohne_job_zurueck(
     assert _zaehlen(db_conn, "procrastinate_jobs") == 2
 
 
-def test_ocr_no_start_legt_nur_ab_und_warnt_nicht(
+def _jobs(db_conn: psycopg.Connection[Any]) -> int:
+    zeile = db_conn.execute("SELECT count(*) FROM procrastinate_jobs").fetchone()
+    assert zeile is not None
+    return int(zeile[0])
+
+
+def test_ocr_reiht_eine_datei_ein_und_nennt_pfad_und_hash(
     cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
 ) -> None:
-    """`--no-start` registriert nur: Die Bytes liegen in `inputs`, kein Job
-    entsteht, und es gibt nichts, wovor ein fehlender Daemon zu warnen waere."""
-    db_conn.execute("DELETE FROM procrastinate_workers")
-    datei = tmp_path / "a.png"
-    datei.write_bytes(PNG_KOPF + b"a")
+    """Pfade kennt nur die Kommandozeile: Sie liest die Datei, hasht sie und nennt
+    die Zuordnung von Pfad zu Hash in ihrer Ausgabe."""
+    datei, sha = _datei(tmp_path, "a.png")
 
-    ergebnis = cli.invoke(app, ["ocr", str(datei), "--no-start"])
-
-    assert ergebnis.exit_code == 0, ergebnis.output
-    assert _zaehlen(db_conn, "inputs") == 1
-    assert _zaehlen(db_conn, "procrastinate_jobs") == 0
-    assert "Daemon" not in ergebnis.stderr
-
-
-def test_ocr_warnt_nicht_bei_laufendem_daemon(
-    cli: CliRunner, tmp_path: Path
-) -> None:
-    """Die `cli`-Vorrichtung legt ein frisches Lebenszeichen an."""
-    datei = tmp_path / "a.png"
-    datei.write_bytes(PNG_KOPF + b"a")
 
     ergebnis = cli.invoke(app, ["ocr", str(datei)])
 
     assert ergebnis.exit_code == 0, ergebnis.output
+    assert sha in ergebnis.stdout
+    assert str(datei) in ergebnis.stdout
+    assert _jobs(db_conn) == 1
+
+
+def test_ocr_json_nennt_je_dokument_hash_zustand_und_ob_eingereiht(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    datei, sha = _datei(tmp_path, "a.png")
+
+    erste = json.loads(cli.invoke(app, ["ocr", str(datei), "--json"]).stdout)
+    assert erste == {
+        "documents": [
+            {"path": str(datei), "sha256": sha, "status": "new", "queued": True}
+        ],
+        "skipped": [],
+    }
+
+    # Dasselbe noch einmal: Das Dokument ist unterwegs, es geschieht nichts.
+    zweite = json.loads(cli.invoke(app, ["ocr", str(datei), "--json"]).stdout)
+    assert zweite["documents"] == [
+        {"path": str(datei), "sha256": sha, "status": "new", "queued": False}
+    ]
+    assert _jobs(db_conn) == 1
+
+
+async def test_ocr_json_nennt_ein_ergebnis_als_treffer_und_reiht_nichts_ein(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    tmp_path: Path,
+) -> None:
+    """Ein Treffer gilt, auch bei `failed`; es entsteht kein Job."""
+    datei, sha = _datei(tmp_path, "fertig.png")
+    cli.invoke(app, ["ocr", str(datei)])
+    db_conn.execute("DELETE FROM procrastinate_jobs")
+    await write_terminal_async(
+        async_conn, sha256=sha, status=DocumentStatus.FAILED, raw={}, error="aus"
+    )
+
+    ergebnis = json.loads(cli.invoke(app, ["ocr", str(datei), "--json"]).stdout)
+
+    assert ergebnis["documents"] == [
+        {"path": str(datei), "sha256": sha, "status": "failed", "queued": False}
+    ]
+    assert _jobs(db_conn) == 0
+
+
+def test_ocr_ordner_ueberspringt_nicht_unterstuetztes_und_nennt_es(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """In Ordnern werden nicht unterstuetzte Dateien uebersprungen und gezaehlt,
+    statt an der ersten `.DS_Store` zu sterben."""
+    ordner = tmp_path / "scans"
+    _datei(ordner, "a.png")
+    _datei(ordner, "unter/b.png")
+    (ordner / "notiz.txt").write_text("Sehr geehrte Damen und Herren")
+
+    ergebnis = cli.invoke(app, ["ocr", str(ordner), "--json"])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    angaben = json.loads(ergebnis.stdout)
+    assert len(angaben["documents"]) == 2
+    assert [s["reason"] for s in angaben["skipped"]] == ["nicht_unterstuetzter_typ"]
+    assert angaben["skipped"][0]["path"] == str(ordner / "notiz.txt")
+    assert _jobs(db_conn) == 2
+
+
+def test_ocr_ordner_waechst_und_ein_zweiter_lauf_reiht_nur_das_neue_ein(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Der vorgesehene Gebrauch: Ein Ordner wird wieder und wieder durchlaufen, und
+    es laeuft nur, was noch fehlt."""
+    ordner = tmp_path / "scans"
+    _datei(ordner, "a.png")
+    cli.invoke(app, ["ocr", str(ordner)])
+    _datei(ordner, "b.png")
+
+    angaben = json.loads(cli.invoke(app, ["ocr", str(ordner), "--json"]).stdout)
+
+    assert [d["queued"] for d in angaben["documents"]] == [False, True]
+    assert _jobs(db_conn) == 2
+
+
+def test_ocr_ordner_nimmt_ein_muster(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    ordner = tmp_path / "scans"
+    _datei(ordner, "a.png")
+    _datei(ordner, "unter/b.png")
+
+    angaben = json.loads(
+        cli.invoke(app, ["ocr", str(ordner), "--glob", "*.png", "--json"]).stdout
+    )
+
+    assert len(angaben["documents"]) == 1
+    assert angaben["documents"][0]["path"] == str(ordner / "a.png")
+
+
+def test_ocr_eine_ausdruecklich_genannte_nicht_unterstuetzte_datei_haelt_die_uebrigen_nicht_auf(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Wer eine Datei beim Namen nennt, meint sie: `ocr` meldet sie mit Grund auf
+    der Fehlerausgabe und endet mit 1 — reiht aber die uebrigen trotzdem ein."""
+    vorn, _ = _datei(tmp_path, "vorn.png")
+    schlecht = tmp_path / "notizen.txt"
+    schlecht.write_text("Sehr geehrte Damen und Herren")
+    hinten, _ = _datei(tmp_path, "hinten.png")
+
+    ergebnis = cli.invoke(app, ["ocr", str(vorn), str(schlecht), str(hinten), "--json"])
+
+    assert ergebnis.exit_code == 1
+    assert "notizen.txt" in ergebnis.stderr
+    assert "kein unterstuetzter Typ" in ergebnis.stderr
+    angaben = json.loads(ergebnis.stdout)
+    assert [d["path"] for d in angaben["documents"]] == [str(vorn), str(hinten)]
+    assert [s["path"] for s in angaben["skipped"]] == [str(schlecht)]
+    assert _jobs(db_conn) == 2
+
+
+def test_ocr_eine_ausdruecklich_genannte_zu_grosse_datei_haelt_die_uebrigen_nicht_auf(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(db, "MAX_INPUT_BYTES", 40)
+    klein, _ = _datei(tmp_path, "klein.png", PNG_KOPF)
+    gross = tmp_path / "gross.png"
+    gross.write_bytes(PNG_KOPF + b"x" * 100)
+
+    ergebnis = cli.invoke(app, ["ocr", str(gross), str(klein), "--json"])
+
+    assert ergebnis.exit_code == 1
+    assert "gross.png" in ergebnis.stderr
+    angaben = json.loads(ergebnis.stdout)
+    assert [d["path"] for d in angaben["documents"]] == [str(klein)]
+    assert [s["reason"] for s in angaben["skipped"]] == ["zu_gross"]
+    assert _jobs(db_conn) == 1
+
+
+def test_ocr_eine_nicht_vorhandene_datei_hindert_die_uebrigen_nicht(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    gut, _ = _datei(tmp_path, "gut.png")
+
+    ergebnis = cli.invoke(
+        app, ["ocr", str(tmp_path / "gibt-es-nicht.png"), str(gut), "--json"]
+    )
+
+    assert ergebnis.exit_code == 1
+    assert "gibt-es-nicht.png" in ergebnis.stderr
+    assert len(json.loads(ergebnis.stdout)["documents"]) == 1
+    assert _jobs(db_conn) == 1
+
+
+def test_ocr_liest_eine_nicht_unterstuetzte_oder_zu_grosse_datei_nicht(
+    cli: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Eine grosse Datei fremden Typs darf nicht erst ganz in den Speicher, um dann
+    abgewiesen zu werden."""
+    film = tmp_path / "film.mov"
+    film.write_bytes(b"\x00\x00\x00\x14ftypqt  " + b"x" * 100)
+    gross = tmp_path / "gross.png"
+    gross.write_bytes(PNG_KOPF + b"x" * 100)
+    monkeypatch.setattr(db, "MAX_INPUT_BYTES", 40)
+
+    echtes_lesen = Path.read_bytes
+
+    def nie(self: Path) -> bytes:
+        # Nur diese beiden Dateien; die Einstellungen lesen ihre eigene.
+        if self.name in ("film.mov", "gross.png"):
+            raise AssertionError("die Datei wurde ganz gelesen")
+        return echtes_lesen(self)
+
+    monkeypatch.setattr(Path, "read_bytes", nie)
+    ergebnis = cli.invoke(app, ["ocr", str(film), str(gross)])
+
+    assert ergebnis.exit_code == 1
+    assert "film.mov" in ergebnis.stderr and "gross.png" in ergebnis.stderr
+
+
+def test_ocr_ohne_daemon_reiht_trotzdem_ein_und_warnt_auf_stderr(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Abschicken haengt nicht davon ab, ob ein Daemon laeuft. Auf stdout stehen nur
+    Daten, die Warnung geht auf stderr."""
+    db_conn.execute("DELETE FROM procrastinate_workers")
+    datei, sha = _datei(tmp_path, "a.png")
+    _datei(tmp_path, "b.png")
+
+    ergebnis = cli.invoke(app, ["ocr", str(tmp_path), "--json"])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    angaben = json.loads(ergebnis.stdout)
+    assert [d["queued"] for d in angaben["documents"]] == [True, True]
+    assert sha in [d["sha256"] for d in angaben["documents"]]
+    assert "mineru-ocr daemon" in ergebnis.stderr
+    assert "kein Daemon" not in ergebnis.stdout
+    # Einmal, nicht je Dokument.
+    assert ergebnis.stderr.count("kein Daemon") == 1
+    assert _jobs(db_conn) == 2
+
+
+def test_ocr_warnt_nicht_wenn_ein_daemon_laeuft(
+    cli: CliRunner, tmp_path: Path
+) -> None:
+    """Die `cli`-Vorrichtung legt ein frisches Lebenszeichen an."""
+    datei, _ = _datei(tmp_path, "a.png")
+    ergebnis = cli.invoke(app, ["ocr", str(datei)])
+    assert ergebnis.exit_code == 0, ergebnis.output
     assert "Daemon" not in ergebnis.stderr
 
 
-def test_ocr_hat_keine_strict_option_mehr(cli: CliRunner, tmp_path: Path) -> None:
-    """Der Abbruch ohne Daemon ist abgeloest, und die Option, die ihn schaltete,
-    entfaellt mit ihm. `preflight` behaelt seine eigene `--strict`-Option: Sie
-    betrifft Konfigurations-Abweichungen und nicht den Daemon."""
-    datei = tmp_path / "a.png"
-    datei.write_bytes(PNG_KOPF + b"a")
+def test_ocr_hat_weder_strict_noch_start(cli: CliRunner, tmp_path: Path) -> None:
+    """Abgebrochen wird ohne Daemon nichts, und eine Zeile ohne Job gibt es nicht
+    mehr: Die Schalter `--strict` und `--no-start` entfallen."""
+    datei, _ = _datei(tmp_path, "a.png")
+    for schalter in ("--strict", "--no-strict", "--start", "--no-start"):
+        assert cli.invoke(app, ["ocr", str(datei), schalter]).exit_code == 2, schalter
 
-    for schalter in ("--strict", "--no-strict"):
-        ergebnis = cli.invoke(app, ["ocr", str(datei), schalter])
-        assert ergebnis.exit_code == 2, (schalter, ergebnis.output)
-
+    # `preflight` behaelt seine eigene `--strict`-Option: Sie betrifft
+    # Konfigurations-Abweichungen und nicht den Daemon.
     assert "strict" not in inspect.signature(cli_modul.ocr).parameters
     assert "strict" in inspect.signature(cli_modul.preflight).parameters
 
 
-def test_der_stderr_handler_haengt_nach_dem_aufruf_nicht_mehr_am_logger() -> None:
-    """Der Handler haelt den Strom fest, auf den `sys.stderr` gerade zeigt. Bliebe
-    er nach einem Fehler im Rumpf haengen, doppelte jede Warnung in einem Prozess,
-    der die Kommandozeile mehrfach aufruft (und jeder Test taete es auch)."""
+def test_der_stderr_handler_wird_einmal_angemeldet_und_haelt_keinen_strom(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Die Warnungen des Pakets gehen ueber EINEN Handler auf stderr, der den Strom
+    erst beim Schreiben nimmt. Ein Handler je Aufruf doppelte jede Warnung in einem
+    Prozess, der die Kommandozeile mehrfach aufruft, und ein Handler, der den Strom
+    beim Anlegen festhielte, schriebe nach dem ersten Aufruf ins Leere."""
     logger = logging.getLogger("mineru_ocr")
-    vorher = list(logger.handlers)
+    db_conn.execute("DELETE FROM procrastinate_workers")
 
-    with pytest.raises(RuntimeError):
-        with cli_modul._warnungen_auf_stderr():
-            assert len(logger.handlers) == len(vorher) + 1
-            raise RuntimeError("Fehler im Rumpf")
+    for name in ("a.png", "b.png"):
+        datei, _ = _datei(tmp_path, name)
+        ergebnis = cli.invoke(app, ["ocr", str(datei)])
+        assert ergebnis.stderr.count("kein Daemon") == 1, name
 
-    assert logger.handlers == vorher
+    eigene = [h for h in logger.handlers if isinstance(h, cli_modul._FehlerAusgabe)]
+    assert len(eigene) == 1
+    assert not isinstance(eigene[0], logging.StreamHandler)
+
+
+def test_ziel_ohne_hash_und_ohne_datei_ist_unbekannt(
+    cli: CliRunner, tmp_path: Path
+) -> None:
+    """Ein Pfad, den es nicht gibt, ist kein Hash und keine Datei, die sich hashen
+    liesse: Betriebsfehler mit dieser Auskunft statt eines Tracebacks."""
+    for kommando in ("show", "wait", "markdown", "retry"):
+        ergebnis = cli.invoke(app, [kommando, str(tmp_path / "gibt-es-nicht.png")])
+        assert ergebnis.exit_code == 1, kommando
+        assert "weder ein sha256 noch" in ergebnis.stderr, kommando
+
+
+def test_hash_oder_pfad_wird_festgelegt_unterschieden() -> None:
+    """Vierundsechzig Zeichen aus `[0-9a-f]` sind ein Hash, alles andere ist ein
+    Pfad. Die Regel steht als Muster an EINER Stelle der Kommandozeile."""
+    assert cli_modul.HASH_FORM.match("a" * 64)
+    assert not cli_modul.HASH_FORM.match("a" * 63)
+    assert not cli_modul.HASH_FORM.match("A" * 64)  # Grossbuchstaben sind kein sha256
+    assert not cli_modul.HASH_FORM.match("/tmp/x.pdf")
 
 
 # --- Das Kommando, das Geld ausgibt --------------------------------------
@@ -566,28 +799,26 @@ async def test_retry_fragt_vor_dem_geldausgeben(
     Und die Gegenprobe im selben Test: Wird die Frage verneint, passiert NICHTS
     — kein halber Lauf, keine Teilmenge.
     """
-    huelle = _anlegen(db_conn, tmp_path, "teuer.png", _test_datenbank)
-    cli.invoke(app, ["ocr", str(tmp_path / "teuer.png")])
+    datei, sha = _datei(tmp_path, "teuer.png")
+    cli.invoke(app, ["ocr", str(datei)])
     db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
     await write_terminal_async(
-        async_conn, sha256=huelle.sha256, status=DocumentStatus.FAILED, raw={}
+        async_conn, sha256=sha, status=DocumentStatus.FAILED, raw={}
     )
 
-    verneint = cli.invoke(app, ["retry", huelle.sha256], input="n\n")
+    verneint = cli.invoke(app, ["retry", sha], input="n\n")
     assert verneint.exit_code == 0
     assert "KOSTET" in verneint.output or "kostet Geld" in verneint.output
     # Nichts passiert: Der Job steht unveraendert auf `failed`.
     zustand = db_conn.execute(
-        "SELECT status FROM procrastinate_jobs WHERE queueing_lock = %s",
-        (huelle.sha256,),
+        "SELECT status FROM procrastinate_jobs WHERE queueing_lock = %s", (sha,)
     ).fetchone()
     assert zustand is not None and zustand[0] == "failed"
 
-    bejaht = cli.invoke(app, ["retry", huelle.sha256], input="j\ny\n")
+    bejaht = cli.invoke(app, ["retry", sha], input="j\ny\n")
     assert bejaht.exit_code == 0
     zustand = db_conn.execute(
-        "SELECT status FROM procrastinate_jobs WHERE queueing_lock = %s",
-        (huelle.sha256,),
+        "SELECT status FROM procrastinate_jobs WHERE queueing_lock = %s", (sha,)
     ).fetchone()
     assert zustand is not None and zustand[0] == "todo"
 
@@ -604,14 +835,14 @@ async def test_retry_mit_yes_fragt_nicht(
     Ausdruecklich und nicht als Voreinstellung: Wer ihn setzt, hat die Frage
     schon beantwortet.
     """
-    huelle = _anlegen(db_conn, tmp_path, "skript.png", _test_datenbank)
-    cli.invoke(app, ["ocr", str(tmp_path / "skript.png")])
+    datei, sha = _datei(tmp_path, "skript.png")
+    cli.invoke(app, ["ocr", str(datei)])
     db_conn.execute("UPDATE procrastinate_jobs SET status = 'failed'")
     await write_terminal_async(
-        async_conn, sha256=huelle.sha256, status=DocumentStatus.FAILED, raw={}
+        async_conn, sha256=sha, status=DocumentStatus.FAILED, raw={}
     )
 
-    ergebnis = cli.invoke(app, ["retry", huelle.sha256, "--yes"])
+    ergebnis = cli.invoke(app, ["retry", sha, "--yes"])
     assert ergebnis.exit_code == 0
     assert "1 von 1" in ergebnis.output
 

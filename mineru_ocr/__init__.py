@@ -2,26 +2,29 @@
 
 Die lokale Seite der MinerU-Strecke: Ein Daemon arbeitet Dokumente ueber einen
 RunPod-Endpoint ab, eine Postgres-Tabelle haelt die Ergebnisse, und eine Fassade
-macht beides bequem benutzbar. Der uebliche Weg:
+macht beides bequem benutzbar. Die Bibliothek nimmt BYTES und gibt HASHES; Pfade
+kennt nur die Kommandozeile. Der uebliche Weg:
 
     from pathlib import Path
-    from mineru_ocr import OCRClient, OCRMegaWrapper
+    from mineru_ocr import OCRClient
 
     with OCRClient() as client:
-        mega = OCRMegaWrapper.from_dir(
-            Path("~/Scans").expanduser(), client.conn, client.settings
-        )
-        client.ocr_start(mega)          # kehrt SOFORT zurueck, es laeuft noch nichts
+        h = client.ocr_start(Path("scan.pdf").read_bytes())
+        # kehrt SOFORT zurueck, es laeuft noch nichts; `h` ist der Hash des
+        # Dokuments, der Griff, mit dem es in jedem Prozess weitergeht.
         print(client.status())          # Uebersicht, jederzeit
 
-        # Ein einzelnes Dokument abwarten und ansehen:
-        fertig = client.wait("<sha256>")
+        # Das Dokument abwarten und ansehen:
+        fertig = client.wait(h)
         print(fertig.rendered_markdown)
 
         # Oder spaeter, ohne zu warten — auch aus einer anderen Sitzung:
-        print(client.get("<sha256>").rendered_markdown)
+        print(client.get(h).rendered_markdown)
 
-Und derselbe Dienst ueber die Kommandozeile:
+        # Abschicken und warten in einem Zug, mit der vollstaendigen Antwort:
+        antwort = client.ocr(Path("andere.pdf").read_bytes()).raw
+
+Und derselbe Dienst ueber die Kommandozeile, die Dateien und Ordner liest:
 
     mineru-ocr setup
     mineru-ocr daemon                   # in einem eigenen Fenster: der Exekutor
@@ -33,8 +36,8 @@ ist Innenleben und kann sich aendern.
 
 Der Daemon ist ein EIGENER PROZESS. Wer nur einreiht, startet keinen —
 `ocr_start` legt Jobs an, und wenn niemand sie abholt, passiert nichts. Genau das
-ist die haeufigste Ueberraschung dieses Aufbaus, und deshalb sagt der Preflight
-es einem, statt es einen suchen zu lassen.
+ist die haeufigste Ueberraschung dieses Aufbaus, und deshalb warnt `ocr_start`
+(und sagt der Preflight es einem), statt es einen suchen zu lassen.
 
 Der ganze Aufbau steht samt Begruendungen in `plans/2026-08-05-ocr-service-plan.md`;
 jede Procrastinate-Stuetze ist einzeln belegt in
@@ -45,6 +48,7 @@ from __future__ import annotations
 
 from .client import OCRClient
 from .config import Settings
+from .core import Submitted
 from .db import DerivedStatus, DocumentRow, DocumentStatus, Phase
 from .errors import (
     ConfigDriftError,
@@ -66,13 +70,13 @@ from .errors import (
     UnsupportedTypeError,
 )
 from .mime import DocumentType
-from .wrapper import OCRMegaWrapper, OCRWrapper
+from .wrapper import OCRWrapper
 
 __all__ = [
     # Der uebliche Einstieg
     "OCRClient",
     "OCRWrapper",
-    "OCRMegaWrapper",
+    "Submitted",
     # Einstellung und Zustaende
     "Settings",
     "DocumentStatus",

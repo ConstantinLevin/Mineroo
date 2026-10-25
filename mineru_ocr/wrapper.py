@@ -1,15 +1,16 @@
-"""Die Huellen aus Jurgens Braindump: ein Dokument, viele Dokumente.
+"""Die Huelle aus Jurgens Braindump: ein Dokument, seine Angaben und sein Ergebnis.
 
-Beide Klassen sind REINE Postgres-Leser. Sie sprechen nie mit RunPod, sie
-verarbeiten nichts, sie warten auf nichts. Eine Huelle ist die bequeme Sicht auf
-eine Zeile — mehr will sie nicht sein, und weniger auch nicht.
+Die Klasse ist ein REINER Postgres-Leser. Sie spricht nie mit RunPod, sie
+verarbeitet nichts, sie wartet auf nichts, und sie legt nichts an: Dokumente
+entstehen durch `OCRClient.ocr_start`. Eine Huelle ist die bequeme Sicht auf eine
+Zeile — mehr will sie nicht sein, und weniger auch nicht. Sie kennt keinen Pfad.
 
 Der Braindump, aus dem das stammt (Plan 2.1), ist an drei Stellen sehr genau, und
-alle drei sind hier eingebaut. Erstens die Identitaet ueber den Inhalts-Hash:
+alle drei sind eingebaut. Erstens die Identitaet ueber den Inhalts-Hash:
 „vor einem run wird auch immer die inputdatei von OCRWRAPPER initialisierung
-gehashed und geschaut ob es […] bereits dafür einen eintrag gibt". Zweitens das
-Nichts-Tun bei Fertigem: „wenn ocrwrapper bereits OCR'd ist dann ist es eine
-noop". Drittens der Maximalismus: „ja alles an metadaten etc was speicherbar ist
+gehashed und geschaut ob es […] bereits dafür einen eintrag gibt" (das tut das
+Abschicken). Zweitens das Nichts-Tun bei Fertigem: „wenn ocrwrapper bereits OCR'd
+ist dann ist es eine noop" (auch das Abschicken). Drittens der Maximalismus: „ja alles an metadaten etc was speicherbar ist
 in den objekten speichern. maximalismus."
 
 Und eine Stelle ist wichtiger als alle drei, weil sie bestimmt, was gespeichert
@@ -24,76 +25,17 @@ from __future__ import annotations
 
 import base64
 import binascii
-import hashlib
-from collections.abc import Callable, Iterator
-from pathlib import Path
 from typing import Any, TypeVar
 
 import psycopg
 
-from . import assembly, db, mime
-from .config import Settings
+from . import assembly, db
 from .db import DocumentRow, DocumentStatus
-from .errors import (
-    DocumentNotFound,
-    IncompleteResultError,
-    TooLargeError,
-    UnsupportedTypeError,
-)
+from .errors import DocumentNotFound, IncompleteResultError
 
 F = TypeVar("F")
 """Der erwartete Typ eines Feldes im gespeicherten Ergebnis (`OCRWrapper._feld`)
 — `str` fuer `markdown`, `list` fuer `content_list`, `dict` fuer `images`."""
-
-
-def _groesse_pruefen(groesse: int, was: str) -> None:
-    """Weist eine Eingabe ab, die nicht in `inputs` passt — mit einer Meldung.
-
-    Ohne diese Pruefung scheitert das Ablegen ab etwa 1 GiB mit einem
-    Verbindungsabbruch des Servers, und in einem Ordnerlauf bricht das das ganze
-    Einreihen ab.
-
-    Raises:
-        TooLargeError: `groesse` liegt ueber `db.MAX_INPUT_BYTES`.
-    """
-    if groesse > db.MAX_INPUT_BYTES:
-        raise TooLargeError(
-            f"{was}: {groesse} Byte sind mehr, als sich ablegen laesst "
-            f"({db.MAX_INPUT_BYTES} Byte). Die Eingabe liegt als `bytea` in der "
-            f"Datenbank, und Postgres begrenzt ein Feld auf knapp 1 GiB."
-        )
-
-
-def _anlegen(
-    conn: psycopg.Connection[Any],
-    *,
-    data: bytes,
-    sha256: str,
-    mime_type: str,
-    endpoint_id: str,
-) -> bool:
-    """Legt Zeile und Eingabe an — in EINER Transaktion, und nur neu.
-
-    Die Eingabe kommt nur zu einer Zeile, die dabei neu entsteht. Gibt es die
-    Zeile schon, ist das Dokument entweder fertig (dann ist seine Eingabe
-    absichtlich weg und darf nicht zurueckkehren) oder unterwegs oder gescheitert
-    (dann liegt seine Eingabe bereits da). Beides in einer Transaktion, damit es
-    keine Zeile ohne Eingabe gibt, die ein Job nicht lesen koennte.
-
-    Returns:
-        True, wenn die Zeile neu angelegt wurde.
-    """
-    with conn.transaction():
-        angelegt = db.insert_document(
-            conn,
-            sha256=sha256,
-            size_bytes=len(data),
-            mime=mime_type,
-            endpoint_id=endpoint_id,
-        )
-        if angelegt:
-            db.insert_input(conn, sha256=sha256, content=data)
-    return angelegt
 
 
 class OCRWrapper:
@@ -110,46 +52,18 @@ class OCRWrapper:
     """
 
     @classmethod
-    def from_path(
-        cls, path: Path, conn: psycopg.Connection[Any], settings: Settings
-    ) -> OCRWrapper:
-        """Baut eine Huelle aus einer Datei: lesen, dann wie `from_bytes`.
-
-        Vor dem Lesen werden Typ (am Anfang der Datei, bei einem ZIP am
-        Verzeichnis) und Groesse geprueft: Eine grosse Datei, die ohnehin
-        abgewiesen wird, kommt so nie ganz in den Speicher. Danach wird die Datei
-        einmal ganz gelesen; Hash, Typ und die abgelegte Eingabe stammen aus
-        denselben Bytes. Der Pfad geht nirgends hin — weder in die Datenbank noch
-        in den Job. Er ist nach dem Lesen vergessen.
-
-        Raises:
-            UnsupportedTypeError: Der Typ wird nicht unterstuetzt. SOFORT beim
-                Bauen, nicht erst beim Verarbeiten — „es wird immer ein objekt der
-                klasse OCRWRAPPER zurückgegeben […] rejected falls nicht
-                unterstüzter type" (Plan 2.1). Die Meldung nennt den Dateinamen.
-            TooLargeError: Die Datei passt nicht in `inputs` (`db.MAX_INPUT_BYTES`).
-            OSError: Nicht lesbar.
-
-        Kosten: keine.
-        """
-        mime.sniff_path(path)
-        _groesse_pruefen(path.stat().st_size, path.name)
-        return cls.from_bytes(path.read_bytes(), conn, settings)
-
-    @classmethod
     def from_row(cls, row: DocumentRow, conn: psycopg.Connection[Any]) -> OCRWrapper:
-        """Baut eine Huelle um eine bereits gelesene Zeile. Kein Dateizugriff.
+        """Baut eine Huelle um eine bereits gelesene Zeile.
 
-        Der Weg von einem Hash zu einem Ergebnis, und ohne ihn faellt die halbe
-        Bedienung aus: `mineru-ocr markdown <hash>` hat nur den Hash — es gibt
-        nichts zu hashen und nichts zu erkennen, die Zeile steht ja schon da. Ohne
-        diesen Konstruktor muesste sich die Kommandozeile ihre eigene Fassung der
-        Getter bauen, und damit gaebe es zwei.
+        Der Weg von einem Hash zu einem Ergebnis: `OCRClient.get` und `wait` bauen
+        ihre Huellen damit, und die Kommandozeile hat ebenfalls nur den Hash.
 
         Args:
-            row: Eine vollstaendig gelesene Zeile (`db.get_document`), nicht eine
-                aus `list_documents`, der `raw` fehlt.
-            conn: Fuer spaetere `refresh()`-Aufrufe.
+            row: Eine gelesene Zeile. Fehlt ihr `raw` (`raw_loaded` ist False, wie
+                bei `db.get_document(..., with_raw=False)` und `list_documents`),
+                laedt die Huelle es nach, sobald jemand das Ergebnis will, ueber
+                `conn`. Abschicken und Nachsehen lesen deshalb kein `raw`.
+            conn: Fuer das Nachladen und fuer `refresh()`.
 
         Kosten: keine.
         """
@@ -158,62 +72,6 @@ class OCRWrapper:
         huelle._conn = conn
         huelle._zwischenspeicher = {}
         return huelle
-
-    @classmethod
-    def from_bytes(
-        cls,
-        data: bytes,
-        conn: psycopg.Connection[Any],
-        settings: Settings,
-    ) -> OCRWrapper:
-        """Baut eine Huelle aus Bytes und legt Zeile und Eingabe an, falls sie fehlen.
-
-        Der Ablauf: Hash der Bytes bilden; Typ am Inhalt bestimmen und bei einem
-        nicht unterstuetzten SOFORT werfen, ohne etwas anzulegen; Zeile und
-        Eingabe in `inputs` in einer Transaktion anlegen. Es wird keine Datei
-        geschrieben und kein PDF geoeffnet: Die Seitenzahl bestimmt der Job.
-
-        „Uebernehmen" ist dabei der wichtigere Fall und die Umsetzung von Jurgens
-        Nichts-Tun-Regel: Gibt es die Zeile schon und ist sie fertig, ist diese
-        Huelle sofort fertig. Es wird nichts neu verarbeitet, nichts erneut
-        bezahlt, und die Eingabe kommt nicht zurueck.
-
-        `settings` wird gebraucht, weil `db.insert_document` den `endpoint_id`
-        verlangt. Sie wird uebergeben und nicht aus einer globalen Stelle geholt —
-        es gibt keine, und das ist eine ausdrueckliche Regel (`config.py`).
-
-        Args:
-            data: Die vollstaendigen Bytes.
-            conn: Offene Verbindung, gehoert dem Aufrufer.
-
-        Returns:
-            Die Huelle, entweder zu einer neuen oder zu einer uebernommenen Zeile.
-
-        Raises:
-            UnsupportedTypeError: Der Typ wird nicht unterstuetzt.
-            TooLargeError: Die Bytes passen nicht in `inputs` (`db.MAX_INPUT_BYTES`).
-
-        Kosten: keine.
-        """
-        typ = mime.sniff_bytes(data)
-        _groesse_pruefen(len(data), "die Bytes")
-        sha256 = hashlib.sha256(data).hexdigest()
-
-        _anlegen(
-            conn,
-            data=data,
-            sha256=sha256,
-            mime_type=typ.mime,
-            endpoint_id=settings.endpoint_id,
-        )
-        zeile = db.get_document(conn, sha256)
-        if zeile is None:  # pragma: no cover — direkt nach dem Anlegen unmoeglich
-            raise DocumentNotFound(
-                f"Die Zeile zu {sha256} war unmittelbar nach dem Anlegen nicht "
-                f"lesbar. Das deutet auf eine abgebrochene Transaktion beim "
-                f"Aufrufer hin."
-            )
-        return cls.from_row(zeile, conn)
 
     # -- Angaben aus der Zeile --------------------------------------------
 
@@ -549,342 +407,3 @@ class OCRWrapper:
         ergebnis = self.row.raw if self.row.raw is not None else {}
         self._zwischenspeicher["ergebnis"] = ergebnis
         return ergebnis
-
-
-class OCRMegaWrapper:
-    """Viele Dokumente als eine Einheit — Jurgens Ordner-Szenario.
-
-    Der Fall, um den herum diese Klasse gebaut ist, steht woertlich im Braindump:
-    „stell dir vor man hat einen OCRMEGAWRAPPER aus einem ordner initialisiert und
-    dann lässt man laufen, dann später kommt zum ordner noch ein pfad hinzu den
-    tut man einfach dazu und lässt nochmal durchlaufen weil eh nur läuft was noch
-    fehlt" (Plan 2.1). Genau das muss ohne jede Sonderbehandlung funktionieren —
-    und es tut es, weil die Identitaet am Hash haengt und Fertiges beim erneuten
-    Durchlaufen ein Nichts-Tun ist.
-    """
-
-    @classmethod
-    def from_paths(
-        cls, paths: list[Path], conn: psycopg.Connection[Any], settings: Settings
-    ) -> OCRMegaWrapper:
-        """Baut eine Sammlung aus ausdruecklich genannten Pfaden.
-
-        Raises:
-            UnsupportedTypeError: Bei einem nicht unterstuetzten Pfad — hier wird
-                geworfen und nicht uebersprungen. Wer eine Datei ausdruecklich
-                nennt, meint sie; sie stillschweigend auszulassen waere die
-                schlechtere Ueberraschung.
-        """
-        sammlung = cls.__new__(cls)
-        sammlung._conn = conn
-        sammlung._settings = settings
-        sammlung._huellen = {}
-        sammlung._uebersprungen = {}
-        for pfad in paths:
-            huelle = OCRWrapper.from_path(pfad, conn, settings)
-            sammlung._huellen[huelle.sha256] = huelle
-        return sammlung
-
-    @classmethod
-    def from_dir(
-        cls,
-        directory: Path,
-        conn: psycopg.Connection[Any],
-        settings: Settings,
-        glob: str = "**/*",
-        progress: Callable[[int, int], None] | None = None,
-    ) -> OCRMegaWrapper:
-        """Baut eine Sammlung aus einem Verzeichnis.
-
-        Anders als `from_paths` UEBERSPRINGT diese Methode nicht unterstuetzte
-        Dateien und ZAEHLT sie, statt an der ersten `.DS_Store` zu sterben. Der
-        Unterschied ist kein Widerspruch, sondern folgt aus der Absicht: Wer ein
-        Verzeichnis uebergibt, meint „was hier verwertbar ist", nicht „jede
-        einzelne Datei hier".
-
-        Args:
-            directory: Vorhandenes Verzeichnis.
-            conn: Offene Verbindung.
-            settings: Fuer `endpoint_id`.
-            glob: Welche Dateien betrachtet werden. Voreinstellung: rekursiv alle.
-            progress: Wird je fertig verarbeiteter Datei mit dem laufenden Zaehler
-                und der Gesamtzahl gerufen. None heisst: keine Meldung.
-
-        Returns:
-            Die Sammlung. Was uebersprungen wurde, steht in `stats()` — gezaehlt
-            und nach Grund aufgeschluesselt, nicht bloss verschwunden.
-
-        Verhalten bei GROSSEN Bestaenden — der eigentliche Grund fuer `progress`:
-            Der teure Teil ist nicht die Datenbank, sondern das Hashen. Jede Datei
-            wird dafuer einmal ganz gelesen. Bei zehntausend Dokumenten laeuft
-            diese Methode also minutenlang, waehrend aeusserlich nichts geschieht
-            — und wer das nicht weiss, haelt es fuer einen Haenger und bricht ab.
-            Deshalb meldet sie Fortschritt.
-
-            Sie ist ausserdem WIEDERAUFSETZBAR, ohne dass sie etwas dafuer tun
-            muesste: Ein zweiter Lauf ueber dasselbe Verzeichnis hasht zwar erneut,
-            legt aber nichts doppelt an (der Hash ist der Primaerschluessel) und
-            fasst Fertiges nicht an. Abbrechen und neu anfangen ist also
-            unschaedlich — das ist dieselbe Eigenschaft, auf der das
-            Ordner-Szenario beruht.
-
-        Kosten: keine.
-        """
-        sammlung = cls.__new__(cls)
-        sammlung._conn = conn
-        sammlung._settings = settings
-        sammlung._huellen = {}
-        sammlung._uebersprungen = {}
-
-        kandidaten = [pfad for pfad in sorted(directory.glob(glob)) if pfad.is_file()]
-        gesamt = len(kandidaten)
-        for nummer, pfad in enumerate(kandidaten, start=1):
-            try:
-                huelle = OCRWrapper.from_path(pfad, conn, settings)
-            except UnsupportedTypeError:
-                # GEZAEHLT, nicht verschwunden. Wer ein Verzeichnis uebergibt,
-                # meint „was hier verwertbar ist" — aber er will trotzdem
-                # wissen, was uebergangen wurde, und wie oft.
-                sammlung._uebersprungen["nicht_unterstuetzter_typ"] = (
-                    sammlung._uebersprungen.get("nicht_unterstuetzter_typ", 0) + 1
-                )
-            except TooLargeError:
-                sammlung._uebersprungen["zu_gross"] = (
-                    sammlung._uebersprungen.get("zu_gross", 0) + 1
-                )
-            except OSError:
-                sammlung._uebersprungen["nicht_lesbar"] = (
-                    sammlung._uebersprungen.get("nicht_lesbar", 0) + 1
-                )
-            else:
-                sammlung._huellen[huelle.sha256] = huelle
-            if progress is not None:
-                progress(nummer, gesamt)
-        return sammlung
-
-    # Aus dem Braindump woertlich uebernommener Zweitname.
-    paths = from_paths
-
-    def add(self, item: Path | OCRWrapper) -> OCRWrapper:
-        """Nimmt ein Dokument auf, doppelte werden ueber den Hash erkannt.
-
-        Returns:
-            Die Huelle — die neue, oder die bereits vorhandene, wenn derselbe
-            Inhalt schon in der Sammlung ist.
-        """
-        huelle = (
-            item
-            if isinstance(item, OCRWrapper)
-            else OCRWrapper.from_path(item, self._conn, self._settings)
-        )
-        vorhanden = self._huellen.get(huelle.sha256)
-        if vorhanden is not None:
-            return vorhanden
-        self._huellen[huelle.sha256] = huelle
-        return huelle
-
-    def extend(self, paths: list[Path]) -> list[OCRWrapper]:
-        """Nimmt mehrere Dokumente auf. Returns: nur die tatsaechlich neuen."""
-        neue: list[OCRWrapper] = []
-        for pfad in paths:
-            vorher = set(self._huellen)
-            huelle = self.add(pfad)
-            if huelle.sha256 not in vorher:
-                neue.append(huelle)
-        return neue
-
-    def refresh_dir(self, directory: Path, glob: str = "**/*") -> list[OCRWrapper]:
-        """Sieht im Verzeichnis nach, was seit dem letzten Mal dazugekommen ist.
-
-        Das Herzstueck des Ordner-Szenarios. Returns: nur die neuen Huellen —
-        Vorhandenes wird nicht angefasst, Fertiges nicht neu verarbeitet.
-        """
-        neue: list[OCRWrapper] = []
-        for pfad in sorted(directory.glob(glob)):
-            if not pfad.is_file():
-                continue
-            try:
-                huelle = OCRWrapper.from_path(pfad, self._conn, self._settings)
-            except (UnsupportedTypeError, TooLargeError, OSError):
-                continue
-            if huelle.sha256 not in self._huellen:
-                self._huellen[huelle.sha256] = huelle
-                neue.append(huelle)
-        return neue
-
-    def refresh(self) -> OCRMegaWrapper:
-        """Liest alle Zeilen neu. EINE Abfrage, nicht eine je Dokument.
-
-        Der Unterschied ist bei dreissigtausend Dokumenten der zwischen einer
-        Abfrage und dreissigtausend. Geladen wird dabei OHNE `raw` — eine
-        Uebersicht braucht es nie, und mit ihm waeren es zweistellige Gigabyte.
-        Die Huellen merken sich das (`raw_loaded = False`) und laden einzeln
-        nach, sobald wirklich jemand das Ergebnis will.
-        """
-        for zeile in db.list_documents(self._conn):
-            huelle = self._huellen.get(zeile.sha256)
-            if huelle is not None:
-                huelle.row = zeile
-                huelle._zwischenspeicher.clear()
-        return self
-
-    # -- Uebersicht -------------------------------------------------------
-
-    def status_counts(self) -> dict[DocumentStatus, int]:
-        """Wie viele Dokumente in welchem Zustand — maschinell auswertbar.
-
-        Der programmatische Teil von Jurgens Forderung: „er braucht methoden die
-        den status z.b. aller in ihm aggregiert (programmatisch und per text
-        ausgebbar)" (Plan 2.1).
-        """
-        zaehlung = {zustand: 0 for zustand in DocumentStatus}
-        for huelle in self._huellen.values():
-            zaehlung[huelle.status] += 1
-        return zaehlung
-
-    def stats(self) -> dict[str, Any]:
-        """Zahlen ueber die ganze Sammlung: Zustaende, Bytes, Seiten, Fehler,
-        Leere und die beim Einlesen uebersprungenen Dateien nach Grund.
-
-        `pages` zaehlt nur Dokumente, deren Seitenzahl bekannt ist: Das Einreihen
-        oeffnet keine PDF, die Seitenzahl kommt erst mit dem Endergebnis des Jobs.
-        Offene Dokumente tragen also nichts bei."""
-        zaehlung = self.status_counts()
-        return {
-            "documents": len(self._huellen),
-            "status": {zustand.value: anzahl for zustand, anzahl in zaehlung.items()},
-            "bytes": sum(h.size_bytes for h in self._huellen.values()),
-            "pages": sum(
-                h.page_count for h in self._huellen.values() if h.page_count is not None
-            ),
-            "failed": zaehlung[DocumentStatus.FAILED]
-            + zaehlung[DocumentStatus.INPUT_ERROR],
-            "empty": zaehlung[DocumentStatus.EMPTY],
-            "pending": zaehlung[DocumentStatus.NEW],
-            "skipped": dict(self._uebersprungen),
-            "upgrade_cases": len(self._aufruest_faelle()),
-        }
-
-    def report(self, verbose: bool = False) -> str:
-        """Dieselben Zahlen als lesbarer Text — der zweite Teil derselben Forderung.
-
-        Weist ausserdem offene AUFRUEST-FAELLE aus (Dokumente mit `input_error`
-        und einem Aufruest-Hinweis in `notes`). Das ist der vorgesehene Weg, auf
-        dem so ein Fall zu einem Aufgaben-Eintrag wird: Der Report zeigt ihn, der
-        Mensch legt ihn an. Der Daemon legt NIE selbst einen an (Plan 4.1) — ein
-        Hintergrundprozess, der Tickets erzeugt, ist ein Seiteneffekt, den
-        niemand erwartet.
-
-        Args:
-            verbose: False gibt die Zusammenfassung. True zaehlt zusaetzlich jedes
-                gescheiterte Dokument einzeln auf, mit Hash und Fehlertext.
-        """
-        zahlen = self.stats()
-        zeilen = [
-            f"{zahlen['documents']} Dokumente, {zahlen['bytes']} Byte, "
-            f"{zahlen['pages']} Seiten (soweit bekannt)",
-        ]
-        for zustand in DocumentStatus:
-            zeilen.append(f"  {zustand.value:<12} {zahlen['status'][zustand.value]}")
-
-        if zahlen["skipped"]:
-            zeilen.append("Beim Einlesen uebersprungen:")
-            for grund, anzahl in sorted(zahlen["skipped"].items()):
-                zeilen.append(f"  {grund:<28} {anzahl}")
-
-        aufruestbar = self._aufruest_faelle()
-        if aufruestbar:
-            # Der vorgesehene Weg, auf dem ein solcher Fall zu einem
-            # Aufgaben-Eintrag wird: Der Report zeigt ihn, der Mensch legt ihn
-            # an. Der Daemon legt NIE selbst einen an — ein Hintergrundprozess,
-            # der Tickets erzeugt, ist ein Seiteneffekt, den niemand erwartet.
-            zeilen.append(
-                f"OFFENE AUFRUEST-FAELLE: {len(aufruestbar)} — bitte je einen "
-                f"Aufgaben-Eintrag anlegen:"
-            )
-            for huelle in aufruestbar:
-                zeilen.append(f"  {huelle.sha256}")
-
-        if verbose:
-            gescheitert = self.failed
-            if gescheitert:
-                zeilen.append("Gescheitert im Einzelnen:")
-                for huelle in gescheitert:
-                    zeilen.append(
-                        f"  {huelle.sha256}  [{huelle.status.value}]  "
-                        f"{huelle.row.error}"
-                    )
-        return "\n".join(zeilen)
-
-    def _aufruest_faelle(self) -> list[OCRWrapper]:
-        """Dokumente mit `input_error` UND einem Aufruest-Hinweis in `notes`.
-
-        Erkannt am Wort AUFRUESTBAR, das `chunking.check_fits_unsplit` in seine
-        Meldung setzt und der Executor in den Vermerk uebernimmt. Ein eigenes
-        Feld dafuer waere ein zweites Datenmodell fuer etwas, das noch keines
-        hat — `notes` ist gerade der Ort dafuer.
-        """
-        faelle: list[OCRWrapper] = []
-        for huelle in self._huellen.values():
-            if huelle.status is not DocumentStatus.INPUT_ERROR:
-                continue
-            text = f"{huelle.row.error} {huelle.notes}"
-            if "AUFRUESTBAR" in text:
-                faelle.append(huelle)
-        return faelle
-
-    # -- Sichten ----------------------------------------------------------
-
-    @property
-    def pending(self) -> list[OCRWrapper]:
-        """Alle noch nicht endgueltigen — genau die, die ein Durchlauf anfasst."""
-        return [h for h in self._huellen.values() if not h.status.is_terminal]
-
-    @property
-    def done(self) -> list[OCRWrapper]:
-        """Alle erfolgreichen, `done` und `empty`."""
-        return [h for h in self._huellen.values() if h.success]
-
-    @property
-    def failed(self) -> list[OCRWrapper]:
-        """Alle gescheiterten, `failed` und `input_error`."""
-        return [
-            h
-            for h in self._huellen.values()
-            if h.status in (DocumentStatus.FAILED, DocumentStatus.INPUT_ERROR)
-        ]
-
-    def by_state(self, state: DocumentStatus) -> list[OCRWrapper]:
-        """Alle in genau einem Zustand."""
-        return [h for h in self._huellen.values() if h.status is state]
-
-    def __iter__(self) -> Iterator[OCRWrapper]:
-        return iter(self._huellen.values())
-
-    def __len__(self) -> int:
-        return len(self._huellen)
-
-    def __getitem__(self, key: int | str) -> OCRWrapper:
-        """Zugriff ueber Position ODER ueber den Hash."""
-        if isinstance(key, int):
-            return list(self._huellen.values())[key]
-        huelle = self._huellen.get(key)
-        if huelle is None:
-            raise KeyError(f"Kein Dokument mit dem Hash {key} in dieser Sammlung.")
-        return huelle
-
-    def __repr__(self) -> str:
-        zaehlung = self.status_counts()
-        teile = ", ".join(
-            f"{zustand.value}={anzahl}"
-            for zustand, anzahl in zaehlung.items()
-            if anzahl
-        )
-        return f"OCRMegaWrapper({len(self._huellen)} Dokumente: {teile})"
-
-    # -- Das Innere -------------------------------------------------------
-
-    _conn: psycopg.Connection[Any]
-    _settings: Settings
-    _huellen: dict[str, OCRWrapper]
-    _uebersprungen: dict[str, int]
