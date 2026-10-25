@@ -25,6 +25,7 @@ from mineru_ocr.db import (
     DocumentRow,
     DocumentStatus,
     Phase,
+    check_schema,
     count_open,
     counts_by_status,
     delete_input_async,
@@ -318,6 +319,51 @@ def test_setup_meldet_ein_documents_aus_der_zeit_mit_new(
     finally:
         db_conn.execute("ALTER TABLE documents ALTER COLUMN mime DROP NOT NULL")
     setup(_test_datenbank)  # wieder in Ordnung
+
+
+@pytest.mark.db
+def test_check_schema_laesst_die_richtige_form_durch(
+    db_conn: psycopg.Connection[Any],
+) -> None:
+    check_schema(db_conn)
+
+
+@pytest.mark.db
+def test_check_schema_weist_die_alte_form_ab_und_aendert_nichts(
+    db_conn: psycopg.Connection[Any], alte_documents_form: None
+) -> None:
+    """Nach einem Paket-Update ohne `setup` steht die alte Tabelle noch da, mit
+    `new`-Zeilen. `check_schema` sagt das samt Abhilfe, statt dass der erste
+    Lesezugriff an einem `ValueError` scheitert — und rein lesend."""
+    db_conn.execute(
+        "INSERT INTO documents (sha256, endpoint_id, mime, size_bytes) "
+        "VALUES (%s, 'e', 'image/png', 1)",
+        (HASH,),
+    )
+    with pytest.raises(DatabaseError) as fehler:
+        check_schema(db_conn)
+    text = str(fehler.value)
+    assert "'new'" in text and "setup" in text
+    zeile = db_conn.execute(
+        "SELECT status FROM documents WHERE sha256 = %s", (HASH,)
+    ).fetchone()
+    assert zeile == ("new",)
+
+
+@pytest.mark.db
+def test_check_schema_nennt_ein_fehlendes_schema_und_setup(
+    db_conn: psycopg.Connection[Any],
+) -> None:
+    """Fehlen die Tabellen ganz (nie `setup`), ist das eine Meldung mit dem Weg,
+    kein `UndefinedTable` aus der Tiefe."""
+    db_conn.execute("CREATE SCHEMA IF NOT EXISTS leer_fuer_test")
+    try:
+        db_conn.execute("SET search_path TO leer_fuer_test")
+        with pytest.raises(DatabaseError, match="setup"):
+            check_schema(db_conn)
+    finally:
+        db_conn.execute("SET search_path TO DEFAULT")
+        db_conn.execute("DROP SCHEMA leer_fuer_test")
 
 
 @pytest.mark.db

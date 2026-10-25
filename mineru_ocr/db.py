@@ -572,6 +572,35 @@ und kein Verbindungsabbruch. Sie gilt fuer jede Eingabe, auch fuer PDFs, die der
 Job danach in Stuecke schneidet."""
 
 
+def check_schema(conn: psycopg.Connection[Any]) -> None:
+    """Prueft rein lesend, ob die Tabellen da sind und zum Code passen.
+
+    Fuer jeden Zugang ausser `setup`: Daemon und Client rufen das beim Start.
+    Nach einem Paket-Update ohne `setup` steht sonst die alte Tabelle mit
+    `new`-Zeilen da, und der erste Lesezugriff scheiterte an
+    `DocumentStatus('new')` mit einem `ValueError` — beim Daemon in jedem Job
+    vor dem Fehlerzweig, sodass das Dokument ohne Ergebnis endete, bei der
+    Kommandozeile als ungefangener Ausnahmetext.
+
+    Raises:
+        DatabaseError: Eine der Tabellen fehlt (nie `setup` gelaufen) oder passt
+            nicht; die Meldung nennt den Weg.
+
+    Kosten: keine. Einige Katalogabfragen.
+    """
+    fehlend: list[str] = []
+    for tabelle in ("documents", "inputs"):
+        zeile = conn.execute("SELECT to_regclass(%s)", (tabelle,)).fetchone()
+        if zeile is None or zeile[0] is None:
+            fehlend.append(tabelle)
+    if fehlend:
+        raise DatabaseError(
+            f"Die Tabellen {fehlend} fehlen in dieser Datenbank. Erst "
+            "`mineru-ocr setup` ausfuehren."
+        )
+    _schema_abgleichen(conn)
+
+
 def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
     """Prueft die Tabellen auf der Platte gegen ihre Zeilenklassen.
 

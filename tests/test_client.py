@@ -148,6 +148,25 @@ def _hash(inhalt: bytes) -> str:
     return hashlib.sha256(inhalt).hexdigest()
 
 
+def test_client_auf_der_alten_tabelle_meldet_setup_statt_valueerror(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    alte_documents_form: None,
+) -> None:
+    """Nach einem Paket-Update ohne `setup` stehen alte `new`-Zeilen da. Jeder
+    Lesezugriff scheiterte an `DocumentStatus('new')` mit einem `ValueError`,
+    den die Kommandozeile nicht faengt. Der Client prueft das Schema beim
+    Oeffnen und sagt den Weg."""
+    db_conn.execute(
+        "INSERT INTO documents (sha256, endpoint_id, mime, size_bytes) "
+        "VALUES (%s, 'e', 'image/png', 1)",
+        ("c" * 64,),
+    )
+    with pytest.raises(DatabaseError, match="setup"):
+        with OCRClient(db_dsn=_test_datenbank, preflight=False):
+            pass
+
+
 def _abschicken(client: OCRClient, name: str) -> str:
     """Schickt ein PNG ab und gibt seinen Hash."""
     return str(client.ocr_start(_png(name)))

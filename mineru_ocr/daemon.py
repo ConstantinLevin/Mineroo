@@ -35,7 +35,7 @@ import signal
 from collections.abc import Awaitable, Sequence
 from typing import Any, TypeVar
 
-from . import config, tasks
+from . import config, db, tasks
 from .config import Settings
 
 T = TypeVar("T")
@@ -117,10 +117,12 @@ async def run(
     Raises:
         ConfigurationError: Kein Endpoint oder kein RunPod-Schluessel eingestellt
             (`Settings.load` laesst beide fehlen, weil Abschicken und Lesen sie
-            nicht brauchen); Datenbank nicht erreichbar oder Schema fehlt. Der
+            nicht brauchen); Datenbank nicht erreichbar. Der
             Daemon startet dann gar nicht erst, statt still nichts zu tun — oder,
             ohne Endpoint, jeden Job anzunehmen und endgueltig als `failed` zu
             schreiben.
+        DatabaseError: Das Schema fehlt oder ist eines aus der Zeit vor dem
+            letzten Update (`db.check_schema`); dann zuerst `mineru-ocr setup`.
 
     Kosten: JA, mittelbar — er arbeitet die Warteschlange ab.
     """
@@ -129,6 +131,11 @@ async def run(
     # Konfiguration, und `classify_failure` machte daraus einen Endzustand.
     settings.require_endpoint_id()
     settings.require_api_key()
+    # Ebenso vorher: Auf einer Tabelle aus der Zeit vor dem letzten Update
+    # scheiterte jeder offene Job beim Nachsehen an `DocumentStatus('new')` und
+    # endete ohne Ergebnis. Eine kurze synchrone Verbindung, einmal beim Start.
+    with db.connect(settings.db_dsn) as conn:
+        db.check_schema(conn)
     app = tasks.build_daemon_app(settings)
     mittel = tasks.worker_context_resources(settings)
     pool = mittel["pool"]

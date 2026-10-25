@@ -387,6 +387,29 @@ def db_conn(_test_datenbank: str) -> Iterator[Any]:
 
 
 @pytest.fixture
+def alte_documents_form(db_conn: Any) -> Iterator[None]:
+    """Gibt `documents` die Form aus der Zeit, als das Abschicken die Zeile mit
+    `new` anlegte — so, wie sie nach einem Paket-Update ohne `setup` noch
+    dasteht —, und stellt die richtige Form danach wieder her."""
+    db_conn.execute(
+        "ALTER TABLE documents DROP CONSTRAINT documents_status_check, "
+        "ADD CONSTRAINT documents_status_check CHECK "
+        "(status IN ('new', 'done', 'empty', 'failed', 'input_error')), "
+        "ALTER COLUMN status SET DEFAULT 'new'"
+    )
+    try:
+        yield
+    finally:
+        db_conn.execute("DELETE FROM documents WHERE status = 'new'")
+        db_conn.execute(
+            "ALTER TABLE documents DROP CONSTRAINT documents_status_check, "
+            "ADD CONSTRAINT documents_status_check CHECK "
+            "(status IN ('done', 'empty', 'failed', 'input_error')), "
+            "ALTER COLUMN status DROP DEFAULT"
+        )
+
+
+@pytest.fixture
 def abgestuerzter_worker(db_conn: Any) -> Callable[[], None]:
     """Legt die Zeile an, die ein abgestuerzter Daemon hinterlaesst.
 

@@ -33,7 +33,7 @@ from mineru_ocr import config, daemon, db, tasks
 from mineru_ocr.client import OCRClient
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, Phase, derive_status, get_document
-from mineru_ocr.errors import ConfigurationError
+from mineru_ocr.errors import ConfigurationError, DatabaseError
 from mineru_ocr.runpod import RunPodClient
 
 pytestmark = pytest.mark.db
@@ -1223,6 +1223,39 @@ async def test_daemon_ohne_endpoint_oder_schluessel_startet_nicht_und_laesst_die
     assert get_document(db_conn, sha) is None
     assert _eingabe_steht(db_conn, sha)
     assert [job.status for job in _jobs_zu(db_conn, sha)] == ["todo"]
+    assert db.worker_heartbeats(db_conn) == []
+
+
+async def test_daemon_auf_der_alten_tabelle_startet_nicht_und_laesst_die_jobs_liegen(
+    db_conn: psycopg.Connection[Any],
+    int_settings: Settings,
+    alte_documents_form: None,
+    erzeuger: Erzeuger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nach einem Paket-Update ohne `setup` steht die alte Tabelle noch da, mit
+    offenen `new`-Zeilen und ihren Jobs. Startete der Daemon, scheiterte jeder
+    dieser Jobs beim Nachsehen an `DocumentStatus('new')` und endete ohne
+    Ergebnis. Er prueft das Schema deshalb VOR dem Start der Worker."""
+    sha = "c" * 64
+    db_conn.execute(
+        "INSERT INTO documents (sha256, endpoint_id, mime, size_bytes) "
+        "VALUES (%s, 'e', 'image/png', 1)",
+        (sha,),
+    )
+    db.insert_input(db_conn, sha256=sha, content=b"alt")
+    assert erzeuger.einreihen(sha)
+
+    def keine_betriebsmittel(_s: Settings) -> dict[str, Any]:
+        raise AssertionError("der Daemon hat seine Betriebsmittel gebaut")
+
+    monkeypatch.setattr(tasks, "worker_context_resources", keine_betriebsmittel)
+
+    with pytest.raises(DatabaseError, match="setup"):
+        await asyncio.wait_for(daemon.run(int_settings), timeout=10)
+
+    assert [job.status for job in _jobs_zu(db_conn, sha)] == ["todo"]
+    assert _eingabe_steht(db_conn, sha)
     assert db.worker_heartbeats(db_conn) == []
 
 

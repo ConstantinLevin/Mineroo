@@ -269,6 +269,9 @@ class OCRClient:
         """
         try:
             self._conn = db.connect(self._settings.db_dsn)
+            # Eine Tabelle aus der Zeit vor dem letzten Update meldet sich hier
+            # mit dem Weg (`setup`), nicht spaeter als `ValueError` beim Lesen.
+            db.check_schema(self._conn)
             # Ein Pool OHNE stehende Verbindungen (`NullConnectionPool`,
             # `max_size=1`, ein Hintergrund-Faden): Er hat nichts auf Vorrat und
             # leiht fuer jede Abfrage eine kurzlebige Verbindung. Der Client legt
