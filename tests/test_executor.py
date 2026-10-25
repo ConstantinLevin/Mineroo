@@ -36,7 +36,7 @@ from mineru_ocr.errors import (
     UnsupportedTypeError,
 )
 from mineru_ocr.executor import process_document, wait_for_balance
-from mineru_ocr.mime import DocumentType
+from mineru_ocr.mime import DocumentType, sniff_bytes
 
 pytestmark = pytest.mark.db
 
@@ -151,9 +151,17 @@ _KOPF: dict[DocumentType, bytes] = {
 
 def _als(typ: DocumentType, inhalt: bytes) -> bytes:
     """Die Bytes einer Eingabe vom Typ `typ`: der Inhalt hinter dem Dateikopf,
-    falls er ihn noch nicht traegt. Der Job bestimmt den Typ aus den Bytes."""
-    kopf = _KOPF[typ]
-    return inhalt if inhalt.startswith(kopf) else kopf + inhalt
+    falls er ihn noch nicht traegt. Der Job bestimmt den Typ aus den Bytes.
+
+    Erkennt `sniff_bytes` den Typ schon (ein echtes Bild aus Pillow, eine PDF),
+    bleibt der Inhalt, wie er ist; nur sonst kommt der Kopf aus `_KOPF` davor.
+    """
+    try:
+        if sniff_bytes(inhalt) is typ:
+            return inhalt
+    except UnsupportedTypeError:
+        pass
+    return _KOPF[typ] + inhalt
 
 
 def _anlegen(
