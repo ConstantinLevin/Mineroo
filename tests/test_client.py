@@ -2604,19 +2604,22 @@ async def test_async_get_unterscheidet_offen_und_unbekannt(
         await offener_async_client.get(h)
 
 
-@pytest.mark.parametrize("neuer_lauf_fertig", [False, True])
+@pytest.mark.parametrize(
+    "neuer_lauf", [None, DocumentStatus.DONE, DocumentStatus.FAILED]
+)
 async def test_async_warten_liefert_failed_auch_wenn_retry_die_zeile_eben_wegnahm(
     offener_async_client: AsyncOCRClient,
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],
     monkeypatch: pytest.MonkeyPatch,
-    neuer_lauf_fertig: bool,
+    neuer_lauf: DocumentStatus | None,
 ) -> None:
     """Wie im Sync-Client: Ein Warten, das `failed` gesehen hat, endet mit `failed`,
     auch wenn ein `retry` aus einem anderen Prozess die Zeile wegnimmt, bevor
-    `raw` geladen ist — und auch, wenn der neue Lauf bis dahin schon `done`
-    schrieb. Die uebrigen kommen trotzdem; `raw` der gesehenen Zeile meldet
-    `DocumentNotFound` wie im Sync-Client."""
+    `raw` geladen ist — und auch, wenn der neue Lauf bis dahin schon ein Ergebnis
+    schrieb, `done` oder wieder `failed` (dann entscheidet `updated_at`). Die
+    uebrigen kommen trotzdem; `raw` der gesehenen Zeile meldet `DocumentNotFound`,
+    den neuen Stand holt `get`."""
     gescheitert = await offener_async_client.ocr_start(_png("gescheitert"))
     fertig = await offener_async_client.ocr_start(_png("fertig"))
     for h, zustand in ((gescheitert, DocumentStatus.FAILED), (fertig, DocumentStatus.DONE)):
@@ -2633,11 +2636,11 @@ async def test_async_warten_liefert_failed_auch_wenn_retry_die_zeile_eben_wegnah
                 "DELETE FROM documents WHERE sha256 = %s AND status = 'failed'",
                 (sha256,),
             )
-            if neuer_lauf_fertig:
+            if neuer_lauf is not None:
                 await write_terminal_async(
                     async_conn,
                     sha256=sha256,
-                    status=DocumentStatus.DONE,
+                    status=neuer_lauf,
                     raw={"neu": True},
                     endpoint_id="e",
                 )
@@ -2656,6 +2659,9 @@ async def test_async_warten_liefert_failed_auch_wenn_retry_die_zeile_eben_wegnah
         huellen[0].raw
     with pytest.raises(DocumentNotFound, match="await client.get"):
         huellen[0].refresh()
+    if neuer_lauf is not None:
+        jetzt = await offener_async_client.get(gescheitert)
+        assert (jetzt.status, jetzt.raw) == (neuer_lauf, {"neu": True})
 
 
 async def test_async_warten_meldet_eine_abgerissene_client_verbindung_als_databaseerror(
