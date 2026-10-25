@@ -366,6 +366,55 @@ def test_check_schema_weist_eine_falsche_form_von_job_id_ab(
 
 
 @pytest.mark.db
+@pytest.mark.parametrize(
+    ("aenderungen", "erwartet"),
+    [
+        (
+            ["ALTER TABLE documents ADD COLUMN ueberzaehlig integer"],
+            ["`documents` passt nicht zu DocumentRow", "['ueberzaehlig']"],
+        ),
+        (
+            ["ALTER TABLE inputs DROP COLUMN job_id"],
+            ["`inputs` passt nicht zu INPUT_SPALTEN", "['job_id']"],
+        ),
+        (
+            ["ALTER TABLE inputs DROP CONSTRAINT inputs_pkey"],
+            ["`inputs` hat die erwarteten Spalten", "Primaerschluessel []"],
+        ),
+        (
+            ["ALTER TABLE inputs ALTER COLUMN content DROP NOT NULL"],
+            ["`inputs` hat die erwarteten Spalten", "'content': ('bytea', False)"],
+        ),
+        (
+            ["ALTER TABLE inputs ALTER COLUMN sha256 TYPE varchar(64)"],
+            ["`inputs` hat die erwarteten Spalten", "character varying(64)"],
+        ),
+        (
+            [
+                "ALTER TABLE documents ALTER COLUMN size_bytes SET NOT NULL",
+                "ALTER TABLE inputs ADD COLUMN ueberzaehlig integer",
+            ],
+            ["NOT NULL an ['size_bytes']", "`inputs` passt nicht zu INPUT_SPALTEN"],
+        ),
+    ],
+)
+def test_check_schema_nennt_jede_abweichung_in_einer_meldung(
+    db_conn: psycopg.Connection[Any], aenderungen: list[str], erwartet: list[str]
+) -> None:
+    """Spalten zu viel oder zu wenig, ein fehlender Primaerschluessel, eine
+    falsche Form von `content` oder `sha256`, `size_bytes` mit NOT NULL: Jede
+    Abweichung steht in der Meldung, beide Tabellen in EINER, samt Weg."""
+    with db_conn.transaction(force_rollback=True):
+        for aenderung in aenderungen:
+            db_conn.execute(aenderung)
+        with pytest.raises(DatabaseError) as fehler:
+            check_schema(db_conn)
+    text = str(fehler.value)
+    for teil in [*erwartet, "DROP DATABASE"]:
+        assert teil in text, teil
+
+
+@pytest.mark.db
 def test_check_schema_nennt_ein_fehlendes_schema_und_setup(
     db_conn: psycopg.Connection[Any],
 ) -> None:
