@@ -91,7 +91,10 @@ mineru-ocr status
 Nur `setup` legt das Schema an. Daemon und jeder `OCRClient` prüfen es beim
 Öffnen rein lesend (`db.check_schema`): Fehlt es oder stammt die Tabelle aus der
 Zeit vor dem letzten Update (mit `new`), endet der Start mit `DatabaseError` und
-dem Weg, statt dass ein Job an einer alten Zeile ohne Ergebnis endet.
+dem Weg, statt dass ein Job an einer alten Zeile ohne Ergebnis endet. Ausgenommen
+ist `preflight` (`OCRClient(schema_check=False)`): Er liest beide Tabellen nicht
+und darf jederzeit laufen. Die Prüfung im Daemon läuft in einem Faden, damit eine
+hängende Datenbank die Ereignisschleife nicht anhält.
 
 **Installation.** `mineru-ocr` ist ein installierter Befehl, kein Pfad. Er wird
 einmal aus dem Haupt-Checkout installiert, in die Miniconda-Base, **ohne dabei ein

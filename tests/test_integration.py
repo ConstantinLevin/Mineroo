@@ -1277,6 +1277,23 @@ async def test_daemon_auf_der_alten_tabelle_startet_nicht_und_laesst_die_jobs_li
     assert db.worker_heartbeats(db_conn) == []
 
 
+async def test_die_schemapruefung_beim_start_haelt_die_ereignisschleife_nicht_an(
+    int_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Die Pruefung ist synchrones Postgres. Liefe sie direkt in der Koroutine,
+    hielte eine haengende Datenbank die ganze Schleife an, und kein
+    `wait_for` und kein Abbruch kaemen durch."""
+
+    def haengt(_conn: Any) -> None:
+        time.sleep(1.0)
+
+    monkeypatch.setattr(db, "check_schema", haengt)
+    beginn = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(daemon.run(int_settings), timeout=0.1)
+    assert time.monotonic() - beginn < 0.8
+
+
 def test_main_uebersetzt_in_exit_codes(int_settings: Settings) -> None:
     """`main` gibt 0 bei ordentlichem Ende und 1 bei einem Fehler.
 

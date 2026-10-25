@@ -642,7 +642,9 @@ def preflight(
     Bericht.
     """
     try:
-        with OCRClient(preflight=False, strict=strict) as klient:
+        # Ohne Schemapruefung: `preflight` liest weder `documents` noch `inputs`
+        # und darf jederzeit laufen, auch vor `setup`.
+        with OCRClient(preflight=False, strict=strict, schema_check=False) as klient:
             befund = klient.preflight()
     except MineruOcrError as fehler:
         _betriebsfehler(fehler)

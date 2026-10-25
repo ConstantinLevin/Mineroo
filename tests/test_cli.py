@@ -158,6 +158,16 @@ def test_erfolg_ist_null(cli: CliRunner, tmp_path: Path) -> None:
     assert ergebnis.exit_code == 0, ergebnis.output
 
 
+def test_preflight_laeuft_auch_auf_einer_alten_tabelle(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], alte_documents_form: None
+) -> None:
+    """`preflight` veraendert nichts und darf jederzeit laufen — auch vor
+    `setup` oder auf einer Tabelle von vor dem Update: Er liest weder
+    `documents` noch `inputs`, also haelt ihn deren Form nicht auf."""
+    ergebnis = cli.invoke(app, ["preflight"])
+    assert ergebnis.exit_code == 0, ergebnis.output
+
+
 async def test_fertiges_dokument_gibt_null(
     cli: CliRunner,
     db_conn: psycopg.Connection[Any],

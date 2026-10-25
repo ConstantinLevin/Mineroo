@@ -46,6 +46,12 @@ Schliessen der Betriebsmittel (liefert nichts) — daher generisch."""
 log = logging.getLogger("mineru_ocr.daemon")
 
 
+def _schema_pruefen(dsn: str) -> None:
+    """`db.check_schema` auf einer eigenen kurzen Verbindung, fuer den Start."""
+    with db.connect(dsn) as conn:
+        db.check_schema(conn)
+
+
 async def run(
     settings: Settings,
     *,
@@ -117,12 +123,14 @@ async def run(
     Raises:
         ConfigurationError: Kein Endpoint oder kein RunPod-Schluessel eingestellt
             (`Settings.load` laesst beide fehlen, weil Abschicken und Lesen sie
-            nicht brauchen); Datenbank nicht erreichbar. Der
+            nicht brauchen), oder der Zugang zur Datenbank wird abgewiesen. Der
             Daemon startet dann gar nicht erst, statt still nichts zu tun — oder,
             ohne Endpoint, jeden Job anzunehmen und endgueltig als `failed` zu
             schreiben.
-        DatabaseError: Das Schema fehlt oder ist eines aus der Zeit vor dem
-            letzten Update (`db.check_schema`); dann zuerst `mineru-ocr setup`.
+        DatabaseError: Datenbank nicht erreichbar; oder das Schema fehlt (dann
+            `mineru-ocr setup`) oder ist eines aus der Zeit vor dem letzten
+            Update (dann Datenbank wegwerfen und neu anlegen, wie die Meldung
+            von `db.check_schema` sagt).
 
     Kosten: JA, mittelbar — er arbeitet die Warteschlange ab.
     """
@@ -133,9 +141,10 @@ async def run(
     settings.require_api_key()
     # Ebenso vorher: Auf einer Tabelle aus der Zeit vor dem letzten Update
     # scheiterte jeder offene Job beim Nachsehen an `DocumentStatus('new')` und
-    # endete ohne Ergebnis. Eine kurze synchrone Verbindung, einmal beim Start.
-    with db.connect(settings.db_dsn) as conn:
-        db.check_schema(conn)
+    # endete ohne Ergebnis. Eine kurze synchrone Verbindung, einmal beim Start,
+    # in einem Faden: Haengt die Datenbank, steht sonst die ganze Schleife, und
+    # kein Abbruch kaeme durch.
+    await asyncio.to_thread(_schema_pruefen, settings.db_dsn)
     app = tasks.build_daemon_app(settings)
     mittel = tasks.worker_context_resources(settings)
     pool = mittel["pool"]

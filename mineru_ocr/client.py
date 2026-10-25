@@ -224,6 +224,7 @@ class OCRClient:
         strict: bool = True,
         min_balance: float = 1.0,
         backend: str = "vlm-auto-engine",
+        schema_check: bool = True,
     ) -> None:
         """Baut den Client. Die Angaben gehen an `Settings.load`.
 
@@ -243,6 +244,10 @@ class OCRClient:
             strict: Ob eine Abweichung der Endpoint-Konfiguration abbricht.
             min_balance: Untergrenze fuer den Preflight.
             backend: Wird beim Einreihen als Task-Angabe mitgegeben.
+            schema_check: Ob beim Betreten das Schema geprueft wird
+                (`db.check_schema`). Aus nur fuer den, der weder `documents` noch
+                `inputs` liest: das Kommando `preflight`, das jederzeit laufen
+                darf, auch vor `setup`.
 
         Kosten: keine. Der Konstruktor spricht mit niemandem — erst `__enter__`.
         """
@@ -255,6 +260,7 @@ class OCRClient:
             min_balance_start_usd=min_balance,
         )
         self._preflight_gewuenscht = preflight
+        self._schema_pruefen = schema_check
         self._conn: psycopg.Connection[Any] | None = None
         self._app: procrastinate.App | None = None
         self._pool: NullConnectionPool[psycopg.Connection[Any]] | None = None
@@ -269,9 +275,11 @@ class OCRClient:
         """
         try:
             self._conn = db.connect(self._settings.db_dsn)
-            # Eine Tabelle aus der Zeit vor dem letzten Update meldet sich hier
-            # mit dem Weg (`setup`), nicht spaeter als `ValueError` beim Lesen.
-            db.check_schema(self._conn)
+            # Ein fehlendes Schema oder eine Tabelle aus der Zeit vor dem letzten
+            # Update meldet sich hier mit dem Weg, den die Meldung nennt, nicht
+            # spaeter als `UndefinedTable` oder `ValueError` beim Lesen.
+            if self._schema_pruefen:
+                db.check_schema(self._conn)
             # Ein Pool OHNE stehende Verbindungen (`NullConnectionPool`,
             # `max_size=1`, ein Hintergrund-Faden): Er hat nichts auf Vorrat und
             # leiht fuer jede Abfrage eine kurzlebige Verbindung. Der Client legt
