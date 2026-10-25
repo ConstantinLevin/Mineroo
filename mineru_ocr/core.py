@@ -18,7 +18,6 @@ bekommt Bytes.
 from __future__ import annotations
 
 import hashlib
-import io
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,20 +37,6 @@ def sha256_of(data: bytes) -> str:
     nach dem Lesen der Eingabe nachprueft.
     """
     return hashlib.sha256(data).hexdigest()
-
-
-def sha256_of_file(file: io.BufferedIOBase) -> str:
-    """Der Hash eines geoeffneten Dokuments, ohne es ganz in den Speicher zu lesen.
-
-    Derselbe Hash wie `sha256_of` auf den ganzen Bytes. Der Weg fuer die
-    Kommandozeile, die aus einem Pfad einen Hash macht, ohne eine grosse Datei zu
-    laden; die Bibliothek selbst bekommt Bytes.
-
-    Args:
-        file: Eine zum Lesen geoeffnete Datei (`open(..., "rb")`), am Anfang
-            positioniert. Sie bleibt offen; schliessen tut der Aufrufer.
-    """
-    return hashlib.file_digest(file, "sha256").hexdigest()
 
 
 def check_size(size_bytes: int, was: str) -> None:

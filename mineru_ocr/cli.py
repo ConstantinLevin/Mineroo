@@ -47,6 +47,7 @@ Bibliothek, etwa dass kein Daemon laeuft — gehen auf die Fehlerausgabe.
 
 from __future__ import annotations
 
+import hashlib
 import json as json_modul
 import logging
 import re
@@ -124,8 +125,10 @@ def _ziel(target: str) -> str:
             f"Kein Dokument zu {target!r}: Es ist weder ein sha256 noch eine "
             f"lesbare Datei."
         )
+    # In Stuecken und nicht ueber `read_bytes`: Eine grosse Datei soll nicht ganz in
+    # den Speicher, nur um einen Hash zu bilden. Derselbe Hash wie `core.sha256_of`.
     with pfad.open("rb") as datei:
-        return core.sha256_of_file(datei)
+        return hashlib.file_digest(datei, "sha256").hexdigest()
 
 
 def _lesen(datei: Path) -> bytes:
@@ -254,6 +257,11 @@ def ocr(
     Wiederholtes Aufrufen auf demselben Verzeichnis ist der vorgesehene Gebrauch,
     kein Missbrauch: Ein Dokument, zu dem es ein Ergebnis gibt (auch `failed`), oder
     das schon unterwegs ist, wird nicht angefasst.
+
+    Bricht der Lauf mittendrin ab (Datenbank weg, Strg-C), steht auf stdout, was bis
+    dahin eingereiht ist, und das Kommando endet mit Exit-Code 1; die Meldung des
+    Abbruchs steht auf stderr. Exit-Code 1 mit Ausgabe heisst also nicht immer
+    „einzelne Dateien uebersprungen, der Rest eingereiht".
 
     Laeuft kein Daemon, wird trotzdem eingereiht: Abschicken haengt nicht vom
     Daemon ab, die Jobs liegen in der Datenbank, bis einer startet. Die Warnung

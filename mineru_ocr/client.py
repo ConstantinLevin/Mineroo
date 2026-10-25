@@ -66,6 +66,15 @@ def _nimmt_bytes(wert: object) -> str:
     )
 
 
+def _hash_pruefen(sha256: object) -> None:
+    """Weist ein Ziel ab, das kein Hash ist: Pfade kennt die Bibliothek nicht."""
+    if not isinstance(sha256, str):
+        raise TypeError(
+            f"Angenommen wird der sha256 als Zeichenkette, nicht "
+            f"{type(sha256).__name__}. Pfade kennt die Bibliothek nicht."
+        )
+
+
 class _SchonUnterwegs(Exception):
     """Macht aus „das Dokument ist schon unterwegs" einen Rollback der Transaktion,
     in der `_abschicken` gerade nichts Neues angelegt hat. Verlaesst die Methode
@@ -706,8 +715,9 @@ class OCRClient:
         gewarnt, und ein gesehener Daemon beendet sie. Nur Auskunft: Ist die
         Lebendigkeit nicht lesbar (Procrastinates undokumentierte Worker-Tabelle
         fehlt oder sieht anders aus, die Verbindung ist weggebrochen), steht das
-        samt Ursache in der Warnung, und eingereiht wird trotzdem — das Abschicken
-        haengt nicht an einer Auskunft.
+        samt Ursache in der Warnung, und eingereiht ist trotzdem — das Abschicken
+        haengt nicht an einer Auskunft: Der Aufrufer bekommt seinen Hash und keine
+        Ausnahme fuer eine Warnung.
         """
         try:
             if self._lebenszeichen():
@@ -717,7 +727,10 @@ class OCRClient:
                 "Es laeuft kein Daemon (kein Worker-Herzschlag juenger als "
                 f"{DAEMON_HEARTBEAT_MAX_AGE_SECONDS:g} s)"
             )
-        except DatabaseError as fehler:
+        except (DatabaseError, psycopg.Error) as fehler:
+            # `db.worker_heartbeats` uebersetzt psycopgs Fehler in `DatabaseError`;
+            # psycopg.Error steht dabei, damit auch ein Fehler, der an dieser
+            # Uebersetzung vorbeigeht, das Abschicken nicht scheitern laesst.
             lage = "nicht_lesbar"
             ursache = (str(fehler.__cause__ or fehler).splitlines() or [""])[0]
             grund = f"Ob ein Daemon laeuft, ist nicht pruefbar ({ursache})"
@@ -794,6 +807,7 @@ class OCRClient:
 
         Kosten: keine.
         """
+        _hash_pruefen(sha256)
         zeile = db.wait_for_terminal(
             self.conn,
             sha256,
@@ -1060,11 +1074,7 @@ class OCRClient:
 
     def _zeile(self, sha256: str) -> db.DocumentRow:
         """Die Zeile zu einem Hash, ohne `raw` — oder `DocumentNotFound`."""
-        if not isinstance(sha256, str):
-            raise TypeError(
-                f"Angenommen wird der sha256 als Zeichenkette, nicht "
-                f"{type(sha256).__name__}. Pfade kennt die Bibliothek nicht."
-            )
+        _hash_pruefen(sha256)
         zeile = db.get_document(self.conn, sha256, with_raw=False)
         if zeile is None:
             raise DocumentNotFound(

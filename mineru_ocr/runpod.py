@@ -635,8 +635,8 @@ class RunPodClient:
                 wird dann neu geschickt, nicht das Dokument aufgegeben.
             asyncio.CancelledError: Der Daemon faehrt herunter. Wird NICHT
                 gefangen und nicht in etwas anderes verwandelt — der Job endet
-                dann `aborted`, das Dokument bleibt `new` und laeuft beim
-                naechsten Einreihen von vorn (Plan 5.3).
+                dann `aborted`, das Dokument bleibt `new`; den Rueckweg
+                bringt das Ticket #26 (Plan 5.3).
 
         Kosten: keine ueber die von `submit` hinaus.
         """

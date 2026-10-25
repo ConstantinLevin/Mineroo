@@ -582,6 +582,51 @@ def test_ocr_ordner_ueberspringt_nicht_unterstuetztes_und_nennt_es(
     assert _jobs(db_conn) == 2
 
 
+def test_ocr_ordner_nennt_in_der_zaehlzeile_die_uebersprungenen_nach_grund(
+    cli: CliRunner, tmp_path: Path
+) -> None:
+    """Die Zaehlzeile auf stderr sagt, WARUM Dateien uebersprungen wurden, mit
+    Zahl je Grund — auch bei einem Grund, der mehrfach vorkommt."""
+    ordner = tmp_path / "scans"
+    _datei(ordner, "a.png")
+    (ordner / "x.txt").write_text("Text")
+    (ordner / "y.txt").write_text("Anderer Text")
+    (ordner / "film.mov").write_bytes(b"\x00\x00\x00\x14ftypqt  " + b"x" * 64)
+
+    ergebnis = cli.invoke(app, ["ocr", str(ordner)])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert "3 uebersprungen (nicht_unterstuetzter_typ: 3)" in ergebnis.stderr
+
+
+def test_ocr_nennt_nach_strg_c_mitten_im_lauf_die_bis_dahin_eingereihten(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auch ein Strg-C beendet den Lauf nicht, ohne zu sagen, was schon eingereiht
+    ist. Das Kommando endet unsauber (Exit-Code ungleich 0)."""
+    dateien = [_datei(tmp_path, name) for name in ("a.png", "b.png", "c.png")]
+    echtes = client_modul.OCRClient.ocr_start
+    aufrufe = {"n": 0}
+
+    def zweiter_wird_unterbrochen(self: Any, data: Any) -> Any:
+        aufrufe["n"] += 1
+        if aufrufe["n"] == 2:
+            raise KeyboardInterrupt
+        return echtes(self, data)
+
+    monkeypatch.setattr(client_modul.OCRClient, "ocr_start", zweiter_wird_unterbrochen)
+
+    ergebnis = cli.invoke(app, ["ocr", str(tmp_path), "--json"])
+
+    assert ergebnis.exit_code != 0
+    angaben = json.loads(ergebnis.stdout)
+    assert [d["sha256"] for d in angaben["documents"]] == [dateien[0][1]]
+    assert _jobs(db_conn) == 1
+
+
 def test_ocr_ordner_waechst_und_ein_zweiter_lauf_reiht_nur_das_neue_ein(
     cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
 ) -> None:

@@ -86,8 +86,8 @@ async def run(
         endet `aborted` — endgueltig und OHNE automatische Wiederholung. Fuer
         `aborted` gibt es kein Retry-Bordmittel (Feature-Verifikation Punkt 19);
         die betroffene Zeile bleibt `new`, der abgeleitete Zustand zeigt
-        „endgueltig beendet ohne Ergebnis", und beim naechsten Einreihen laeuft
-        das Dokument von vorn. Kein Waechter noetig, keine Reparatur.
+        „endgueltig beendet ohne Ergebnis"; `ocr_start` fasst eine Zeile `new`
+        nicht an, den Rueckweg bringt das Ticket #26. Kein Waechter noetig.
 
         Ein zweites Signal waehrend des Herunterfahrens bricht sofort ab. Wer
         zweimal Strg-C drueckt, meint es so.
