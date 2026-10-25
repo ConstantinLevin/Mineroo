@@ -590,6 +590,30 @@ def test_ocr_ordner_ueberspringt_nicht_unterstuetztes_und_nennt_es(
     assert _jobs(db_conn) == 2
 
 
+def test_ocr_ordner_eine_kaputte_pdf_haelt_die_uebrigen_nicht_auf(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Das Einreihen oeffnet keine PDF: Eine kaputte in einem Ordner wird wie jede
+    andere eingereiht (sie endet erst im Job als `input_error`), und die Dateien
+    davor und danach laufen mit. Frueher brach sie den ganzen Ordnerlauf ab."""
+    ordner = tmp_path / "scans"
+    _, vorher = _datei(ordner, "a.png")
+    _, kaputt = _datei(ordner, "b-kaputt.pdf", b"%PDF-1.7\nund dann nur noch Unsinn\n")
+    _, nachher = _datei(ordner, "c.png")
+
+    ergebnis = cli.invoke(app, ["ocr", str(ordner), "--json"])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    angaben = json.loads(ergebnis.stdout)
+    assert [(d["sha256"], d["queued"]) for d in angaben["documents"]] == [
+        (vorher, True),
+        (kaputt, True),
+        (nachher, True),
+    ]
+    assert angaben["skipped"] == []
+    assert _jobs(db_conn) == 3
+
+
 def test_ocr_ordner_nennt_in_der_zaehlzeile_die_uebersprungenen_nach_grund(
     cli: CliRunner, tmp_path: Path
 ) -> None:
