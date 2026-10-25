@@ -45,6 +45,7 @@ from mineru_ocr.db import (
     wait_for_terminal,
     wait_for_terminal_async,
     worker_heartbeats,
+    worker_heartbeats_async,
     write_terminal_async,
 )
 from mineru_ocr.errors import (
@@ -2000,6 +2001,27 @@ def test_eine_unlesbare_worker_tabelle_laesst_eine_offene_transaktion_benutzbar(
             with pytest.raises(DatabaseError):
                 worker_heartbeats(db_conn)
             assert db_conn.execute("SELECT 1").fetchone() == (1,)
+    finally:
+        db_conn.execute(
+            "ALTER TABLE procrastinate_workers_weg RENAME TO procrastinate_workers"
+        )
+
+
+@pytest.mark.db
+async def test_eine_unlesbare_worker_tabelle_laesst_auch_asynchron_die_transaktion_benutzbar(
+    db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """Dasselbe fuer `worker_heartbeats_async`, den Weg des `AsyncOCRClient`:
+    derselbe uebersetzte Fehler, und nur der Sicherungspunkt wird zurueckgerollt."""
+    db_conn.execute(
+        "ALTER TABLE procrastinate_workers RENAME TO procrastinate_workers_weg"
+    )
+    try:
+        async with async_conn.transaction():
+            with pytest.raises(DatabaseError):
+                await worker_heartbeats_async(async_conn)
+            cur = await async_conn.execute("SELECT 1")
+            assert await cur.fetchone() == (1,)
     finally:
         db_conn.execute(
             "ALTER TABLE procrastinate_workers_weg RENAME TO procrastinate_workers"

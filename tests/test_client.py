@@ -2668,6 +2668,29 @@ async def test_async_warten_meldet_eine_abgerissene_client_verbindung_als_databa
     assert isinstance(warten.value.__cause__, psycopg.Error)
 
 
+async def test_async_eingabe_und_job_entstehen_zusammen_oder_gar_nicht(
+    offener_async_client: AsyncOCRClient,
+    db_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wie im Sync-Client: Scheitert das Einreihen oder das Vermerken der Kennung,
+    bleibt die Eingabe nicht stehen. Eine Eingabe ohne Job hiesse „unterwegs", und
+    niemand fasste sie je wieder an."""
+    _worker_am_leben(db_conn)
+
+    async def scheitert(*_: Any, **__: Any) -> Any:
+        raise psycopg.OperationalError("Verbindung weg")
+
+    for stelle, name in ((tasks, "enqueue_document_async"), (db, "set_input_job_async")):
+        with monkeypatch.context() as m:
+            m.setattr(stelle, name, scheitert)
+            with pytest.raises(psycopg.OperationalError):
+                await offener_async_client.ocr_start(_png(name))
+
+        for tabelle in ("documents", "inputs", "procrastinate_jobs"):
+            assert _zaehlen(db_conn, tabelle) == 0, (name, tabelle)
+
+
 async def test_async_client_oeffnet_und_schliesst_pool_und_app_selbst(
     _test_datenbank: str,
 ) -> None:
