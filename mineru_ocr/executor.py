@@ -969,7 +969,9 @@ async def _stuecke_verarbeiten(
         async def absenden(kodiert: str = kodiert) -> str:
             return await runpod.submit(
                 file_b64=kodiert,
-                backend=settings.backend,
+                tier=settings.tier,
+                ocr_mode=settings.ocr_mode,
+                image_analysis=settings.image_analysis,
                 transport=settings.transport,
             )
 

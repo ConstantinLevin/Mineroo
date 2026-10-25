@@ -75,14 +75,25 @@ class FalscherRunPod:
         # JEDER Aufruf, auch die lesenden (Kontostand, Herkunft des Images): wer
         # „vor jedem RunPod-Kontakt" prueft, darf keinen davon uebersehen.
         self.kontakte: list[str] = []
+        # Je Absenden die Lese-Einstellungen (`tier`, `ocr_mode`,
+        # `image_analysis`), mit denen der Executor RunPod gerufen hat.
+        self.lese_einstellungen: list[tuple[str, str, bool]] = []
         self._nummer = 0
 
     async def submit(
-        self, *, file_b64: str, backend: str, transport: str, **_: Any
+        self,
+        *,
+        file_b64: str,
+        tier: str,
+        ocr_mode: str,
+        image_analysis: bool,
+        transport: str,
+        **_: Any,
     ) -> str:
         job = f"job-{len(self.abgesendet)}"
         self.kontakte.append("submit")
         self.abgesendet.append(file_b64)
+        self.lese_einstellungen.append((tier, ocr_mode, image_analysis))
         self.verlauf.append(f"submit:{job}")
         return job
 
@@ -300,6 +311,25 @@ async def test_guard_laesst_failed_durch(
     assert zeile.status is DocumentStatus.DONE
     assert zeile.raw is not None
     assert zeile.raw["markdown"] == "Jetzt geklappt"
+
+
+async def test_lese_einstellungen_der_einstellung_gehen_an_runpod(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Der Job schickt die Stufe, den OCR-Modus und die Bildanalyse aus den
+    Einstellungen, nicht feste Werte (Mineroo#11; je Dokument erst Mineroo#14)."""
+    sha, _ = _anlegen(db_conn, tmp_path, b"ein bild", name="a.png", typ=DocumentType.PNG)
+    eingestellt = dataclasses.replace(
+        exec_settings, tier="basic", ocr_mode="txt", image_analysis=False
+    )
+
+    runpod = FalscherRunPod([_fertige_antwort("Text")])
+    await process_document(sha, settings=eingestellt, runpod=runpod, pool=pool)
+
+    assert runpod.lese_einstellungen == [("basic", "txt", False)]
 
 
 # --- Eingang --------------------------------------------------------------
@@ -1403,17 +1433,13 @@ async def test_402_beim_absenden_pausiert_statt_zu_werfen(
             )
             self.leer = True
 
-        async def submit(
-            self, *, file_b64: str, backend: str, transport: str, **_: Any
-        ) -> str:
+        async def submit(self, *, file_b64: str, **rest: Any) -> str:
             if len(self.abgesendet) == 1 and self.leer:
                 # Beim ZWEITEN Absenden ist das Konto leer. Danach ist es
                 # aufgeladen — genau so, wie eine Nachzahlung wirkt.
                 self.leer = False
                 raise InsufficientBalanceError("HTTP 402: Konto leer")
-            return await super().submit(
-                file_b64=file_b64, backend=backend, transport=transport
-            )
+            return await super().submit(file_b64=file_b64, **rest)
 
     runpod = KontoLeertSich()
     await process_document(sha, settings=eng, runpod=runpod, pool=pool)
@@ -1493,9 +1519,7 @@ async def test_402_trotz_gedecktem_konto_wird_als_widerspruch_benannt(
     class ImmerLeer(FalscherRunPod):
         """Konto meldet 5,00 USD, der Endpoint lehnt trotzdem jedes Mal ab."""
 
-        async def submit(
-            self, *, file_b64: str, backend: str, transport: str, **_: Any
-        ) -> str:
+        async def submit(self, *, file_b64: str, **_: Any) -> str:
             raise InsufficientBalanceError("HTTP 402: Konto leer")
 
     runpod = ImmerLeer()
@@ -1771,30 +1795,38 @@ async def test_zu_grosses_bild_wird_abgelehnt_ohne_zu_bezahlen(
     assert zeile.error is not None and "AUFRUESTBAR" in zeile.error
 
 
-def test_ungueltiges_backend_faellt_lokal_auf(settings: Settings) -> None:
-    """Ein Tippfehler im Backend-Namen kostet keinen Kaltstart mehr.
+def test_ungueltige_lese_einstellung_faellt_lokal_auf(settings: Settings) -> None:
+    """Ein Tippfehler in Stufe oder OCR-Modus kostet keinen Kaltstart.
 
-    Die gueltigen Namen sind von der Gegenseite ABGELESEN: Am 09.08.2026 wurde
-    absichtlich ein ungueltiger geschickt, und die Fehlerantwort nannte die
-    Liste selbst. Bis dahin war ein Tippfehler nur zu erfahren, indem man dafuer
-    bezahlte — im gemessenen Fall 177 Sekunden Wartezeit bis zur Meldung, und
-    das je Dokument. Ueber einen Bestandslauf waere es derselbe Fehler 30 000
-    Mal.
+    Die gueltigen Werte stehen im Job-Vertrag des Forks (`api.mdx`,
+    „Reading settings"): `tier` ist eines von `flash`, `basic`, `standard`,
+    `advanced`, `ocr_mode` eines von `auto`, `txt`, `ocr`. Der Worker prueft
+    sie erst, wenn ein Worker hochgefahren ist; ein Tippfehler waere also nur
+    gegen einen bezahlten Kaltstart je Dokument zu erfahren.
     """
     import dataclasses
 
-    from mineru_ocr.config import GUELTIGE_BACKENDS
+    from mineru_ocr.config import GUELTIGE_OCR_MODI, GUELTIGE_STUFEN
     from mineru_ocr.errors import ConfigurationError
 
-    # Die Voreinstellung ist gueltig.
-    assert settings.backend in GUELTIGE_BACKENDS
+    # Die Voreinstellungen sind die des Vertrags.
+    assert (settings.tier, settings.ocr_mode, settings.image_analysis) == (
+        "advanced",
+        "ocr",
+        True,
+    )
 
     with pytest.raises(ConfigurationError, match="kennt der Worker nicht"):
-        dataclasses.replace(settings, backend="vlm-auto-engien")
+        dataclasses.replace(settings, tier="advance")
+    with pytest.raises(ConfigurationError, match="kennt der Worker nicht"):
+        dataclasses.replace(settings, ocr_mode="ocr ")
 
-    # Und jeder von der Gegenseite genannte Name geht durch.
-    for name in GUELTIGE_BACKENDS:
-        assert dataclasses.replace(settings, backend=name).backend == name
+    for stufe in ("flash", "basic", "standard", "advanced"):
+        assert dataclasses.replace(settings, tier=stufe).tier == stufe
+    for modus in ("auto", "txt", "ocr"):
+        assert dataclasses.replace(settings, ocr_mode=modus).ocr_mode == modus
+    assert set(GUELTIGE_STUFEN) == {"flash", "basic", "standard", "advanced"}
+    assert set(GUELTIGE_OCR_MODI) == {"auto", "txt", "ocr"}
 
 
 # --- Verbindungen und Abbruch ---------------------------------------------
