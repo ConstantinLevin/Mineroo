@@ -88,6 +88,11 @@ mineru-ocr ocr ~/Scans  # einreihen; nennt je Datei Pfad und Hash
 mineru-ocr status
 ```
 
+Nur `setup` legt das Schema an. Daemon und jeder `OCRClient` prüfen es beim
+Öffnen rein lesend (`db.check_schema`): Fehlt es oder stammt die Tabelle aus der
+Zeit vor dem letzten Update (mit `new`), endet der Start mit `DatabaseError` und
+dem Weg, statt dass ein Job an einer alten Zeile ohne Ergebnis endet.
+
 **Installation.** `mineru-ocr` ist ein installierter Befehl, kein Pfad. Er wird
 einmal aus dem Haupt-Checkout installiert, in die Miniconda-Base, **ohne dabei ein
 Paket der Base zu ändern**, das andere Projekte mitbenutzen:
@@ -180,8 +185,9 @@ Logger `mineru_ocr.client`, die Kommandozeile schreibt sie auf stderr. Abgebroch
 wird nichts, und weder Bibliothek noch Kommandozeile starten selbst einen Daemon —
 den startet der Betreiber. Es gibt keinen `strict`-Abbruch und keine
 `--strict`-Option am Kommando `ocr`; `strict` betrifft nur Konfigurations-
-Abweichungen im Preflight. Zeile, Eingabe und Job entstehen je Dokument in einer
-Transaktion; ohne Daemon bleibt deshalb zu jeder Eingabe ein Job zurück. Gewarnt
+Abweichungen im Preflight. Eingabe und Job entstehen je Dokument in einer
+Transaktion (die Ergebniszeile erst am Ende des Jobs); ohne Daemon bleibt deshalb
+zu jeder Eingabe ein Job zurück. Gewarnt
 wird einmal je daemonloser Phase eines Clients und nur, wenn nach dem Aufruf
 Dokumente offen sind, eingereiht oder schon unterwegs (ein erneuter Lauf, der nichts
 mehr einreiht, sähe ohne Hinweis wie ein Hänger aus). Ein `--no-start`, das nur
@@ -259,8 +265,9 @@ fertig wird, fälschlich als unbekannt. Das Warten (`db.wait_for_terminal`) frag
 Procrastinate nicht und lädt kein `raw`.
 
 „Läuft gerade" wird aus dem jüngsten verknüpften Procrastinate-Job **gelesen**
-(`queueing_lock = sha256`, `ORDER BY id DESC LIMIT 1`), nur von
-`OCRClient.document`, und nirgends gespiegelt. Wer das nicht weiß, sucht
+(`queueing_lock = sha256`, `ORDER BY id DESC LIMIT 1`), von `OCRClient.document`
+(und von `retry_failed`, das den Job zum Wiederholen sucht), und nirgends
+gespiegelt. Wer das nicht weiß, sucht
 vergeblich nach dem Feld — oder, schlimmer, führt es ein und erzeugt genau die
 zwei Bücher, die auseinanderlaufen. `document()` meldet den Endzustand, ein
 offenes Dokument samt dem Zustand seines Jobs (`Phase.WAITING`, `RUNNING` oder
