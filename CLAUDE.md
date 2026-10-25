@@ -442,8 +442,11 @@ Antwort als `letzter_versuch`. Daraus folgt:
   (`executor.ABBRUCH_IM_LETZTEN_VERSUCH`) und wirft dann weiter; der Job endet
   `aborted`. Der Abbruch bei RunPod (`/cancel`) geht in beiden Fällen hinaus.
   Trifft der Abbruch den Fehlerzweig mitten im Schreiben von `failed`, läuft das
-  Schreiben zu Ende (`abbruch.unabbrechbar_abwarten`), und weitergeworfen wird
-  der Fehler, der in den Fehlerzweig führte, nicht der Abbruch.
+  Schreiben zu Ende (`abbruch.abwarten_bis_zum_zweiten_abbruch`), und
+  weitergeworfen wird der Fehler, der in den Fehlerzweig führte, nicht der
+  Abbruch. Ein zweiter Abbruch (das zweite Signal an den Daemon) bricht das
+  Schreiben ab, damit eine hängende Datenbank den Daemon nicht festhält; das
+  Dokument bleibt dann ohne Ergebnis.
 - **Nachsehen und Lesen im Fehlerzweig.** Das Nachsehen nach einem Ergebnis und
   das Lesen der Eingabe stehen im `try` des Exekutors, damit auch ein
   Datenbankfehler dort im letzten Versuch `failed` schreibt.
@@ -457,7 +460,8 @@ Ohne Ergebnis enden kann danach nur noch Seltenes oder von Hand Ausgelöstes: ei
 Abbruch über die API (`cancel_job_by_id(…, abort=True)`), die Absage eines
 wartenden Jobs (Shell `cancel` oder API), ein unbekannter Task-Name (Daemon und
 Bibliothek in verschiedenen Ständen), ein Endschreiben, das im letzten Versuch
-an einem Datenbankausfall scheitert. Für all diese Fälle ist `retry` der Weg
+an einem Datenbankausfall scheitert oder das ein zweites Signal an den Daemon
+abbricht. Für all diese Fälle ist `retry` der Weg
 zurück; `document()` zeigt sie als `Phase.ENDED_WITHOUT_RESULT`.
 
 Der API-Abbruch hat eine Eigenheit, die man kennen muss: Er kommt beim Task als

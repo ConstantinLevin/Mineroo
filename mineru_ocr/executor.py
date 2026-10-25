@@ -40,7 +40,7 @@ from typing import Any, TypeVar
 from psycopg_pool import AsyncConnectionPool
 
 from . import assembly, chunking, db, images
-from .abbruch import unabbrechbar_abwarten
+from .abbruch import abwarten_bis_zum_zweiten_abbruch
 from .config import Settings
 from .errors import (
     CorruptDocumentError,
@@ -596,11 +596,11 @@ async def process_document(
         # eben geschrieben wurde. Kaeme der Abbruch heraus, reihte
         # Procrastinate einen endgueltig gescheiterten Job neu ein, und das
         # Dokument liefe und kostete noch einmal. Der Task endet trotzdem
-        # sofort, nur eben mit diesem Fehler.
-        try:
-            await unabbrechbar_abwarten(ergebnis_schreiben())
-        except asyncio.CancelledError:
-            pass
+        # sofort, nur eben mit diesem Fehler. Ein zweiter Abbruch (das zweite
+        # Signal an den Daemon) bricht das Schreiben dagegen ab und kommt
+        # heraus; dann bleibt das Dokument ohne Ergebnis, und `retry` ist der
+        # Weg zurueck.
+        await abwarten_bis_zum_zweiten_abbruch(ergebnis_schreiben())
         raise
 
 

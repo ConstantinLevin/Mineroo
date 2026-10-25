@@ -85,3 +85,48 @@ async def unabbrechbar_abwarten(arbeit: Awaitable[T]) -> T:
             # Abbruch des eigenen Tasks nachgeholt.
             raise asyncio.CancelledError
         return ergebnis
+
+
+async def abwarten_bis_zum_zweiten_abbruch(arbeit: Awaitable[T]) -> T:
+    """Wartet `arbeit` ab; einen Abbruch haelt es von ihr fern, den zweiten nicht.
+
+    Fuer das Schreiben eines Ergebnisses im Fehlerzweig des Executors
+    (Mineroo#27): Bricht das Herunterfahren den Job genau waehrend des
+    Schreibens ab, soll das Schreiben fertig werden, sonst bliebe das Dokument
+    ohne Ergebnis. Ein ZWEITER Abbruch dagegen ist das zweite Signal an den
+    Daemon, und das bricht sofort ab (`daemon.run`). Haelte das Schreiben auch
+    ihn fern, hielte eine haengende Datenbank den Daemon fest, bis nur noch
+    `kill -9` hilft.
+
+    Gezaehlt werden die Abbrueche des eigenen Tasks (`Task.cancelling()`), auch
+    der, der schon vor dem Warten kam: Fuehrte ein Abbruch in den Fehlerzweig,
+    ist schon der naechste der zweite.
+
+    Anders als `unabbrechbar_abwarten` holt diese Funktion einen abgehaltenen
+    Abbruch NICHT nach: Sie gibt das Ergebnis zurueck, und der Aufrufer
+    entscheidet, was danach geworfen wird.
+
+    Args:
+        arbeit: Was zu Ende laufen soll.
+
+    Returns:
+        Das Ergebnis von `arbeit`, auch wenn ein Abbruch abgehalten wurde.
+
+    Raises:
+        asyncio.CancelledError: Beim zweiten Abbruch (die Arbeit wird dann
+            abgebrochen) oder wenn `arbeit` selbst abgebrochen wurde.
+
+    Kosten: keine.
+    """
+    aufgabe = asyncio.ensure_future(arbeit)
+    eigener = asyncio.current_task()
+    while True:
+        try:
+            return await asyncio.shield(aufgabe)
+        except asyncio.CancelledError:
+            if aufgabe.done():
+                raise
+            if eigener is not None and eigener.cancelling() > 1:
+                aufgabe.cancel()
+                await asyncio.wait([aufgabe])
+                raise

@@ -1889,6 +1889,52 @@ async def test_abbruch_waehrend_des_failed_schreibens_unterbricht_es_nicht(
     assert _eingabe_steht(db_conn, sha)
 
 
+async def test_zweiter_abbruch_waehrend_des_failed_schreibens_gewinnt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Haengt das Schreiben von `failed` (eine blockierte Datenbank), beendet ein
+    zweiter Abbruch es doch: Das zweite Signal an den Daemon bricht sofort ab
+    (`daemon.run`). Sonst hielte eine haengende Datenbank den Daemon fest, bis
+    nur noch `kill -9` hilft. Das Dokument bleibt dann ohne Ergebnis; dafuer ist
+    `retry` der Weg zurueck."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+
+    class Endgueltig(FalscherRunPod):
+        async def await_result(self, job_id: str) -> dict[str, Any]:
+            raise TerminalRunPodError("FAILED")
+
+    schreiben_begonnen = asyncio.Event()
+
+    async def haengendes_schreiben(*_a: Any, **_k: Any) -> Any:
+        schreiben_begonnen.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(db_modul, "write_terminal_async", haengendes_schreiben)
+    lauf = asyncio.ensure_future(
+        process_document(
+            sha,
+            settings=exec_settings,
+            runpod=Endgueltig([_fertige_antwort()]),
+            pool=pool,
+        )
+    )
+    await asyncio.wait_for(schreiben_begonnen.wait(), timeout=10)
+    lauf.cancel()
+    await asyncio.sleep(0)
+    lauf.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(lauf, timeout=10)
+
+    assert get_document(db_conn, sha) is None
+    assert _eingabe_steht(db_conn, sha)
+
+
 @pytest.mark.parametrize("schritt", ["get_status_async", "read_input_async"])
 async def test_datenbankfehler_vor_dem_lesen_im_letzten_versuch_schreibt_failed(
     db_conn: psycopg.Connection[Any],
