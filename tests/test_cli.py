@@ -464,6 +464,47 @@ def test_ocr_reiht_auch_ohne_daemon_ein_und_warnt_auf_stderr(
     assert anzahl is not None and anzahl[0] == 2
 
 
+def _zaehlen(db_conn: psycopg.Connection[Any], tabelle: str) -> int:
+    zeile = db_conn.execute(f"SELECT count(*) FROM {tabelle}").fetchone()
+    assert zeile is not None
+    return int(zeile[0])
+
+
+def test_ocr_ohne_daemon_laesst_keine_eingabe_ohne_job_zurueck(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Seit die Bytes in `inputs` liegen, ist „abgelegt“ ein Zustand der Datenbank:
+    Wer ohne Daemon abschickt, soll danach zu jeder abgelegten Eingabe einen Job
+    haben. Frueher stand das auf dem Abbruch („reiht nichts ein“); jetzt steht es
+    darauf, dass eingereiht wird."""
+    db_conn.execute("DELETE FROM procrastinate_workers")
+    for name in ("a.png", "b.png"):
+        (tmp_path / name).write_bytes(PNG_KOPF + name.encode())
+
+    ergebnis = cli.invoke(app, ["ocr", str(tmp_path)])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert _zaehlen(db_conn, "inputs") == 2
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 2
+
+
+def test_ocr_no_start_legt_nur_ab_und_warnt_nicht(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """`--no-start` registriert nur: Die Bytes liegen in `inputs`, kein Job
+    entsteht, und es gibt nichts, wovor ein fehlender Daemon zu warnen waere."""
+    db_conn.execute("DELETE FROM procrastinate_workers")
+    datei = tmp_path / "a.png"
+    datei.write_bytes(PNG_KOPF + b"a")
+
+    ergebnis = cli.invoke(app, ["ocr", str(datei), "--no-start"])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert _zaehlen(db_conn, "inputs") == 1
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 0
+    assert "Daemon" not in ergebnis.stderr
+
+
 def test_ocr_warnt_nicht_bei_laufendem_daemon(
     cli: CliRunner, tmp_path: Path
 ) -> None:

@@ -152,7 +152,9 @@ Logger `mineru_ocr.client`, die Kommandozeile schreibt sie auf stderr. Abgebroch
 wird nichts, und weder Bibliothek noch Kommandozeile starten selbst einen Daemon —
 den startet der Betreiber. Es gibt keinen `strict`-Abbruch und keine
 `--strict`-Option am Kommando `ocr`; `strict` betrifft nur Konfigurations-
-Abweichungen im Preflight.
+Abweichungen im Preflight. Die Eingaben liegen ab dem Bauen der Hüllen in
+`inputs`; ohne Daemon bleibt trotzdem zu jeder ein Job zurück, nur `--no-start`
+legt ab, ohne einzureihen.
 
 Ein Daemon **läuft**, wenn ein Worker einen Herzschlag hat, der jünger ist als
 `config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS` (30 s, Procrastinates
