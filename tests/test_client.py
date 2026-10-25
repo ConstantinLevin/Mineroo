@@ -782,8 +782,8 @@ async def test_ocr_start_warnt_nicht_wenn_nichts_eingereiht_wird(
     async_conn: psycopg.AsyncConnection[Any],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Die Warnung sagt „die Jobs sind eingereiht“. Wird nichts eingereiht —
-    eine leere Folge, lauter fertige Dokumente —, waere sie falsch."""
+    """Die Warnung sagt, dass offene Dokumente liegen bleiben. Ist nach dem Aufruf
+    nichts offen — eine leere Folge, lauter fertige Dokumente —, waere sie falsch."""
     _worker_am_leben(db_conn)
     fertig = _png("fertig")
     h = offener_client.ocr_start(fertig)
@@ -795,6 +795,28 @@ async def test_ocr_start_warnt_nicht_wenn_nichts_eingereiht_wird(
         assert offener_client.ocr_start(fertig).queued is False
 
     assert _warnungen_des_clients(caplog) == 0
+
+
+def test_ocr_start_warnt_auch_wenn_das_dokument_schon_unterwegs_ist(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Dieselbe Lage, nur ohne Einreihen: Wer ohne Daemon ein Dokument abschickt,
+    das schon unterwegs ist, sieht sonst nur „nicht eingereiht“ und haelt es fuer
+    einen Haenger. Gewarnt wird, wenn nach dem Aufruf Dokumente offen sind."""
+    _worker_am_leben(db_conn)
+    inhalt = _png("unterwegs ohne daemon")
+    assert offener_client.ocr_start(inhalt).queued is True
+    db_conn.execute("DELETE FROM procrastinate_workers")
+
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        wieder = offener_client.ocr_start(inhalt)
+
+    assert wieder.queued is False
+    assert wieder.status is DocumentStatus.NEW
+    assert _warnungen_des_clients(caplog) == 1
+    assert "kein Daemon" in caplog.text
 
 
 def test_ocr_start_reiht_auch_ein_wenn_die_lebendigkeit_nicht_lesbar_ist(

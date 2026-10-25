@@ -633,8 +633,9 @@ class OCRClient:
 
         Laeuft kein Daemon, wird trotzdem eingereiht, und der Client warnt (auf dem
         Logger `mineru_ocr.client`, Stufe WARNING; einmal je daemonloser Phase und
-        nicht je Aufruf, und nur, wenn wirklich etwas eingereiht wurde):
-        Eingereihte Jobs bleiben dann liegen, bis einer startet. Abgebrochen wird
+        nicht je Aufruf, und nur, wenn nach dem Aufruf Dokumente offen sind,
+        eingereiht oder schon unterwegs): Offene Dokumente bleiben dann liegen,
+        bis einer startet. Abgebrochen wird
         deshalb nichts — „das warten ist kuenstlich man wartet auf die datenbank
         nicht direkt auf den worker der ist ja unabhaengig". Ein Daemon gilt als
         laufend, wenn ein Worker einen Herzschlag hat, der juenger ist als
@@ -684,9 +685,12 @@ class OCRClient:
             self._abschicken(dokument, bereit)
             for dokument, bereit in zip(dokumente, vorbereitet, strict=True)
         ]
-        if any(e.queued for e in ergebnisse):
-            # Nur wenn wirklich eingereiht wurde: Die Warnung sagt, dass die Jobs
-            # liegen bleiben, und bei nichts Eingereihtem waere das falsch.
+        if any(not e.status.is_terminal for e in ergebnisse):
+            # Nur wenn nach dem Aufruf Dokumente offen sind, eingereiht oder schon
+            # unterwegs: Die Warnung sagt, dass sie liegen bleiben, und bei lauter
+            # fertigen waere das falsch. Ein schon unterwegs liegendes ist dieselbe
+            # Lage, nur ohne Einreihen — „nicht eingereiht“ ohne Hinweis saehe wie
+            # ein Haenger aus.
             self._ohne_daemon_warnen()
         if einzeln:
             return ergebnisse[0]
@@ -707,7 +711,7 @@ class OCRClient:
         return lebende
 
     def _ohne_daemon_warnen(self) -> None:
-        """Warnt nach dem Einreihen, wenn kein Daemon laeuft — einmal je Lage.
+        """Warnt, wenn Dokumente offen sind und kein Daemon laeuft — einmal je Lage.
 
         Einmal, weil die Kommandozeile Dokument fuer Dokument einreiht und
         dreissigtausend gleiche Zeilen Laerm waeren. Eine Lage ist die daemonlose
@@ -738,7 +742,7 @@ class OCRClient:
             return
         self._daemon_warnung = lage
         log.warning(
-            "%s. Die Jobs sind eingereiht und bleiben liegen, bis einer startet: "
+            "%s. Offene Dokumente bleiben liegen, bis einer startet: "
             "`mineru-ocr daemon`.",
             grund,
         )

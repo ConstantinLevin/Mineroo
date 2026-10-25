@@ -779,6 +779,23 @@ def test_ocr_warnt_ohne_daemon_einmal_je_lauf_und_nicht_je_datei(
     assert ergebnis.stderr.count("kein Daemon") == 1
 
 
+def test_ocr_warnt_ohne_daemon_auch_wenn_alles_schon_unterwegs_ist(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Ein zweiter Lauf ohne Daemon reiht nichts mehr ein, aber die Dokumente sind
+    weiter offen: „0 eingereiht“ ohne Hinweis saehe aus wie ein Haenger."""
+    db_conn.execute("DELETE FROM procrastinate_workers")
+    _datei(tmp_path, "a.png")
+    cli.invoke(app, ["ocr", str(tmp_path)])
+
+    ergebnis = cli.invoke(app, ["ocr", str(tmp_path), "--json"])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert json.loads(ergebnis.stdout)["documents"][0]["queued"] is False
+    assert ergebnis.stderr.count("kein Daemon") == 1
+    assert _jobs(db_conn) == 1
+
+
 def test_ocr_warnt_nicht_wenn_ein_daemon_laeuft(
     cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
 ) -> None:

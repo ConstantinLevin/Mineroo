@@ -165,8 +165,10 @@ den startet der Betreiber. Es gibt keinen `strict`-Abbruch und keine
 `--strict`-Option am Kommando `ocr`; `strict` betrifft nur Konfigurations-
 Abweichungen im Preflight. Zeile, Eingabe und Job entstehen je Dokument in einer
 Transaktion; ohne Daemon bleibt deshalb zu jeder Eingabe ein Job zurück. Gewarnt
-wird einmal je daemonloser Phase eines Clients und nur, wenn wirklich etwas
-eingereiht wurde. Ein `--no-start`, das nur ablegt, gibt es nicht mehr.
+wird einmal je daemonloser Phase eines Clients und nur, wenn nach dem Aufruf
+Dokumente offen sind, eingereiht oder schon unterwegs (ein erneuter Lauf, der nichts
+mehr einreiht, sähe ohne Hinweis wie ein Hänger aus). Ein `--no-start`, das nur
+ablegt, gibt es nicht mehr.
 
 Ein Daemon **läuft**, wenn ein Worker einen Herzschlag hat, der jünger ist als
 `config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS` (30 s, Procrastinates
