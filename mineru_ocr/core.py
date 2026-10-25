@@ -17,6 +17,7 @@ bekommt Bytes.
 
 from __future__ import annotations
 
+import enum
 import hashlib
 from dataclasses import dataclass
 from typing import Any
@@ -138,3 +139,22 @@ class Submitted(str):
         ueber die fehlenden Schluesselwoerter ab.
         """
         return (str(self),), {"queued": self.queued, "status": self.status}
+
+
+class RetryOutcome(enum.Enum):
+    """Was `retry` mit einem Dokument getan hat. Nur die letzten beiden kosten."""
+
+    HAS_RESULT = "has_result"
+    """Nichts: Es steht ein gueltiges Ergebnis da (`done`, `empty`,
+    `input_error`)."""
+
+    UNDERWAY = "underway"
+    """Nichts: Der Job wartet oder laeuft."""
+
+    RESET = "reset"
+    """Die `failed`-Zeile ist weg, und derselbe gescheiterte Job ist mit
+    `retry_job_by_id` zurueckgesetzt."""
+
+    REQUEUED = "requeued"
+    """Ein neuer Job ist eingereiht (der alte war abgebrochen, abgesagt oder weg),
+    eine `failed`-Zeile ist weg, und die neue Kennung steht an der Eingabe."""

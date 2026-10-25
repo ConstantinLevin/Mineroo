@@ -48,7 +48,7 @@ from __future__ import annotations
 
 from .client import OCRClient
 from .config import Settings
-from .core import Submitted
+from .core import RetryOutcome, Submitted
 from .db import DerivedStatus, DocumentRow, DocumentStatus, Phase
 from .errors import (
     ConfigDriftError,
@@ -78,6 +78,7 @@ __all__ = [
     "OCRClient",
     "OCRWrapper",
     "Submitted",
+    "RetryOutcome",
     # Einstellung und Zustaende
     "Settings",
     "DocumentStatus",

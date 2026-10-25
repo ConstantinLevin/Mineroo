@@ -874,6 +874,21 @@ def set_input_job(conn: psycopg.Connection[Any], *, sha256: str, job_id: int) ->
     )
 
 
+def delete_failed_result(conn: psycopg.Connection[Any], sha256: str) -> None:
+    """Nimmt ein Ergebnis `failed` weg, und nur dieses — fuer `retry`.
+
+    Danach ist das Dokument wieder offen (Eingabe da, kein Ergebnis), und jeder,
+    der wartet, wartet auf den neuen Lauf, in jedem Prozess. Ein gueltiges
+    Ergebnis (`done`, `empty`, `input_error`) bleibt unberuehrt, auch wenn es
+    zwischen Nachsehen und Wegnehmen entstanden ist.
+
+    Kosten: keine.
+    """
+    conn.execute(
+        "DELETE FROM documents WHERE sha256 = %s AND status = 'failed'", (sha256,)
+    )
+
+
 async def read_input_async(dsn: str, sha256: str) -> bytes | None:
     """Liest die Eingabe eines Dokuments auf einer EIGENEN, kurzlebigen Verbindung.
 

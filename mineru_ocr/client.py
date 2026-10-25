@@ -37,7 +37,7 @@ from psycopg_pool import NullConnectionPool
 
 from . import core, db, tasks
 from .config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS, MASKE, Settings, ist_geheimnisname
-from .core import Submitted
+from .core import RetryOutcome, Submitted
 from .db import DerivedStatus, DocumentStatus
 from .errors import (
     ConfigDriftError,
@@ -871,6 +871,92 @@ class OCRClient:
         Kosten: JA, mittelbar.
         """
         return self.wait(self.ocr_start(data), timeout=timeout)
+
+    def retry(self, sha256: str) -> RetryOutcome:
+        """Bringt EIN Dokument ohne gueltiges Ergebnis wieder in Gang, auf
+        Procrastinates eigenem Weg.
+
+        Der Ablauf:
+
+        1. Steht ein Ergebnis `done`, `empty` oder `input_error` da, geschieht
+           nichts (`HAS_RESULT`).
+        2. Sonst wird der Job ueber die Kennung an der Eingabe gelesen
+           (`inputs.job_id`, `list_jobs(id=…)`):
+
+           * `todo` oder `doing`: nichts, der Job ist unterwegs (`UNDERWAY`). Ein
+             laufender Job wird nicht zurueckgesetzt, und zweimal `retry` laesst
+             ein Dokument nicht doppelt laufen.
+           * `failed`: Erst geht die `failed`-Zeile weg (eigene Transaktion), dann
+             setzt `retry_job_by_id` DENSELBEN Job zurueck (`RESET`). So
+             dokumentiert und benutzt Procrastinate es selbst („Retry a Job
+             Manually", Shell `retry`) und vermerkt es als Ereignis `retried`. Der
+             Job behaelt seinen Versuchszaehler, und das Zuruecksetzen zaehlt
+             selbst einen Versuch dazu.
+           * `aborted`, `cancelled`, `failed` mit stehendem `abort_requested` (ein
+             Abbruch ueber die API; das Zuruecksetzen scheiterte dort am CHECK
+             `check_not_todo_abort_requested`) oder kein Job: Procrastinate legt
+             sie nicht wieder vor. In EINER Transaktion geht eine `failed`-Zeile
+             weg, ein neuer Job entsteht, und seine Kennung kommt an die Eingabe
+             (`REQUEUED`); er liest die Eingabe samt ihren Einstellungen.
+
+        Warum die `failed`-Zeile weggeht: Dann ist „offen" wieder eine Tatsache
+        der Datenbank (Eingabe da, kein Ergebnis), und jeder, der wartet, wartet
+        auf den neuen Lauf, in jedem Prozess, auch `mineru-ocr wait` nach
+        `mineru-ocr retry`. Ihr Rohergebnis ginge ohnehin verloren, denn der neue
+        Lauf ueberschreibt es. Erst Wegnehmen, dann Zuruecksetzen ist Absicht:
+        Andersherum koennte der zurueckgesetzte Job schon ein neues Ergebnis
+        geschrieben haben, das das Wegnehmen loeschte. Stirbt `retry` zwischen
+        beiden Schritten, steht das Dokument ohne Ergebnis mit `failed`-Job da, und
+        `retry` noch einmal setzt ihn zurueck.
+
+        Lese-Einstellungen nimmt `retry` keine: Es wiederholt einen Job. Ein Fehler
+        von Procrastinate (etwa ein Job, der zwischen Lesen und Zuruecksetzen
+        seinen Zustand aenderte) geht nach oben, statt als „nicht wiederholt"
+        verbucht zu werden.
+
+        Args:
+            sha256: Der Hash des Dokuments, wie `ocr_start` ihn gab.
+
+        Returns:
+            Was geschehen ist (`RetryOutcome`).
+
+        Raises:
+            DocumentNotFound: Weder Ergebnis noch Eingabe.
+            DatabaseError: Ein `failed`-Ergebnis ohne Eingabe; ein neuer Lauf
+                haette nichts zu lesen, und es bleibt, wie es ist.
+
+        Kosten: JA, mittelbar, bei `RESET` und `REQUEUED` — das Dokument wird neu
+        verarbeitet und neu bezahlt.
+        """
+        stand = self._stand(sha256)
+        if stand.row is not None and stand.row.status is not DocumentStatus.FAILED:
+            return RetryOutcome.HAS_RESULT
+        if not stand.has_input:
+            raise DatabaseError(
+                f"{sha256} steht auf `failed`, aber seine Eingabe fehlt: Ein neuer "
+                f"Lauf haette nichts zu lesen. Das Dokument neu abschicken geht "
+                f"nicht, solange das Ergebnis steht; es bleibt, wie es ist."
+            )
+        job = self._job(stand)
+        if job is not None and job.status in ("todo", "doing"):
+            return RetryOutcome.UNDERWAY
+        if (
+            job is not None
+            and job.id is not None
+            and job.status == "failed"
+            and not job.abort_requested
+        ):
+            with self.conn.transaction():
+                db.delete_failed_result(self.conn, sha256)
+            self._procrastinate.job_manager.retry_job_by_id(
+                job.id, utils.utcnow(), job.priority, job.queue, job.lock
+            )
+            return RetryOutcome.RESET
+        with self.conn.transaction():
+            db.delete_failed_result(self.conn, sha256)
+            kennung = tasks.enqueue_document(self._procrastinate, self.conn, sha256)
+            db.set_input_job(self.conn, sha256=sha256, job_id=kennung)
+        return RetryOutcome.REQUEUED
 
     def retry_failed(self, target: OCRWrapper | Sequence[OCRWrapper]) -> int:
         """Legt gescheiterte Dokumente erneut vor. Duenner Durchgriff, kein Eigenbau.

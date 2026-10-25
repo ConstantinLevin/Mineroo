@@ -32,6 +32,7 @@ from psycopg_pool import NullConnectionPool
 from mineru_ocr import config, daemon, db, tasks
 from mineru_ocr.client import OCRClient
 from mineru_ocr.config import Settings
+from mineru_ocr.core import RetryOutcome
 from mineru_ocr.db import DocumentStatus, Phase, derive_status, get_document
 from mineru_ocr.errors import ConfigurationError, DatabaseError
 from mineru_ocr.runpod import RunPodClient
@@ -1660,3 +1661,214 @@ async def test_lange_in_der_warteschlange_ist_kein_grund_aufzugeben(
     assert zeile.status is DocumentStatus.DONE
     assert gegenstelle.ereignisse("run") == ["job-1"]
     assert gegenstelle.ereignisse("cancel") == []
+
+
+# --------------------------------------------------------------------------
+# `retry` auf Procrastinates Weg
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "endzustand",
+    [DocumentStatus.DONE, DocumentStatus.EMPTY, DocumentStatus.INPUT_ERROR],
+)
+async def test_retry_tut_nichts_bei_einem_gueltigen_ergebnis(
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    int_settings: Settings,
+    endzustand: DocumentStatus,
+) -> None:
+    """Steht ein Ergebnis `done`, `empty` oder `input_error` da, gibt es nichts zu
+    wiederholen: kein Job entsteht, das Ergebnis bleibt."""
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(PNG_KOPF + b"hat ein ergebnis")
+        await db.write_terminal_async(
+            async_conn,
+            sha256=sha,
+            status=endzustand,
+            raw={},
+            endpoint_id="testendpoint",
+        )
+        jobs_vorher = _jobs_zu(db_conn, sha)
+
+        ausgang = klient.retry(sha)
+
+    assert ausgang is RetryOutcome.HAS_RESULT
+    assert _jobs_zu(db_conn, sha) == jobs_vorher
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is endzustand
+
+
+@pytest.mark.parametrize("job_zustand", ["todo", "doing"])
+def test_retry_tut_nichts_bei_einem_job_der_unterwegs_ist(
+    db_conn: psycopg.Connection[Any], int_settings: Settings, job_zustand: str
+) -> None:
+    """Wartet oder laeuft der Job der Eingabe, ist das Dokument unterwegs: `retry`
+    setzt ihn nicht zurueck und legt keinen zweiten an. Frueher setzte es auch
+    einen laufenden Job zurueck, und zweimal `retry` liess ein Dokument doppelt
+    laufen."""
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(PNG_KOPF + b"unterwegs")
+        db_conn.execute(
+            "UPDATE procrastinate_jobs SET status = %s WHERE lock = %s",
+            (job_zustand, sha),
+        )
+        vorher = _jobs_zu(db_conn, sha)
+
+        ausgang = klient.retry(sha)
+        zweimal = klient.retry(sha)
+
+    assert ausgang is RetryOutcome.UNDERWAY
+    assert zweimal is RetryOutcome.UNDERWAY
+    assert _jobs_zu(db_conn, sha) == vorher
+    assert get_document(db_conn, sha) is None
+
+
+async def test_retry_setzt_einen_gescheiterten_job_zurueck_und_ein_warten_anderswo_bekommt_das_neue_ergebnis(
+    db_conn: psycopg.Connection[Any], int_settings: Settings
+) -> None:
+    """Endet das Dokument `failed` mit Job `failed`, nimmt `retry` erst die
+    `failed`-Zeile weg und setzt dann DENSELBEN Job mit `retry_job_by_id` zurueck:
+    kein zweiter Job, der Versuchszaehler zaehlt weiter, Procrastinate vermerkt
+    `retried`. Danach ist das Dokument offen, und ein Warten in einem anderen
+    Zugang (eigene Verbindung, eigener Client) bekommt das neue Ergebnis, nicht das
+    alte `failed`."""
+    import threading
+
+    inhalt = PNG_KOPF + b"scheitert erst"
+    scheiternd = ProtokollRunPod(
+        lambda nr: {"id": f"job-{nr}", "status": "FAILED", "error": "kaputt"}
+    )
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(inhalt)
+
+        async def gescheitert() -> bool:
+            return get_document(db_conn, sha) is not None
+
+        await _daemon_laufen_lassen(int_settings, scheiternd, bis=gescheitert)
+        (vorher,) = _jobs_zu(db_conn, sha)
+        assert vorher.status == "failed"
+
+        ausgang = klient.retry(sha)
+
+        assert ausgang is RetryOutcome.RESET
+        assert get_document(db_conn, sha) is None
+        (danach,) = _jobs_zu(db_conn, sha)
+        assert danach.id == vorher.id
+        assert danach.status == "todo"
+        assert danach.attempts == vorher.attempts + 1
+        vermerkt = db_conn.execute(
+            "SELECT count(*) FROM procrastinate_events "
+            "WHERE job_id = %s AND type = 'retried'",
+            (vorher.id,),
+        ).fetchone()
+        assert vermerkt is not None and vermerkt[0] == 1
+
+    gewartet: list[Any] = []
+
+    def anderswo_warten() -> None:
+        with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as anderer:
+            huelle = anderer.wait(sha, timeout=20)
+            gewartet.append((huelle.status, huelle.raw["markdown"]))
+
+    warter = threading.Thread(target=anderswo_warten)
+    warter.start()
+    gelingend = ProtokollRunPod(lambda nr: _fertig("Beim zweiten Mal"))
+
+    async def fertig() -> bool:
+        return not warter.is_alive()
+
+    await _daemon_laufen_lassen(int_settings, gelingend, bis=fertig, zeit=20)
+    warter.join(5)
+
+    assert gelingend.aufrufe == 1
+    assert gewartet == [(DocumentStatus.DONE, "Beim zweiten Mal")]
+
+
+@pytest.mark.parametrize(
+    "lage", ["aborted", "cancelled", "failed_mit_abbruchwunsch", "ohne_job"]
+)
+async def test_retry_reiht_einen_neuen_job_ein_wo_procrastinate_nicht_wieder_vorlegt(
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    int_settings: Settings,
+    lage: str,
+) -> None:
+    """`aborted`, `cancelled`, `failed` mit stehendem `abort_requested` (das
+    Zuruecksetzen scheiterte dort am CHECK `check_not_todo_abort_requested`) oder
+    kein Job: Procrastinate legt sie nicht wieder vor. `retry` reiht in einer
+    Transaktion einen neuen Job ein, nimmt eine `failed`-Zeile weg und schreibt die
+    neue Kennung in `inputs.job_id`; der Daemon arbeitet ihn ab."""
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(PNG_KOPF + f"neu einreihen {lage}".encode())
+        alt = _job_der_eingabe(db_conn, sha)
+        assert alt is not None and alt.id is not None
+        if lage == "ohne_job":
+            db_conn.execute("DELETE FROM procrastinate_jobs WHERE id = %s", (alt.id,))
+        elif lage == "failed_mit_abbruchwunsch":
+            db_conn.execute(
+                "UPDATE procrastinate_jobs SET status = 'failed', "
+                "abort_requested = true WHERE id = %s",
+                (alt.id,),
+            )
+            await db.write_terminal_async(
+                async_conn,
+                sha256=sha,
+                status=DocumentStatus.FAILED,
+                raw={},
+                endpoint_id="testendpoint",
+                error="abgebrochen",
+            )
+        else:
+            db_conn.execute(
+                "UPDATE procrastinate_jobs SET status = %s WHERE id = %s",
+                (lage, alt.id),
+            )
+
+        ausgang = klient.retry(sha)
+
+    assert ausgang is RetryOutcome.REQUEUED
+    assert get_document(db_conn, sha) is None
+    neu = _job_der_eingabe(db_conn, sha)
+    assert neu is not None and neu.id != alt.id
+    assert (neu.status, neu.queue, neu.lock, neu.task_name) == (
+        "todo",
+        config.QUEUE_OCR,
+        sha,
+        config.TASK_OCR_DOCUMENT,
+    )
+
+    async def fertig() -> bool:
+        return get_document(db_conn, sha) is not None
+
+    await _daemon_laufen_lassen(int_settings, ProtokollRunPod(), bis=fertig)
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+
+
+def test_retry_ohne_eingabe_meldet_es_und_aendert_nichts(
+    db_conn: psycopg.Connection[Any], int_settings: Settings
+) -> None:
+    """Ein `failed`-Ergebnis ohne Eingabe (gibt es nur, wenn jemand von Hand
+    geloescht hat) laesst sich nicht wiederholen: Ein neuer Job faende nichts zu
+    lesen und ersetzte das Ergebnis durch einen Eingabefehler. `retry` sagt es und
+    laesst Ergebnis und Jobs, wie sie sind."""
+    sha = "f" * 64
+    db_conn.execute(
+        "INSERT INTO documents (sha256, status, endpoint_id, error) "
+        "VALUES (%s, 'failed', 'testendpoint', 'kaputt')",
+        (sha,),
+    )
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        with pytest.raises(DatabaseError, match="Eingabe"):
+            klient.retry(sha)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+    assert _zaehlen_jobs(db_conn) == 0
+
+
+def _zaehlen_jobs(conn: psycopg.Connection[Any]) -> int:
+    zeile = conn.execute("SELECT count(*) FROM procrastinate_jobs").fetchone()
+    assert zeile is not None
+    return int(zeile[0])
