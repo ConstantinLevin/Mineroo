@@ -487,6 +487,31 @@ async def test_show_zeigt_was_document_sagt_und_raw_die_vollstaendige_antwort(
     assert stand["mime"] == "image/png"
     assert "raw" not in stand
 
+    # Ohne `--json` dasselbe, lesbar: Zustand und die Angaben des Ergebnisses.
+    text = cli.invoke(app, ["show", huelle.sha256])
+    assert text.exit_code == 0, text.output
+    assert "Zustand:   done" in text.stdout and "terminal" in text.stdout
+    assert f"Typ:       image/png  {huelle.size_bytes} Byte" in text.stdout
+    assert "ganz" not in text.stdout  # kein raw
+
+    # Ein Eingabefehler ohne Eingabe hat weder Typ noch Groesse: Das sagt die
+    # Ausgabe, statt `None` zu drucken.
+    ohne = "d" * 64
+    await write_terminal_async(
+        async_conn,
+        sha256=ohne,
+        status=DocumentStatus.INPUT_ERROR,
+        raw={},
+        error="Eingabe fehlt",
+        endpoint_id="testendpoint",
+    )
+    text = cli.invoke(app, ["show", ohne])
+    assert text.exit_code == 0, text.output
+    assert "Typ:       unbekannt  ? Byte" in text.stdout
+    assert "Fehler:    Eingabe fehlt" in text.stdout
+    (typ_zeile,) = [z for z in text.stdout.splitlines() if "Typ:" in z]
+    assert "None" not in typ_zeile
+
     ergebnis = cli.invoke(app, ["show", huelle.sha256, "--raw"])
     assert ergebnis.exit_code == 0, ergebnis.output
     vollstaendig = json.loads(ergebnis.stdout)
