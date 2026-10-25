@@ -1228,24 +1228,33 @@ def test_get_document_und_wait_nehmen_einen_hash_und_keinen_pfad(
         offener_client.wait(Path("scan.pdf"), timeout=0.1)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    "fehler",
+    [DatabaseError("Die Worker-Lebenszeichen liessen sich nicht lesen"), psycopg.OperationalError("weg")],
+)
 def test_ocr_start_gibt_den_hash_auch_wenn_die_abfrage_der_lebenszeichen_scheitert(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fehler: Exception,
 ) -> None:
     """Die Warnung ist eine Auskunft. Das Dokument ist da schon eingereiht; scheitert
     dann die Abfrage, bekommt der Aufrufer trotzdem seinen Hash und keine
-    Ausnahme."""
+    Ausnahme. `db.worker_heartbeats` wirft dabei den uebersetzten `DatabaseError`,
+    nicht psycopgs eigenen Fehler."""
 
     def scheitert(_conn: Any) -> Any:
-        raise psycopg.OperationalError("Verbindung weg")
+        raise fehler
 
     monkeypatch.setattr(db, "worker_heartbeats", scheitert)
 
-    gereicht = offener_client.ocr_start(_png("trotzdem"))
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        gereicht = offener_client.ocr_start(_png("trotzdem"))
 
     assert gereicht.queued is True
     assert _zaehlen(db_conn, "procrastinate_jobs") == 1
+    assert "nicht pruefbar" in caplog.text
 
 
 def test_die_bibliothek_kennt_keine_pfade() -> None:

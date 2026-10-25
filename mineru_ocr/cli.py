@@ -111,8 +111,8 @@ def _ziel(target: str) -> str:
     """Der Hash zu einem Ziel: ein Hash bleibt ein Hash, ein Pfad wird gehasht.
 
     Die Bibliothek kennt keine Pfade; hier ist die einzige Stelle, die einen in
-    einen Hash verwandelt, und sie benutzt dieselbe Hash-Funktion wie das
-    Abschicken.
+    einen Hash verwandelt. Gehasht wird in Stuecken (`hashlib.file_digest`),
+    mit demselben Ergebnis wie `core.sha256_of` auf den ganzen Bytes.
 
     Raises:
         DocumentNotFound: Weder ein Hash noch eine lesbare Datei.

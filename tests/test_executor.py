@@ -1434,7 +1434,7 @@ async def test_abbruch_wird_durchgereicht(
     tmp_path: Path,
 ) -> None:
     """`CancelledError` wird nicht gefangen: Der Job endet `aborted`, die Zeile
-    bleibt `new`, das Dokument laeuft beim naechsten Einreihen von vorn.
+    bleibt `new` (den Rueckweg bringt das Ticket #26).
 
     Der Test faengt einen echten Fehler ab, den man leicht macht: Waere hier
     `except BaseException` statt `except Exception`, wuerde der Abbruch als

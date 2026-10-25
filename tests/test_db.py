@@ -147,8 +147,9 @@ def test_beendeter_job_ohne_ergebnis_wird_erkannt() -> None:
     """Zeile `new`, juengster Job endgueltig: Phase ENDED_WITHOUT_RESULT.
 
     Der Fall nach hartem Abschuss oder Herunterfahren. Kein Datenfehler,
-    sondern genau der Zustand, den das Ein-Buch-Modell erwartet — er heilt beim
-    naechsten Einreihen von selbst.
+    sondern genau der Zustand, den das Ein-Buch-Modell erwartet — Einreihen
+    heilt ihn nicht (`ocr_start` fasst eine Zeile `new` nicht an), den Rueckweg
+    bringt das Ticket #26.
     """
     for status in ["succeeded", "failed", "cancelled", "aborted"]:
         abgeleitet = derive_status(_zeile(), [_job(1, status)])
