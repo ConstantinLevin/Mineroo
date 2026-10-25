@@ -895,6 +895,35 @@ def test_status_meldet_den_daemon_auch_bei_einem_psycopg_fehler_als_unbekannt(
     assert offener_client.status()["daemon_alive"] is None
 
 
+def test_ohne_schluessel_entfaellt_der_preflight_beim_oeffnen_still(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`OCRClient()` prueft beim Oeffnen per Voreinstellung. Der Preflight fragt
+    RunPod; Abschicken braucht RunPod nicht. Ohne Schluessel entfaellt er deshalb
+    still, statt das Abschicken zu verhindern."""
+
+    def nie(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("RunPod wurde angesprochen")
+
+    monkeypatch.setattr(client_modul, "_runpod_fragen", nie)
+    _worker_am_leben(db_conn)
+    with caplog.at_level(logging.DEBUG, logger="mineru_ocr"):
+        with OCRClient(db_dsn=_test_datenbank) as klient:
+            assert klient.ocr_start(_png("ohne preflight")).queued is True
+    assert not [e for e in caplog.records if e.levelno >= logging.WARNING]
+
+
+def test_mit_schluessel_laeuft_der_preflight_beim_oeffnen_wie_bisher(
+    _test_datenbank: str, runpod: RunPodAntworten
+) -> None:
+    """Mit Schluessel bleibt alles beim Alten: Beim Oeffnen wird geprueft."""
+    with OCRClient(db_dsn=_test_datenbank, api_key="erfunden", strict=False) as klient:
+        assert klient._letzter_preflight is not None
+
+
 def test_ohne_schluessel_schickt_der_client_ab_und_liest_aber_fragt_runpod_nicht(
     _test_datenbank: str,
     db_conn: psycopg.Connection[Any],

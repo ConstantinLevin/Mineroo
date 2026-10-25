@@ -117,7 +117,7 @@ unter drei Kodierungen (Vorgabe, `ascii`, `utf-8`): im schlichten Traceback
 immer vorhanden, im rich-formatierten nie."""
 
 
-def test_der_modulaufruf_geht_wirklich_durch_main() -> None:
+def test_der_modulaufruf_geht_wirklich_durch_main(tmp_path: Path) -> None:
     """Ein unbehandelter Fehler kommt SCHLICHT heraus, nicht rich-formatiert.
 
     HIER STAND EIN TEST, DER SEINE EIGENE ZUSAGE NICHT EINGELOEST HAT. Er hiess
@@ -182,7 +182,15 @@ def test_der_modulaufruf_geht_wirklich_durch_main() -> None:
     Aussagekraft an einer Umgebungsvariablen haengt, die er nicht setzt, genau
     so still versagt, wie es hier passiert ist.
     """
-    umgebung = dict(os.environ)
+    # Leeres HOME und keine Variablen des Pakets: Der Kindprozess liest sonst die
+    # echte Konfiguration und den echten RunPod-Schluessel des Entwicklers, und
+    # das Umbiegen in `conftest` wirkt in einem Kindprozess nicht.
+    umgebung = {
+        name: wert
+        for name, wert in os.environ.items()
+        if not name.startswith("MINERU_OCR_")
+    }
+    umgebung["HOME"] = str(tmp_path)
     umgebung["COLUMNS"] = "200"
     umgebung["NO_COLOR"] = "1"
     umgebung["PYTHONIOENCODING"] = "utf-8"

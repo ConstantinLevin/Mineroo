@@ -53,8 +53,10 @@ keinen Build-Schritt.
 
 Endpoint, Datenbank und die Sollwerte des Preflights stehen **nicht im Code**,
 sondern in einer Konfiguration. Es gibt für Endpoint und Datenbank keine
-Voreinstellung: Wer sie nirgends einstellt, bekommt beim ersten Aufruf eine
-Meldung, die alle Stellen nennt.
+Voreinstellung. Wer die Datenbank nirgends einstellt, bekommt beim ersten Aufruf
+eine Meldung, die alle Stellen nennt. Den Endpoint verlangt nur, wer ihn braucht
+(Abschicken, `daemon`, `preflight`); erst dort kommt die Meldung, `setup` und die
+lesenden Kommandos fragen nicht nach ihm.
 
 Quellen, vom Stärksten: ausdrückliche Angabe (Argument oder Option) →
 Umgebungsvariable `MINERU_OCR_<NAME>` → Konfigurationsdatei → Voreinstellung. Die

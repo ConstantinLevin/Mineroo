@@ -130,7 +130,9 @@ nennt dann die Stellen bzw. sagt, was mit `~/.runpod/config.toml` ist:
 | `status`, `credit`, `account` | nein | ja |
 
 Den Schlüssel verlangt `RunPodClient` beim Bauen, die Lesefragen des Clients
-vor dem Fragen. Die Sollwerte des Preflights (`expected_image_tag`, `workers_min`,
+vor dem Fragen; Endpoint und Schlüssel prüft `daemon.run` vor dem Start der Worker,
+auch für Aufrufer aus Python. Der Preflight beim Öffnen eines `OCRClient` läuft nur,
+wenn ein Schlüssel eingestellt ist; ohne entfällt er still. Die Sollwerte des Preflights (`expected_image_tag`, `workers_min`,
 `workers_max`, `idle_timeout`, `execution_timeout_ms`, `allowed_data_centers`, die
 Tabelle `[endpoint_env]`) sind Felder von `Settings` mit den Voreinstellungen aus
 Mineroo#3 (0, 10, 60, 600000). Ein unbekannter Schlüssel in der Datei, eine

@@ -114,11 +114,20 @@ async def run(
         die niemand stellt, wenn etwas schiefgeht.
 
     Raises:
-        ConfigurationError: Datenbank nicht erreichbar oder Schema fehlt. Der
-            Daemon startet dann gar nicht erst, statt still nichts zu tun.
+        ConfigurationError: Kein Endpoint oder kein RunPod-Schluessel eingestellt
+            (`Settings.load` laesst beide fehlen, weil Abschicken und Lesen sie
+            nicht brauchen); Datenbank nicht erreichbar oder Schema fehlt. Der
+            Daemon startet dann gar nicht erst, statt still nichts zu tun — oder,
+            ohne Endpoint, jeden Job anzunehmen und endgueltig als `failed` zu
+            schreiben.
 
     Kosten: JA, mittelbar — er arbeitet die Warteschlange ab.
     """
+    # VOR allem anderen, auch fuer Aufrufer aus Python (`main`, `run`): Ohne
+    # Endpoint naehme jeder Worker Jobs an, scheiterte beim Absenden an der
+    # Konfiguration, und `classify_failure` machte daraus einen Endzustand.
+    settings.require_endpoint_id()
+    settings.require_api_key()
     app = tasks.build_daemon_app(settings)
     mittel = tasks.worker_context_resources(settings)
     pool = mittel["pool"]

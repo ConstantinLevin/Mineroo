@@ -33,6 +33,7 @@ from mineru_ocr import config, daemon, db, tasks
 from mineru_ocr.client import OCRClient
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, Phase, derive_status, get_document
+from mineru_ocr.errors import ConfigurationError
 from mineru_ocr.runpod import RunPodClient
 
 pytestmark = pytest.mark.db
@@ -1037,6 +1038,50 @@ async def test_gestorbener_worker_beendet_den_daemon_mit_fehler(
             await daemon.run(int_settings)
     finally:
         App.run_worker_async = echt  # type: ignore[method-assign]
+
+
+@pytest.mark.parametrize("fehlt", ["endpoint_id", "api_key"])
+async def test_daemon_ohne_endpoint_oder_schluessel_startet_nicht_und_laesst_die_jobs_liegen(
+    db_conn: psycopg.Connection[Any],
+    int_settings: Settings,
+    fehlt: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`Settings.load` laesst Endpoint und Schluessel fehlen, damit Abschicken und
+    Lesen ohne sie gehen. Der Daemon braucht beide: Startete er ohne, nahme er
+    jeden Job an, scheiterte beim Absenden an der Konfiguration und schriebe jedes
+    Dokument endgueltig als `failed`. Er verlangt sie deshalb VOR dem Start der
+    Worker, auch fuer Aufrufer aus Python, und die Jobs bleiben, wie sie sind."""
+    with OCRClient(
+        db_dsn=int_settings.db_dsn, api_key="erfunden", preflight=False
+    ) as klient:
+        sha = klient.ocr_start(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"ohne " + fehlt.encode())
+    ohne = (
+        dataclasses.replace(int_settings, endpoint_id=None)
+        if fehlt == "endpoint_id"
+        else dataclasses.replace(int_settings, api_key=None)
+    )
+
+    # RunPod darf dieser Test unter keinen Umstaenden erreichen, auch nicht, wenn
+    # die Pruefung fehlt: Die Betriebsmittel (darunter der RunPod-Zugang) duerfen
+    # gar nicht erst entstehen, und jeder HTTP-Versand scheitert laut.
+    def keine_betriebsmittel(_s: Settings) -> dict[str, Any]:
+        raise AssertionError("der Daemon hat seine Betriebsmittel gebaut")
+
+    async def kein_netz(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("eine HTTP-Anfrage wollte hinaus")
+
+    monkeypatch.setattr(tasks, "worker_context_resources", keine_betriebsmittel)
+    monkeypatch.setattr(httpx.AsyncClient, "send", kein_netz)
+
+    with pytest.raises(ConfigurationError):
+        await asyncio.wait_for(daemon.run(ohne), timeout=10)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.NEW
+    assert [job.status for job in _jobs_zu(db_conn, sha)] == ["todo"]
+    assert db.worker_heartbeats(db_conn) == []
 
 
 def test_main_uebersetzt_in_exit_codes(int_settings: Settings) -> None:
