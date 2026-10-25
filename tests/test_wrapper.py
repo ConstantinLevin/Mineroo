@@ -158,9 +158,9 @@ async def test_gelistete_zeile_laedt_raw_nach(
     """Eine Huelle aus `list_documents` (ohne `raw`) liefert fuer ein FERTIGES
     Dokument den Text — sie laedt die Zeile nach, statt leer zu antworten.
 
-    Ohne diese Nachladung waere `mega.refresh()` (eine Abfrage fuer alle) mit den
-    Ergebnis-Gettern unvertraeglich, und der Fehler saehe aus wie ein leeres
-    Ergebnis.
+    Ohne diese Nachladung waere eine Huelle ohne `raw` (aus einer Abfrage, die es
+    nicht mitliest) mit den Ergebnis-Gettern unvertraeglich, und der Fehler saehe
+    aus wie ein leeres Ergebnis.
     """
     huelle = _huelle(db_conn, settings, PNG_KOPF + b"n")
     await write_terminal_async(
@@ -307,6 +307,28 @@ async def test_to_dict_mit_raw_traegt_das_vollstaendige_ergebnis(
     # Ohne den Schalter bleibt es dabei: kein `raw`.
     assert "raw" not in frisch.to_dict()
     assert "raw" not in frisch.to_dict(raw=False)
+
+
+async def test_to_dict_mit_raw_beschreibt_dieselbe_zeile_wie_das_raw(
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    settings: Settings,
+) -> None:
+    """Wird das Dokument zwischen `get` und `to_dict(raw=True)` fertig, kommt die
+    Abbildung aus der Zeile, aus der auch `raw` stammt: nicht `status` `new` und
+    `success` False neben einer fertigen Antwort."""
+    huelle = _huelle(db_conn, settings, PNG_KOPF + b"fertig dazwischen")
+    raw = {"markdown": "Text.", "content_list": [], "images": {}}
+    await write_terminal_async(
+        async_conn, sha256=huelle.sha256, status=DocumentStatus.DONE, raw=raw
+    )
+    assert huelle.row.status is DocumentStatus.NEW
+
+    abbildung = huelle.to_dict(raw=True)
+
+    assert abbildung["raw"] == raw
+    assert abbildung["status"] == "done"
+    assert abbildung["success"] is True
 
 
 def test_to_dict_mit_raw_ohne_ergebnis_traegt_ein_leeres_raw(

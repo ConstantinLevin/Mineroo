@@ -331,9 +331,12 @@ class OCRWrapper:
                 sie dafuer nach, wenn die Huelle sie noch nicht hat. Bei einem
                 Dokument ohne Ergebnis ist sie leer (`{}`), wie bei `.raw`.
         """
+        # `raw` ZUERST: Es laedt die Zeile womoeglich neu, und die Angaben sollen
+        # aus derselben Zeile stammen wie die Antwort, die neben ihnen steht.
+        antwort = self.raw if raw else None
         abbildung = self._angaben()
-        if raw:
-            abbildung["raw"] = self.raw
+        if antwort is not None:
+            abbildung["raw"] = antwort
         return abbildung
 
     def _angaben(self) -> dict[str, Any]:
