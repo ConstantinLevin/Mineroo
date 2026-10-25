@@ -496,7 +496,7 @@ async def test_retry_von_hand_verarbeitet_wirklich_neu(
     bleibt — UND das Dokument wird wirklich neu verarbeitet: es endet `done`,
     `raw` ist ueberschrieben.
 
-    Genau diese letzte Zusicherung faengt einen Terminal-Guard, der faelschlich
+    Genau diese letzte Zusicherung faengt ein Nachsehen, das faelschlich
     `failed` deckt. Ohne sie saehe ein Nichts-Tun wie ein Erfolg aus.
     """
     sha = _anlegen(db_conn, tmp_path, "g.png")
@@ -680,7 +680,7 @@ async def test_duplikat_waehrend_der_verarbeitung_ist_ein_nichts_tun(
     tmp_path: Path,
 ) -> None:
     """(i) Ein waehrend `doing` nachgeschobenes Duplikat wird per `lock`
-    serialisiert, startet danach und endet sofort am Terminal-Guard — keine
+    serialisiert, startet danach und endet sofort am Nachsehen — keine
     Doppelzahlung.
 
     Der Fall ist real und nicht ausgedacht: `queueing_lock` bindet NUR den

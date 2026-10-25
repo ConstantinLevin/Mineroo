@@ -304,7 +304,7 @@ die Sperre gegen ein zweites Einreihen, auch gleichzeitig und während der Job
 läuft. Es entsteht keine Datei, und das Einreihen öffnet keine PDF: Typ, Größe und
 Seitenzahl bestimmt der Job aus den Bytes und schreibt sie mit dem Endergebnis
 (`mime` bleibt leer bei einem Typ, den das Paket nicht kennt, beides bei fehlender
-Eingabe).
+oder beschädigter Eingabe).
 
 Abschicken prüft **erst alle** übergebenen Dokumente (`core.prepare`), dann reiht es
 ein; sonst wären bei einem abgewiesenen Element die vorderen schon abgeschickt.

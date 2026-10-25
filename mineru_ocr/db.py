@@ -141,8 +141,8 @@ keine Voreinstellung.
 
 `size_bytes` und `mime` bestimmt der Job aus den Bytes der Eingabe. Leer bleiben
 sie nur, wo sie sich nicht bestimmen liessen: `mime` bei einem Typ, den das Paket
-nicht kennt, beide, wenn die Eingabe fehlte. Ein erfundener Wert waere dort eine
-Angabe, die stimmt aussieht und nicht stimmt.
+nicht kennt, beide, wenn die Eingabe fehlte oder ihr Hash nicht stimmte. Ein
+erfundener Wert waere dort eine Angabe, die stimmt aussieht und nicht stimmt.
 
 `raw` ist Jurgens „raw section" — und sie steht auf DOKUMENT-Ebene, nicht auf
 Chunk-Ebene. Das ist die tragende Festlegung und der haeufigste Denkfehler beim
@@ -259,11 +259,11 @@ class DocumentRow:
     sha256: str
     size_bytes: int | None
     """Die Groesse der Eingabe, vom Job bestimmt. None nur, wenn die Eingabe
-    fehlte (siehe SCHEMA_SQL)."""
+    fehlte oder beschaedigt war (siehe SCHEMA_SQL)."""
 
     mime: str | None
     """Der Typ der Eingabe, vom Job aus den Bytes bestimmt. None, wenn das Paket
-    den Typ nicht kennt oder die Eingabe fehlte."""
+    den Typ nicht kennt oder die Eingabe fehlte oder beschaedigt war."""
 
     page_count: int | None
     status: DocumentStatus
@@ -1149,7 +1149,8 @@ async def write_terminal_async(
             Daemons).
         mime: Der Typ, den der Job aus den Bytes bestimmt hat; None, wenn er
             sich nicht bestimmen liess.
-        size_bytes: Die Groesse der Eingabe; None, wenn sie fehlte.
+        size_bytes: Die Groesse der Eingabe; None, wenn sie fehlte oder
+            beschaedigt war.
         image_tag_at_submit: Welches Worker-Image lief. Der Executor liest es
             einmal je Lauf und reicht es hier durch. Ohne diesen Weg bliebe die
             Spalte fuer immer leer, und die Frage, fuer die sie da ist („war das

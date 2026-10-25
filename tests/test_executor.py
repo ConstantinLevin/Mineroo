@@ -1629,7 +1629,7 @@ async def test_zu_grosses_bild_wird_abgelehnt_ohne_zu_bezahlen(
     haengt: Kommt die Ablehnung wirklich VOR dem ersten bezahlten Aufruf?
 
     Und der zweite Teil: Der Endzustand ist `input_error`, nicht `failed`. Er
-    steht damit im Terminal-Guard und wird nicht wieder angefasst — ein
+    gehoert damit zu den Ergebnissen, die das Nachsehen nicht wieder anfasst — ein
     Wiederlauf koennte an der Groesse nichts aendern und wuerde nur kosten.
     """
     from mineru_ocr.errors import TooLargeError

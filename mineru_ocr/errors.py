@@ -216,7 +216,7 @@ class ResultLostError(TransientRunPodError):
     nicht einmal ein Fehler der Gegenseite.
 
     Dass der Fall ueberhaupt eintritt, ist ein Fehler UNSERER Orchestrierung, und
-    dagegen ist der Executor gebaut (Schritt 3a dort): Es wird nie erst alles
+    dagegen ist der Executor gebaut (Schritt 2a dort): Es wird nie erst alles
     abgesendet und spaeter eingesammelt; je Dokument ist hoechstens ein Ergebnis
     offen und wird innerhalb eines Abfrageintervalls abgeholt. Solange der Prozess
     lebt, kann dieser Zustand nicht entstehen. Er bleibt als eigene Klasse

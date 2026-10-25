@@ -134,9 +134,9 @@ _TABELLE: Final[dict[DocumentType, tuple[str, str]]] = {
 """MIME-Zeichenkette und Endung je Typ. DIESE WERTE SIND DAUERHAFT.
 
 Warum das keine Kleinigkeit ist: Die MIME-Zeichenkette landet unveraenderlich in
-`documents.mime`, und der Job findet ueber sie den Typ zur Zeile wieder
-(`executor._typ_aus_mime`). Wer hier spaeter eine MIME-Zeichenkette aendert,
-laesst alle bestehenden Zeilen ins Leere zeigen, ohne dass etwas auffaellt.
+`documents.mime`; der Job bestimmt sie aus den Bytes (`sniff_bytes`) und schreibt
+sie mit dem Endergebnis. Wer hier spaeter eine MIME-Zeichenkette aendert, laesst
+alte und neue Zeilen denselben Typ verschieden nennen, ohne dass etwas auffaellt.
 
 Wo es zwei uebliche Schreibweisen gibt, ist die kuerzere gewaehlt (`.jpg`,
 `.tif`) — die Wahl ist beliebig, ihre Bestaendigkeit nicht."""

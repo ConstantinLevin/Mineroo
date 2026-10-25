@@ -228,7 +228,7 @@ def unpack_response(response: dict[str, Any], chunk: Chunk) -> ChunkArtifacts:
     Vorbedingung:
         `response["status"] == "COMPLETED"`. Nicht erfolgreiche Endzustaende
         werden VOR dem Auspacken vom Executor in eine Ausnahme uebersetzt (Schritt
-        3b dort) — hier kommen sie nicht an.
+        2b dort) — hier kommen sie nicht an.
 
     Zusicherung:
         Verlustfrei: Was die Antwort trug, steht danach in einem Feld von
