@@ -494,6 +494,16 @@ Antwort als `letzter_versuch`. Daraus folgt:
   wenn noch kein Ergebnis da ist (`executor.write_failure_if_no_result`; ein
   vorhandenes `failed` mit bezahltem `raw` bleibt), und beendet den Job über
   `JobManager.finish_job` als `failed`, mit derselben Löschregel wie der Worker.
+  Das Budget zählt je Job, nicht je Schuldigem: Ein Dokument, das den
+  Daemon-Prozess abstürzen lässt (etwa PDFium beim Schneiden), lässt mit ihm alle
+  Jobs hängen, die gerade mitliefen. Jeder Absturz kostet jeden von ihnen einen
+  Versuch, und stürzt der Prozess wiederholt ab, enden auch die unschuldigen
+  Dokumente als `failed` („Worker wiederholt abgestürzt“). Eine Mechanik, die
+  Schuldige und Mitläufer trennt, gibt es nicht und soll es nicht geben: Der
+  Betreiber holt die Mitläufer gezielt zurück, mit `retry HASH` je Dokument oder
+  `retry_all(hashes)` mit Angabe, nicht mit `retry --all` (`retry_all()` ohne
+  Angabe), das den Schuldigen mit einreihte und den Daemon erneut abstürzen
+  ließe.
 
 Ohne Ergebnis enden kann danach nur noch Seltenes oder von Hand Ausgelöstes: ein
 Abbruch über die API (`cancel_job_by_id(…, abort=True)`), die Absage eines

@@ -1227,7 +1227,7 @@ class OCRClient:
 
         Je Dokument eine Abfrage seines Jobs (`list_jobs(id=…)`); waehrend eines
         grossen Laufs mit vielen offenen Dokumenten sind das entsprechend viele.
-        Ohne laufenden Daemon warnt es wie `retry`, einmal fuer den ganzen Aufruf.
+        Ohne laufenden Daemon warnt es wie `retry`, einmal je daemonloser Phase.
 
         Args:
             hashes: Die Dokumente, oder None fuer jedes ohne gueltiges Ergebnis.
