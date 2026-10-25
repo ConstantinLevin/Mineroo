@@ -1123,7 +1123,8 @@ class OCRClient:
         if stand.row is None:
             raise DocumentNotFound(
                 f"{sha256} hat noch kein Ergebnis: Es ist abgeschickt und offen. "
-                f"Wo es steht, sagt `document()`; darauf warten `wait()`."
+                f"Wo es steht, sagt `document()` (`mineru-ocr show {sha256}`); "
+                f"darauf warten `wait()` (`mineru-ocr wait {sha256}`)."
             )
         return OCRWrapper.from_row(stand.row, self.conn)
 

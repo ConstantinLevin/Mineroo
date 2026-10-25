@@ -460,6 +460,14 @@ def test_show_raw_eines_offenen_dokuments_sagt_dass_es_noch_kein_ergebnis_hat(
     assert ergebnis.exit_code == 1
     assert ergebnis.stdout == ""
     assert "noch kein Ergebnis" in ergebnis.stderr
+    # Wer an der Kommandozeile sitzt, bekommt die Kommandos genannt, nicht nur
+    # die Funktionen der Bibliothek.
+    assert "mineru-ocr show" in ergebnis.stderr
+    assert "mineru-ocr wait" in ergebnis.stderr
+
+    markdown = cli.invoke(app, ["markdown", sha])
+    assert markdown.exit_code == 1
+    assert "mineru-ocr show" in markdown.stderr
 
 
 async def test_show_zeigt_was_document_sagt_und_raw_die_vollstaendige_antwort(
