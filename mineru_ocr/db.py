@@ -586,8 +586,8 @@ Job danach in Stuecke schneidet."""
 def check_schema(conn: psycopg.Connection[Any]) -> None:
     """Prueft rein lesend, ob die Tabellen da sind und zum Code passen.
 
-    Fuer jeden Zugang: Daemon und Client rufen das beim Start, `setup` nach dem
-    Anlegen. Nach einem Paket-Update ohne `setup` steht sonst die alte
+    Fuer jeden Zugang: Daemon und Client rufen das beim Start (der
+    `AsyncOCRClient` ueber `check_schema_async`), `setup` nach dem Anlegen. Nach einem Paket-Update ohne `setup` steht sonst die alte
     Tabelle mit `new`-Zeilen da, und der erste Lesezugriff scheiterte an
     `DocumentStatus('new')` mit einem `ValueError` — beim Daemon in jedem Job
     vor dem Fehlerzweig, sodass das Dokument ohne Ergebnis endete, bei der
@@ -604,6 +604,14 @@ def check_schema(conn: psycopg.Connection[Any]) -> None:
     """
     with conn.cursor(row_factory=dict_row) as cur:
         katalog = cur.execute(_KATALOG_SQL).fetchone()
+    _schema_bewerten(katalog)
+
+
+async def check_schema_async(conn: psycopg.AsyncConnection[Any]) -> None:
+    """Dasselbe wie `check_schema`, asynchron: fuer den `AsyncOCRClient`."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(_KATALOG_SQL)
+        katalog = await cur.fetchone()
     _schema_bewerten(katalog)
 
 

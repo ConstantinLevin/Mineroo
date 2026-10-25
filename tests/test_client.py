@@ -2607,6 +2607,30 @@ async def test_async_client_oeffnet_und_schliesst_pool_und_app_selbst(
     assert (klient._conn, klient._pool, klient._app) == (None, None, None)
 
 
+async def test_async_client_auf_der_alten_tabelle_meldet_setup_statt_valueerror(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    alte_documents_form: None,
+) -> None:
+    """Wie der Sync-Client prueft der Async-Client das Schema beim Betreten und
+    sagt den Weg, statt beim ersten Lesen an `DocumentStatus('new')` zu
+    scheitern; was schon offen war, macht er wieder zu."""
+    db_conn.execute(
+        "INSERT INTO documents (sha256, endpoint_id, mime, size_bytes) "
+        "VALUES (%s, 'e', 'image/png', 1)",
+        ("c" * 64,),
+    )
+    vorher = _verbindungen_stabil(db_conn)
+    klient = AsyncOCRClient(db_dsn=_test_datenbank)
+
+    with pytest.raises(DatabaseError, match="setup"):
+        async with klient:
+            pass
+
+    assert (klient._conn, klient._pool, klient._app) == (None, None, None)
+    assert _verbindungen_erreichen(db_conn, vorher), "Verbindung blieb offen"
+
+
 async def test_async_client_macht_bei_scheiterndem_betreten_alles_wieder_zu(
     _test_datenbank: str,
     db_conn: psycopg.Connection[Any],

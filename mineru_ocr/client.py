@@ -1457,6 +1457,9 @@ class AsyncOCRClient:
         zugemacht, was schon offen ist."""
         try:
             self._conn = await db.connect_async(self._settings.db_dsn)
+            # Wie im Sync-Client: Ein fehlendes oder veraltetes Schema meldet sich
+            # hier mit dem Weg, nicht spaeter beim ersten Lesen.
+            await db.check_schema_async(self._conn)
             pool: AsyncNullConnectionPool[psycopg.AsyncConnection[Any]] = (
                 AsyncNullConnectionPool(
                     self._settings.db_dsn, max_size=1, num_workers=1, open=False
