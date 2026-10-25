@@ -1237,14 +1237,14 @@ async def test_retry_fragt_vor_dem_geldausgeben(
     assert "KOSTET" in verneint.output or "kostet Geld" in verneint.output
     # Nichts passiert: Der Job steht unveraendert auf `failed`.
     zustand = db_conn.execute(
-        "SELECT status FROM procrastinate_jobs WHERE queueing_lock = %s", (sha,)
+        "SELECT status FROM procrastinate_jobs WHERE lock = %s", (sha,)
     ).fetchone()
     assert zustand is not None and zustand[0] == "failed"
 
     bejaht = cli.invoke(app, ["retry", sha], input="j\ny\n")
     assert bejaht.exit_code == 0
     zustand = db_conn.execute(
-        "SELECT status FROM procrastinate_jobs WHERE queueing_lock = %s", (sha,)
+        "SELECT status FROM procrastinate_jobs WHERE lock = %s", (sha,)
     ).fetchone()
     assert zustand is not None and zustand[0] == "todo"
 

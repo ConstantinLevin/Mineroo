@@ -411,52 +411,42 @@ async def retry_stalled(context: procrastinate.JobContext, timestamp: int) -> No
 
 def enqueue_document(
     app: procrastinate.App, connection: Any, sha256: str
-) -> bool:
-    """Reiht ein Dokument ein. EINZELN, nie im Stapel.
+) -> int:
+    """Reiht ein Dokument ein, EINZELN, und gibt die Kennung des Jobs.
 
     Eingereiht wird per NAMEN und mit ausdruecklicher Queue, beide aus denselben
     Konstanten, unter denen der Daemon den Task anmeldet. Ohne `queue=` landete
     der Job in `default`, die der Daemon nie liest. Die Verbindung ist die des
-    Aufrufers (`connection=`): Das Einreihen holt sich keine aus dem Pool, und
-    der Client bleibt bei der einen Verbindung, die er ohnehin haelt.
+    Aufrufers (`connection=`): Das Einreihen holt sich keine aus dem Pool, laeuft
+    in der Transaktion des Aufrufers, und das Signal, das die Worker weckt, geht
+    erst bei deren Commit hinaus.
 
-    Setzt beim Einreihen ZWEI Sperren, und beide werden gebraucht:
-
-    `queueing_lock = sha256` verhindert ein zweites WARTENDES Duplikat. Es ist
-    aber schon frei, sobald der Job laeuft — „queueing_lock allows a single job in
-    todo status. Meanwhile, it allows multiple jobs to be in doing status"
-    (Feature-Verifikation Punkt 5). Ein waehrend der Verarbeitung nachgeschobenes
-    Duplikat wuerde also angenommen und liefe parallel: doppelte Bezahlung
-    desselben Dokuments.
-
-    `lock = sha256` schliesst diese Luecke. Es serialisiert Jobs gleichen Locks —
-    das Duplikat startet erst NACH dem laufenden Job. Endet der laufende
-    erfolgreich, endet das Duplikat sofort am Nachsehen des Executors, ohne etwas zu
-    kosten. Endet er `failed`, verarbeitet das Duplikat das Dokument neu, und
-    auch das ist gewollt: Es ist genau der eine weitere Versuch. Der Lock wird
+    Am Job steht nur `lock = sha256`, kein `queueing_lock`. Die Sperre gegen ein
+    zweites Einreihen ist die Eingabe-Tabelle (ihr Primaerschluessel): Wer
+    einreiht, hat die Eingabe gerade neu angelegt oder legt fuer eine stehende
+    Eingabe ausdruecklich einen neuen Job an (`retry`). Ein `queueing_lock`
+    daneben loeste Procrastinate-Issue #1446 aus: Ein zweiter Job, eingereiht
+    waehrend der erste laeuft, blieb fuer immer auf „laeuft" stehen, wenn der erste
+    wiederholbar scheiterte. `lock` serialisiert Jobs desselben Dokuments; er wird
     bei JEDEM Job-Ende frei, auch bei einem gescheiterten — „the second task
     cannot run before the first one has ended (successfully or not)"
-    (Feature-Verifikation Punkt 18) —, eine Kette kann also nie dauerhaft
-    verklemmen.
+    (Feature-Verifikation Punkt 18) —, eine Kette kann also nie verklemmen.
 
-    Warum ausdruecklich EINZELN und nie ueber das Stapel-Einreihen: Beides
-    zusammen ist untersagt, und die Folge waere schlimm. Enthaelt ein Stapel auch
-    nur einen Konflikt, wird der GESAMTE Stapel zurueckgerollt — dreissigtausend
-    Dokumente scheitern an einem einzigen bereits wartenden (Feature-Verifikation
-    Punkt 9). Einzelne Einreihungen sind billig; dieser Fehler waere es nicht.
+    Warum ausdruecklich EINZELN und nie ueber das Stapel-Einreihen: Jedes Dokument
+    hat seine eigene Transaktion mit seiner Eingabe, und ein Stapel, der an einem
+    Element scheitert, rollte alle zurueck (Feature-Verifikation Punkt 9).
 
     Args:
         app: Die App des Clients (`build_client_app`), geoeffnet oder nicht — mit
             `connection=` braucht das Einreihen keinen Pool.
-        connection: Die Verbindung des Aufrufers. Im Betrieb eine psycopg-
-            Verbindung mit `autocommit`, damit der Job sofort sichtbar ist.
+        connection: Die Verbindung des Aufrufers, in deren Transaktion der Job
+            entsteht.
         sha256: Welches Dokument.
 
     Returns:
-        True, wenn ein Job entstanden ist. False, wenn schon einer wartet —
-        das ist der NORMALFALL beim erneuten Durchlaufen eines Ordners und heisst
-        schlicht „laeuft schon" (die Ausnahme `AlreadyEnqueued` wird gefangen und
-        in dieses False uebersetzt).
+        Die Kennung des Jobs, die `defer` zurueckgibt. Der Aufrufer schreibt sie
+        in `inputs.job_id`: Ueber sie findet `document()` den Job und `retry` den,
+        den es wiederholt.
 
     Zusicherung:
         Reiht ein und wartet nicht. Wer warten will, nimmt `wait`. Das trennt
@@ -465,22 +455,12 @@ def enqueue_document(
 
     Kosten: keine unmittelbar — mittelbar loest der Job Verarbeitung aus.
     """
-    try:
-        app.configure_task(
-            name=config.TASK_OCR_DOCUMENT,
-            queue=config.QUEUE_OCR,
-            lock=sha256,
-            queueing_lock=sha256,
-            connection=connection,
-        ).defer(sha256=sha256)
-    except procrastinate.exceptions.AlreadyEnqueued:
-        # „Laeuft schon" — der Normalfall beim erneuten Durchlaufen eines
-        # Ordners und ausdruecklich kein Fehler. Genau darauf beruht Jurgens
-        # Ordner-Szenario: „dann später kommt zum ordner noch ein pfad hinzu den
-        # tut man einfach dazu und lässt nochmal durchlaufen weil eh nur läuft
-        # was noch fehlt".
-        return False
-    return True
+    return app.configure_task(
+        name=config.TASK_OCR_DOCUMENT,
+        queue=config.QUEUE_OCR,
+        lock=sha256,
+        connection=connection,
+    ).defer(sha256=sha256)
 
 
 def worker_context_resources(settings: Settings) -> dict[str, Any]:

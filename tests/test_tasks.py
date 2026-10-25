@@ -83,7 +83,7 @@ def _job(attempts: int = 0) -> Job:
         status="doing",
         queue=config.QUEUE_OCR,
         lock=HASH,
-        queueing_lock=HASH,
+        queueing_lock=None,
         task_name=config.TASK_OCR_DOCUMENT,
         attempts=attempts,
     )
@@ -220,10 +220,12 @@ def test_es_gibt_weder_modulweite_app_noch_umschalten() -> None:
 
 
 def test_einreihen_erzeugt_einen_job(einreihen_app: procrastinate.App) -> None:
-    """Der Normalfall: ein Job, mit dem Hash als einzigem Argument."""
-    assert tasks.enqueue_document(einreihen_app, object(), HASH) is True
+    """Der Normalfall: ein Job, mit dem Hash als einzigem Argument; zurueck kommt
+    seine Kennung, die der Aufrufer an die Eingabe schreibt."""
+    kennung = tasks.enqueue_document(einreihen_app, object(), HASH)
     jobs = list(einreihen_app.connector.jobs.values())  # type: ignore[attr-defined]
     assert len(jobs) == 1
+    assert kennung == jobs[0]["id"]
     assert jobs[0]["task_name"] == config.TASK_OCR_DOCUMENT
     # Der Hash ist das EINZIGE Argument. Alles Weitere steht in der Zeile — ein
     # Job-Argument waere eine Kopie, und eine Kopie kann abweichen.
@@ -263,27 +265,18 @@ def test_einreihen_laeuft_ueber_die_uebergebene_verbindung(
     assert speicher.verbindungen == [verbindung]
 
 
-def test_zweites_einreihen_meldet_laeuft_schon(
-    einreihen_app: procrastinate.App,
-) -> None:
-    """`AlreadyEnqueued` wird gefangen und zu False — der Normalfall beim
-    wiederholten Durchlaufen eines Ordners, kein Fehler."""
-    assert tasks.enqueue_document(einreihen_app, object(), HASH) is True
-    assert tasks.enqueue_document(einreihen_app, object(), HASH) is False
-    assert len(einreihen_app.connector.jobs) == 1  # type: ignore[attr-defined]
+def test_der_job_traegt_nur_lock(einreihen_app: procrastinate.App) -> None:
+    """`lock` auf den Hash, kein `queueing_lock`.
 
-
-def test_beide_sperren_werden_gesetzt(einreihen_app: procrastinate.App) -> None:
-    """`queueing_lock` UND `lock`, beide auf den Hash.
-
-    Ohne den zweiten wuerde ein waehrend der Verarbeitung nachgeschobenes
-    Duplikat angenommen und liefe parallel: dasselbe Dokument zweimal bezahlt.
-    Der `queueing_lock` allein reicht nicht — er bindet nur den Zustand `todo`
-    und ist frei, sobald der Job laeuft.
+    Die Sperre gegen ein zweites Einreihen ist die Eingabe-Tabelle. Ein
+    `queueing_lock` daneben loeste Procrastinate-Issue #1446 aus: Ein zweiter Job,
+    eingereiht waehrend der erste laeuft, blieb fuer immer auf „laeuft" stehen,
+    wenn der erste wiederholbar scheiterte. `lock` serialisiert die Jobs eines
+    Dokuments.
     """
     tasks.enqueue_document(einreihen_app, object(), HASH)
     job = next(iter(einreihen_app.connector.jobs.values()))  # type: ignore[attr-defined]
-    assert job["queueing_lock"] == HASH
+    assert job["queueing_lock"] is None
     assert job["lock"] == HASH
 
 

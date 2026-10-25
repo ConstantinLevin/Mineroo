@@ -203,7 +203,7 @@ def _warnungen_des_clients(caplog: pytest.LogCaptureFixture) -> int:
 def _jobs_zaehlen(conn: psycopg.Connection[Any], sha256: str) -> int:
     """Wie viele Procrastinate-Jobs zu diesem Dokument eingereiht sind."""
     zeile = conn.execute(
-        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s",
+        "SELECT count(*) FROM procrastinate_jobs WHERE lock = %s",
         (sha256,),
     ).fetchone()
     assert zeile is not None
@@ -1023,24 +1023,6 @@ def test_ocr_start_wenn_ein_anderer_schneller_war_legt_nichts_an(
     assert _zaehlen(db_conn, "procrastinate_jobs") == 0
 
 
-def test_ocr_start_wenn_der_job_schon_besteht_rollt_alles_zurueck(
-    offener_client: OCRClient,
-    db_conn: psycopg.Connection[Any],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Besteht zum Hash schon ein Job (`queueing_lock`), wird die Eingabe dieses
-    Aufrufs nicht stehen gelassen: sonst gaebe es eine Eingabe ohne eigenen Job,
-    die niemand je anfasst."""
-    monkeypatch.setattr(tasks, "enqueue_document", lambda *_a, **_k: False)
-
-    gereicht = offener_client.ocr_start(_png("schon da"))
-
-    assert gereicht.queued is False
-    assert gereicht.status is None
-    assert _zaehlen(db_conn, "documents") == 0
-    assert _zaehlen(db_conn, "inputs") == 0
-
-
 def test_ocr_start_warnt_nicht_bei_laufendem_daemon(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
@@ -1106,7 +1088,7 @@ def test_ocr_start_nimmt_bytes_und_gibt_den_hash(
     assert h == _hash(inhalt)
     assert isinstance(h, str)
     anzahl = db_conn.execute(
-        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s", (h,)
+        "SELECT count(*) FROM procrastinate_jobs WHERE lock = %s", (h,)
     ).fetchone()
     assert anzahl is not None and anzahl[0] == 1
     assert h.queued is True
@@ -1992,7 +1974,7 @@ def test_einreihen_holt_keine_verbindung_aus_dem_pool(
     h = _abschicken(offener_client, "a.png")
 
     anzahl = db_conn.execute(
-        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s", (h,)
+        "SELECT count(*) FROM procrastinate_jobs WHERE lock = %s", (h,)
     ).fetchone()
     assert anzahl is not None and anzahl[0] == 1
 
@@ -2013,7 +1995,7 @@ def test_eingereihter_job_liegt_in_der_queue_des_daemons(
         config.TASK_OCR_DOCUMENT,
         config.QUEUE_OCR,
         h,
-        h,
+        None,
     )
 
 

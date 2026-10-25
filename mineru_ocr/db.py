@@ -93,7 +93,8 @@ CREATE INDEX IF NOT EXISTS documents_status_idx ON documents (status);
 
 CREATE TABLE IF NOT EXISTS inputs (
     sha256        text PRIMARY KEY,
-    content       bytea NOT NULL
+    content       bytea NOT NULL,
+    job_id        bigint
 );
 """
 """Das vollstaendige Schema: `documents` fuer die Ergebnisse, `inputs` fuer die
@@ -558,7 +559,7 @@ def _datenbank_anlegen_falls_noetig(dsn: str) -> None:
         ) from fehler
 
 
-INPUT_SPALTEN: Final = frozenset({"sha256", "content"})
+INPUT_SPALTEN: Final = frozenset({"sha256", "content", "job_id"})
 """Die Spalten von `inputs`. Die Tabelle hat keine Zeilenklasse (der Executor
 liest nur `content`), also steht die Erwartung hier, und `_schema_abgleichen`
 vergleicht gegen sie. Typ, NOT NULL und Primaerschluessel stehen dort selbst."""
@@ -854,6 +855,23 @@ def insert_input(
         (sha256, content),
     ).fetchone()
     return ergebnis is not None
+
+
+def set_input_job(conn: psycopg.Connection[Any], *, sha256: str, job_id: int) -> None:
+    """Merkt an der Eingabe, welcher Procrastinate-Job das Dokument verarbeitet.
+
+    Die Verbindung Dokument–Job: Abschicken schreibt die Kennung, die `defer`
+    zurueckgibt, in derselben Transaktion wie Eingabe und Job; `retry` schreibt
+    die Kennung des neuen Jobs, wenn es einen anlegt. Ueber sie findet
+    `document()` den Job eines offenen Dokuments und `retry` den, den es
+    wiederholt. Die Kennung steht nur hier, nicht am Job (der traegt nur den Hash
+    als `lock`).
+
+    Kosten: keine.
+    """
+    conn.execute(
+        "UPDATE inputs SET job_id = %s WHERE sha256 = %s", (job_id, sha256)
+    )
 
 
 async def read_input_async(dsn: str, sha256: str) -> bytes | None:

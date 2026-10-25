@@ -72,9 +72,12 @@ class Erzeuger:
     app: procrastinate.App
     conn: psycopg.Connection[Any]
 
-    def einreihen(self, sha: str) -> bool:
-        """Reiht ein Dokument ein, wie der Client es tut (`connection=`)."""
-        return tasks.enqueue_document(self.app, self.conn, sha)
+    def einreihen(self, sha: str) -> int:
+        """Reiht ein Dokument ein, wie der Client es tut (`connection=`), und
+        merkt die Kennung an der Eingabe."""
+        kennung = tasks.enqueue_document(self.app, self.conn, sha)
+        db.set_input_job(self.conn, sha256=sha, job_id=kennung)
+        return kennung
 
 
 @pytest.fixture
@@ -178,15 +181,15 @@ def _eingabe_steht(conn: psycopg.Connection[Any], sha: str) -> bool:
 
 
 def _jobs_zu(conn: psycopg.Connection[Any], sha: str) -> list[Job]:
-    """Liest die Jobs eines Dokuments — ueber den `queueing_lock`-Link.
+    """Liest die Jobs eines Dokuments — ueber ihren `lock`, den Hash.
 
     Genau der Weg des Ein-Buch-Modells: „DER JOB LINKED AUF DAS DOKUMENT DAS ER
     PROCESSED UND WENN MAN DEN STATUS EINES DOKUMENTS HABEN WILL QUERIED MAN
     NACH DE LETZTEN JOB DER AUF DAS DOKUMENT LINKT" (Plan 2.4).
     """
     zeilen = conn.execute(
-        "SELECT id, status, attempts, queue_name, lock, queueing_lock, task_name "
-        "FROM procrastinate_jobs WHERE queueing_lock = %s ORDER BY id",
+        "SELECT id, status, attempts, queue_name, lock, task_name "
+        "FROM procrastinate_jobs WHERE lock = %s ORDER BY id",
         (sha,),
     ).fetchall()
     return [
@@ -196,8 +199,8 @@ def _jobs_zu(conn: psycopg.Connection[Any], sha: str) -> list[Job]:
             attempts=z[2],
             queue=z[3],
             lock=z[4],
-            queueing_lock=z[5],
-            task_name=z[6],
+            queueing_lock=None,
+            task_name=z[5],
         )
         for z in zeilen
     ]
@@ -256,7 +259,7 @@ async def test_dokument_laeuft_vollstaendig_durch(
     `succeeded`, und der abgeleitete Zustand sagt TERMINAL.
     """
     sha = _anlegen(db_conn, tmp_path, "a.png")
-    assert erzeuger.einreihen(sha) is True
+    erzeuger.einreihen(sha)
 
     async def fertig() -> bool:
         return get_document(db_conn, sha) is not None
@@ -444,7 +447,7 @@ async def test_absturz_mitten_im_dokument_heilt_durch_den_waechter(
     assert tote_kennung is not None
     db_conn.execute(
         "UPDATE procrastinate_jobs SET status = 'doing', worker_id = %s "
-        "WHERE queueing_lock = %s",
+        "WHERE lock = %s",
         (tote_kennung[0], sha),
     )
     db_conn.commit()
@@ -473,16 +476,6 @@ async def test_absturz_mitten_im_dokument_heilt_durch_den_waechter(
     assert zeile.raw is not None
     # Und es wurde wirklich verarbeitet, nicht bloss umgebucht.
     assert runpod.aufrufe >= 1
-
-
-async def test_doppeltes_einreihen_wird_abgefangen(
-    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
-) -> None:
-    """(f) Das zweite Einreihen ergibt „laeuft schon" statt eines zweiten Jobs."""
-    sha = _anlegen(db_conn, tmp_path, "f.png")
-    assert erzeuger.einreihen(sha) is True
-    assert erzeuger.einreihen(sha) is False
-    assert len(_jobs_zu(db_conn, sha)) == 1
 
 
 async def test_retry_von_hand_verarbeitet_wirklich_neu(
@@ -706,7 +699,7 @@ async def test_duplikat_waehrend_der_verarbeitung_ist_ein_nichts_tun(
     assert erster.aufrufe == 1
 
     # Jetzt das Duplikat.
-    assert erzeuger.einreihen(sha) is True
+    erzeuger.einreihen(sha)
     zweiter = ProtokollRunPod()
 
     async def zweiter_job_fertig() -> bool:
@@ -923,6 +916,58 @@ async def test_abschicken_legt_nur_die_eingabe_an_und_der_job_am_ende_die_zeile(
     assert not _eingabe_steht(db_conn, sha)
 
 
+def test_abschicken_legt_eingabe_und_job_in_einer_transaktion_an_und_merkt_die_kennung(
+    db_conn: psycopg.Connection[Any],
+    int_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Eingabe und Job entstehen in EINER Transaktion: Solange das Einreihen
+    laeuft, sieht eine andere Verbindung weder die Eingabe noch den Job. Danach
+    steht die Kennung, die `defer` zurueckgab, in `inputs.job_id`, und der Job
+    liegt in der Queue des Daemons und traegt nur `lock`, keinen
+    `queueing_lock`: Die Sperre gegen Dubletten ist die Eingabe-Tabelle.
+
+    Nur gegen echtes Postgres pruefbar, weil Procrastinates `InMemoryConnector`
+    `connection=` uebergeht."""
+    echtes_einreihen = tasks.enqueue_document
+    gesehen: list[tuple[object, object]] = []
+
+    def beobachtet(app: Any, conn: Any, sha256: str) -> int:
+        kennung = echtes_einreihen(app, conn, sha256)
+        with psycopg.connect(int_settings.db_dsn, autocommit=True) as andere:
+            gesehen.append(
+                (
+                    andere.execute(
+                        "SELECT 1 FROM inputs WHERE sha256 = %s", (sha256,)
+                    ).fetchone(),
+                    andere.execute(
+                        "SELECT 1 FROM procrastinate_jobs WHERE id = %s", (kennung,)
+                    ).fetchone(),
+                )
+            )
+        return kennung
+
+    monkeypatch.setattr(tasks, "enqueue_document", beobachtet)
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(PNG_KOPF + b"eine transaktion")
+
+    assert gesehen == [(None, None)]
+    zeilen = db_conn.execute(
+        "SELECT j.id, j.task_name, j.queue_name, j.lock, j.queueing_lock, i.job_id "
+        "FROM procrastinate_jobs j, inputs i WHERE i.sha256 = %s",
+        (sha,),
+    ).fetchall()
+    assert len(zeilen) == 1
+    kennung, name, queue, lock, queueing_lock, gemerkt = zeilen[0]
+    assert (name, queue, lock, queueing_lock) == (
+        config.TASK_OCR_DOCUMENT,
+        config.QUEUE_OCR,
+        sha,
+        None,
+    )
+    assert gemerkt == kennung
+
+
 async def test_zweites_abschicken_waehrend_der_job_laeuft_legt_keinen_zweiten_an(
     db_conn: psycopg.Connection[Any], int_settings: Settings
 ) -> None:
@@ -974,7 +1019,7 @@ def test_gleichzeitiges_abschicken_derselben_bytes_legt_einen_job_an(
     erster_haelt = threading.Event()
     zweiter_wartete: list[bool] = []
 
-    def langsam(app: Any, conn: Any, sha256: str) -> bool:
+    def langsam(app: Any, conn: Any, sha256: str) -> int:
         # Die Eingabe ist abgelegt, aber nicht festgeschrieben. Gehalten wird,
         # bis Postgres den zweiten am Primaerschluessel warten laesst — keine
         # feste Pause, die auf einer langsamen Maschine still verstriche und

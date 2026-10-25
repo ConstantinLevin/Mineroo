@@ -797,9 +797,10 @@ class OCRClient:
                     # warten lassen). Es bleibt bei seiner Eingabe und seinem Job.
                     raise _SchonUnterwegs
                 # EINZELN und in dieser Transaktion: Das Signal an die Worker geht
-                # erst beim Commit hinaus.
-                if not tasks.enqueue_document(self._procrastinate, self.conn, sha256):
-                    raise _SchonUnterwegs
+                # erst beim Commit hinaus. Die Kennung kommt an die Eingabe, ueber
+                # sie finden `document()` und `retry` den Job.
+                kennung = tasks.enqueue_document(self._procrastinate, self.conn, sha256)
+                db.set_input_job(self.conn, sha256=sha256, job_id=kennung)
         except _SchonUnterwegs:
             # Steht inzwischen ein Ergebnis da (der Job des anderen endete eben),
             # ist das der Zustand; sonst ist das Dokument offen.
@@ -930,7 +931,7 @@ class OCRClient:
         erledigt = 0
         for huelle in betroffene:
             jobs = sorted(
-                app.job_manager.list_jobs(queueing_lock=huelle.sha256),
+                app.job_manager.list_jobs(lock=huelle.sha256),
                 key=lambda j: j.id or 0,
             )
             if not jobs:
@@ -1104,7 +1105,7 @@ class OCRClient:
         Kosten: keine.
         """
         stand = self._stand(sha256)
-        jobs = self._procrastinate.job_manager.list_jobs(queueing_lock=sha256)
+        jobs = self._procrastinate.job_manager.list_jobs(lock=sha256)
         return db.derive_status(sha256, stand.row, jobs)
 
     def get(self, sha256: str) -> OCRWrapper:

@@ -406,14 +406,15 @@ def test_documents_kennt_keine_pfade(db_conn: psycopg.Connection[Any]) -> None:
 @pytest.mark.db
 def test_setup_legt_inputs_an(db_conn: psycopg.Connection[Any]) -> None:
     """Die Eingabe hat eine eigene Tabelle: `sha256` als Schluessel, `content` als
-    `bytea` — nicht base64 in einer Textspalte."""
+    `bytea` — nicht base64 in einer Textspalte —, und `job_id`, die Kennung des
+    Jobs, ueber die `document()` und `retry` ihn finden."""
     spalten = dict(
         db_conn.execute(
             "SELECT column_name, data_type FROM information_schema.columns "
             "WHERE table_name = 'inputs'"
         ).fetchall()
     )
-    assert spalten == {"sha256": "text", "content": "bytea"}
+    assert spalten == {"sha256": "text", "content": "bytea", "job_id": "bigint"}
     schluessel = db_conn.execute(
         "SELECT a.attname FROM pg_index i "
         "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
