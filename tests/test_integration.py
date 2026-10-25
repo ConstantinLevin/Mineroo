@@ -1928,3 +1928,87 @@ def test_retry_all_prueft_erst_alle_hashes(
             klient.retry_all([sha, "e" * 64])
 
     assert [job.status for job in _jobs_zu(db_conn, sha)] == ["cancelled"]
+
+
+def test_gleichzeitiges_retry_reiht_nur_einen_neuen_job_ein(
+    db_conn: psycopg.Connection[Any],
+    int_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zwei Aufrufer rufen `retry` gleichzeitig fuer dasselbe Dokument ohne
+    laufenden Job: Nur einer reiht ein, der andere sieht danach dessen Job und
+    meldet unterwegs. Sonst entstuenden zwei Jobs, und scheiterte der erste, liefe
+    der zweite und bezahlte noch einmal. Ohne Zeitrennen: Der erste haelt beim
+    Einreihen an, bis Postgres den zweiten nachweislich warten laesst (oder eine
+    Frist verstreicht, wenn nichts ihn aufhaelt)."""
+    import threading
+
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(PNG_KOPF + b"zweimal retry")
+    db_conn.execute("UPDATE procrastinate_jobs SET status = 'cancelled'")
+
+    echtes_einreihen = tasks.enqueue_document
+    erster_haelt = threading.Event()
+    zweiter_wartete: list[bool] = []
+
+    def langsam(app: Any, conn: Any, sha256: str) -> int:
+        if not erster_haelt.is_set():
+            erster_haelt.set()
+            frist = time.monotonic() + 10
+            with psycopg.connect(int_settings.db_dsn, autocommit=True) as beobachter:
+                while time.monotonic() < frist:
+                    wartend = beobachter.execute(
+                        "SELECT 1 FROM pg_stat_activity "
+                        "WHERE datname = current_database() "
+                        "AND wait_event_type = 'Lock'"
+                    ).fetchone()
+                    if wartend is not None:
+                        zweiter_wartete.append(True)
+                        break
+                    time.sleep(0.01)
+        return echtes_einreihen(app, conn, sha256)
+
+    monkeypatch.setattr(tasks, "enqueue_document", langsam)
+    ausgaenge: dict[str, RetryOutcome] = {}
+
+    def wiederholen(wer: str) -> None:
+        with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as anderer:
+            ausgaenge[wer] = anderer.retry(sha)
+
+    erster = threading.Thread(target=wiederholen, args=("erster",))
+    erster.start()
+    assert erster_haelt.wait(10)
+    zweiter = threading.Thread(target=wiederholen, args=("zweiter",))
+    zweiter.start()
+    erster.join(30)
+    zweiter.join(30)
+
+    assert sorted(o.value for o in ausgaenge.values()) == ["requeued", "underway"]
+    assert [job.status for job in _jobs_zu(db_conn, sha)] == ["cancelled", "todo"]
+    assert zweiter_wartete
+
+
+def test_retry_gibt_seine_sperre_frei_solange_der_client_offen_ist(
+    db_conn: psycopg.Connection[Any], int_settings: Settings
+) -> None:
+    """Die Sperre gilt nur fuer die Dauer eines `retry`: Ein anderer Client kann
+    dasselbe Dokument gleich danach wiederholen, auch wenn der erste noch offen
+    ist. Behielte die Sitzung sie, wartete jeder andere, bis der erste schliesst."""
+    import threading
+
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as erster:
+        sha = erster.ocr_start(PNG_KOPF + b"sperre frei")
+        assert erster.retry(sha) is RetryOutcome.UNDERWAY
+        danach: list[RetryOutcome] = []
+
+        def anderswo() -> None:
+            with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as zweiter:
+                danach.append(zweiter.retry(sha))
+
+        faden = threading.Thread(target=anderswo, daemon=True)
+        faden.start()
+        faden.join(10)
+        frei = not faden.is_alive()
+
+    assert frei, "der zweite Client wartete auf die Sperre des ersten"
+    assert danach == [RetryOutcome.UNDERWAY]

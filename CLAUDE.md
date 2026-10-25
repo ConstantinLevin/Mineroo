@@ -305,7 +305,10 @@ API; das Zurücksetzen scheitert am CHECK `check_not_todo_abort_requested`) oder
 kein Job → in **einer** Transaktion `failed`-Zeile weg, neuer Job, neue Kennung
 in `inputs.job_id`. Weil die `failed`-Zeile weggeht, ist das Dokument danach
 offen, und jedes Warten, in jedem Prozess, wartet auf den neuen Lauf; einen
-Zeitstempel-Vergleich gibt es dafür nicht. Fehler von Procrastinate gehen nach
+Zeitstempel-Vergleich gibt es dafür nicht. Gleichzeitige `retry` auf dasselbe
+Dokument laufen nacheinander (`db.retry_lock`, eine Advisory-Sperre der Sitzung um
+Lesen und Handeln): Ohne sie läsen zwei Aufrufer beide „kein Job“ und reihten
+zwei Jobs ein, die beide bezahlt würden. Fehler von Procrastinate gehen nach
 oben, keiner wird als „nicht wiederholt" verschluckt. Das Kommando `retry` (Ziel
 oder `--all`) fragt vorher nach, außer mit `--yes`, und ruft genau eine der
 beiden Funktionen.

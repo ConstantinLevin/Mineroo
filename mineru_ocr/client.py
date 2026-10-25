@@ -908,6 +908,11 @@ class OCRClient:
         beiden Schritten, steht das Dokument ohne Ergebnis mit `failed`-Job da, und
         `retry` noch einmal setzt ihn zurueck.
 
+        Gleichzeitige `retry` auf dasselbe Dokument laufen nacheinander
+        (`db.retry_lock`, eine Advisory-Sperre um Lesen und Handeln): Der zweite
+        liest erst, wenn der erste fertig ist, sieht dessen Job und meldet
+        unterwegs, statt einen zweiten einzureihen, der noch einmal bezahlt wuerde.
+
         Lese-Einstellungen nimmt `retry` keine: Es wiederholt einen Job. Ein Fehler
         von Procrastinate (etwa ein Job, der zwischen Lesen und Zuruecksetzen
         seinen Zustand aenderte) geht nach oben, statt als „nicht wiederholt"
@@ -927,6 +932,13 @@ class OCRClient:
         Kosten: JA, mittelbar, bei `RESET` und `REQUEUED` — das Dokument wird neu
         verarbeitet und neu bezahlt.
         """
+        _hash_pruefen(sha256)
+        with db.retry_lock(self.conn, sha256):
+            return self._retry_unter_sperre(sha256)
+
+    def _retry_unter_sperre(self, sha256: str) -> RetryOutcome:
+        """`retry` fuer ein Dokument, dessen Sperre der Aufrufer haelt: Erst unter
+        ihr wird der Stand gelesen, auf dem die Entscheidung beruht."""
         stand = self._stand(sha256)
         if stand.row is not None and stand.row.status is not DocumentStatus.FAILED:
             return RetryOutcome.HAS_RESULT

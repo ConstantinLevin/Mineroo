@@ -29,7 +29,8 @@ from __future__ import annotations
 
 import enum
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from datetime import datetime
 from typing import Any, Final
@@ -872,6 +873,40 @@ def set_input_job(conn: psycopg.Connection[Any], *, sha256: str, job_id: int) ->
     conn.execute(
         "UPDATE inputs SET job_id = %s WHERE sha256 = %s", (job_id, sha256)
     )
+
+
+RETRY_SPERRKLASSE: Final = 26
+"""Die erste Haelfte des Schluessels der Advisory-Sperre von `retry_lock`; sie
+trennt diese Sperren von allen anderen auf derselben Datenbank."""
+
+
+@contextmanager
+def retry_lock(conn: psycopg.Connection[Any], sha256: str) -> Iterator[None]:
+    """Serialisiert `retry` je Dokument: eine Advisory-Sperre der Sitzung.
+
+    Zwei gleichzeitige `retry` auf dasselbe Dokument laesen sonst beide denselben
+    Stand (etwa „kein Job") und reihten beide ein; zwei Jobs, und scheiterte der
+    erste, bezahlte der zweite noch einmal. Unter der Sperre liest der zweite erst,
+    wenn der erste fertig ist, und sieht dessen Job.
+
+    Eine Sperre der SITZUNG und keine der Transaktion: `retry` nimmt die
+    `failed`-Zeile in einer eigenen Transaktion weg und setzt den Job danach auf
+    einer anderen Verbindung zurueck (`retry_job_by_id`); die Sperre muss beide
+    Schritte umfassen. Stirbt der Prozess, schliesst die Verbindung und gibt sie
+    frei. Der Schluessel ist (`RETRY_SPERRKLASSE`, `hashtext(sha256)`); eine
+    Kollision zweier Hashes laesst zwei Dokumente nur nacheinander laufen.
+
+    Kosten: keine.
+    """
+    conn.execute(
+        "SELECT pg_advisory_lock(%s, hashtext(%s))", (RETRY_SPERRKLASSE, sha256)
+    )
+    try:
+        yield
+    finally:
+        conn.execute(
+            "SELECT pg_advisory_unlock(%s, hashtext(%s))", (RETRY_SPERRKLASSE, sha256)
+        )
 
 
 def input_hashes(conn: psycopg.Connection[Any]) -> list[str]:
