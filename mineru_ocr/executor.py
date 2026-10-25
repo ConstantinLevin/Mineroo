@@ -92,9 +92,30 @@ def _fehler_umschlag(fehler: BaseException) -> dict[str, Any]:
     """
     return {
         "type": type(fehler).__name__,
-        "message": str(fehler),
+        "message": _fehlernachricht(fehler),
         "at": _jetzt(),
     }
+
+
+ABBRUCH_IM_LETZTEN_VERSUCH = "beim Herunterfahren im letzten Versuch abgebrochen"
+"""Der Vermerk an einem Dokument, dessen letzter Versuch abgebrochen wurde.
+
+Ein `CancelledError` traegt keinen Text; ohne diesen Vermerk stuende in `error`
+nur „CancelledError: ", und niemand saehe, dass das Dokument nicht an sich
+scheiterte, sondern an einem Herunterfahren zur falschen Zeit. Ein `retry`
+bringt es wieder in Gang."""
+
+
+def _fehlernachricht(fehler: BaseException) -> str:
+    """Der Text eines Fehlers, beim Abbruch der Vermerk statt des leeren Texts."""
+    if isinstance(fehler, asyncio.CancelledError):
+        return ABBRUCH_IM_LETZTEN_VERSUCH
+    return str(fehler)
+
+
+def _fehlerbeschreibung(fehler: BaseException) -> str:
+    """Die Kurzform fuer `error` und den Vermerk: Typ und Text."""
+    return f"{type(fehler).__name__}: {_fehlernachricht(fehler)}"
 
 
 async def process_document(
@@ -213,9 +234,13 @@ async def process_document(
     Wiederholbare Fehler werden GEWORFEN, ohne etwas zu schreiben — die
     Warteschlange legt den Job erneut vor, das Dokument laeuft von vorn.
     Endgueltige Fehler schreiben ZUERST (`raw` mit dem, was bis dahin ankam, samt
-    Fehler-Umschlag, Zustand `failed`, Wecksignal) und werfen DANN. Diese
+    Fehler-Umschlag, Zustand `failed`, Wecksignal) und werfen DANN; ebenso jeder
+    Fehler im letzten Versuch, auch der Abbruch beim Herunterfahren. Diese
     Reihenfolge ist der Grund, warum Job-Endzustand und Ergebnis immer dieselbe
-    Wahrheit tragen.
+    Wahrheit tragen: Jeder Job, der nicht neu eingereiht wird, schreibt ein
+    Ergebnis (Mineroo#27). Das Nachsehen (0.) und das Lesen der Eingabe (1.)
+    stehen mit im Ausnahme-Pfad, damit auch ein Datenbankfehler dort im letzten
+    Versuch `failed` schreibt.
 
     Was ein wiederholbarer Fehler mitten im Dokument KOSTET, steht hier, weil es
     sonst niemand sieht: Die bis dahin abgeholten Antworten liegen im
@@ -270,11 +295,12 @@ async def process_document(
             auf `input_error`.
         asyncio.CancelledError: Der Daemon faehrt herunter. Wird weitergeworfen,
             nicht verschluckt; vorher geht `/cancel` fuer den RunPod-Job hinaus,
-            auf den gerade gewartet wird. Der Job endet dann `aborted`, es
-            entsteht kein Ergebnis, und die Eingabe bleibt: Das Dokument ist
-            offen. Es gibt fuer `aborted` ausdruecklich kein Retry-Bordmittel
-            (Feature-Verifikation Punkt 19), und erneutes Abschicken findet die
-            Eingabe und tut nichts — den Rueckweg bringt `retry`.
+            auf den gerade gewartet wird. Der Abbruch ist wiederholbar wie jeder
+            andere wiederholbare Fehler: Kommt noch ein Versuch, wird nichts
+            geschrieben, und Procrastinate reiht den Job neu ein. Im letzten
+            Versuch steht vorher `failed` mit dem Vermerk
+            `ABBRUCH_IM_LETZTEN_VERSUCH` da, und der Job endet `aborted`
+            (Mineroo#27). Die Eingabe bleibt in beiden Faellen stehen.
 
     Endet das Warten auf einen Job mit einem Fehler, bei dem er bei RunPod
     weiterlaufen kann (jeder ausser der Zeitueberschreitung, nach der der Client
@@ -285,18 +311,7 @@ async def process_document(
     ausgibt. Ein Dokument mit N Chunks kostet N Parses; ein Wiederanlauf nach
     einem Absturz kostet sie erneut.
     """
-    # --- 0.: nachsehen, ob es schon ein Ergebnis gibt ---------------------
-    # Die Verbindung wird SOFORT wieder zurueckgegeben. Alles Weitere geschieht
-    # ohne Verbindung — ein Dokument haengt bis zu fuenfundzwanzig Minuten in
-    # seiner Abfrageschleife, und vierundzwanzig gehaltene Verbindungen ueber
-    # diese Zeit blockierten den Pool, waehrend niemand ihn benutzt.
     endpoint = settings.require_endpoint_id()
-    async with pool.connection() as conn:
-        vorhanden = await db.get_status_async(conn, sha256)
-        if vorhanden in _GUARD_ZUSTAENDE:
-            await db.delete_input_async(conn, sha256)
-            return
-
     teile: list[assembly.ChunkArtifacts] = []
     # Bezahlte Antworten, die sich nicht auspacken liessen. Sie gehoeren in
     # `raw`, weil sie bezahlt sind — die Begruendung steht an der Stelle, die
@@ -312,6 +327,22 @@ async def process_document(
     begonnen = time.monotonic()
 
     try:
+        # --- 0.: nachsehen, ob es schon ein Ergebnis gibt -----------------
+        # Im Fehlerzweig und nicht davor: Scheitert das Nachsehen im letzten
+        # Versuch an der Datenbank, schreibt der Fehlerzweig `failed`, statt das
+        # Dokument ohne Ergebnis zurueckzulassen (Mineroo#27).
+        #
+        # Die Verbindung wird SOFORT wieder zurueckgegeben. Alles Weitere
+        # geschieht ohne Verbindung — ein Dokument haengt bis zu
+        # fuenfundzwanzig Minuten in seiner Abfrageschleife, und
+        # vierundzwanzig gehaltene Verbindungen ueber diese Zeit blockierten den
+        # Pool, waehrend niemand ihn benutzt.
+        async with pool.connection() as conn:
+            vorhanden = await db.get_status_async(conn, sha256)
+            if vorhanden in _GUARD_ZUSTAENDE:
+                await db.delete_input_async(conn, sha256)
+                return
+
         # --- 1.: Eingabe lesen und den Hash gegenpruefen -----------------
         # Aus `inputs`, ueber den Hash, auf einer EIGENEN kurzlebigen Verbindung
         # (siehe `db.read_input_async`) — nicht aus dem Pool des Daemons und
@@ -463,12 +494,16 @@ async def process_document(
                 page_count=seitenzahl,
             )
 
-    except Exception as fehler:
-        # `asyncio.CancelledError` erbt von `BaseException` und wird hier
-        # ausdruecklich NICHT gefangen: Beim Herunterfahren soll der Job
-        # `aborted` enden und das Dokument offen bleiben. Es hier als
-        # endgueltigen Fehler zu schreiben, machte aus jedem Strg-C reihenweise
-        # `failed`.
+    except (Exception, asyncio.CancelledError) as fehler:
+        # `asyncio.CancelledError` erbt von `BaseException` und steht deshalb
+        # ausdruecklich hier: der Abbruch beim Herunterfahren. Er ist
+        # wiederholbar (`errors.classify_failure`), und Procrastinate reiht den
+        # Job neu ein, solange Versuche uebrig sind; dann wird hier nur
+        # geworfen. Im letzten Versuch reiht niemand mehr ein, und ohne
+        # Schreiben bliebe das Dokument ohne Ergebnis: Dann wird `failed`
+        # geschrieben und erst danach weitergeworfen, und der Job endet
+        # `aborted` (Mineroo#27). Andere `BaseException` (`KeyboardInterrupt`,
+        # `SystemExit`) bleiben ungefangen.
         if should_run_again(fehler) and not letzter_versuch:
             # Wiederholbar UND es kommt noch ein Versuch: WERFEN, ohne etwas zu
             # schreiben. Die Warteschlange legt den Job erneut vor, das Dokument
@@ -513,6 +548,7 @@ async def process_document(
         # dem, was das gekostet haette, steht an der Funktion.
         ergebnis = _ergebnis_fuer_endzustand(teile, vermerke)
         ergebnis["failure"] = _fehler_umschlag(fehler)
+        beschreibung = _fehlerbeschreibung(fehler)
         if unverwertbar:
             # Bezahlte Antworten, die sich nicht auspacken liessen. Sie stehen
             # hier VOLLSTAENDIG, weil sie bezahlt sind und dreissig Minuten nach
@@ -523,7 +559,7 @@ async def process_document(
                 "kind": "gescheitert",
                 "at": _jetzt(),
                 "teilstuecke_bezahlt": len(teile),
-                "detail": f"{type(fehler).__name__}: {fehler}",
+                "detail": beschreibung,
             }
         )
         status = (
@@ -541,7 +577,7 @@ async def process_document(
                 mime=art,
                 size_bytes=groesse,
                 image_tag_at_submit=image_tag,
-                error=f"{type(fehler).__name__}: {fehler}",
+                error=beschreibung,
                 notes=vermerke,
                 page_count=seitenzahl,
             )

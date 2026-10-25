@@ -683,6 +683,52 @@ async def test_abbruch_beim_herunterfahren_wird_neu_eingereiht(
     assert len(_jobs_zu(db_conn, sha)) == 1
 
 
+async def test_abbruch_beim_herunterfahren_im_letzten_versuch_endet_failed(
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
+) -> None:
+    """(e2) Faellt das Herunterfahren auf den letzten Versuch, steht danach
+    `failed` mit dem Vermerk da, und der Job endet `aborted` (Mineroo#27).
+
+    Das ist der Fall, fuer den die Regel „jeder Job, der nicht neu eingereiht
+    wird, schreibt ein Ergebnis" steht: Ein Daemon, der waehrend eines langen
+    Dokuments so oft neu startet, wie es Versuche gibt, liesse es sonst ohne
+    Ergebnis zurueck, und `wait` hinge ewig. Zwei Versuche halten den Test kurz;
+    die Rechnung ist dieselbe wie bei drei.
+    """
+    zwei = dataclasses.replace(int_settings, max_attempts=2)
+    sha = _anlegen(db_conn, tmp_path, "e2.png")
+    erzeuger.einreihen(sha)
+
+    # Zwei Daemon-Laeufe, jeder faehrt herunter, waehrend RunPod rechnet. Nach
+    # dem ersten ist der Job neu eingereiht; nach dem zweiten, dem letzten
+    # Versuch, endet er. `attempts` zaehlt jeden beendeten Lauf, die
+    # Wiedervorlage wie das Ende (`procrastinate_finish_job`).
+    for nach_dem_lauf, laeufe in (("todo", 1), ("aborted", 2)):
+        haengend = ProtokollRunPod()
+        haengend.freigabe = asyncio.Event()
+
+        async def laeuft(h: ProtokollRunPod = haengend) -> bool:
+            return h.gestartet.is_set()
+
+        await _daemon_laufen_lassen(zwei, haengend, bis=laeuft)
+        assert haengend.abgebrochen == ["job-1"]
+        jobs = _jobs_zu(db_conn, sha)
+        assert len(jobs) == 1
+        assert jobs[0].status == nach_dem_lauf
+        assert jobs[0].attempts == laeufe
+        if nach_dem_lauf == "todo":
+            assert get_document(db_conn, sha) is None
+
+    # Nach dem zweiten Herunterfahren: kein neuer Versuch, aber ein Ergebnis.
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.error is not None
+    assert "beim Herunterfahren im letzten Versuch abgebrochen" in zeile.error
+    # Die Eingabe bleibt, damit `retry` etwas zu lesen hat.
+    assert _eingabe_steht(db_conn, sha)
+
+
 async def test_duplikat_waehrend_der_verarbeitung_ist_ein_nichts_tun(
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],

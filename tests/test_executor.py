@@ -22,6 +22,7 @@ import pytest
 from PIL import Image
 from psycopg_pool import AsyncConnectionPool
 
+from mineru_ocr import db as db_modul
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, get_document, insert_input, write_terminal_async
 from mineru_ocr.errors import (
@@ -1737,12 +1738,13 @@ async def test_abbruch_wird_durchgereicht(
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    """`CancelledError` wird nicht gefangen: Der Job endet `aborted`, es entsteht
-    kein Ergebnis, das Dokument bleibt offen (den Rueckweg bringt `retry`).
+    """Ein Abbruch, nach dem noch ein Versuch kommt, schreibt nichts: Die
+    Warteschlange reiht den Job neu ein (Mineroo#27), es entsteht kein Ergebnis,
+    und die Eingabe steht.
 
-    Der Test faengt einen echten Fehler ab, den man leicht macht: Waere hier
-    `except BaseException` statt `except Exception`, wuerde der Abbruch als
-    endgueltiger Fehler verbucht — und jedes Strg-C machte reihenweise `failed`.
+    Der Test faengt einen echten Fehler ab, den man leicht macht: Wuerde der
+    Abbruch hier wie ein endgueltiger Fehler verbucht, machte jedes Strg-C
+    reihenweise `failed`.
     """
     sha, _ = _anlegen(
         db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
@@ -1759,6 +1761,130 @@ async def test_abbruch_wird_durchgereicht(
         )
 
     # Kein Ergebnis — kein `failed` —, und die Eingabe steht noch.
+    assert get_document(db_conn, sha) is None
+    assert _eingabe_steht(db_conn, sha)
+
+
+async def test_abbruch_im_letzten_versuch_schreibt_failed_und_wirft_weiter(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Bricht das Herunterfahren den letzten Versuch ab, schreibt der Executor
+    `failed` mit dem Vermerk und wirft den Abbruch DANN weiter (Mineroo#27).
+
+    Ohne das bliebe das Dokument ohne Ergebnis liegen: Die Warteschlange reiht
+    nach dem letzten Versuch nicht mehr ein, und ein Daemon, der waehrend eines
+    langen Dokuments dreimal neu startet, liesse es offen zurueck. Der Job
+    endet danach `aborted`; der RunPod-Job ist abgebrochen, und die Eingabe
+    bleibt fuer `retry` stehen.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+
+    class Abbrechend(FalscherRunPod):
+        async def await_result(self, job_id: str) -> dict[str, Any]:
+            raise asyncio.CancelledError()
+
+    runpod = Abbrechend([_fertige_antwort()])
+    with pytest.raises(asyncio.CancelledError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=runpod,
+            pool=pool,
+            letzter_versuch=True,
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.error is not None
+    assert "beim Herunterfahren im letzten Versuch abgebrochen" in zeile.error
+    assert zeile.raw is not None
+    assert zeile.raw["failure"]["type"] == "CancelledError"
+    assert (
+        "beim Herunterfahren im letzten Versuch abgebrochen"
+        in zeile.raw["failure"]["message"]
+    )
+    assert zeile.notes[-1]["kind"] == "gescheitert"
+    assert runpod.abgebrochen == ["job-0"]
+    assert _eingabe_steht(db_conn, sha)
+
+
+@pytest.mark.parametrize("schritt", ["get_status_async", "read_input_async"])
+async def test_datenbankfehler_vor_dem_lesen_im_letzten_versuch_schreibt_failed(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    schritt: str,
+) -> None:
+    """Das Nachsehen und das Lesen der Eingabe stehen im Fehlerzweig: Scheitern
+    sie im letzten Versuch an der Datenbank, steht danach `failed` da
+    (Mineroo#27). Vorher stand das Nachsehen vor dem Fehlerzweig, und ein
+    Aussetzer dort liess das Dokument im letzten Versuch ohne Ergebnis zurueck.
+
+    Gestoert wird nur der eine Aufruf; das Schreiben danach laeuft gegen die
+    echte Datenbank, denn ein Aussetzer ist meist vorbei, wenn geschrieben wird.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+
+    async def aussetzer(*_a: Any, **_k: Any) -> Any:
+        raise psycopg.OperationalError("Postgres kurz weg")
+
+    monkeypatch.setattr(db_modul, schritt, aussetzer)
+    runpod = FalscherRunPod([_fertige_antwort()])
+    with pytest.raises(psycopg.OperationalError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=runpod,
+            pool=pool,
+            letzter_versuch=True,
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.error is not None and "OperationalError" in zeile.error
+    # Vor jedem RunPod-Kontakt gescheitert: bezahlt ist nichts.
+    assert runpod.kontakte == []
+    assert _eingabe_steht(db_conn, sha)
+
+
+@pytest.mark.parametrize("schritt", ["get_status_async", "read_input_async"])
+async def test_datenbankfehler_vor_dem_lesen_mit_restbudget_schreibt_nichts(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    schritt: str,
+) -> None:
+    """Mit Restbudget bleibt es beim Werfen: Der Aussetzer ist wiederholbar,
+    die Warteschlange legt neu vor, und es entsteht kein Ergebnis."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+
+    async def aussetzer(*_a: Any, **_k: Any) -> Any:
+        raise psycopg.OperationalError("Postgres kurz weg")
+
+    monkeypatch.setattr(db_modul, schritt, aussetzer)
+    with pytest.raises(psycopg.OperationalError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod([_fertige_antwort()]),
+            pool=pool,
+        )
+
     assert get_document(db_conn, sha) is None
     assert _eingabe_steht(db_conn, sha)
 
