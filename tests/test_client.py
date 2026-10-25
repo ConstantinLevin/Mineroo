@@ -12,7 +12,7 @@ from typing import Any
 
 import psycopg
 import pytest
-from psycopg_pool import NullConnectionPool
+from psycopg_pool import AsyncNullConnectionPool, NullConnectionPool
 
 from mineru_ocr import client as client_modul
 from mineru_ocr import config, core, db, tasks
@@ -2582,6 +2582,119 @@ async def test_async_get_unterscheidet_offen_und_unbekannt(
     h = await offener_async_client.ocr_start(_png("offen"))
     with pytest.raises(DocumentNotFound, match="noch kein Ergebnis"):
         await offener_async_client.get(h)
+
+
+async def test_async_client_oeffnet_und_schliesst_pool_und_app_selbst(
+    _test_datenbank: str,
+) -> None:
+    """Der Pool ist ein `AsyncNullConnectionPool` ohne stehende Verbindungen
+    (`max_size=1`, ein Hintergrund-Faden). Der Client legt ihn selbst an und
+    schliesst ihn selbst, in derselben Ereignisschleife: `app.close_async()`
+    schliesst einen uebergebenen Pool nicht."""
+    klient = AsyncOCRClient(db_dsn=_test_datenbank)
+    with pytest.raises(ConfigurationError, match="betreten"):
+        klient._procrastinate
+
+    async with klient:
+        pool = klient._pool
+        assert isinstance(pool, AsyncNullConnectionPool)
+        assert (pool.min_size, pool.max_size, pool.num_workers) == (0, 1, 1)
+        offen_beim_betreten = not pool.closed
+        assert klient._procrastinate is not None
+
+    assert offen_beim_betreten
+    assert pool.closed
+    assert (klient._conn, klient._pool, klient._app) == (None, None, None)
+
+
+async def test_async_client_macht_bei_scheiterndem_betreten_alles_wieder_zu(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ein `async with` ruft `__aexit__` nicht, wenn schon `__aenter__` wirft:
+    Scheitert das Bauen der App, schliesst der Client Verbindung und Pool selbst
+    und gibt den urspruenglichen Fehler weiter."""
+    angelegt: list[AsyncNullConnectionPool[Any]] = []
+
+    class Aufzeichnend(AsyncNullConnectionPool):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            angelegt.append(self)
+
+    def kaputt(settings: Settings) -> Any:
+        raise _Absichtlich("app")
+
+    monkeypatch.setattr(client_modul, "AsyncNullConnectionPool", Aufzeichnend)
+    monkeypatch.setattr(tasks, "build_async_client_app", kaputt)
+    vorher = _verbindungen_stabil(db_conn)
+    klient = AsyncOCRClient(db_dsn=_test_datenbank)
+
+    with pytest.raises(_Absichtlich, match="app"):
+        await klient.__aenter__()
+
+    assert len(angelegt) == 1 and angelegt[0].closed
+    assert (klient._conn, klient._pool, klient._app) == (None, None, None)
+    assert _verbindungen_erreichen(db_conn, vorher), "Verbindung blieb offen"
+
+
+async def test_async_einreihen_holt_keine_verbindung_aus_dem_pool(
+    offener_async_client: AsyncOCRClient,
+    db_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Das Einreihen laeuft ueber die Verbindung des Clients (`connection=`), in
+    der Transaktion der Eingabe; holte es sich eine aus dem Pool, schluege das an."""
+    _worker_am_leben(db_conn)
+
+    def verboten(*_: Any, **__: Any) -> Any:
+        raise AssertionError("Das Einreihen darf keine Pool-Verbindung holen.")
+
+    monkeypatch.setattr(offener_async_client._pool, "connection", verboten)
+    monkeypatch.setattr(offener_async_client._pool, "getconn", verboten)
+
+    h = await offener_async_client.ocr_start(_png("a"))
+
+    assert _jobs_zaehlen(db_conn, h) == 1
+
+
+async def test_sync_und_async_client_zugleich_im_selben_prozess(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+) -> None:
+    """Beide Clients im selben Prozess, jeder mit seiner eigenen App, wie
+    Procrastinates eigener Abnahmetest: Beide reihen ein, warten und holen ab, und
+    keiner haelt zwischen den Aufrufen eine Procrastinate-Verbindung. Gezaehlt
+    wird von aussen, an der Datenbank: je Client genau seine eine Verbindung."""
+    _worker_am_leben(db_conn)
+    vorher = _verbindungen_stabil(db_conn)
+
+    with OCRClient(db_dsn=_test_datenbank, preflight=False) as sync_klient:
+        async with AsyncOCRClient(db_dsn=_test_datenbank) as async_klient:
+            assert _verbindungen_erreichen(db_conn, vorher + 2), "nach dem Betreten"
+
+            h_sync = sync_klient.ocr_start(_png("sync"))
+            h_async = await async_klient.ocr_start(_png("async"))
+            assert _jobs_zaehlen(db_conn, h_sync) == _jobs_zaehlen(db_conn, h_async) == 1
+            for h in (h_sync, h_async):
+                await write_terminal_async(
+                    async_conn,
+                    sha256=h,
+                    status=DocumentStatus.DONE,
+                    raw={"markdown": h, "content_list": [], "images": {}},
+                    endpoint_id="e",
+                )
+
+            von_async = await async_klient.wait_all([h_sync, h_async], timeout=5.0)
+            von_sync = sync_klient.wait_all([h_async, h_sync], timeout=5.0)
+            assert [w["markdown"] for w in von_async] == [h_sync, h_async]
+            assert [w["markdown"] for w in von_sync] == [h_async, h_sync]
+            assert (await async_klient.get(h_sync))["markdown"] == h_sync
+            sync_klient.document(h_async)
+            assert _verbindungen_erreichen(db_conn, vorher + 2), "zwischen den Aufrufen"
+
+    assert _verbindungen_erreichen(db_conn, vorher), "nach dem Verlassen"
 
 
 async def test_async_ocr_start_reiht_ein_unterwegs_liegendes_nicht_nochmal_ein(
