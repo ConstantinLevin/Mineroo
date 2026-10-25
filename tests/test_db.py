@@ -396,6 +396,18 @@ def test_check_schema_weist_eine_falsche_form_von_job_id_ab(
             ],
             ["NOT NULL an ['size_bytes']", "`inputs` passt nicht zu INPUT_SPALTEN"],
         ),
+        (
+            ["ALTER TABLE documents ALTER COLUMN status SET DEFAULT 'done'"],
+            ["Voreinstellung 'done'::text", "Pruefungen CHECK"],
+        ),
+        (
+            [
+                "ALTER TABLE documents DROP CONSTRAINT documents_status_check, "
+                "ADD CONSTRAINT documents_status_check CHECK "
+                "(status IN ('new', 'done', 'empty', 'failed', 'input_error'))"
+            ],
+            ["'new'::text", "Voreinstellung (keine)"],
+        ),
     ],
 )
 def test_check_schema_nennt_jede_abweichung_in_einer_meldung(
@@ -412,6 +424,21 @@ def test_check_schema_nennt_jede_abweichung_in_einer_meldung(
     text = str(fehler.value)
     for teil in [*erwartet, "DROP DATABASE"]:
         assert teil in text, teil
+
+
+@pytest.mark.db
+def test_check_schema_nennt_eine_einzelne_fehlende_tabelle(
+    db_conn: psycopg.Connection[Any],
+) -> None:
+    """Fehlt nur `inputs`, nennt die Meldung genau sie und den Weg ueber `setup`."""
+    with db_conn.transaction(force_rollback=True):
+        db_conn.execute("DROP TABLE inputs")
+        with pytest.raises(DatabaseError) as fehler:
+            check_schema(db_conn)
+    assert str(fehler.value) == (
+        "Die Tabellen ['inputs'] fehlen in dieser Datenbank. Erst "
+        "`mineru-ocr setup` ausfuehren."
+    )
 
 
 @pytest.mark.db
