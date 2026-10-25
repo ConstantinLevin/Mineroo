@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import json
 import math
 import time
 from collections.abc import AsyncGenerator, Generator, Iterable, Iterator, Sequence
@@ -590,6 +591,18 @@ eine Nachricht auf knapp 1 GiB: Gemessen gingen 1.070.000.008 Byte noch hinein,
 die Verbindung). Die Grenze liegt darunter, damit die Ablehnung eine Meldung ist
 und kein Verbindungsabbruch. Sie gilt fuer jede Eingabe, auch fuer PDFs, die der
 Job danach in Stuecke schneidet."""
+
+
+MAX_RAW_JSON_BYTES: Final = MAX_INPUT_BYTES
+"""Das groesste `raw`, das das Endschreiben noch sendet, als JSON-Text in Byte.
+
+Dieselbe Grenze wie fuer die Eingabe und aus demselben Grund: Darueber trennte
+der Server die Verbindung („invalid message length"), und beim Client kaeme ein
+`OperationalError` ohne SQLSTATE an, also ein wiederholbarer Aussetzer. Das
+Dokument liefe und kostete dreimal und bliebe ohne Ergebnis (Mineroo#27).
+Darunter entscheidet Postgres selbst: Was die Grenze von `jsonb` uebersteigt,
+meldet es als 54000 (`_nicht_speicherbar`). Eine engere Grenze hier riete,
+denn `jsonb` ist je nach Inhalt kleiner oder groesser als sein Text."""
 
 
 def check_schema(conn: psycopg.Connection[Any]) -> None:
@@ -1468,19 +1481,31 @@ async def write_terminal_async(
     Raises:
         TerminalOverwriteError: siehe Idempotenz.
         UnstorableResultError: Postgres weist das Ergebnis wegen seines Inhalts
-            ab (`_nicht_speicherbar`), etwa ein U+0000 in `raw`. Geschrieben ist
+            ab (`_nicht_speicherbar`), etwa ein U+0000 in `raw`, oder `raw` ist
+            als JSON groesser als `MAX_RAW_JSON_BYTES`. Geschrieben ist
             dann nichts, die Transaktion ist zurueckgerollt. Eingepackt wird
             hier, weil nur hier feststeht, dass der Fehler am Endschreiben
             haengt; endgueltig macht ihn `errors.classify_failure`.
 
     Kosten: keine.
     """
+    # Einmal zu Text, mit demselben `json.dumps`, das psycopg sonst selbst
+    # aufriefe: So laesst sich die Groesse vor dem Senden pruefen, ohne `raw`
+    # ein zweites Mal zu serialisieren (es kann Gigabyte gross sein).
+    text = json.dumps(raw)
+    if len(text) > MAX_RAW_JSON_BYTES:
+        raise UnstorableResultError(
+            f"Das Ergebnis ist als JSON {len(text)} Byte gross, mehr als die "
+            f"{MAX_RAW_JSON_BYTES} Byte, die sich in einer Nachricht an Postgres "
+            f"senden lassen. So ist es nicht speicherbar; ein weiterer Lauf "
+            f"liefert denselben Inhalt."
+        )
     try:
         await _endergebnis_schreiben(
             conn,
             sha256=sha256,
             status=status,
-            raw=raw,
+            raw=Jsonb(raw, dumps=lambda _: text),
             endpoint_id=endpoint_id,
             mime=mime,
             size_bytes=size_bytes,
@@ -1512,7 +1537,7 @@ async def _endergebnis_schreiben(
     *,
     sha256: str,
     status: DocumentStatus,
-    raw: dict[str, Any],
+    raw: Jsonb,
     endpoint_id: str,
     mime: str | None,
     size_bytes: int | None,
@@ -1541,7 +1566,7 @@ async def _endergebnis_schreiben(
                     mime,
                     page_count,
                     status.value,
-                    Jsonb(raw),
+                    raw,
                     error,
                     endpoint_id,
                     image_tag_at_submit,
@@ -1579,7 +1604,7 @@ async def _endergebnis_schreiben(
                     """,
                     (
                         status.value,
-                        Jsonb(raw),
+                        raw,
                         error,
                         endpoint_id,
                         mime,

@@ -270,7 +270,9 @@ class UnstorableResultError(DatabaseError):
 
     Faelle: ein U+0000 im Text, den `jsonb` nicht tragen kann (SQLSTATE 22P05),
     eine Groesse ueber der Grenze von `jsonb` (54000), allgemein ein Datenfehler
-    (Klasse 22) oder eine Programmgrenze (Klasse 54) beim Endschreiben. Geworfen
+    (Klasse 22) oder eine Programmgrenze (Klasse 54) beim Endschreiben, dazu ein
+    `raw`, das groesser ist als eine Nachricht an Postgres (`db.MAX_RAW_JSON_BYTES`,
+    vor dem Senden geprueft, ohne SQLSTATE). Geworfen
     nur von `db.write_terminal_async`, das den rohen psycopg-Fehler darin
     einpackt; `sqlstate` traegt dessen Code (None beim Fehler, den psycopg selbst
     vor dem Senden wirft).

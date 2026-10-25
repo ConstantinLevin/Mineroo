@@ -491,8 +491,11 @@ Antwort als `letzter_versuch`. Daraus folgt:
   Datenbankfehler dort im letzten Versuch `failed` schreibt.
 - **Nicht speicherbares Ergebnis.** Weist Postgres das Endschreiben wegen des
   Inhalts ab (SQLSTATE-Klasse 22 oder 54: ein U+0000 im Text, die Größe von
-  `jsonb`; `db._nicht_speicherbar`), packt `db.write_terminal_async` das in
-  `UnstorableResultError`, und `classify_failure` stuft es als endgültig ein,
+  `jsonb`; `db._nicht_speicherbar`) oder ist `raw` größer als eine Nachricht an
+  Postgres (`db.MAX_RAW_JSON_BYTES`, vor dem Senden geprüft; gesendet trennte der
+  Server die Verbindung, und das sähe wiederholbar aus), packt
+  `db.write_terminal_async` das in `UnstorableResultError`, und
+  `classify_failure` stuft es als endgültig ein,
   obwohl es ein `DatabaseError` ist: Ein weiterer Lauf liefert denselben Inhalt.
   Der Exekutor schreibt dann schon im ersten Versuch `failed`, ohne den Inhalt,
   mit dem Vermerk `ergebnis_nicht_speicherbar`, der den Grund nennt; ebenso, wenn

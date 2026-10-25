@@ -24,6 +24,7 @@ import psycopg.sql
 import pytest
 from procrastinate.jobs import Job
 
+from mineru_ocr import db as db_modul
 from mineru_ocr.config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS
 from mineru_ocr.db import (
     WAIT_APPLICATION_NAME,
@@ -898,6 +899,35 @@ async def test_nicht_speicherbares_ergebnis_wird_als_solches_gemeldet(
     await _schreiben(async_conn, raw={"markdown": "vor nach"})
     zeile = get_document(db_conn, HASH)
     assert zeile is not None and zeile.status is DocumentStatus.DONE
+
+
+@pytest.mark.db
+async def test_ergebnis_ueber_der_nachrichtengrenze_wird_vor_dem_senden_abgewiesen(
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ein `raw` ueber der Grenze einer Nachricht an Postgres (knapp 1 GiB) kommt
+    als UnstorableResultError heraus, bevor etwas gesendet wird.
+
+    Gesendet, schloesse der Server die Verbindung („invalid message length"),
+    und beim Client kaeme ein OperationalError ohne SQLSTATE an, also ein
+    wiederholbarer Aussetzer: Das Dokument liefe und kostete dreimal und bliebe
+    ohne Ergebnis (Mineroo#27). Die Grenze ist hier herabgesetzt; ein Wert
+    darunter wird weiter geschrieben.
+    """
+    monkeypatch.setattr(db_modul, "MAX_RAW_JSON_BYTES", 100)
+    insert_input(db_conn, sha256=HASH, content=b"bytes")
+    with pytest.raises(UnstorableResultError) as gefangen:
+        await _schreiben(async_conn, raw={"markdown": "x" * 200})
+    assert gefangen.value.sqlstate is None
+    assert "100" in str(gefangen.value)
+    assert get_document(db_conn, HASH) is None
+    assert _eingabe(db_conn)
+
+    await _schreiben(async_conn, raw={"markdown": "x"})
+    zeile = get_document(db_conn, HASH)
+    assert zeile is not None and zeile.raw == {"markdown": "x"}
 
 
 @pytest.mark.parametrize(

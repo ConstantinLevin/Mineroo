@@ -1229,6 +1229,34 @@ async def test_nicht_speicherbares_ergebnis_endet_failed_im_ersten_versuch(
     assert _eingabe_steht(db_conn, sha)
 
 
+async def test_zu_grosses_ergebnis_endet_failed_im_ersten_versuch(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ein Ergebnis ueber der Nachrichtengrenze von Postgres endet ebenso sofort
+    `failed`, ohne den Inhalt und mit dem Grund (Mineroo#27). Die Grenze ist
+    herabgesetzt."""
+    monkeypatch.setattr(db_modul, "MAX_RAW_JSON_BYTES", 2000)
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"gross", name="g.png", typ=DocumentType.PNG
+    )
+    runpod = FalscherRunPod([_fertige_antwort("x" * 5000)])
+
+    with pytest.raises(UnstorableResultError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert len(runpod.abgesendet) == 1
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.raw is not None
+    assert "markdown" not in zeile.raw
+    assert "2000" in zeile.raw["ergebnis_nicht_speicherbar"]
+
+
 async def test_nicht_speicherbare_teilstuecke_im_fehlerpfad_verhindern_das_failed_nicht(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
