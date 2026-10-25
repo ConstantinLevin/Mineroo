@@ -1173,7 +1173,7 @@ def _runpod_ueber_http(
     int_settings: Settings, gegenstelle: ErsatzRunPodHttp
 ) -> Any:
     echte = dataclasses.replace(
-        int_settings, api_key="erfundener-schluessel-nicht-echt", endpoint_id="l79lebhinxaqjz"
+        int_settings, api_key="erfundener-schluessel-nicht-echt"
     )
     return RunPodClient(
         echte,

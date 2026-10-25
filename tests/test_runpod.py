@@ -236,7 +236,7 @@ async def test_abbruch_geht_an_cancel_mit_der_kennung(
     assert len(transport.anfragen) == 1
     anfrage = transport.anfragen[0]
     assert anfrage.method == "POST"
-    assert str(anfrage.url) == f"{API_BASE}/l79lebhinxaqjz/cancel/job-9"
+    assert str(anfrage.url) == f"{API_BASE}/{echte_settings.endpoint_id}/cancel/job-9"
     assert anfrage.headers["Authorization"] == f"Bearer {SCHLUESSEL}"
     assert SCHLUESSEL not in str(anfrage.url)
     assert SCHLUESSEL not in anfrage.content.decode()
