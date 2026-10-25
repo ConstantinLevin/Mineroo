@@ -532,6 +532,41 @@ setzt einen Job mit `abort_requested` auf `failed` statt auf `todo` (Procrastina
 3.10.0, am laufenden Daemon geprüft). Im letzten Versuch hat der Exekutor vorher
 schon `failed` geschrieben; dann steht ein Ergebnis da.
 
+### MinerU 4, der Worker im Fork und der neue Endpoint
+
+Das Paket spricht nur noch den **MinerU-4-Worker**. Er lebt im Fork
+`ConstantinLevin/mineru-runpod` (Basis Upstream v1.13.0), ruft MinerU 4s
+`parse_async` und schreibt das Ergebnis mit `ParseResult.save`. **Maßgeblich ist
+sein Job-Vertrag**, `docs/content/docs/reference/api.mdx` im Fork; der Code des
+Workers (`handler.py`, `worker/parse.py`, `worker/harness.py`) und die
+Harness-Bibliothek `runpod-doc-worker` legen die Antwortform fest. MinerU-3.4-
+Ergebnisse gibt es nicht zu bedienen (Mineroo#1, „Nur noch MinerU 4").
+
+- **Abgeschickt** werden `tier`, `ocr_mode` und `image_analysis` (Voreinstellung
+  `advanced`, `ocr`, `true`; Felder von `Settings`, geprüft gegen
+  `config.GUELTIGE_STUFEN` und `config.GUELTIGE_OCR_MODI`), nie `backend`, das der
+  Worker abweist. Außerhalb von `advanced` bestellt `runpod.RunPodClient.submit`
+  die Bildanalyse als aus, weil sie dort nicht wirkt. Je Dokument einstellbar
+  werden die drei mit Mineroo#14; bis dahin gelten die Einstellungen des Daemons.
+- **Zurück** kommt im Tarball (`tarball_b64`, gzip-Tar) je Teilstück:
+  `markdown.md`, `markdown_full.md` (Vollmodus, vom Worker gerendert),
+  `middle_json.json` (Schema `docvortex.middle` 2.0: Seiten mit `page_idx` und
+  `blocks`), `structured_content.json`, `model_output.json` (nur mit
+  Modellausgabe) und `images/page_{page_idx}_{typ}_{index}.{endung}`. Die Namen
+  stehen fest in `assembly` (`DATEI_*`, `BILDER_VERZEICHNIS`); was auf keinen
+  passt, geht nach `extras`. Ohne `markdown.md` ist eine Antwort unverwertbar.
+- **Abweisungen**: Ein `FAILED`, dessen `error` mit der Abweisung des Workers
+  oder MinerUs beginnt (`errors.DATEIABWEISUNG_KENNUNGEN`,
+  `errors.ist_dateiabweisung`), wird zur `WorkerRejectedError` und endet
+  `input_error` mit dem Grund aus der Antwort; jedes andere `FAILED` endet
+  `failed`.
+- **Der neue Endpoint** ist queue-basiert, wird aus dem Fork über RunPods
+  GitHub-Integration gebaut und rechnet nur in EWR-Rechenzentren (Spec,
+  „Endpoint"). Seine Kennung steht wie jede in der Konfiguration
+  (`endpoint_id`), nie im Code; der alte Endpoint `l79lebhinxaqjz` wird nicht
+  repariert. Solange er fehlt, gibt es keine echten MinerU-4-Antworten
+  (Mineroo#10).
+
 ### Teilstücke sind vor Postgres vollständig abstrahiert
 
 Hinein geht das ganze Dokument, heraus kommt das ganze Dokument. Dass ein PDF
@@ -539,6 +574,21 @@ unterwegs in Stücke zu 20 Seiten zerfällt (`chunking.plan_chunks`), sieht die
 Datenbank nie: Der Exekutor setzt die Teilergebnisse **vor** dem Schreiben mit
 `assembly.assemble` zusammen, und `raw` ist **ein** Objekt auf Dokumentebene. Es
 gibt keine Chunk-Tabelle und keine Teil-Zeilen.
+
+Jede Datei der Antwort hat in `raw` ihren eigenen Schlüssel: `markdown` und
+`markdown_full` als Text über alle Teilstücke (`markdown_full` ist `None`, wenn
+es einem Teilstück fehlt), `middle_json`, `structured_content` und
+`model_output` als Liste mit einem Eintrag je Teilstück, als JSON-Struktur. In
+`middle_json` und `structured_content` zählt jedes Seiten-`page_idx` die Seite
+des Originals (`assembly._seiten_verschoben`). **Bilder bekommen je Teilstück
+einen eigenen Namensraum**, `images/teilstueck_{n}/…`
+(`assembly.BILD_NAMENSRAUM`): MinerU 4 zählt die Bildnamen in jedem Teilstück
+ab Seite 0, ohne Namensraum überschrieben sie einander. Jeder Verweis in jeder
+Datei des Teilstücks (Markdown, `image_path`, `<img src>`, `image_source`) wird
+mit umbenannt, und `raw["images"]` trägt jedes Bild unter genau diesem Verweis.
+Leer (`assembly.is_empty`) ist ein Dokument ohne Text in beiden Markdowns, ohne
+Block im Middle-JSON und ohne Bild; das Kriterium an der echten leeren
+MinerU-4-Seite festzustellen ist offen bis Mineroo#10.
 
 `chunking.verify_page_coverage` prüft dabei strukturell und in dieser Reihenfolge:
 Beginn bei 0 → lückenlose Nachbarschaft → Ende bei `page_count - 1`. Die frühere
@@ -632,56 +682,35 @@ Jede steht wegen eines bezahlten Fehlers, nicht wegen einer Vorliebe.
 
 ## Das Testmaterial — was echt ist und was nicht
 
-Es gibt **zwei** Sätze echter Antworten, und der Unterschied zwischen ihnen ist
-der Unterschied zwischen dem Weg, den der Betrieb geht, und dem, den er nicht
-geht. Beide sind ausführlich in `tests/conftest.py` beschrieben, jeder an seiner
-eigenen Konstante.
+**Echte MinerU-4-Antworten gibt es noch nicht.** Sie kommen mit Mineroo#10
+(sechs Aufnahmen auf dem neuen Endpoint: normale PDF-Seite, leere Seite als
+Bilddatei, zwölfseitiges Dokument in drei Teilstücken, DOCX, HTML, erzwungene
+Fehlerantwort), und erst dann ist das Paket so geprüft, wie die Spec es verlangt:
+durch Abspielen echter Antworten.
 
-**`artifacts/2026-08-05-doku-verifikationstest/` — sechs Antworten mit
-`transport: "inline"`.** Der Betrieb versendet `tarball_b64`; diese sechs zeigen
-also nicht den Produktionspfad. Alle sechs sind einseitige Bilder mit
-`page_idx == 0`.
+**Bis dahin spielen die Tests Ersatz-Antworten aus `tests/ersatz_antworten.py`.**
+Sie sind nicht geraten, sondern nach den Quellen gebaut, die die Antwortform
+festlegen, und jede Bauform nennt ihre Quelle: der Job-Vertrag des Forks
+(`api.mdx`), der Code des Workers (`handler.py`, `worker/parse.py`,
+`worker/harness.py`), die Harness-Bibliothek `runpod-doc-worker` 0.9.1 (Archiv
+und Inline-Bilder), MinerU 4.0.12 (Tag `mineru-4.0.12-released`,
+`ParseResult.save`, Schema des Middle-JSON) und DocVortex 0.5.16 (Blocktypen,
+Bildnamen und ihre Verweise). Was diese Bauformen **nicht** wissen: wie MinerU 4
+eine leere Seite beschreibt, welche Randklassen der Vollmodus-Markdown trägt und
+wie groß die Dateien sind. Wo die Aufnahmen abweichen, gilt die Aufnahme.
 
-**`artifacts/2026-08-08-erster-tarball-lauf/` — Antworten mit `tarball_b64`,
-also der Produktionspfad.** Sie sind am 08./09.08.2026 in
-bezahlten Läufen aufgenommen worden und deckten die Lagen ab, für die es vorher
-nichts gab. Zwei der Aufnahmen (vier Antwortdateien) sind vor dem ersten Push
-entfernt worden; im Repository liegen noch `leere_seite` und `fehlerantwort`:
-
-- `gute_nacht.tarball.response.json` — der gewöhnliche Erfolg, einseitig;
-  **vor dem ersten Push entfernt**, weil der Tarball den Text einer privaten
-  E-Mail trug (Mineroo#2). Die zwei Tests, die sie lasen
-  (`test_echte_tarball_antwort_wird_vollstaendig_ausgepackt`,
-  `…_traegt_zwei_content_list_generationen` in `tests/test_assembly.py`), sind
-  **ausgesetzt**: Die Vorrichtung `echte_tarball_antwort` überspringt sie mit
-  Grund (`pytest -rs`), bis das Ticket zum MinerU-4-Vertrag eine Ersatzaufnahme
-  aus Material ohne Personenbezug unter demselben Namen ablegt.
-- `leere_seite.tarball.response.json` — die **leere Seite**. Sie hat das
-  `empty`-Kriterium am echten Verhalten festgestellt und zwei Fehler ans Licht
-  gebracht, die einander verdeckten.
-- `fehlerantwort.response.json` — eine echte `FAILED`-Antwort samt Traceback des
-  Workers. Nebenbei hat sie die Liste der gültigen Backend-Namen geliefert, die
-  jetzt in `config.GUELTIGE_BACKENDS` steht.
-- `mehrteilig_0_seiten_0-4` / `_1_seiten_5-9` / `_2_seiten_10-11` — **ein**
-  zwölfseitiges Dokument über drei Teilstücke, **vor dem ersten Push entfernt**,
-  weil es den Inhalt eines Steuerdokuments mit personenbezogenen Daten trug
-  (Mineroo#2). Die zwei Tests, die es lasen (Seitenversatz über drei Teilstücke
-  und Randblöcke in `tests/test_assembly.py`), sind **ausgesetzt**: Die
-  Vorrichtung `echte_mehrteilige_antworten` überspringt sie mit Grund
-  (`pytest -rs`), bis das Ticket zum MinerU-4-Vertrag neue Aufnahmen aus Material
-  ohne Personenbezug unter denselben Namen ablegt. Bis dahin laufen der
-  Seitenversatz und die Randblöcke nur gegen erfundene Antworten.
-
-**Was nur gegen erfundene Antworten läuft:** eine echte
-**Namenskollision** zwischen Bildern zweier Teilstücke (`bild_namenskollisionen`
-in `assembly.assemble`). Die Namen sind Inhalts-Hashes, eine Kollision heißt also
-dasselbe Bild in zwei Stücken — möglich, aber in diesem Material nicht
-vorgekommen. Bis die Ersatzaufnahmen liegen, außerdem alles, was die zwei
-entfernten Aufnahmen trugen: der gewöhnliche, nicht leere Tarball-Erfolg (Bilder
-und Inhalt in beiden `content_list`-Generationen; Layout-PDF, zweite Generation,
-fehlendes Span-PDF, Umschlag und `source` prüft weiter `leere_seite`), der
-Seitenversatz über mehrere Teilstücke und dass ein Randblock, dessen Text schon
-im Markdown steht, nicht noch einmal angehängt wird.
+**Die 3.4-Aufnahmen unter `artifacts/` werden nicht mehr abgespielt** — bis auf
+eine. `2026-08-05-doku-verifikationstest/` (sechs Inline-Antworten) und
+`2026-08-08-erster-tarball-lauf/leere_seite.tarball.response.json` tragen
+MinerU-3.4-Dateien (`content_list`, `doc.md`, `doc_middle.json`), die es unter
+MinerU 4 nicht gibt; sie sind Geschichte und werden durch die Aufnahmen aus
+Mineroo#10 ersetzt. Die zwei personenbezogenen Aufnahmen (`gute_nacht`,
+`mehrteilig_*`) sind vor dem ersten Push entfernt worden (Mineroo#2), und die
+Tests, die sie lasen, gibt es mit dem Umbau auf MinerU 4 nicht mehr.
+Abgespielt wird nur noch `fehlerantwort.response.json` (Vorrichtung
+`echte_fehlerantwort`): eine echte `FAILED`-Antwort, an der sich zeigt, wie
+RunPod sie umschlägt (`error` auf oberster Ebene, der Rest unter `output`) — das
+hängt nicht an der MinerU-Version.
 
 ---
 
@@ -692,6 +721,9 @@ im Markdown steht, nicht noch einmal angehängt wird.
   Eigentümers. **Wo sie den August-Plan ablöst, gilt sie.** Was sie ablöst, steht
   dort unter „Was sich daran ändert", dazu alles, was der Umzug auf MinerU 4
   ändert (Backend, Ausgabedateien, Antwortformat).
+- **Der Job-Vertrag des Forks**, `docs/content/docs/reference/api.mdx` in
+  `ConstantinLevin/mineru-runpod` — was das Paket an den Worker schickt und was
+  zurückkommt. Eigentümer ist der Fork; im Zweifel gilt dessen Code.
 - **`plans/2026-08-05-ocr-service-plan.md`** — der Entwurf mit allen Begründungen.
   Maßgeblich für „warum ist das so gebaut", soweit die Spec nichts ändert.
 - **`plans/2026-08-06-procrastinate-feature-verifikation.md`** — 19 einzeln

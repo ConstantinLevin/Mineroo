@@ -483,10 +483,9 @@ class Settings:
     """Fest. Bei diesem Transport ist ein `formats`-Feld wirkungslos: es kommt
     immer alles zurueck. Damit ist die Abruf-Regel („alles holen, alles
     persistieren, nie filtern") Mechanik statt Disziplin — an Disziplin ist sie
-    schon einmal gescheitert. Zusaetzlich traegt der Tarball das Layout-PDF und
-    die Bilder, die der Inline-Transport gar nicht liefert (Plan 6). Das
-    Span-PDF gehoerte frueher in diese Aufzaehlung; es entsteht mit unserem
-    Backend gar nicht erst (Begruendung an `assembly.ChunkArtifacts.span_pdf`)."""
+    schon einmal gescheitert. Der Tarball traegt jede Datei, die der Worker ins
+    Ausgabeverzeichnis legt, auch eine, die das Paket noch nicht kennt
+    (Job-Vertrag des Forks: „`formats` … No-op for `tarball_b64`")."""
 
     # -- Zerlegung grosser Dokumente --------------------------------------
 
@@ -520,8 +519,12 @@ class Settings:
     Seiten, also knapp unter das Cap. Gemessen sind es 0,81 MB. Der Fehler lag
     in der Zutat, nicht in der Rechnung — angenommen war, der Tarball trage
     zusaetzlich zu den Inline-Formaten noch Layout- UND Span-PDF; das Span-PDF
-    gibt es gar nicht (siehe `assembly.ChunkArtifacts.span_pdf`), und das
-    Layout-PDF ist mit rund 40 KB klein.
+    gab es mit dem damaligen Backend gar nicht, und das Layout-PDF war mit rund
+    40 KB klein.
+
+    Gemessen ist das an MinerU 3.4. Die Antworten des MinerU-4-Workers tragen
+    andere Dateien (Mineroo#11); ihre Groesse misst der Qualitaets- und
+    Messlauf (Mineroo#19), aus dem die Teilstueck-Grenzen kommen (Mineroo#20).
 
     Die Schwelle BLEIBT trotzdem bei 20, und das ist eine Entscheidung und kein
     Versaeumnis: Die Antwortgroesse ist nicht die einzige Grenze. Ein groesseres

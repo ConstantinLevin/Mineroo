@@ -12,9 +12,11 @@ Dieses Repository enthält die **lokale Seite**: Dateien hinein, Text und Strukt
 heraus. Der Worker, der MinerU auf RunPod ausführt, lebt in seinem eigenen Fork,
 `ConstantinLevin/mineru-runpod`.
 
-**Stand:** Das Paket ist gebaut und getestet gegen den bisherigen Endpoint und
-MinerU 3.4. Der Umbau auf MinerU 4, einen neuen Worker und einen neuen Endpoint
-und die Behebung der bekannten Fehler sind in der Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1)
+**Stand:** Das Paket spricht den Job-Vertrag des MinerU-4-Workers aus dem Fork
+(Mineroo#11) und ist gegen Antworten geprüft, die nach den Quellen dieses
+Vertrags gebaut sind; echte MinerU-4-Antworten gibt es erst mit dem neuen
+Endpoint (Mineroo#10). Der Umbau auf MinerU 4, einen neuen Worker und einen
+neuen Endpoint und die Behebung der bekannten Fehler sind in der Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1)
 beschrieben und werden in Tickets umgesetzt. **Wo dieses README und die Spec
 auseinandergehen, gilt die Spec.** Der große Lauf über viele Dokumente hat noch
 nicht stattgefunden; er kostet Geld und ist eine Entscheidung des Eigentümers.

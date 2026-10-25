@@ -165,10 +165,11 @@ ZUSAMMENGESETZTE UND DADURCH GEHT KEINE INFORMATION VERLOREN WEIL INPUT IST DAS
 GANZE DOKUMENT UND OUTPUT IST DAS GANZE DOKUMENT IN OCR, das es dazwischen
 chunks gab in der arbeit is irrelevant" (Jurgen, 07.08.2026).
 
-Was also darin steht: der zusammengesetzte Text, die zusammengesetzte
-Strukturliste mit den Seitenzahlen DES ORIGINALS, die vereinigten Bilder, dazu
-alles Uebrige, was die Antworten trugen — `middle`, die Layout- und Span-PDFs,
-die `debug`-Bloecke, die Ausfuehrungszeiten. Zusammengesetzt heisst NICHT
+Was also darin steht: der zusammengesetzte Text, je Teilstueck MinerU 4s
+Middle-JSON und strukturierter Inhalt mit den Seitenzahlen DES ORIGINALS, die
+Bilder jedes Teilstuecks in seinem eigenen Namensraum, dazu alles Uebrige, was
+die Antworten trugen — die Modellausgabe, die `debug`-Bloecke, die
+Ausfuehrungszeiten, alles Unerkannte (`assembly.assemble`). Zusammengesetzt heisst NICHT
 reduziert: Weggelassen wird nichts, und nichts wird auf eine Auswahl
 eingedampft. Zusammengesetzt heisst nur, dass die Stuecke wieder in der
 Reihenfolge und mit der Zaehlung stehen, die sie vor dem Schnitt hatten.

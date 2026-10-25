@@ -27,16 +27,13 @@ Das ist die Begründung dafür, warum diese Liste existiert — und zugleich der
 Beleg, dass sie zu spät gefahren wurde. Die Vorgabe lautete: „es wird ja nicht
 ohne interaktion gebaut es ist ja consigment gegen die api" (Plan 2.4).
 
-WAS OFFLINE ABGESICHERT IST, seit die Antworten dieser Läufe als Fixtures unter
-`artifacts/2026-08-08-erster-tarball-lauf/` liegen: das `empty`-Kriterium samt
-dem Tarball-Auspacker an einer leeren Antwort und die Form einer echten
-Fehlerantwort. Diese zwei brauchen kein Geld mehr.
-
-Der Tarball-Auspacker an einer nicht leeren Antwort und der Seitenversatz ueber
-drei echte Teilstuecke waren ebenso abgesichert, bis Mineroo#2 die Aufnahmen dazu
-entfernte, weil sie personenbezogene Daten trugen. Ihre Tests laufen ausgesetzt
-(`pytest -rs`), bis Ersatzaufnahmen ohne Personenbezug unter denselben Namen
-liegen; bis dahin laufen diese Wege offline nur gegen erfundene Antworten.
+DIESE LISTE BESCHREIBT DEN STAND VON MINERU 3.4. Seit Mineroo#11 spricht das
+Paket den MinerU-4-Worker; die Antworten dieser Läufe (unter
+`artifacts/2026-08-08-erster-tarball-lauf/`) tragen Dateien, die es unter MinerU
+4 nicht gibt, und werden offline nicht mehr abgespielt, bis auf die Form einer
+echten Fehlerantwort. Bis die sechs MinerU-4-Aufnahmen aus Mineroo#10 liegen,
+laufen Auspacken, Zusammensetzen und das `empty`-Kriterium offline gegen
+Ersatz-Antworten, gebaut nach den Quellen des Vertrags (`tests/ersatz_antworten.py`).
 """
 
 from __future__ import annotations
@@ -118,7 +115,7 @@ def test_tarball_wird_ausgepackt() -> None:
 
     GEFAHREN am 08.08.2026, Antwort konserviert als
     `artifacts/2026-08-08-erster-tarball-lauf/gute_nacht.tarball.response.json`
-    (vor dem ersten Push entfernt, Mineroo#2; siehe `TARBALL_FIXTURE`).
+    (vor dem ersten Push entfernt, Mineroo#2).
 
     DREI ANNAHMEN SIND DARAN GESCHEITERT:
 
@@ -161,8 +158,8 @@ def test_leeres_ergebnis_am_echten_verhalten() -> None:
     eine echt leere Seite fuer ein kaputtes Archiv gehalten haette — also
     `failed` statt `empty`, mit Wiedervorlage und erneutem Bezahlen.
 
-    Antwort konserviert als `leere_seite.tarball.response.json`; der Weg ist
-    damit OFFLINE abgesichert.
+    Antwort konserviert als `leere_seite.tarball.response.json`. Unter MinerU 4
+    ist das Kriterium neu festzustellen (Mineroo#10, #11).
     """
 
 
@@ -239,9 +236,10 @@ def test_echte_fehlerantwort() -> None:
     Fehlerantwort ist also NICHT leer.
 
     Dieselbe Antwort hat die Liste der gueltigen Backend-Namen geliefert — der
-    Worker nennt sie selbst, wenn man ihn falsch fragt. Sie steht jetzt in
-    `config.GUELTIGE_BACKENDS` und wird lokal geprueft; vorher war ein Tippfehler
-    nur zu erfahren, indem man dafuer bezahlte (177 s Kaltstart je Dokument).
+    Worker nannte sie selbst, wenn man ihn falsch fragte —, und sie wurde lokal
+    geprueft; vorher war ein Tippfehler nur zu erfahren, indem man dafuer
+    bezahlte (177 s Kaltstart je Dokument). Unter MinerU 4 sind es die Stufen
+    (`config.GUELTIGE_STUFEN`).
 
     Antwort konserviert als `fehlerantwort.response.json`; der Weg ist damit
     OFFLINE abgesichert.

@@ -272,8 +272,9 @@ class OCRWrapper:
         """Das gespeicherte Gesamtergebnis, unveraendert und ungefiltert.
 
         Der Weg an allem vorbei: Wer etwas braucht, was die Getter nicht liefern
-        — `middle`, die Layout- und Span-PDFs, die Umschlaege mit Laufzeiten und
-        `debug`-Bloecken — oder wer pruefen will, ob ein Getter richtig liegt,
+        — `structured_content`, `model_output`, die Umschlaege mit Laufzeiten,
+        gemeldeter MinerU-Version und `debug`-Bloecken, `extras` — oder wer
+        pruefen will, ob ein Getter richtig liegt,
         sieht hier nach.
 
         Wirft NICHT bei gescheiterten Dokumenten: Gerade dann will man sehen, was
