@@ -937,6 +937,27 @@ def test_ohne_schluessel_entfaellt_der_preflight_beim_oeffnen_still(
     assert not [e for e in caplog.records if e.levelno >= logging.WARNING]
 
 
+def test_ohne_endpoint_entfaellt_der_preflight_beim_oeffnen_auch_mit_schluessel(
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Den Endpoint verlangt nur, wer ihn braucht (Mineroo#3), und Abschicken
+    braucht ihn nicht. Ein Schluessel in `~/.runpod/config.toml` allein darf das
+    Oeffnen deshalb nicht am fehlenden Endpoint scheitern lassen; ohne Endpoint
+    gibt es nichts zu pruefen."""
+
+    def nie(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("RunPod wurde angesprochen")
+
+    monkeypatch.setattr(client_modul, "_runpod_fragen", nie)
+    monkeypatch.delenv("MINERU_OCR_ENDPOINT_ID")
+    _worker_am_leben(db_conn)
+    with OCRClient(db_dsn=_test_datenbank, api_key="erfunden") as klient:
+        assert klient.settings.endpoint_id is None
+        assert klient.ocr_start(_png("ohne endpoint")).queued is True
+
+
 def test_mit_schluessel_laeuft_der_preflight_beim_oeffnen_wie_bisher(
     _test_datenbank: str, runpod: RunPodAntworten
 ) -> None:

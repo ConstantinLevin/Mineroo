@@ -347,10 +347,11 @@ class OCRClient:
             preflight: Ob beim Betreten geprueft wird. True ist die
                 Voreinstellung, weil die haeufigste Betriebs-Ueberraschung dieser
                 Architektur „es passiert nichts" bei totem Daemon ist — und der
-                Preflight sagt es einem. Er laeuft nur, wenn ein RunPod-Schluessel
-                eingestellt ist; ohne entfaellt er still, denn er fragt RunPod,
-                und Abschicken und Lesen brauchen RunPod nicht. `preflight()`
-                selbst verlangt den Schluessel weiter.
+                Preflight sagt es einem. Er laeuft nur, wenn RunPod-Schluessel
+                und Endpoint eingestellt sind; ohne einen davon entfaellt er
+                still, denn er fragt RunPod nach dem Endpoint, und Abschicken und
+                Lesen brauchen keins von beiden. `preflight()` selbst verlangt
+                beides weiter.
             strict: Ob eine Abweichung der Endpoint-Konfiguration abbricht.
             min_balance: Untergrenze fuer den Preflight.
             backend: Wird beim Einreihen als Task-Angabe mitgegeben.
@@ -404,8 +405,13 @@ class OCRClient:
             # Die App des Clients: synchroner Zugang, keine angemeldeten Tasks.
             # Sie gehoert diesem Client und wird nie umgehaengt.
             self._app = tasks.build_client_app(self._settings).open(pool)
-            # Nur mit Schluessel: Der Preflight fragt RunPod, Abschicken nicht.
-            if self._preflight_gewuenscht and self._settings.api_key is not None:
+            # Nur mit Schluessel und Endpoint: Der Preflight fragt RunPod nach
+            # dem Endpoint, Abschicken braucht keins von beiden.
+            if (
+                self._preflight_gewuenscht
+                and self._settings.api_key is not None
+                and self._settings.endpoint_id is not None
+            ):
                 self._letzter_preflight = self.preflight()
         except BaseException:
             self.__exit__(None, None, None)
