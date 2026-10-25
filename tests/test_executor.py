@@ -12,6 +12,7 @@ import base64
 import dataclasses
 import hashlib
 import io
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -1006,6 +1007,34 @@ async def test_image_tag_wird_auch_bei_einer_pdf_mitgeschrieben(
     # Zuerst die Herkunft, dann der Kontostand, dann erst bezahlt.
     assert runpod.kontakte[0] == "image_tag"
     assert runpod.kontakte[1] == "balance"
+
+
+async def test_die_bildfrage_laeuft_nicht_auf_dem_thread_der_ereignisschleife(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pillow liest die Bytes eines Bildes in einem Thread: Ein boesartig gebautes
+    GIF (Kommentarbloecke bis zur Groessengrenze) brauchte Sekunden bis Minuten und
+    hielt sonst die Ereignisschleife des Daemons mit allen anderen Dokumenten an."""
+    from mineru_ocr import images
+
+    threads: list[int] = []
+
+    def _merken(daten: bytes) -> bool:
+        threads.append(threading.get_ident())
+        return False
+
+    monkeypatch.setattr(images, "has_several_images", _merken)
+    sha, _ = _anlegen(db_conn, tmp_path, _bild("TIFF", 1), typ=DocumentType.TIFF)
+
+    runpod = FalscherRunPod([_fertige_antwort()])
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert len(threads) == 1
+    assert threads[0] != threading.get_ident()
 
 
 async def test_zu_grosses_bild_wird_abgelehnt_bevor_pillow_es_liest(

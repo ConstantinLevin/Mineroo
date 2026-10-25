@@ -10,9 +10,14 @@ Gefragt wird nur „mehr als eines?", nicht „wie viele?". Bei TIFF springt
 waehrend `n_frames` jede Seite durchlaeuft — bei Zehntausenden Seiten Sekunden.
 Bei GIF, PNG und WebP ist es umgekehrt: Dort dekodiert `seek(1)` das erste Bild
 (ein GIF mit 8192 x 8192 Pixeln: rund 120 ms und hunderte MB), und `is_animated`
-antwortet aus den Kopfdaten. Beide Fragen laufen im Job in einem Thread
-(`asyncio.to_thread`): Pillow ist anders als PDFium threadsicher genug dafuer,
-solange jedes Bild nur in einem Thread geoeffnet wird.
+dekodiert nichts. PNG und WebP antworten aus den Kopfdaten; GIF geht die Bloecke
+bis zum zweiten Bild durch, und das kostet bei einem boesartig gebauten GIF
+(Kommentarbloecke bis zur Groessengrenze von 7 MB) Sekunden bis Minuten. Deshalb
+laeuft die Frage im Job in einem Thread (`asyncio.to_thread`) und erst nach der
+Groessenpruefung: Pillow ist anders als PDFium dafuer threadsicher genug, solange
+jedes Bild nur in einem Thread geoeffnet wird. Ein solcher Thread laesst sich
+nicht abbrechen; er verzoegert beim Herunterfahren hoechstens bis zum Ende seiner
+Arbeit.
 
 Pillow oeffnet lazy: `Image.open` liest nur den Kopf, die Pixel werden nicht
 geladen.

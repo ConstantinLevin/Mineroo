@@ -349,10 +349,12 @@ hinweg, und eine Vereinigung behielte nur das letzte.)
   in `pyproject.toml` gilt genau dafür; importiert es jemand woanders, meldet
   mypy es sofort.
 - `images.py` ist die einzige Stelle, die `PIL` (Pillow) importiert. Es fragt, ob
-  eine Bilddatei ein zweites Bild trägt (`Image.seek(1)`, nicht `n_frames`: das
-  zählt jede Seite durch und hält die Ereignisschleife an); ja heißt: im Job vor
-  jedem RunPod-Kontakt, auch dem lesenden, `input_error` (`MultiImageError`,
-  Hinweis: als PDF einreichen). Gefragt wird nur bei TIFF, GIF, WebP und PNG
+  eine Bilddatei ein zweites Bild trägt (TIFF: `Image.seek(1)`; GIF, PNG, WebP:
+  `is_animated`, weil `seek(1)` dort das erste Bild dekodiert; nie `n_frames`, das
+  jede Seite durchzählt); ja heißt: im Job vor jedem RunPod-Kontakt, auch dem
+  lesenden, `input_error` (`MultiImageError`, Hinweis: als PDF einreichen). Die
+  Frage läuft nach der Größenprüfung in einem Thread (`asyncio.to_thread`), weil
+  ein bösartig gebautes GIF Sekunden bis Minuten braucht. Gefragt wird nur bei TIFF, GIF, WebP und PNG
   (`DocumentType.can_hold_several_images`); JPEG und BMP tragen keine Seitenfolge,
   ein Multi-Picture-JPEG ist ein Foto. Ein Bild, das Pillow nicht lesen kann, geht
   weiter — ob es lesbar ist, entscheidet die Engine.
