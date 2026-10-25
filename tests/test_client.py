@@ -859,6 +859,20 @@ def test_status_meldet_den_daemon_als_unbekannt_wenn_die_lebendigkeit_nicht_lesb
     assert "documents" in uebersicht
 
 
+def test_status_meldet_den_daemon_auch_bei_einem_psycopg_fehler_als_unbekannt(
+    offener_client: OCRClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Derselbe Fang wie beim Abschicken: Auch ein Fehler, der an der Uebersetzung
+    in `DatabaseError` vorbeigeht, laesst `status` nicht scheitern."""
+
+    def scheitert(_conn: Any) -> Any:
+        raise psycopg.OperationalError("weg")
+
+    monkeypatch.setattr(db, "worker_heartbeats", scheitert)
+
+    assert offener_client.status()["daemon_alive"] is None
+
+
 def test_ocr_start_warnt_ohne_daemon_nur_einmal_je_client(
     offener_client: OCRClient, caplog: pytest.LogCaptureFixture
 ) -> None:

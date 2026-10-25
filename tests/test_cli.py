@@ -891,6 +891,29 @@ def test_ziel_ohne_hash_und_ohne_datei_ist_unbekannt(
         assert "weder ein sha256 noch" in ergebnis.stderr, kommando
 
 
+def test_ziel_als_nicht_lesbare_datei_ist_ein_betriebsfehler_ohne_traceback(
+    cli: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Eine Datei, die da ist, aber nicht lesbar (kein Leserecht), endet wie eine,
+    die es nicht gibt: Exit-Code 1 mit Auskunft statt eines `PermissionError`."""
+    datei, _ = _datei(tmp_path, "gesperrt.png")
+    echtes_oeffnen = Path.open
+
+    def gesperrt(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self.name == "gesperrt.png":
+            raise PermissionError(13, "Permission denied", str(self))
+        return echtes_oeffnen(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", gesperrt)
+    for kommando in ("show", "wait", "markdown", "retry"):
+        ergebnis = cli.invoke(app, [kommando, str(datei)])
+        assert ergebnis.exit_code == 1, kommando
+        assert "nicht lesbar" in ergebnis.stderr, kommando
+        assert ergebnis.exception is None or isinstance(
+            ergebnis.exception, SystemExit
+        ), kommando
+
+
 def test_hash_oder_pfad_wird_festgelegt_unterschieden() -> None:
     """Vierundsechzig Zeichen aus `[0-9a-f]` sind ein Hash, alles andere ist ein
     Pfad. Die Regel steht als Muster an EINER Stelle der Kommandozeile."""

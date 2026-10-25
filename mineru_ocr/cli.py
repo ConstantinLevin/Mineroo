@@ -127,8 +127,16 @@ def _ziel(target: str) -> str:
         )
     # In Stuecken und nicht ueber `read_bytes`: Eine grosse Datei soll nicht ganz in
     # den Speicher, nur um einen Hash zu bilden. Derselbe Hash wie `core.sha256_of`.
-    with pfad.open("rb") as datei:
-        return hashlib.file_digest(datei, "sha256").hexdigest()
+    try:
+        with pfad.open("rb") as datei:
+            return hashlib.file_digest(datei, "sha256").hexdigest()
+    except OSError as fehler:
+        # Eine Datei, die da ist, aber nicht lesbar (kein Leserecht), ist fuer das
+        # Ziel dasselbe wie keine: ein Betriebsfehler mit Auskunft, kein Traceback.
+        raise DocumentNotFound(
+            f"Kein Dokument zu {target!r}: Die Datei ist nicht lesbar "
+            f"({fehler.strerror or fehler})."
+        ) from fehler
 
 
 def _lesen(datei: Path) -> bytes:
@@ -258,10 +266,11 @@ def ocr(
     kein Missbrauch: Ein Dokument, zu dem es ein Ergebnis gibt (auch `failed`), oder
     das schon unterwegs ist, wird nicht angefasst.
 
-    Bricht der Lauf mittendrin ab (Datenbank weg, Strg-C), steht auf stdout, was bis
-    dahin eingereiht ist, und das Kommando endet mit Exit-Code 1; die Meldung des
-    Abbruchs steht auf stderr. Exit-Code 1 mit Ausgabe heisst also nicht immer
-    „einzelne Dateien uebersprungen, der Rest eingereiht".
+    Bricht der Lauf mittendrin ab, steht auf stdout, was bis dahin eingereiht ist.
+    Bei einem Betriebsfehler (Datenbank weg) endet das Kommando mit Exit-Code 1, und
+    die Meldung des Abbruchs steht auf stderr; Exit-Code 1 mit Ausgabe heisst also
+    nicht immer „einzelne Dateien uebersprungen, der Rest eingereiht". Bei Strg-C
+    endet es, wie typer es fuer einen Abbruch vorsieht, mit Exit-Code 130.
 
     Laeuft kein Daemon, wird trotzdem eingereiht: Abschicken haengt nicht vom
     Daemon ab, die Jobs liegen in der Datenbank, bis einer startet. Die Warnung

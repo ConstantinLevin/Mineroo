@@ -1023,9 +1023,10 @@ class OCRClient:
 
         try:
             daemon_lebt: bool | None = bool(self._lebenszeichen())
-        except DatabaseError:
+        except (DatabaseError, psycopg.Error):
             # Wie der Kontostand: Nicht lesbar ist nicht dasselbe wie „laeuft
-            # nicht“, und die Uebersicht bricht an einer Auskunft nicht ab.
+            # nicht“, und die Uebersicht bricht an einer Auskunft nicht ab. Derselbe
+            # Fang wie beim Abschicken (`_ohne_daemon_warnen`).
             daemon_lebt = None
 
         return {
