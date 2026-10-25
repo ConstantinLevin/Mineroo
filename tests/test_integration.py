@@ -713,21 +713,27 @@ async def test_abbruch_beim_herunterfahren_wird_neu_eingereiht(
     assert jobs[0].status == "todo"
     assert jobs[0].attempts == 1
     assert haengend.abgebrochen == ["job-1"]
+    kennung = jobs[0].id
 
     # Der naechste Daemon nimmt DENSELBEN Job wieder auf, ohne dass jemand
-    # einreiht, und das Dokument laeuft durch.
+    # einreiht, und das Dokument laeuft durch. Er behaelt erfolgreiche Jobs
+    # (`delete_jobs="never"`), sonst loeschte er ihn (Mineroo#26), und es liesse
+    # sich nicht mehr sehen, welcher Job das Ergebnis schrieb.
     gelingend = ProtokollRunPod(lambda nr: _fertig("Nach dem Neustart"))
 
     async def fertig() -> bool:
         z = get_document(db_conn, sha)
         return z is not None and z.status is DocumentStatus.DONE
 
-    await _daemon_laufen_lassen(int_settings, gelingend, bis=fertig)
+    await _daemon_laufen_lassen(
+        dataclasses.replace(int_settings, delete_jobs="never"), gelingend, bis=fertig
+    )
 
     zeile = get_document(db_conn, sha)
     assert zeile is not None
     assert zeile.status is DocumentStatus.DONE
-    assert len(_jobs_zu(db_conn, sha)) == 1
+    jobs = _jobs_zu(db_conn, sha)
+    assert [(job.id, job.status) for job in jobs] == [(kennung, "succeeded")]
 
 
 async def test_abbruch_beim_herunterfahren_im_letzten_versuch_endet_failed(
