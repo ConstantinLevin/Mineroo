@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +13,7 @@ from psycopg_pool import NullConnectionPool
 
 from mineru_ocr import client as client_modul
 from mineru_ocr import config, tasks
+from mineru_ocr import db as db_modul
 from mineru_ocr.client import HASH_FORM, OCRClient
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, write_terminal_async
@@ -150,13 +151,14 @@ def _warnungen_des_clients(caplog: pytest.LogCaptureFixture) -> int:
     return len([e for e in caplog.records if e.name == "mineru_ocr.client"])
 
 
-def _worker_ist_abgestuerzt(conn: psycopg.Connection[Any]) -> None:
-    """Die Zeile, die ein abgestuerzter Daemon hinterlaesst: Sie bleibt bis zum
-    naechsten Start stehen, und ihr Alter ist das Merkmal."""
-    conn.execute(
-        "INSERT INTO procrastinate_workers (last_heartbeat) "
-        "VALUES (now() - interval '67 days')"
-    )
+def _jobs_zaehlen(conn: psycopg.Connection[Any], sha256: str) -> int:
+    """Wie viele Procrastinate-Jobs zu diesem Dokument eingereiht sind."""
+    zeile = conn.execute(
+        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s",
+        (sha256,),
+    ).fetchone()
+    assert zeile is not None
+    return int(zeile[0])
 
 
 # --- Preflight ------------------------------------------------------------
@@ -675,33 +677,26 @@ def test_ocr_start_reiht_auch_ohne_daemon_ein_und_warnt(
     with caplog.at_level("WARNING", logger="mineru_ocr.client"):
         offener_client.ocr_start(huelle)
 
-    anzahl = db_conn.execute(
-        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s",
-        (huelle.sha256,),
-    ).fetchone()
-    assert anzahl is not None and anzahl[0] == 1
+    assert _jobs_zaehlen(db_conn, huelle.sha256) == 1
     assert any("kein Daemon" in eintrag.getMessage() for eintrag in caplog.records)
 
 
 def test_ocr_start_warnt_auch_bei_altem_herzschlag(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
+    abgestuerzter_worker: Callable[[], None],
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Eine stehengebliebene Worker-Zeile eines abgestuerzten Daemons gilt nicht
     als laufender Daemon: Dieselbe Warnung, dasselbe Einreihen."""
-    _worker_ist_abgestuerzt(db_conn)
+    abgestuerzter_worker()
     huelle = _huelle(offener_client, tmp_path, "a.png")
     with caplog.at_level("WARNING", logger="mineru_ocr.client"):
         offener_client.ocr_start(huelle)
 
     assert any("kein Daemon" in eintrag.getMessage() for eintrag in caplog.records)
-    anzahl = db_conn.execute(
-        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s",
-        (huelle.sha256,),
-    ).fetchone()
-    assert anzahl is not None and anzahl[0] == 1
+    assert _jobs_zaehlen(db_conn, huelle.sha256) == 1
 
 
 def test_ocr_start_warnt_je_daemonloser_phase_einmal(
@@ -794,17 +789,13 @@ def test_ocr_start_reiht_auch_ein_wenn_die_lebendigkeit_nicht_lesbar_ist(
     def kaputt(conn: psycopg.Connection[Any]) -> Any:
         raise DatabaseError("procrastinate_workers sieht anders aus")
 
-    monkeypatch.setattr(client_modul.db, "worker_heartbeats", kaputt)
+    monkeypatch.setattr(db_modul, "worker_heartbeats", kaputt)
     huelle = _huelle(offener_client, tmp_path, "a.png")
 
     with caplog.at_level("WARNING", logger="mineru_ocr.client"):
         offener_client.ocr_start(huelle)
 
-    anzahl = db_conn.execute(
-        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s",
-        (huelle.sha256,),
-    ).fetchone()
-    assert anzahl is not None and anzahl[0] == 1
+    assert _jobs_zaehlen(db_conn, huelle.sha256) == 1
     assert any("nicht pruefbar" in e.getMessage() for e in caplog.records)
 
 
@@ -823,11 +814,14 @@ def test_ocr_start_warnt_nicht_bei_laufendem_daemon(
 
 
 def test_preflight_meldet_den_daemon_nach_dem_alter_des_herzschlags(
-    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+    _test_datenbank: str,
+    db_conn: psycopg.Connection[Any],
+    abgestuerzter_worker: Callable[[], None],
+    runpod: RunPodAntworten,
 ) -> None:
     """Ein 67 Tage alter Herzschlag ist ein toter Daemon, ein frischer ein
     lebender — im selben Befund, am selben Punkt."""
-    _worker_ist_abgestuerzt(db_conn)
+    abgestuerzter_worker()
     with OCRClient(
         db_dsn=_test_datenbank, api_key="erfunden", preflight=False, strict=False
     ) as klient:
@@ -845,9 +839,11 @@ def test_preflight_meldet_den_daemon_nach_dem_alter_des_herzschlags(
 
 
 def test_status_meldet_den_daemon_nach_dem_alter_des_herzschlags(
-    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    abgestuerzter_worker: Callable[[], None],
 ) -> None:
-    _worker_ist_abgestuerzt(db_conn)
+    abgestuerzter_worker()
     assert offener_client.status()["daemon_alive"] is False
 
     _worker_am_leben(db_conn)
@@ -867,11 +863,7 @@ def test_ocr_start_blockiert_nicht(
     zurueck = offener_client.ocr_start(huelle)
 
     assert zurueck is huelle
-    anzahl = db_conn.execute(
-        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s",
-        (huelle.sha256,),
-    ).fetchone()
-    assert anzahl is not None and anzahl[0] == 1
+    assert _jobs_zaehlen(db_conn, huelle.sha256) == 1
 
 
 async def test_ocr_start_faesst_fertiges_nicht_an(
@@ -914,11 +906,7 @@ async def test_ocr_start_reiht_alles_ohne_endzustand_ein(
     assert huelle.refresh().status is DocumentStatus.NEW
 
     offener_client.ocr_start(huelle)
-    anzahl = db_conn.execute(
-        "SELECT count(*) FROM procrastinate_jobs WHERE queueing_lock = %s",
-        (huelle.sha256,),
-    ).fetchone()
-    assert anzahl is not None and anzahl[0] == 2
+    assert _jobs_zaehlen(db_conn, huelle.sha256) == 2
 
 
 async def test_wait_gibt_bei_jedem_endzustand_zurueck(

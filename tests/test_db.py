@@ -11,6 +11,7 @@ from __future__ import annotations
 import inspect
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -959,6 +960,7 @@ def test_worker_lebenszeichen_sind_lesbar(db_conn: psycopg.Connection[Any]) -> N
 @pytest.mark.db
 def test_alter_herzschlag_zaehlt_nicht_als_laufender_daemon(
     db_conn: psycopg.Connection[Any],
+    abgestuerzter_worker: Callable[[], None],
 ) -> None:
     """Nach einem Absturz bleibt die Worker-Zeile stehen, und ihr Alter ist das
     Merkmal: Ein Herzschlag aelter als die Schwelle ist kein laufender Daemon.
@@ -966,10 +968,7 @@ def test_alter_herzschlag_zaehlt_nicht_als_laufender_daemon(
     Der Fall, der das ausgeloest hat: eine 67 Tage alte Zeile liess `status`
     „laeuft" sagen.
     """
-    db_conn.execute(
-        "INSERT INTO procrastinate_workers (last_heartbeat) "
-        "VALUES (now() - interval '67 days')"
-    )
+    abgestuerzter_worker()
     assert worker_heartbeats(db_conn) == []
 
     # Ein frischer Herzschlag daneben zaehlt, der alte weiterhin nicht.

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any, Final
 
@@ -378,6 +378,25 @@ def db_conn(_test_datenbank: str) -> Iterator[Any]:
             "RESTART IDENTITY CASCADE"
         )
         yield conn
+
+
+@pytest.fixture
+def abgestuerzter_worker(db_conn: Any) -> Callable[[], None]:
+    """Legt die Zeile an, die ein abgestuerzter Daemon hinterlaesst.
+
+    Sie bleibt bis zum naechsten Start stehen, und ihr Alter ist das Merkmal:
+    67 Tage, weit ueber der Schwelle (`config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS`).
+    Eine Funktion und kein sofortiges Anlegen, weil Tests die Worker-Tabelle vorher
+    leeren oder die Zeile erst mitten im Ablauf brauchen.
+    """
+
+    def anlegen() -> None:
+        db_conn.execute(
+            "INSERT INTO procrastinate_workers (last_heartbeat) "
+            "VALUES (now() - interval '67 days')"
+        )
+
+    return anlegen
 
 
 @pytest.fixture

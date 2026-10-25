@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -82,7 +84,7 @@ def cli(
         "_runpod_fragen",
         lambda settings, was: client_modul._synchron_ausfuehren(was(Zugang())),
     )
-    # Ein lebendes Lebenszeichen, damit `ocr` nicht am toten Daemon scheitert.
+    # Ein lebendes Lebenszeichen, damit `ocr` nicht ohne Daemon warnt.
     db_conn.execute("INSERT INTO procrastinate_workers DEFAULT VALUES")
     return CliRunner()
 
@@ -404,15 +406,14 @@ def test_status_sagt_wenn_kein_daemon_laeuft(
 
 
 def test_status_zaehlt_einen_alten_herzschlag_nicht_als_daemon(
-    cli: CliRunner, db_conn: psycopg.Connection[Any]
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    abgestuerzter_worker: Callable[[], None],
 ) -> None:
     """Nach einem Absturz bleibt die Worker-Zeile stehen, und `status` darf sie
     nicht fuer einen laufenden Daemon halten (eine 67 Tage alte tat es)."""
     db_conn.execute("DELETE FROM procrastinate_workers")
-    db_conn.execute(
-        "INSERT INTO procrastinate_workers (last_heartbeat) "
-        "VALUES (now() - interval '67 days')"
-    )
+    abgestuerzter_worker()
     ergebnis = cli.invoke(app, ["status"])
     assert ergebnis.exit_code == 0
     assert "LAEUFT NICHT" in ergebnis.output
@@ -466,6 +467,21 @@ def test_ocr_hat_keine_strict_option_mehr(cli: CliRunner, tmp_path: Path) -> Non
 
     assert "strict" not in inspect.signature(cli_modul.ocr).parameters
     assert "strict" in inspect.signature(cli_modul.preflight).parameters
+
+
+def test_der_stderr_handler_haengt_nach_dem_aufruf_nicht_mehr_am_logger() -> None:
+    """Der Handler haelt den Strom fest, auf den `sys.stderr` gerade zeigt. Bliebe
+    er nach einem Fehler im Rumpf haengen, doppelte jede Warnung in einem Prozess,
+    der die Kommandozeile mehrfach aufruft (und jeder Test taete es auch)."""
+    logger = logging.getLogger("mineru_ocr")
+    vorher = list(logger.handlers)
+
+    with pytest.raises(RuntimeError):
+        with cli_modul._warnungen_auf_stderr():
+            assert len(logger.handlers) == len(vorher) + 1
+            raise RuntimeError("Fehler im Rumpf")
+
+    assert logger.handlers == vorher
 
 
 # --- Das Kommando, das Geld ausgibt --------------------------------------
