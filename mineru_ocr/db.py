@@ -1538,7 +1538,15 @@ class _Warteplan:
 
     def _frist_pruefen(self) -> None:
         if self.ende is not None and time.monotonic() >= self.ende:
-            raise WaitTimeoutError(tuple(self.offen), self.timeout)
+            offen = tuple(self.offen)
+            raise WaitTimeoutError(
+                f"{len(offen)} Dokument(e) hatten innerhalb von {self.timeout} "
+                f"Sekunden kein Ergebnis: {', '.join(offen)}. Sie koennen trotzdem "
+                f"noch fertig werden — der Zeitablauf sagt etwas ueber die Geduld "
+                f"des Wartenden, nichts ueber die Dokumente.",
+                pending=offen,
+                timeout=self.timeout,
+            )
 
     def wartezeit(self) -> float:
         """Wie lange auf Signale gewartet wird: bis zum naechsten Takt, hoechstens

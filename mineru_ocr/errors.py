@@ -274,17 +274,18 @@ class WaitTimeoutError(MineruOcrError, TimeoutError):
     des Wartenden, nichts ueber die Dokumente.
     """
 
-    def __init__(self, pending: tuple[str, ...], timeout: float | None) -> None:
+    def __init__(
+        self,
+        nachricht: str,
+        *,
+        pending: tuple[str, ...] = (),
+        timeout: float | None = None,
+    ) -> None:
+        super().__init__(nachricht)
         self.pending = pending
         """Die Hashes, die bei Ablauf noch offen waren, in der Reihenfolge der
         Frage. Mit ihnen laesst sich spaeter erneut warten."""
         self.timeout = timeout
-        super().__init__(
-            f"{len(pending)} Dokument(e) hatten innerhalb von {timeout} Sekunden "
-            f"kein Ergebnis: {', '.join(pending)}. Sie koennen trotzdem noch fertig "
-            f"werden — der Zeitablauf sagt etwas ueber die Geduld des Wartenden, "
-            f"nichts ueber die Dokumente."
-        )
 
 
 class TerminalOverwriteError(DatabaseError):
