@@ -64,6 +64,29 @@ def _datei(tmp_path: Path, name: str, inhalt: bytes) -> Path:
     return pfad
 
 
+def _huelle(
+    conn: psycopg.Connection[Any], settings: Settings, inhalt: bytes
+) -> OCRWrapper:
+    """Eine Huelle zu einer frisch angelegten Zeile `new`, ohne das Abschicken.
+
+    Legt Zeile und Eingabe mit den Funktionen von `db` an, so wie das Abschicken
+    es tut, und liest die Zeile OHNE `raw`: genau die Huelle, die `get()` gibt.
+    """
+    sha256 = hashlib.sha256(inhalt).hexdigest()
+    with conn.transaction():
+        db.insert_document(
+            conn,
+            sha256=sha256,
+            size_bytes=len(inhalt),
+            mime="image/png",
+            endpoint_id=settings.endpoint_id,
+        )
+        db.insert_input(conn, sha256=sha256, content=inhalt)
+    zeile = db.get_document(conn, sha256, with_raw=False)
+    assert zeile is not None
+    return OCRWrapper.from_row(zeile, conn)
+
+
 # --- Identitaet und Nichts-Tun -------------------------------------------
 
 
@@ -779,3 +802,53 @@ def test_zugriff_ueber_position_und_hash(
     assert len(list(mega)) == 3
     with pytest.raises(KeyError):
         mega["gibtesnicht"]
+
+
+async def test_to_dict_mit_raw_traegt_das_vollstaendige_ergebnis(
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    settings: Settings,
+) -> None:
+    """`to_dict(raw=True)` nimmt die vollstaendige Antwort mit — und laedt sie
+    dafuer nach, wenn die Huelle sie noch nicht hat."""
+    huelle = _huelle(db_conn, settings, PNG_KOPF + b"mit raw")
+    raw = {"markdown": "Text.", "content_list": [], "images": {}, "extras": {"a": 1}}
+    await write_terminal_async(
+        async_conn, sha256=huelle.sha256, status=DocumentStatus.DONE, raw=raw
+    )
+
+    zeile = db.get_document(db_conn, huelle.sha256, with_raw=False)
+    assert zeile is not None
+    frisch = OCRWrapper.from_row(zeile, db_conn)
+    assert frisch.row.raw_loaded is False
+
+    abbildung = frisch.to_dict(raw=True)
+    assert abbildung["raw"] == raw
+    assert abbildung["sha256"] == huelle.sha256
+    # Ohne den Schalter bleibt es dabei: kein `raw`.
+    assert "raw" not in frisch.to_dict()
+    assert "raw" not in frisch.to_dict(raw=False)
+
+
+def test_to_dict_mit_raw_ohne_ergebnis_traegt_ein_leeres_raw(
+    db_conn: psycopg.Connection[Any], settings: Settings
+) -> None:
+    """Ein Dokument ohne Ergebnis hat noch kein `raw`; `raw` selbst wirft dort
+    nicht, und `to_dict(raw=True)` ebenso wenig."""
+    huelle = _huelle(db_conn, settings, PNG_KOPF + b"ohne ergebnis")
+    assert huelle.to_dict(raw=True)["raw"] == {}
+
+
+def test_get_document_ohne_raw_laedt_raw_nicht(
+    db_conn: psycopg.Connection[Any], settings: Settings
+) -> None:
+    """Der schmale Lesezugriff auf EIN Dokument: `raw` bleibt ungelesen und die
+    Zeile sagt es (`raw_loaded`). Das Abschicken eines schon fertigen Dokuments
+    darf nicht dessen ganze Antwort lesen."""
+    huelle = _huelle(db_conn, settings, PNG_KOPF + b"schmal")
+    zeile = db.get_document(db_conn, huelle.sha256, with_raw=False)
+    assert zeile is not None
+    assert zeile.raw is None
+    assert zeile.raw_loaded is False
+    voll = db.get_document(db_conn, huelle.sha256)
+    assert voll is not None and voll.raw_loaded is True

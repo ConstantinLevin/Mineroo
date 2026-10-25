@@ -461,13 +461,25 @@ class OCRWrapper:
         self._zwischenspeicher.clear()
         return self
 
-    def to_dict(self) -> dict[str, Any]:
-        """Alles ueber dieses Dokument als einfache Abbildung — ohne `raw`.
+    def to_dict(self, raw: bool = False) -> dict[str, Any]:
+        """Alles ueber dieses Dokument als einfache Abbildung.
 
-        Fuer die Ausgabe mit `--json`. `raw` fehlt bewusst: Es waere je Dokument
-        gross (rund 0,1 MB je Seite), und keine Statusausgabe braucht es. Wer
-        es will, nimmt `raw`.
+        Fuer die Ausgabe mit `--json`. `raw` fehlt in der Voreinstellung bewusst:
+        Es waere je Dokument gross (rund 0,1 MB je Seite), und keine
+        Statusausgabe braucht es.
+
+        Args:
+            raw: True nimmt die vollstaendige Antwort unter `"raw"` mit und laedt
+                sie dafuer nach, wenn die Huelle sie noch nicht hat. Bei einem
+                Dokument ohne Ergebnis ist sie leer (`{}`), wie bei `.raw`.
         """
+        abbildung = self._angaben()
+        if raw:
+            abbildung["raw"] = self.raw
+        return abbildung
+
+    def _angaben(self) -> dict[str, Any]:
+        """Die Angaben der Zeile ohne `raw`."""
         return {
             "sha256": self.row.sha256,
             "size_bytes": self.row.size_bytes,

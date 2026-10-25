@@ -791,8 +791,17 @@ async def read_input_async(dsn: str, sha256: str) -> bytes | None:
     return inhalt if type(inhalt) is bytes else bytes(inhalt)
 
 
-def get_document(conn: psycopg.Connection[Any], sha256: str) -> DocumentRow | None:
-    """Liest eine Zeile vollstaendig, einschliesslich `raw`. None, wenn es sie nicht gibt.
+def get_document(
+    conn: psycopg.Connection[Any], sha256: str, *, with_raw: bool = True
+) -> DocumentRow | None:
+    """Liest eine Zeile, standardmaessig mit `raw`. None, wenn es sie nicht gibt.
+
+    Mit `with_raw=False` bleibt `raw` ungelesen (`raw_loaded = False`), wie bei
+    `list_documents`. Das ist der Weg fuer alles, was nur den Zustand braucht:
+    Das Abschicken eines schon fertigen Dokuments soll nicht dessen ganze
+    Antwort lesen, und ein erneuter Lauf ueber 30.000 fertige Dokumente zoege
+    sonst rund 34 GB. Wer das Ergebnis dann doch will, bekommt es von der Huelle
+    nachgeladen.
 
     Die Zuordnung Spalte-zu-Feld laeuft ueber `psycopg.rows.class_row(DocumentRow)`
     — ueber die SPALTENNAMEN aus der Cursor-Beschreibung, nicht ueber die
@@ -807,9 +816,10 @@ def get_document(conn: psycopg.Connection[Any], sha256: str) -> DocumentRow | No
     Zeichenkette durch, und `DocumentStatus` entsteht daraus in
     `DocumentRow.__post_init__`.
     """
+    spalten = _SPALTEN_VOLL if with_raw else _SPALTEN_OHNE_RAW
     with conn.cursor(row_factory=class_row(DocumentRow)) as cur:
         return cur.execute(
-            f"SELECT {_SPALTEN_VOLL} FROM documents WHERE sha256 = %s", (sha256,)
+            f"SELECT {spalten} FROM documents WHERE sha256 = %s", (sha256,)
         ).fetchone()
 
 
