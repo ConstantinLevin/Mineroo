@@ -77,6 +77,15 @@ class DocumentType(enum.Enum):
         return self is DocumentType.PDF
 
     @property
+    def is_image(self) -> bool:
+        """Ob dieser Typ eine Bilddatei ist, die mehr als ein Bild tragen kann.
+
+        Office-Formate gehoeren nicht dazu, auch wenn sie Bilder enthalten: Sie
+        sind ein Dokument, keine Folge von Bildern.
+        """
+        return self in _BILDTYPEN
+
+    @property
     def mime(self) -> str:
         """Die MIME-Zeichenkette, wie sie in `documents.mime` landet."""
         return _TABELLE[self][0]
@@ -86,6 +95,17 @@ class DocumentType(enum.Enum):
         """Die Endung mit fuehrendem Punkt."""
         return _TABELLE[self][1]
 
+
+_BILDTYPEN: Final[frozenset[DocumentType]] = frozenset(
+    {
+        DocumentType.PNG,
+        DocumentType.JPEG,
+        DocumentType.GIF,
+        DocumentType.BMP,
+        DocumentType.TIFF,
+        DocumentType.WEBP,
+    }
+)
 
 _TABELLE: Final[dict[DocumentType, tuple[str, str]]] = {
     DocumentType.PDF: ("application/pdf", ".pdf"),

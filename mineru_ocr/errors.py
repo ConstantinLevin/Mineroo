@@ -109,6 +109,17 @@ class CorruptDocumentError(InputError):
     """
 
 
+class MultiImageError(InputError):
+    """Die Bilddatei enthaelt mehr als ein Bild (etwa ein mehrseitiges Fax als TIFF).
+
+    Die Engine liest von einer Bilddatei nur das erste Bild; alle weiteren gingen
+    still verloren, und das Dokument endete als einseitiges `done`. Deshalb endet
+    die Datei vor jedem RunPod-Kontakt als `input_error`, mit dem Hinweis, sie als
+    PDF einzureichen. Mehrseitige Bilder selbst in eine PDF umzuwandeln ist
+    ausdruecklich nicht Aufgabe des Pakets (Mineroo#1, Out of Scope).
+    """
+
+
 class TooLargeError(InputError):
     """Die Datei passt nicht unter eine Grenze und laesst sich nicht zerlegen.
 

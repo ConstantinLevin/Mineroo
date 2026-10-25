@@ -27,6 +27,11 @@ dependencies = [
     # 360 MB Quelle wurden zu 4,1 GB Einzelseiten) und taucht deshalb hier nicht
     # als Abhaengigkeit auf, auch nicht mittelbar gewollt.
     "pypdfium2>=4.30.0",
+    # Pillow zaehlt die Bilder einer Bilddatei (images.py, das einzige Modul, das
+    # es importiert): Mehr als eines endet im Job als input_error mit dem Hinweis,
+    # als PDF einzureichen. 12.2.0 ist die Fassung der Miniconda-Base, gegen die
+    # die Tests laufen; ein Pin wuerde dort andere Projekte brechen.
+    "pillow>=12.2.0",
     # typer bringt rich als eigene Abhaengigkeit mit. Eine zusaetzliche eigene
     # Zeile dafuer stand hier und war eine Behauptung, die nicht stimmte: Das
     # Paket benutzt rich nirgends. Sie ist weg — wer spaeter rich benutzt, traegt

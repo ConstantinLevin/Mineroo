@@ -38,13 +38,14 @@ from typing import Any, TypeVar
 
 from psycopg_pool import AsyncConnectionPool
 
-from . import assembly, chunking, db
+from . import assembly, chunking, db, images
 from .config import Settings
 from .errors import (
     CorruptDocumentError,
     InputError,
     InsufficientBalanceError,
     JobAufgegebenError,
+    MultiImageError,
     ResultLostError,
     TerminalRunPodError,
     TransientRunPodError,
@@ -137,6 +138,12 @@ async def process_document(
        `PdfReader.extract` als Schneider. Fuer alles andere ein einziges
        Teilstueck `Chunk(0, 0)`, das die ganze Datei traegt — es gibt keinen
        Sonderfall „war nicht geschnitten".
+
+       Vor dem ersten RunPod-Kontakt endet eine Eingabe, die nicht verarbeitbar
+       ist, als `input_error`: eine PDF, die sich nicht oeffnen laesst (kaputt
+       oder verschluesselt, `CorruptDocumentError`), und eine Bilddatei mit mehr
+       als einem Bild (`MultiImageError`, Hinweis: als PDF einreichen). Beides
+       gilt vor der Kontostandsabfrage.
 
        Je Teilstueck NACHEINANDER: absenden, abfragen bis terminal, SOFORT
        abholen und auspacken (`assembly.unpack_response`), dann das naechste.
@@ -387,6 +394,19 @@ async def process_document(
                 )
         else:
             seiten = None
+            if typ.is_image:
+                # Die Engine liest von einer Bilddatei nur das erste Bild. Mehr
+                # als eines (ein mehrseitiges Fax als TIFF) hiesse: alle Seiten
+                # nach der ersten gehen still verloren. Gezaehlt wird VOR der
+                # Kontostandsabfrage und vor jedem RunPod-Kontakt; ein Bild, das
+                # sich nicht zaehlen laesst (`None`), geht weiter.
+                bilder = images.count_images(rohbytes)
+                if bilder is not None and bilder > 1:
+                    raise MultiImageError(
+                        f"Die Bilddatei enthaelt {bilder} Bilder, gelesen wuerde "
+                        f"nur das erste. Bitte als PDF einreichen. Es wurde "
+                        f"nichts bezahlt."
+                    )
             # Nicht zerlegbar — also muss es ungeteilt passen.
             chunking.check_fits_unsplit(
                 size_bytes=len(rohbytes), doc_type=typ, settings=settings

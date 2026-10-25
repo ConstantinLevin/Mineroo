@@ -348,6 +348,10 @@ hinweg, und eine Vereinigung behielte nur das letzte.)
   einem Pfad. Die mypy-Ausnahme
   in `pyproject.toml` gilt genau dafür; importiert es jemand woanders, meldet
   mypy es sofort.
+- `images.py` ist die einzige Stelle, die `PIL` (Pillow) importiert. Es zählt die
+  Bilder einer Bilddatei; mehr als eines endet im Job vor jedem RunPod-Kontakt als
+  `input_error` (`MultiImageError`, Hinweis: als PDF einreichen). Ein Bild, das
+  Pillow nicht zählen kann, geht weiter — ob es lesbar ist, entscheidet die Engine.
 - `client.py` und `cli.py` sind zwei Zugänge auf **dieselbe** Fläche. Das
   Kommando enthält keine eigene Logik; jedes ruft genau eine Funktion der
   Bibliothek.

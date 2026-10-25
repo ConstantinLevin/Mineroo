@@ -18,6 +18,7 @@ from typing import Any
 import psycopg
 import pypdfium2
 import pytest
+from PIL import Image
 from psycopg_pool import AsyncConnectionPool
 
 from mineru_ocr.config import Settings
@@ -27,6 +28,7 @@ from mineru_ocr.errors import (
     CorruptDocumentError,
     InsufficientBalanceError,
     JobAufgegebenError,
+    MultiImageError,
     ResultLostError,
     TerminalRunPodError,
     TransientRunPodError,
@@ -36,6 +38,8 @@ from mineru_ocr.executor import process_document, wait_for_balance
 from mineru_ocr.mime import DocumentType
 
 pytestmark = pytest.mark.db
+
+PNG_KOPF = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 
 
 class FalscherRunPod:
@@ -340,6 +344,160 @@ async def test_kaputte_pdf_endet_input_error_auch_bei_leerem_konto(
     zeile = get_document(db_conn, sha)
     assert zeile is not None
     assert zeile.status is DocumentStatus.INPUT_ERROR
+
+
+def _passwortgeschuetzte_pdf() -> bytes:
+    """Eine PDF mit `/Encrypt`, deren Passwort pdfium nicht kennt.
+
+    Von Hand gebaut, weil pypdfium2 nicht verschluesselt und pypdf im Projekt
+    verboten ist. `/O` und `/U` sind Fuellwerte: Das Passwort der leeren
+    Zeichenkette passt nicht dazu, pdfium meldet „Incorrect password error".
+    """
+    objekte = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] >>",
+        b"<< /Filter /Standard /V 1 /R 2 /P -4 /O <"
+        + b"11" * 32
+        + b"> /U <"
+        + b"22" * 32
+        + b"> >>",
+    ]
+    teile = [b"%PDF-1.4\n"]
+    versaetze = []
+    for nr, inhalt in enumerate(objekte, start=1):
+        versaetze.append(sum(len(t) for t in teile))
+        teile.append(b"%d 0 obj\n" % nr + inhalt + b"\nendobj\n")
+    xref = sum(len(t) for t in teile)
+    teile.append(b"xref\n0 %d\n0000000000 65535 f \n" % (len(objekte) + 1))
+    teile.extend(b"%010d 00000 n \n" % v for v in versaetze)
+    teile.append(
+        b"trailer\n<< /Size %d /Root 1 0 R /Encrypt 4 0 R /ID [<%s> <%s>] >>\n"
+        % (len(objekte) + 1, b"aa" * 16, b"aa" * 16)
+    )
+    teile.append(b"startxref\n%d\n%%%%EOF\n" % xref)
+    return b"".join(teile)
+
+
+async def test_verschluesselte_pdf_endet_input_error_ohne_runpod_kontakt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Eine passwortgeschuetzte PDF endet `input_error`, auch bei leerem Konto, und
+    RunPod hoert nichts davon."""
+    sha, _ = _anlegen(db_conn, tmp_path, _passwortgeschuetzte_pdf())
+
+    runpod = FalscherRunPod([_fertige_antwort()], kontostand=0.0)
+    with pytest.raises(CorruptDocumentError, match="PDF"):
+        await asyncio.wait_for(
+            process_document(sha, settings=exec_settings, runpod=runpod, pool=pool),
+            timeout=5,
+        )
+
+    assert runpod.abgesendet == []
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.error is not None
+
+
+def _bild(format: str, anzahl: int) -> bytes:
+    """Eine Bilddatei mit `anzahl` Bildern (Frames), in dem Format."""
+    bilder = [Image.new("RGB", (8, 8), farbe) for farbe in ("red", "blue", "green")]
+    puffer = io.BytesIO()
+    bilder[0].save(
+        puffer,
+        format=format,
+        save_all=True,
+        append_images=bilder[1:anzahl],
+        **({"lossless": True} if format == "WEBP" else {}),
+    )
+    return puffer.getvalue()
+
+
+_BILDTYPEN = [
+    ("TIFF", DocumentType.TIFF),
+    ("GIF", DocumentType.GIF),
+    ("WEBP", DocumentType.WEBP),
+    ("PNG", DocumentType.PNG),
+]
+
+
+@pytest.mark.parametrize(("format", "typ"), _BILDTYPEN)
+async def test_mehrbildige_bilddatei_endet_input_error_vor_jedem_runpod_kontakt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    format: str,
+    typ: DocumentType,
+) -> None:
+    """Ein mehrseitiges Fax als TIFF (oder ein anderes Bild mit mehreren Bildern)
+    endet `input_error` mit dem Hinweis, es als PDF einzureichen.
+
+    Bei leerem Konto und mit Zeitgrenze: Die Pruefung geschieht VOR der
+    Kontostandsabfrage, sonst wartete der Job auf Geld fuer eine Datei, die RunPod
+    nie sieht. Ohne die Pruefung ginge nur das erste Bild hinaus und das Dokument
+    endete als einseitiges `done`.
+    """
+    sha, _ = _anlegen(db_conn, tmp_path, _bild(format, 3), typ=typ)
+
+    runpod = FalscherRunPod([_fertige_antwort()], kontostand=0.0)
+    with pytest.raises(MultiImageError, match="PDF"):
+        await asyncio.wait_for(
+            process_document(sha, settings=exec_settings, runpod=runpod, pool=pool),
+            timeout=5,
+        )
+
+    assert runpod.abgesendet == []
+    assert runpod.verlauf == []
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.error is not None and "3 Bilder" in zeile.error
+
+
+@pytest.mark.parametrize(("format", "typ"), _BILDTYPEN)
+async def test_einbildige_bilddatei_geht_unveraendert_hinaus(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    format: str,
+    typ: DocumentType,
+) -> None:
+    """Das Gegenstueck: Ein Bild mit einem Bild wird gelesen."""
+    inhalt = _bild(format, 1)
+    sha, _ = _anlegen(db_conn, tmp_path, inhalt, typ=typ)
+
+    runpod = FalscherRunPod([_fertige_antwort()])
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert [base64.b64decode(b) for b in runpod.abgesendet] == [inhalt]
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+
+
+async def test_bild_das_pillow_nicht_lesen_kann_geht_trotzdem_hinaus(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Gezaehlt wird, was sich zaehlen laesst. Eine Bilddatei, die Pillow nicht
+    oeffnet (die Endung stimmt, der Inhalt nicht), beweist keine mehreren Bilder;
+    ob sie lesbar ist, entscheidet die Engine, nicht diese Pruefung."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, PNG_KOPF + b"abgeschnitten", typ=DocumentType.PNG
+    )
+
+    runpod = FalscherRunPod([_fertige_antwort()])
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert len(runpod.abgesendet) == 1
 
 
 async def test_job_bestimmt_die_seitenzahl_und_schreibt_sie_mit_dem_ergebnis(
