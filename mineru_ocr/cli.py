@@ -515,7 +515,11 @@ def wait(
     mit (`HASH: ZUSTAND  PFAD`, in JSON `paths`, leer fuer ein Ziel, das ein Hash
     war). Ein gescheitertes beendet das Warten auf die uebrigen nicht. Die Frist
     gilt fuer alle zusammen; nach ihrem Ablauf nennt stderr die noch offenen.
-    Frist und Strg-C beenden nur das Warten, kein Job wird angefasst.
+    Frist und Strg-C beenden nur das Warten, kein Job wird angefasst. Ohne Frist
+    wartet `wait`, bis die Datenbank zurueck ist, wenn sie unterwegs wegbricht —
+    auch wenn sie geloescht oder der Zugang entzogen wurde, denn ein
+    gescheitertes Verbinden traegt keinen SQLSTATE. Deshalb im Zweifel
+    `--timeout` setzen.
 
     Exit-Code: 0, wenn alle `done` oder `empty` sind; 3, wenn eines `failed` oder
     `input_error` ist; 4, wenn nach Ablauf der Frist noch eines offen ist; 1 bei

@@ -744,6 +744,15 @@ def _verbindungsfehler_uebersetzen(
     SQLSTATE, wie ihn eine abgelehnte Verbindung erzeugt — gilt als wiederholbar.
     Im Zweifel also wiederholbar, denn ein faelschlich wiederholter Versuch
     kostet einen Anlauf, ein faelschlich endgueltiger ein Dokument.
+
+    Beim VERBINDEN gibt es diesen SQLSTATE nicht: psycopg (gemessen an 3.3.3)
+    baut den Fehler eines gescheiterten Verbindungsaufbaus nur aus dem Text der
+    Meldung, ohne SQLSTATE — auch fuer „database … does not exist", „role … does
+    not exist" und ein falsches Passwort. Ein Verbinden, das scheitert, ist hier
+    deshalb immer `DatabaseError`, also wiederholbar. Am Text der Meldung wird
+    bewusst nicht unterschieden (Entscheidung des Eigentuemers zu Mineroo#28):
+    Er haengt an Version und Sprache des Servers. `ConfigurationError` kommt nur
+    fuer einen Fehler mit SQLSTATE, also auf einer schon offenen Verbindung.
     """
     zustand = getattr(fehler, "sqlstate", None)
     if isinstance(zustand, str) and (zustand.startswith("28") or zustand == "3D000"):
@@ -764,14 +773,14 @@ def connect(dsn: str) -> psycopg.Connection[Any]:
         dieser Verbindung, sondern auf einer eigenen (`_warte_verbindung`).
 
     Raises:
-        DatabaseError: Die Instanz antwortet nicht. Ausdruecklich NICHT
-            `ConfigurationError` — der Unterschied entscheidet ueber Geld: Eine
-            Verbindungsstoerung ist wiederholbar, ein falscher Zugang ist es
-            nicht. Wuerde hier `ConfigurationError` fliegen, machte ein
-            einsekuendiger Postgres-Aussetzer beim Terminal-Schreiben aus einem
-            bezahlten Dokument ein endgueltig gescheitertes.
-        ConfigurationError: Der Zugang taugt nicht — falsche
-            Verbindungszeichenkette, fehlende Rechte, keine solche Datenbank.
+        DatabaseError: Das Verbinden scheiterte — die Instanz antwortet nicht,
+            aber ebenso eine fehlende Datenbank, eine fehlende Rolle oder ein
+            falsches Passwort: psycopg gibt einem gescheiterten Verbindungsaufbau
+            keinen SQLSTATE (`_verbindungsfehler_uebersetzen`). Ausdruecklich
+            NICHT `ConfigurationError` fuer eine Stoerung — der Unterschied
+            entscheidet ueber Geld: Wuerde hier `ConfigurationError` fliegen,
+            machte ein einsekuendiger Postgres-Aussetzer beim Terminal-Schreiben
+            aus einem bezahlten Dokument ein endgueltig gescheitertes.
     """
     return _verbinden(dsn, "Verbindung oeffnen")
 
@@ -999,8 +1008,9 @@ async def read_input_async(dsn: str, sha256: str) -> bytes | None:
         gibt; was das heisst, entscheidet der Aufrufer.
 
     Raises:
-        DatabaseError: Die Instanz antwortet nicht. Wiederholbar.
-        ConfigurationError: Der Zugang taugt nicht.
+        DatabaseError: Die Instanz antwortet nicht, oder das Verbinden scheiterte
+            aus anderem Grund (ohne SQLSTATE, `_verbindungsfehler_uebersetzen`).
+        ConfigurationError: Ein Zugangsfehler mit SQLSTATE beim Lesen.
 
     Kosten: keine.
     """
@@ -1649,8 +1659,9 @@ def _warte_verbindung(
     `connect_timeout` ist der Rest der Frist (`_Warteplan.verbindungsfrist`).
 
     Raises:
-        DatabaseError: Die Instanz antwortet nicht. Wiederholbar.
-        ConfigurationError: Der Zugang taugt nicht.
+        DatabaseError: Das Verbinden scheiterte. Das schliesst eine fehlende
+            Datenbank oder Rolle ein, denn psycopg gibt dem gescheiterten
+            Verbindungsaufbau keinen SQLSTATE (`_verbindungsfehler_uebersetzen`).
     """
     return _verbinden(
         dsn, "Warte-Verbindung oeffnen", **_warte_angaben(dsn, connect_timeout)
@@ -1744,7 +1755,11 @@ def wait_for_terminal(
            wird nach einer kurzen Pause (`NEUVERBINDEN_PAUSE_SEKUNDEN`) neu
            verbunden und neu angefangen: wieder lauschen, wieder alles Offene
            lesen. Signale aus der Luecke heilt das erneute Lesen. Bei einem
-           Zugangsfehler nicht: Der endet das Warten.
+           Zugangsfehler mit SQLSTATE nicht: Der endet das Warten. Ein
+           Neuverbinden, das scheitert, traegt aber keinen SQLSTATE (auch nicht,
+           wenn Datenbank oder Rolle fehlen; `_verbindungsfehler_uebersetzen`)
+           und wird deshalb wiederholt: Ohne Frist wartet die Schleife, bis die
+           Datenbank zurueck ist. Wer das nicht will, setzt eine Frist.
         5. Laeuft die Frist ab, wird ein letztes Mal alles Offene gelesen; was
            inzwischen fertig ist, kommt als Ergebnis, und nur, was dann noch
            offen ist, nennt der `WaitTimeoutError`. Auch das Verbinden ist durch
@@ -1772,8 +1787,10 @@ def wait_for_terminal(
         DocumentNotFound: Weder Ergebnis noch Eingabe zu einem Hash. Kommt SOFORT,
             vor allem anderen, und nennt jeden unbekannten.
         WaitTimeoutError: Die Frist lief ab; er nennt die noch offenen Hashes.
-        DatabaseError: Die Instanz antwortet schon beim ersten Verbinden nicht.
-        ConfigurationError: Der Zugang taugt nicht.
+        DatabaseError: Schon das erste Verbinden scheiterte (Instanz weg,
+            Datenbank oder Rolle fehlt, falsches Passwort).
+        ConfigurationError: Ein Zugangsfehler mit SQLSTATE auf der offenen
+            Warte-Verbindung.
         ValueError: Die Frist ist `nan` oder negativ (`check_wait_timeout`).
         TypeError: `hashes` ist ein einzelner Hash.
 

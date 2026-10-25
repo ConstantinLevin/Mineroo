@@ -130,7 +130,9 @@ offen ist** (die offenen nennt stderr); 1 bei einem Betriebsfehler, auch einem
 unbekannten Hash; 2 bei einer Frist, die keine Zahl ab null ist (`nan`, negativ);
 130 bei Strg-C. Bei mehreren gilt der schwerste, 1 vor 4 vor 3
 vor 0: 4 verlangt vom Aufrufer eine Handlung (später erneut warten), die
-Fehlschläge stehen ohnehin in den Zeilen.
+Fehlschläge stehen ohnehin in den Zeilen. Ohne `--timeout` wartet `wait`, bis die
+Datenbank zurück ist, wenn sie unterwegs wegbricht, auch wenn sie gelöscht oder
+der Zugang entzogen wurde; in Skripten deshalb `--timeout` setzen.
 
 ### Konfiguration — Endpoint, Datenbank und Sollwerte stehen nicht im Code
 
@@ -301,7 +303,11 @@ gelesen, sonst gehen die übrigen eines Pakets verloren; im Takt
 (`wait_poll_seconds`) werden alle offenen gelesen. Nach einem wiederholbaren
 Abbruch wird nach einer kurzen Pause neu verbunden und neu angefangen (ohne die
 Pause bestürmte eine Verbindung, die gleich wieder abbricht, die Datenbank), nach
-einem Zugangsfehler nicht. Die Frist gilt für den ganzen Aufruf, auch fürs
+einem Zugangsfehler mit SQLSTATE nicht. Ein gescheitertes Verbinden trägt aber
+keinen SQLSTATE (psycopg baut ihn nur aus dem Text, auch bei fehlender Datenbank
+oder Rolle), und am Text wird bewusst nicht unterschieden: Ohne Frist wartet die
+Schleife deshalb, bis die Datenbank zurück ist; wer das nicht will, setzt eine
+Frist (`wait --timeout`). Die Frist gilt für den ganzen Aufruf, auch fürs
 Verbinden (`connect_timeout`); vor ihrem Ablauf wird ein letztes Mal gelesen, und
 ihr `WaitTimeoutError` (ein `TimeoutError`) nennt die Hashes, die dann noch offen
 sind; Frist und Strg-C fassen keinen Job an. Der Client

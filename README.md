@@ -130,11 +130,14 @@ erwarteter Tag —, heißt „nicht prüfbar" und ausdrücklich nicht „in Ordn
 Neun Kommandos gibt es: `setup`, `daemon`, `ocr`, `status`, `show`, `wait`,
 `markdown`, `retry`, `preflight`. Die Exit-Codes sind belegt (0/1/2/3/4, 130 bei
 Strg-C). `wait ZIEL… [--timeout S] [--json]` wartet auf viele und schreibt je
-Dokument eine Zeile, sobald es endgültig ist, mit dem Pfad, wenn das Ziel einer war; es endet mit 0, wenn alle `done` oder
-`empty` sind, mit 3, wenn eines `failed` oder `input_error` ist, mit 4, wenn nach
-Ablauf der Frist noch eines offen ist, mit 1 bei einem Betriebsfehler und mit 2
-bei einer Frist, die keine Zahl ab null ist; bei
-mehreren gilt der schwerste, 1 vor 4 vor 3 vor 0.
+Dokument eine Zeile, sobald es endgültig ist, mit dem Pfad, wenn das Ziel einer
+war; es endet mit 0, wenn alle `done` oder `empty` sind, mit 3, wenn eines
+`failed` oder `input_error` ist, mit 4, wenn nach Ablauf der Frist noch eines
+offen ist, mit 1 bei einem Betriebsfehler und mit 2 bei einer Frist, die keine
+Zahl ab null ist; bei mehreren gilt der schwerste, 1 vor 4 vor 3 vor 0. Ohne
+`--timeout` wartet `wait`, wenn die Datenbank unterwegs wegbricht, bis sie zurück
+ist, auch wenn sie gelöscht oder der Zugang entzogen wurde; in Skripten deshalb
+`--timeout` setzen.
 
 **Pfade kennt nur die CLI.** Sie liest Dateien und Ordner (in Ordnern über das
 Muster `--glob`), hasht sie und nennt in ihrer Ausgabe die Zuordnung von Pfad zu

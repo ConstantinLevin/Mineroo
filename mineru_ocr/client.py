@@ -977,12 +977,16 @@ class OCRClient:
             Die Huelle zum Endzustand, auch bei `failed`.
 
         Raises:
+            ValueError: Die Frist ist `nan` oder negativ. Gemeldet, BEVOR
+                eingereiht wird: Sonst liefe ein bezahlter Job fuer einen Aufruf,
+                der mit einem Fehler endete.
             WaitTimeoutError: Die Zeit lief ab (ein `TimeoutError`); er nennt den
                 Hash. Das Dokument bleibt unterwegs — ohne laufenden Daemon wird
                 es erst fertig, wenn einer startet.
 
         Kosten: JA, mittelbar.
         """
+        db.check_wait_timeout(timeout)
         return self.wait(self.ocr_start(data), timeout=timeout)
 
     def retry(self, sha256: str) -> RetryOutcome:

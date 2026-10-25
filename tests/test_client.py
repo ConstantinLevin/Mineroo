@@ -1709,6 +1709,19 @@ def test_ocr_wartet_auf_das_dokument_und_laeuft_in_die_frist(
     assert _zaehlen(db_conn, "procrastinate_jobs") == 1
 
 
+def test_ocr_weist_eine_unbrauchbare_frist_ab_bevor_es_einreiht(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """`nan` liefe nie ab, eine negative Frist ist ein Irrtum. Das sagt `ocr`,
+    bevor es einreiht: Sonst liefe ein bezahlter Job fuer einen Aufruf, der mit
+    einem Fehler endete."""
+    for frist in (float("nan"), -1.0):
+        with pytest.raises(ValueError, match="Frist"):
+            offener_client.ocr(_png("nie"), timeout=frist)
+    assert _zaehlen(db_conn, "inputs") == 0
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 0
+
+
 def test_get_und_document_auf_unbekannten_hash_werfen(
     offener_client: OCRClient,
 ) -> None:
