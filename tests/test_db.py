@@ -72,7 +72,7 @@ def _job(kennung: int, status: str, attempts: int = 0) -> Job:
         status=status,
         queue="ocr",
         lock=HASH,
-        queueing_lock=HASH,
+        queueing_lock=None,
         task_name="ocr_document",
         attempts=attempts,
     )
@@ -123,7 +123,7 @@ def test_ergebnis_schlaegt_jeden_job() -> None:
     """Gibt es ein Ergebnis, ist das der Zustand — auch wenn danach noch ein Job
     auftaucht. Ein fertiges Dokument bleibt fertig."""
     for status in DocumentStatus:
-        abgeleitet = derive_status(HASH, _zeile(status), [_job(7, "doing")])
+        abgeleitet = derive_status(HASH, _zeile(status), _job(7, "doing"))
         assert abgeleitet.phase is Phase.TERMINAL, status
         assert abgeleitet.row_status is status
         # Die Job-Angaben werden trotzdem mitgeliefert — sie helfen beim
@@ -146,44 +146,26 @@ def test_documents_kennt_nur_endzustaende() -> None:
 def test_offen_ohne_job_ist_ohne_ergebnis_beendet() -> None:
     """Eingabe da, kein Ergebnis, kein Job: Unterwegs ist nichts mehr, `retry`
     hilft. Eingabe und Job entstehen in einer Transaktion, es gab also einen."""
-    abgeleitet = derive_status(HASH, None, [])
+    abgeleitet = derive_status(HASH, None, None)
     assert abgeleitet.phase is Phase.ENDED_WITHOUT_RESULT
     assert abgeleitet.row_status is None
     assert abgeleitet.job_id is None
     assert abgeleitet.job_status is None
     assert abgeleitet.attempts is None
-    assert abgeleitet.job_count == 0
-
-
-def test_juengster_job_zaehlt_nicht_der_aelteste() -> None:
-    """Bei mehreren Jobs entscheidet der mit der hoechsten Kennung.
-
-    Job-Zeilen werden nie geloescht, also gibt es ueber die Zeit mehrere je
-    Dokument — der aelteste sagt nichts ueber jetzt.
-    """
-    jobs = [_job(1, "failed"), _job(9, "doing"), _job(5, "succeeded")]
-    abgeleitet = derive_status(HASH, None, jobs)
-    assert abgeleitet.job_id == 9
-    assert abgeleitet.phase is Phase.RUNNING
-    assert abgeleitet.job_count == 3
-
-    # Und die Reihenfolge der Liste darf nichts aendern — sortiert wird hier.
-    umgekehrt = derive_status(HASH, None, list(reversed(jobs)))
-    assert umgekehrt == abgeleitet
 
 
 def test_wartender_job_ergibt_waiting() -> None:
-    """Offen, juengster Job `todo`: Phase WAITING."""
-    assert derive_status(HASH, None, [_job(1, "todo")]).phase is Phase.WAITING
+    """Offen, sein Job `todo`: Phase WAITING."""
+    assert derive_status(HASH, None, _job(1, "todo")).phase is Phase.WAITING
 
 
 def test_laufender_job_ergibt_running() -> None:
-    """Offen, juengster Job `doing`: Phase RUNNING."""
-    assert derive_status(HASH, None, [_job(1, "doing")]).phase is Phase.RUNNING
+    """Offen, sein Job `doing`: Phase RUNNING."""
+    assert derive_status(HASH, None, _job(1, "doing")).phase is Phase.RUNNING
 
 
 def test_beendeter_job_ohne_ergebnis_wird_erkannt() -> None:
-    """Offen, juengster Job endgueltig: Phase ENDED_WITHOUT_RESULT.
+    """Offen, sein Job endgueltig: Phase ENDED_WITHOUT_RESULT.
 
     Der Fall nach hartem Abschuss oder Herunterfahren. Kein Datenfehler,
     sondern genau der Zustand, den das Ein-Buch-Modell erwartet — erneutes
@@ -191,7 +173,7 @@ def test_beendeter_job_ohne_ergebnis_wird_erkannt() -> None:
     unterwegs), den Rueckweg bringt das Ticket #26.
     """
     for status in ["succeeded", "failed", "cancelled", "aborted"]:
-        abgeleitet = derive_status(HASH, None, [_job(1, status)])
+        abgeleitet = derive_status(HASH, None, _job(1, status))
         assert abgeleitet.phase is Phase.ENDED_WITHOUT_RESULT, status
         assert abgeleitet.job_status == status
 
@@ -204,36 +186,36 @@ def test_unbekannter_job_zustand_gilt_als_wartend() -> None:
     Dokument aus dem Blick, weil es aussaehe, als sei es fertig behandelt.
     WAITING behaelt es im Blick.
     """
-    assert derive_status(HASH, None, [_job(1, "irgendwas_neues")]).phase is Phase.WAITING
+    assert derive_status(HASH, None, _job(1, "irgendwas_neues")).phase is Phase.WAITING
 
 
 def test_versuchszaehler_wird_durchgereicht() -> None:
-    """`attempts` des juengsten Jobs steht im abgeleiteten Zustand.
+    """`attempts` seines Jobs steht im abgeleiteten Zustand.
 
     Zur Reichweite: Das zaehlt JEDE Wiedervorlage — Strategie-Retry,
     stalled-Wiederaufnahme und Retry von Hand laufen durch dieselbe SQL-Funktion
     (Feature-Verifikation Punkt 19).
     """
-    abgeleitet = derive_status(HASH, None, [_job(1, "todo", attempts=2)])
+    abgeleitet = derive_status(HASH, None, _job(1, "todo", attempts=2))
     assert abgeleitet.attempts == 2
 
 
 def test_stand_als_abbildung_ohne_raw() -> None:
     """`to_dict` ist die Ausgabe von `show --json`: bei einem Ergebnis dessen
     Angaben, bei einem offenen Dokument nur Hash, Phase und Job — nie `raw`."""
-    fertig = derive_status(HASH, _zeile(DocumentStatus.DONE), [_job(3, "succeeded")]).to_dict()
+    fertig = derive_status(HASH, _zeile(DocumentStatus.DONE), _job(3, "succeeded")).to_dict()
     assert fertig["status"] == "done"
     assert fertig["phase"] == "terminal"
     assert fertig["mime"] == "application/pdf"
-    assert fertig["job"] == {"id": 3, "status": "succeeded", "attempts": 0, "count": 1}
+    assert fertig["job"] == {"id": 3, "status": "succeeded", "attempts": 0}
     assert "raw" not in fertig
 
-    offen = derive_status(HASH, None, [_job(4, "todo")]).to_dict()
+    offen = derive_status(HASH, None, _job(4, "todo")).to_dict()
     assert offen == {
         "sha256": HASH,
         "status": None,
         "phase": "waiting",
-        "job": {"id": 4, "status": "todo", "attempts": 0, "count": 1},
+        "job": {"id": 4, "status": "todo", "attempts": 0},
     }
 
 

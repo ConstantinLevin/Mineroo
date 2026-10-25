@@ -32,6 +32,7 @@ import procrastinate
 import procrastinate.exceptions
 import psycopg
 from procrastinate import utils
+from procrastinate.jobs import Job
 from psycopg_pool import NullConnectionPool
 
 from . import core, db, tasks
@@ -999,8 +1000,8 @@ class OCRClient:
         AUSSCHLIESSLICH in Summen, nie Dokument fuer Dokument. Das ist keine
         Bequemlichkeit, sondern eine Groessenfrage: Der Bestand hat
         zehntausend und mehr Dokumente, und der abgeleitete Zustand je Dokument
-        braucht dessen juengsten Job. Es gibt in Procrastinates Lese-Schnittstelle
-        keinen Filter „der juengste Job je `queueing_lock`" — wer das je Dokument
+        braucht dessen Job. Den fragt Procrastinates Lese-Schnittstelle einzeln ab
+        (`list_jobs(id=…)`) — wer das je Dokument
         aufloest, macht zehntausend Abfragen fuer eine Uebersicht, die niemand
         Dokument fuer Dokument liest.
 
@@ -1040,8 +1041,7 @@ class OCRClient:
         # `documents`, eine Zaehlung ueber `inputs` und `list_tasks`, das fertige
         # Zaehler je Zustand liefert. Die Aufloesung je Dokument gibt es nur fuer ein
         # BENANNTES Dokument (`document`, `get`) — wer sie fuer alle wollte,
-        # braeuchte je Dokument dessen juengsten Job, und dafuer gibt es in
-        # Procrastinates Lese-Schnittstelle keinen Filter.
+        # braeuchte je Dokument eine Abfrage seines Jobs.
         jobs: dict[str, int] = {}
         for eintrag in aufgaben:
             for zustand in (
@@ -1091,13 +1091,13 @@ class OCRClient:
 
         Gibt es ein Ergebnis, ist es sein Endzustand (`Phase.TERMINAL`, die Zeile
         ohne `raw` unter `.row`). Sonst ist es offen, und die Phase sagt, was sein
-        juengster Job tut: wartet, laeuft, oder ist ohne Ergebnis zu Ende (dann
+        Job (`inputs.job_id`) tut: wartet, laeuft, oder ist ohne Ergebnis zu Ende (dann
         hilft `retry`). Das ist die eine Stelle, an der man ein steckendes
         Dokument von einem unterscheidet, das noch dauert; das Warten fragt
         Procrastinate nicht.
 
         Ergebnis und Eingabe kommen aus einer Anweisung (`db.read_states`), der
-        Job ueber `list_jobs(queueing_lock=…)`.
+        Job ueber die Kennung an der Eingabe (`inputs.job_id`, `list_jobs(id=…)`).
 
         Raises:
             DocumentNotFound: Unbekannt: weder Ergebnis noch Eingabe.
@@ -1105,8 +1105,15 @@ class OCRClient:
         Kosten: keine.
         """
         stand = self._stand(sha256)
-        jobs = self._procrastinate.job_manager.list_jobs(lock=sha256)
-        return db.derive_status(sha256, stand.row, jobs)
+        return db.derive_status(sha256, stand.row, self._job(stand))
+
+    def _job(self, stand: db.DocumentState) -> Job | None:
+        """Der Job, dessen Kennung an der Eingabe steht, None ohne Eingabe oder
+        wenn er nicht mehr da ist."""
+        if stand.job_id is None:
+            return None
+        jobs = self._procrastinate.job_manager.list_jobs(id=stand.job_id)
+        return jobs[0] if jobs else None
 
     def get(self, sha256: str) -> OCRWrapper:
         """Holt die Huelle zu einem bereits bekannten Dokument, ohne zu warten.

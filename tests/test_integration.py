@@ -206,6 +206,17 @@ def _jobs_zu(conn: psycopg.Connection[Any], sha: str) -> list[Job]:
     ]
 
 
+def _job_der_eingabe(conn: psycopg.Connection[Any], sha: str) -> Job | None:
+    """Der Job, dessen Kennung an der Eingabe steht (`inputs.job_id`) — der Weg,
+    auf dem `document()` und `retry` ihn finden. None ohne Eingabe oder Job."""
+    zeile = conn.execute(
+        "SELECT job_id FROM inputs WHERE sha256 = %s", (sha,)
+    ).fetchone()
+    if zeile is None or zeile[0] is None:
+        return None
+    return next((job for job in _jobs_zu(conn, sha) if job.id == zeile[0]), None)
+
+
 async def _daemon_laufen_lassen(
     int_settings: Settings,
     runpod: Any,
@@ -274,9 +285,8 @@ async def test_dokument_laeuft_vollstaendig_durch(
     assert zeile.raw is not None
     assert zeile.raw["markdown"] == "Text"
 
-    jobs = _jobs_zu(db_conn, sha)
-    assert jobs == []
-    assert derive_status(sha, zeile, jobs).phase is Phase.TERMINAL
+    assert _jobs_zu(db_conn, sha) == []
+    assert derive_status(sha, zeile, _job_der_eingabe(db_conn, sha)).phase is Phase.TERMINAL
 
 
 async def test_abgeschicktes_dokument_wird_aus_inputs_gelesen(
@@ -403,7 +413,7 @@ async def test_erschoepfte_versuche_enden_failed(
     # alle vier zusichern. Ein wiederholbarer Fehler laesst sie unberuehrt,
     # SOLANGE noch ein Versuch kommt; beim letzten wird geschrieben.
     assert zeile.status is DocumentStatus.FAILED
-    assert derive_status(sha, zeile, jobs).phase is Phase.TERMINAL
+    assert derive_status(sha, zeile, _job_der_eingabe(db_conn, sha)).phase is Phase.TERMINAL
     # Und der Grund steht daneben, sonst saehe die Zeile aus wie ein Ergebnis
     # ohne Anlass.
     assert zeile.raw is not None
@@ -841,11 +851,11 @@ async def test_ohne_daemon_passiert_nichts_und_das_wird_gesagt(
 
     # Eingabe ohne Job: Unterwegs ist nichts.
     assert get_document(db_conn, sha) is None
-    assert derive_status(sha, None, _jobs_zu(db_conn, sha)).phase is Phase.ENDED_WITHOUT_RESULT
+    assert derive_status(sha, None, _job_der_eingabe(db_conn, sha)).phase is Phase.ENDED_WITHOUT_RESULT
 
     erzeuger.einreihen(sha)
     # Danach: wartet — und niemand arbeitet.
-    assert derive_status(sha, None, _jobs_zu(db_conn, sha)).phase is Phase.WAITING
+    assert derive_status(sha, None, _job_der_eingabe(db_conn, sha)).phase is Phase.WAITING
     assert db.worker_heartbeats(db_conn) == []
 
 
@@ -1070,6 +1080,31 @@ def test_gleichzeitiges_abschicken_derselben_bytes_legt_einen_job_an(
     assert len(_jobs_zu(db_conn, sha)) == 1
     anzahl = db_conn.execute("SELECT count(*) FROM inputs").fetchone()
     assert anzahl is not None and anzahl[0] == 1
+
+
+def test_document_findet_den_job_ueber_inputs_job_id(
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger
+) -> None:
+    """`document()` sagt den Zustand des Jobs, dessen Kennung an der Eingabe
+    steht, nicht den irgendeines Jobs mit demselben Hash: Ein juengerer, nicht
+    verknuepfter Job mit demselben `lock` aendert nichts an der Auskunft."""
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(PNG_KOPF + b"ueber die kennung")
+        (verknuepft,) = db_conn.execute(
+            "SELECT job_id FROM inputs WHERE sha256 = %s", (sha,)
+        ).fetchone() or (None,)
+        db_conn.execute(
+            "UPDATE procrastinate_jobs SET status = 'doing' WHERE id = %s",
+            (verknuepft,),
+        )
+        # Ein juengerer Job desselben Dokuments, NICHT an der Eingabe vermerkt.
+        tasks.enqueue_document(erzeuger.app, db_conn, sha)
+
+        stand = klient.document(sha)
+
+    assert stand.phase is Phase.RUNNING
+    assert stand.job_id == verknuepft
+    assert stand.job_status == "doing"
 
 
 async def test_ein_treffer_auch_failed_legt_nichts_an(

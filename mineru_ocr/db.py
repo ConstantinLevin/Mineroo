@@ -225,7 +225,7 @@ class Phase(enum.Enum):
     """Wo ein Dokument gerade steht — ABGELEITET, nirgends gespeichert.
 
     Das ist die Antwort auf „ein Buch, nicht zwei": Der Fortschritt eines
-    Dokuments wird aus Ergebniszeile, Eingabe und juengstem verlinkten Job
+    Dokuments wird aus Ergebniszeile, Eingabe und dem Job der Eingabe
     GELESEN, nie gespiegelt. Diese Aufzaehlung existiert nur im Speicher. Ein
     unbekanntes Dokument hat keine Phase; wer danach fragt, bekommt
     `DocumentNotFound`.
@@ -235,13 +235,13 @@ class Phase(enum.Enum):
     """Es gibt ein Ergebnis. Welches, sagt `row_status`."""
 
     WAITING = "waiting"
-    """Offen, juengster Job wartet (`todo`)."""
+    """Offen, sein Job wartet (`todo`)."""
 
     RUNNING = "running"
-    """Offen, juengster Job laeuft (`doing`)."""
+    """Offen, sein Job laeuft (`doing`)."""
 
     ENDED_WITHOUT_RESULT = "ended_without_result"
-    """Offen, aber kein Job ist mehr unterwegs: Der juengste ist endgueltig zu
+    """Offen, aber kein Job ist mehr unterwegs: Sein Job ist endgueltig zu
     Ende, ohne ein Ergebnis zu schreiben, oder es gibt keinen.
 
     Der seltene Fall: harter Abschuss im Schreibfenster, Abbruch beim
@@ -347,6 +347,10 @@ class DocumentState:
     """Ob die Eingabe in `inputs` steht. Bei `failed` bleibt sie stehen; dann
     gibt es beides, und das Ergebnis entscheidet."""
 
+    job_id: int | None = None
+    """Die Kennung des Jobs, die an der Eingabe steht (`inputs.job_id`), None ohne
+    Eingabe. Ueber sie finden `document()` und `retry` den Job."""
+
     @property
     def is_terminal(self) -> bool:
         """Es gibt ein Ergebnis, gleich welches."""
@@ -365,7 +369,7 @@ class DocumentState:
 
 @dataclass(frozen=True)
 class DerivedStatus:
-    """Der zusammengesetzte Stand aus Ergebnis, Eingabe und juengstem Job.
+    """Der zusammengesetzte Stand aus Ergebnis, Eingabe und dem Job der Eingabe.
 
     Wird bei jeder Abfrage neu gebildet und nirgends abgelegt. Wer ihn ablegte,
     haette die zweite Buchfuehrung wieder eingefuehrt, gegen die das ganze
@@ -379,7 +383,8 @@ class DerivedStatus:
     """Die Ergebniszeile ohne `raw`, None solange das Dokument offen ist."""
 
     job_id: int | None
-    """Kennung des juengsten verlinkten Jobs, None wenn es keinen gibt."""
+    """Kennung des Jobs, die an der Eingabe steht (`inputs.job_id`), None wenn es
+    keinen gibt (auch, wenn er nicht mehr da ist)."""
 
     job_status: str | None
     """Dessen Zustand in Procrastinates Worten (`todo`, `doing`, `succeeded`,
@@ -387,14 +392,10 @@ class DerivedStatus:
     Datenbank nachsieht, soll dasselbe Wort finden."""
 
     attempts: int | None
-    """Wie oft der juengste Job bisher vorgelegt wurde. Achtung auf die
-    Reichweite: Das zaehlt JEDE Wiedervorlage — Strategie-Retry,
-    stalled-Wiederaufnahme und Retry von Hand laufen durch dieselbe SQL-Funktion
-    und erhoehen den Zaehler alle drei (Feature-Verifikation Punkt 19)."""
-
-    job_count: int
-    """Wie viele Jobs es insgesamt zu diesem Dokument gab. Groesser als eins bei
-    jedem Wiederanlauf; sichtbar, weil Job-Zeilen nie geloescht werden."""
+    """Wie oft der Job bisher vorgelegt wurde. Achtung auf die Reichweite: Das
+    zaehlt JEDE Wiedervorlage — Strategie-Retry, stalled-Wiederaufnahme und Retry
+    von Hand laufen durch dieselbe SQL-Funktion und erhoehen den Zaehler alle drei
+    (Feature-Verifikation Punkt 19)."""
 
     @property
     def row_status(self) -> DocumentStatus | None:
@@ -416,7 +417,6 @@ class DerivedStatus:
             "id": self.job_id,
             "status": self.job_status,
             "attempts": self.attempts,
-            "count": self.job_count,
         }
         return abbildung
 
@@ -1063,7 +1063,8 @@ def read_states(
     )
     with conn.cursor(row_factory=dict_row) as cur:
         zeilen = cur.execute(
-            f"SELECT h.sha256, (i.sha256 IS NOT NULL) AS has_input, {spalten} "
+            f"SELECT h.sha256, (i.sha256 IS NOT NULL) AS has_input, "
+            f"i.job_id AS input_job_id, {spalten} "
             "FROM unnest(%s::text[]) WITH ORDINALITY AS h(sha256, nr) "
             "LEFT JOIN documents d ON d.sha256 = h.sha256 "
             "LEFT JOIN inputs i ON i.sha256 = h.sha256 "
@@ -1081,7 +1082,10 @@ def read_states(
         )
         stand.append(
             DocumentState(
-                sha256=zeile["sha256"], row=ergebnis, has_input=zeile["has_input"]
+                sha256=zeile["sha256"],
+                row=ergebnis,
+                has_input=zeile["has_input"],
+                job_id=zeile["input_job_id"],
             )
         )
     return stand
@@ -1464,63 +1468,57 @@ def wait_for_terminal(
 
 
 def derive_status(
-    sha256: str, row: DocumentRow | None, jobs: Sequence[Job]
+    sha256: str, row: DocumentRow | None, job: Job | None
 ) -> DerivedStatus:
-    """Setzt Ergebnis und Job-Liste eines BEKANNTEN Dokuments zu einem Gesamtbild
+    """Setzt Ergebnis und Job eines BEKANNTEN Dokuments zu einem Gesamtbild
     zusammen. Rein, ohne I/O.
 
     Bekannt heisst: Es hat ein Ergebnis oder eine Eingabe. Ein unbekanntes
     Dokument hat keine Phase; das stellt der Aufrufer vorher fest
     (`DocumentState.is_unknown`) und meldet es.
 
+    Der Job ist der, dessen Kennung an der Eingabe steht (`inputs.job_id`), nicht
+    irgendeiner mit demselben Hash: Abschicken und `retry` schreiben dort die
+    Kennung des Jobs, der das Dokument verarbeitet.
+
     Die Regel, in der Reihenfolge, in der sie angewandt wird:
         1. Gibt es ein Ergebnis, IST das der Zustand. Es wird dann gar nicht
-           mehr auf die Jobs gesehen — ein fertiges Dokument bleibt fertig, auch
-           wenn spaeter noch ein Job dazu auftaucht.
-        2. Sonst ist es offen, und es zaehlt der JUENGSTE Job (hoechste
-           Kennung). „Juengster" und nicht „der Job", weil Job-Zeilen nie
-           geloescht werden und es ueber die Zeit mehrere je Dokument gibt; der
-           aelteste sagt nichts ueber jetzt.
-        3. Ist der juengste Job endgueltig, oder gibt es keinen, ist kein Job
-           mehr unterwegs: `ENDED_WITHOUT_RESULT` — siehe dort.
+           mehr auf den Job gesehen.
+        2. Sonst ist es offen, und es zaehlt der Zustand des Jobs.
+        3. Ist der Job endgueltig, oder gibt es keinen (mehr), ist nichts mehr
+           unterwegs: `ENDED_WITHOUT_RESULT` — siehe dort.
 
-    Warum das eine reine Funktion mit hereingereichter Job-Liste ist und nicht
-    selbst abfragt: So laesst sich die Regel gegen erfundene Job-Listen
-    durchspielen, ohne dass eine Datenbank laeuft. Die Regel ist der heikle Teil,
-    die Abfrage ist Handwerk.
+    Warum das eine reine Funktion mit hereingereichtem Job ist und nicht selbst
+    abfragt: So laesst sich die Regel gegen erfundene Jobs durchspielen, ohne dass
+    eine Datenbank laeuft. Die Regel ist der heikle Teil, die Abfrage ist Handwerk.
 
     Args:
         sha256: Der Hash des Dokuments.
         row: Die Ergebniszeile, None solange das Dokument offen ist.
-        jobs: Alle Jobs mit `queueing_lock == sha256`, in beliebiger
-            Reihenfolge — sortiert wird hier.
+        job: Der Job der Eingabe, None wenn es keinen gibt.
 
     Returns:
         Das Gesamtbild.
 
     Kosten: keine.
     """
-    anzahl = len(jobs)
-
     # Regel 1: Gibt es ein Ergebnis, IST das der Zustand. Die Job-Angaben werden
     # trotzdem mitgeliefert, weil sie beim Nachsehen helfen („welcher Job hat
     # das geschrieben, im wievielten Versuch?"). Sie ENTSCHEIDEN nur nichts mehr.
-    juengster = max(jobs, key=lambda job: job.id or 0) if jobs else None
-
     if row is not None:
         phase = Phase.TERMINAL
-    elif juengster is None:
+    elif job is None:
         # Offen, aber ohne Job: Eingabe und Job entstehen in einer Transaktion,
         # es gab also einen, und er ist weg. Unterwegs ist nichts mehr.
         phase = Phase.ENDED_WITHOUT_RESULT
-    elif juengster.status == "todo":
+    elif job.status == "todo":
         phase = Phase.WAITING
-    elif juengster.status == "doing":
+    elif job.status == "doing":
         phase = Phase.RUNNING
-    elif juengster.status in _TERMINALE_JOB_ZUSTAENDE:
+    elif job.status in _TERMINALE_JOB_ZUSTAENDE:
         # Der Job ist fertig, ein Ergebnis gibt es aber nicht: harter Abschuss
-        # im Schreibfenster oder Abbruch beim Herunterfahren. Kein Datenfehler —
-        # der Zustand, den das Ein-Buch-Modell erwartet.
+        # im Schreibfenster, Abbruch, Absage. Kein Datenfehler — der Zustand, den
+        # das Ein-Buch-Modell erwartet; `retry` bringt ihn wieder in Gang.
         phase = Phase.ENDED_WITHOUT_RESULT
     else:
         # Ein Job-Zustand, den Procrastinate erst spaeter eingefuehrt hat. Ihn
@@ -1533,10 +1531,9 @@ def derive_status(
         sha256=sha256,
         phase=phase,
         row=row,
-        job_id=juengster.id if juengster else None,
-        job_status=juengster.status if juengster else None,
-        attempts=juengster.attempts if juengster else None,
-        job_count=anzahl,
+        job_id=job.id if job else None,
+        job_status=job.status if job else None,
+        attempts=job.attempts if job else None,
     )
 
 
