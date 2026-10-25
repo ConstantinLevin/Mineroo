@@ -314,7 +314,11 @@ Dokument laufen nacheinander (`db.retry_lock`, eine Advisory-Sperre der Sitzung 
 Lesen und Handeln): Ohne sie läsen zwei Aufrufer beide „kein Job“ und reihten
 zwei Jobs ein, die beide bezahlt würden. Fehler von Procrastinate gehen nach
 oben, keiner wird als „nicht wiederholt" verschluckt; ein abgelehntes
-Zurücksetzen kommt als `DatabaseError` des Pakets an. Das Kommando `retry` (Ziel
+Zurücksetzen kommt als `DatabaseError` des Pakets an. Bekannte Grenze: Setzt
+jemand denselben Job im selben Moment von Hand außerhalb des Pakets zurück
+(Procrastinate-Shell oder Admin), kann `retry_job_by_id` einen schon wieder
+laufenden Job noch einmal starten (`procrastinate_retry_job_v2` nimmt auch
+`doing` an); `db.retry_lock` schützt nur vor Aufrufern des Pakets. Das Kommando `retry` (Ziel
 oder `--all`) fragt vorher nach, außer mit `--yes`, und ruft genau eine der
 beiden Funktionen.
 
