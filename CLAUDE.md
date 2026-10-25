@@ -117,17 +117,15 @@ verschwindet (ein Worktree eines Laufs).
 *benutzen*, wann und wie sie Dokumente lesen lassen (Bibliothek oder CLI, Warten
 auf viele, Daemon, Kosten, EWR und personenbezogene Daten); für die Arbeit am Code
 gilt diese Datei. Verlinkt wird er wie die Installation aus dem Haupt-Checkout, in
-die Skill-Verzeichnisse von Claude Code und der übrigen Agenten:
+die Skill-Verzeichnisse von Claude Code und der übrigen Agenten; die Befehle stehen
+in `README.md` unter „Für Agenten: der Skill“.
 
-```bash
-ln -s "$PWD/skills/mineroo" ~/.claude/skills/mineroo
-ln -s "$PWD/skills/mineroo" ~/.agents/skills/mineroo
-```
-
-Der Skill wiederholt nichts, was `--help` oder ein Docstring sagt, und kein Test
-prüft ihn gegen den Code: Wer Kommandos, die Namen der Clients, die Hülle, die
-Daemon-Regel, die Kosten oder die EWR-Regel ändert, ändert ihn in derselben
-Änderung mit.
+Der Skill trägt Abläufe und Regeln, die kein einzelnes `--help` und kein Docstring
+sagen; Optionen, Ausgabeformen und Verträge einzelner Methoden überlässt er
+diesen. Kein Test prüft ihn gegen den Code: Wer Kommandos, die Methoden der
+Clients (auch welche nur der synchrone hat und welche kein `await` nehmen), die
+Hülle, die Daemon-Regel, die Kosten, den Preflight oder die EWR-Regel ändert,
+ändert ihn in derselben Änderung mit.
 
 `preflight` verändert nichts und darf jederzeit laufen. Er prüft, was tatsächlich
 läuft: das Image von Template und Workern gegen den erwarteten Tag, die

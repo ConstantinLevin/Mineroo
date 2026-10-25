@@ -229,9 +229,13 @@ die Installation einmal aus dem Haupt-Checkout in die Skill-Verzeichnisse der
 Agenten verlinkt (Claude Code und die übrigen Agenten):
 
 ```bash
-ln -s "$PWD/skills/mineroo" ~/.claude/skills/mineroo
-ln -s "$PWD/skills/mineroo" ~/.agents/skills/mineroo
+mkdir -p ~/.claude/skills ~/.agents/skills
+ln -sfn "$PWD/skills/mineroo" ~/.claude/skills/mineroo
+ln -sfn "$PWD/skills/mineroo" ~/.agents/skills/mineroo
 ```
+
+`-n` ersetzt einen schon stehenden Link, statt ihm zu folgen; ein zweiter Lauf
+legt sonst einen Link `skills/mineroo/mineroo` im Checkout an.
 
 ### Die eine Überraschung, die jeder einmal hat
 
