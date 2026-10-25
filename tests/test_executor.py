@@ -34,6 +34,7 @@ from mineru_ocr.errors import (
     ResultLostError,
     TerminalRunPodError,
     TransientRunPodError,
+    UnstorableResultError,
     UnsupportedTypeError,
 )
 from mineru_ocr.executor import (
@@ -1185,6 +1186,85 @@ async def test_endgueltiger_fehler_schreibt_vor_dem_werfen(
     assert zeile.raw["failure"]["type"] == "TerminalRunPodError"
     assert any(v["kind"] == "gescheitert" for v in zeile.notes)
     assert zeile.notes[-1]["teilstuecke_bezahlt"] == 1
+
+
+async def test_nicht_speicherbares_ergebnis_endet_failed_im_ersten_versuch(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Weist Postgres das Ergebnis wegen seines Inhalts ab, endet das Dokument
+    sofort `failed`, mit einem Vermerk, der den Grund nennt (Mineroo#27).
+
+    Ein U+0000 im Text kann jsonb nicht tragen, und jeder weitere Lauf liefert
+    denselben Inhalt. Als Datenbank-Aussetzer eingestuft, liefe das Dokument
+    dreimal, bezahlte dreimal und bliebe am Ende ohne Ergebnis, denn auch das
+    `failed` mit demselben Inhalt waere nicht speicherbar. Deshalb schon im
+    ersten Versuch (`letzter_versuch` steht hier auf False) endgueltig, und das
+    `failed` traegt den Inhalt nicht: Er ist so nicht speicherbar, und
+    veraendert wird er nicht.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"nul im text", name="n.png", typ=DocumentType.PNG
+    )
+    runpod = FalscherRunPod([_fertige_antwort("vor\x00nach")])
+
+    with pytest.raises(UnstorableResultError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert len(runpod.abgesendet) == 1
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.error is not None and "22P05" in zeile.error
+    assert zeile.raw is not None
+    assert zeile.raw["failure"]["type"] == "UnstorableResultError"
+    assert "markdown" not in zeile.raw
+    assert "22P05" in zeile.raw["ergebnis_nicht_speicherbar"]
+    vermerk = next(v for v in zeile.notes if v["kind"] == "ergebnis_nicht_speicherbar")
+    assert "22P05" in vermerk["detail"]
+    assert any(v["kind"] == "gescheitert" for v in zeile.notes)
+    # `failed` laesst die Eingabe stehen, damit `retry` etwas zu lesen hat.
+    assert _eingabe_steht(db_conn, sha)
+
+
+async def test_nicht_speicherbare_teilstuecke_im_fehlerpfad_verhindern_das_failed_nicht(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Scheitert ein Dokument an etwas anderem und traegt das bis dahin Bezahlte
+    einen nicht speicherbaren Inhalt, wird `failed` trotzdem geschrieben: ohne
+    den Inhalt, mit dem urspruenglichen Fehler in `error` und einem Vermerk,
+    warum das Bezahlte fehlt.
+
+    Ohne das liefe das `failed`-Schreiben im Fehlerzweig an demselben Inhalt
+    auf, der Fehler verliesse den Zweig, und das Dokument bliebe ohne Ergebnis
+    (Mineroo#27).
+    """
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(2))
+    runpod = FalscherRunPod(
+        [
+            _fertige_antwort("erstes\x00stueck"),
+            {"id": "j", "status": "FAILED", "error": "Modellfehler"},
+        ]
+    )
+
+    with pytest.raises(TerminalRunPodError):
+        await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.error is not None and zeile.error.startswith("TerminalRunPodError")
+    assert zeile.raw is not None
+    assert zeile.raw["failure"]["type"] == "TerminalRunPodError"
+    assert "markdown" not in zeile.raw
+    assert "22P05" in zeile.raw["ergebnis_nicht_speicherbar"]
+    assert any(v["kind"] == "ergebnis_nicht_speicherbar" for v in zeile.notes)
 
 
 # --- Geld -----------------------------------------------------------------

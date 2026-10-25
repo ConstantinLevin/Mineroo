@@ -52,6 +52,7 @@ from .errors import (
     DocumentNotFound,
     MineruOcrError,
     TerminalOverwriteError,
+    UnstorableResultError,
     WaitTimeoutError,
 )
 
@@ -1347,6 +1348,23 @@ async def delete_input_async(conn: psycopg.AsyncConnection[Any], sha256: str) ->
     await conn.execute("DELETE FROM inputs WHERE sha256 = %s", (sha256,))
 
 
+def _nicht_speicherbar(fehler: psycopg.Error) -> bool:
+    """Ob Postgres (oder psycopg vor dem Senden) einen Wert wegen seines INHALTS abweist.
+
+    Das sind die SQLSTATE-Klassen 22 (Datenfehler: ein U+0000 in `jsonb`,
+    22P05; ungueltiger Text, 22P02; ein Wert ausserhalb des Bereichs) und 54
+    (Programmgrenze: die Groesse von `jsonb`, 54000). psycopg fuehrt die Klasse 22
+    als `DataError` und wirft denselben Typ ohne SQLSTATE, wenn ein Text ein NUL
+    traegt, bevor er ihn sendet. Beides liegt am Inhalt: Derselbe Inhalt wird
+    beim naechsten Mal wieder abgewiesen. Ein voller Datentraeger (53),
+    ein Abriss (08) oder eine Serialisierung (40) liegt nicht am Inhalt und
+    bleibt, was es war.
+    """
+    if isinstance(fehler, psycopg.DataError):
+        return True
+    return (fehler.sqlstate or "").startswith("54")
+
+
 async def write_terminal_async(
     conn: psycopg.AsyncConnection[Any],
     *,
@@ -1449,9 +1467,61 @@ async def write_terminal_async(
 
     Raises:
         TerminalOverwriteError: siehe Idempotenz.
+        UnstorableResultError: Postgres weist das Ergebnis wegen seines Inhalts
+            ab (`_nicht_speicherbar`), etwa ein U+0000 in `raw`. Geschrieben ist
+            dann nichts, die Transaktion ist zurueckgerollt. Eingepackt wird
+            hier, weil nur hier feststeht, dass der Fehler am Endschreiben
+            haengt; endgueltig macht ihn `errors.classify_failure`.
 
     Kosten: keine.
     """
+    try:
+        await _endergebnis_schreiben(
+            conn,
+            sha256=sha256,
+            status=status,
+            raw=raw,
+            endpoint_id=endpoint_id,
+            mime=mime,
+            size_bytes=size_bytes,
+            image_tag_at_submit=image_tag_at_submit,
+            error=error,
+            notes=notes,
+            page_count=page_count,
+        )
+    except psycopg.Error as fehler:
+        if not _nicht_speicherbar(fehler):
+            raise
+        # Nur Meldung und Detail, nicht der ganze Text: Dessen CONTEXT zitiert den
+        # Anfang des abgewiesenen JSON, also den Inhalt des Dokuments, und die
+        # Meldung wandert in `error` und in die Vermerke.
+        grund = fehler.diag.message_primary or str(fehler)
+        if fehler.diag.message_detail:
+            grund = f"{grund} ({fehler.diag.message_detail})"
+        raise UnstorableResultError(
+            f"Postgres weist das Ergebnis ab (SQLSTATE "
+            f"{fehler.sqlstate or 'keiner, psycopg vor dem Senden'}): {grund}. "
+            f"So ist es nicht speicherbar; ein weiterer Lauf liefert denselben "
+            f"Inhalt.",
+            sqlstate=fehler.sqlstate,
+        ) from fehler
+
+
+async def _endergebnis_schreiben(
+    conn: psycopg.AsyncConnection[Any],
+    *,
+    sha256: str,
+    status: DocumentStatus,
+    raw: dict[str, Any],
+    endpoint_id: str,
+    mime: str | None,
+    size_bytes: int | None,
+    image_tag_at_submit: str | None,
+    error: str | None,
+    notes: Sequence[dict[str, Any]] | None,
+    page_count: int | None,
+) -> None:
+    """Der Schreibvorgang von `write_terminal_async`, ohne das Einpacken der Fehler."""
     vermerke = Jsonb(list(notes) if notes else [])
     async with conn.transaction():
         angelegt = await (

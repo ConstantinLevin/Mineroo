@@ -51,6 +51,7 @@ from .errors import (
     ResultLostError,
     TerminalRunPodError,
     TransientRunPodError,
+    UnstorableResultError,
     should_run_again,
 )
 from .mime import sniff_bytes
@@ -590,13 +591,13 @@ async def process_document(
             else db.DocumentStatus.FAILED
         )
 
-        async def ergebnis_schreiben() -> None:
+        async def schreiben(roh: dict[str, Any]) -> None:
             async with pool.connection() as conn:
                 await db.write_terminal_async(
                     conn,
                     sha256=sha256,
                     status=status,
-                    raw=ergebnis,
+                    raw=roh,
                     endpoint_id=endpoint,
                     mime=art,
                     size_bytes=groesse,
@@ -605,6 +606,22 @@ async def process_document(
                     notes=vermerke,
                     page_count=seitenzahl,
                 )
+
+        async def ergebnis_schreiben() -> None:
+            # Ist das Ergebnis nicht speicherbar (ein U+0000, die Groesse von
+            # jsonb), wird `failed` ohne den Inhalt geschrieben, mit einem
+            # Vermerk, der den Grund nennt (Mineroo#27). Scheiterte schon das
+            # Endschreiben daran, waere ein zweiter Versuch mit demselben Inhalt
+            # vergeblich; sonst kann das bis dahin Bezahlte denselben Mangel
+            # tragen, und erst das Schreiben zeigt es. Veraendert wird der
+            # Inhalt nicht, um ihn speicherbar zu machen.
+            if isinstance(fehler, UnstorableResultError):
+                await schreiben(_ohne_inhalt(ergebnis, fehler, vermerke))
+                return
+            try:
+                await schreiben(ergebnis)
+            except UnstorableResultError as nicht_speicherbar:
+                await schreiben(_ohne_inhalt(ergebnis, nicht_speicherbar, vermerke))
 
         # Das Schreiben laeuft zu Ende, auch wenn das Herunterfahren den Job
         # genau jetzt abbricht (Mineroo#27): Sonst bliebe im letzten Versuch
@@ -693,6 +710,37 @@ vorgelegter Job muss das Dokument wirklich neu verarbeiten; stuende `failed`
 hier, waere jeder Retry von Hand ein Nichts-Tun, das als Erfolg verbucht wuerde,
 und ein gescheitertes Dokument koennte nie wieder laufen (Feature-Verifikation
 Punkt 19, Konsequenz a)."""
+
+
+def _ohne_inhalt(
+    ergebnis: dict[str, Any],
+    grund: UnstorableResultError,
+    vermerke: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Das `raw` eines `failed`, dessen Inhalt Postgres nicht speichern kann.
+
+    Es traegt den Fehler-Umschlag und den Grund, nicht den Inhalt: Der ist so
+    nicht speicherbar, und veraendert wird er nicht (kein U+0000 entfernt, nichts
+    gekuerzt), denn ein still bereinigtes Ergebnis saehe aus wie das echte.
+    Bezahlt ist er trotzdem; der Vermerk sagt das, damit niemand ein
+    unvollstaendiges Ergebnis ohne Grund vor sich hat. Ein `retry` bezahlt das
+    Dokument neu und scheitert, solange die Engine denselben Inhalt liefert,
+    voraussichtlich wieder.
+
+    Haengt den Vermerk an `vermerke` an.
+    """
+    vermerke.append(
+        {
+            "kind": "ergebnis_nicht_speicherbar",
+            "at": _jetzt(),
+            "detail": str(grund),
+            "folge": (
+                "raw traegt nur den Fehler-Umschlag. Das bezahlte Ergebnis liess "
+                "sich nicht speichern und ist nicht aufgehoben."
+            ),
+        }
+    )
+    return {"failure": ergebnis["failure"], "ergebnis_nicht_speicherbar": str(grund)}
 
 
 def _ergebnis_fuer_endzustand(

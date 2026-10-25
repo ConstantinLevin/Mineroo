@@ -19,6 +19,7 @@ from typing import Any
 
 import procrastinate.worker
 import psycopg
+import psycopg.errors
 import psycopg.sql
 import pytest
 from procrastinate.jobs import Job
@@ -53,6 +54,7 @@ from mineru_ocr.errors import (
     DatabaseError,
     DocumentNotFound,
     TerminalOverwriteError,
+    UnstorableResultError,
     WaitTimeoutError,
 )
 
@@ -870,6 +872,58 @@ async def test_endschreiben_ohne_bekannten_typ_laesst_mime_leer(
     assert zeile is not None
     assert zeile.mime is None and zeile.size_bytes is None
     assert zeile.status is DocumentStatus.INPUT_ERROR
+
+
+@pytest.mark.db
+async def test_nicht_speicherbares_ergebnis_wird_als_solches_gemeldet(
+    db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """Weist Postgres `raw` wegen seines Inhalts ab, kommt das als
+    UnstorableResultError mit dem Grund heraus, nicht als roher psycopg-Fehler.
+
+    Ein U+0000 kann jsonb nicht tragen. Der rohe Fehler hiesse fuer die eine
+    Fehler-Entscheidung „Datenbank-Aussetzer, wiederholen", und das Dokument
+    liefe und kostete dreimal, um am Ende ohne Ergebnis zu bleiben (Mineroo#27).
+    Geschrieben wird nichts: Die Eingabe steht noch, es gibt keine Zeile, und
+    die Verbindung ist danach weiter benutzbar.
+    """
+    insert_input(db_conn, sha256=HASH, content=b"bytes")
+    with pytest.raises(UnstorableResultError) as gefangen:
+        await _schreiben(async_conn, raw={"markdown": "vor\x00nach"})
+    assert gefangen.value.sqlstate == "22P05"
+    assert "22P05" in str(gefangen.value)
+    assert get_document(db_conn, HASH) is None
+    assert _eingabe(db_conn)
+
+    await _schreiben(async_conn, raw={"markdown": "vor nach"})
+    zeile = get_document(db_conn, HASH)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+
+
+@pytest.mark.parametrize(
+    "fehler, nicht_speicherbar",
+    [
+        (psycopg.errors.UntranslatableCharacter(), True),
+        (psycopg.errors.InvalidTextRepresentation(), True),
+        (psycopg.errors.ProgramLimitExceeded(), True),
+        (psycopg.DataError("PostgreSQL text fields cannot contain NUL"), True),
+        (psycopg.errors.DiskFull(), False),
+        (psycopg.errors.OutOfMemory(), False),
+        (psycopg.errors.SerializationFailure(), False),
+        (psycopg.OperationalError("Verbindung weg"), False),
+    ],
+)
+def test_nur_inhaltsfehler_gelten_als_nicht_speicherbar(
+    fehler: psycopg.Error, nicht_speicherbar: bool
+) -> None:
+    """Nicht speicherbar ist, was am Inhalt liegt: SQLSTATE-Klasse 22
+    (Datenfehler, in psycopg `DataError`, auch der Fehler, den psycopg selbst
+    bei einem NUL in einem Text wirft) und 54 (Programmgrenze, etwa die Groesse
+    von jsonb). Ein voller Datentraeger oder ein Abriss liegt nicht am Inhalt
+    und bleibt wiederholbar."""
+    from mineru_ocr.db import _nicht_speicherbar
+
+    assert _nicht_speicherbar(fehler) is nicht_speicherbar
 
 
 @pytest.mark.db

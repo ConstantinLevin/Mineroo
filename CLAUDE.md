@@ -489,6 +489,15 @@ Antwort als `letzter_versuch`. Daraus folgt:
 - **Nachsehen und Lesen im Fehlerzweig.** Das Nachsehen nach einem Ergebnis und
   das Lesen der Eingabe stehen im `try` des Exekutors, damit auch ein
   Datenbankfehler dort im letzten Versuch `failed` schreibt.
+- **Nicht speicherbares Ergebnis.** Weist Postgres das Endschreiben wegen des
+  Inhalts ab (SQLSTATE-Klasse 22 oder 54: ein U+0000 im Text, die Größe von
+  `jsonb`; `db._nicht_speicherbar`), packt `db.write_terminal_async` das in
+  `UnstorableResultError`, und `classify_failure` stuft es als endgültig ein,
+  obwohl es ein `DatabaseError` ist: Ein weiterer Lauf liefert denselben Inhalt.
+  Der Exekutor schreibt dann schon im ersten Versuch `failed`, ohne den Inhalt,
+  mit dem Vermerk `ergebnis_nicht_speicherbar`, der den Grund nennt; ebenso, wenn
+  bei einem anderen Fehler das bis dahin Bezahlte denselben Mangel trägt. Den
+  Inhalt bereinigt er nicht, um ihn speicherbar zu machen.
 - **`retry_stalled`** legt einen hängenden Job nur vor, solange Versuche übrig
   sind. Danach schreibt es `failed` („Worker wiederholt abgestürzt“), aber nur,
   wenn noch kein Ergebnis da ist (`executor.write_failure_if_no_result`; ein

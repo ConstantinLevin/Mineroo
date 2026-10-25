@@ -265,6 +265,29 @@ class DocumentNotFound(DatabaseError):
     """
 
 
+class UnstorableResultError(DatabaseError):
+    """Postgres weist das Ergebnis eines Jobs ab, weil sein Inhalt nicht speicherbar ist.
+
+    Faelle: ein U+0000 im Text, den `jsonb` nicht tragen kann (SQLSTATE 22P05),
+    eine Groesse ueber der Grenze von `jsonb` (54000), allgemein ein Datenfehler
+    (Klasse 22) oder eine Programmgrenze (Klasse 54) beim Endschreiben. Geworfen
+    nur von `db.write_terminal_async`, das den rohen psycopg-Fehler darin
+    einpackt; `sqlstate` traegt dessen Code (None beim Fehler, den psycopg selbst
+    vor dem Senden wirft).
+
+    Anders als jeder andere `DatabaseError` ENDGUELTIG: Ein weiterer Lauf liefert
+    denselben Inhalt, und Postgres weist ihn wieder ab. Wiederholt hiesse, das
+    Dokument dreimal zu bezahlen und es am Ende ohne Ergebnis liegen zu lassen
+    (Mineroo#27). Der Executor schreibt dann `failed` ohne den Inhalt, mit einem
+    Vermerk, der den Grund nennt; den Inhalt veraendert er nicht, um ihn
+    speicherbar zu machen.
+    """
+
+    def __init__(self, nachricht: str, *, sqlstate: str | None = None) -> None:
+        super().__init__(nachricht)
+        self.sqlstate = sqlstate
+
+
 class WaitTimeoutError(MineruOcrError, TimeoutError):
     """Die Frist eines Warte-Aufrufs ist abgelaufen, und Dokumente sind noch offen.
 
@@ -378,7 +401,8 @@ def classify_failure(exc: BaseException) -> FailureKind:
 
             WIEDERHOLBAR — `TransientRunPodError` samt `ResultLostError`;
             `httpx.TimeoutException` und `httpx.TransportError`; `DatabaseError`
-            und seine Unterklassen ausser `DocumentNotFound` (die Datenbank ist
+            und seine Unterklassen ausser `DocumentNotFound`,
+            `TerminalOverwriteError` und `UnstorableResultError` (die Datenbank ist
             lokal, ein Aussetzer ist fast immer voruebergehend); rohe
             `psycopg`-Fehler aus demselben Grund; `asyncio.CancelledError`,
             der Abbruch beim Herunterfahren (siehe unten).
@@ -387,6 +411,8 @@ def classify_failure(exc: BaseException) -> FailureKind:
             `ConfigurationError` samt `ConfigDriftError` (Wiederholen macht einen
             untauglichen Schluessel nicht gueltig); `DocumentNotFound` (die Zeile
             ist geloescht, dreimal nachsehen aendert daran nichts);
+            `UnstorableResultError` (Postgres weist das Ergebnis wegen seines
+            Inhalts ab, und ein weiterer Lauf liefert denselben Inhalt);
             `TerminalOverwriteError` und `IncompleteResultError` (beides
             Programmierfehler — wiederholt werden sie nur teurer); und alles
             Unbekannte.
@@ -436,15 +462,19 @@ def classify_failure(exc: BaseException) -> FailureKind:
     #
     #   InsufficientBalanceError IST ein RunPodError — stuende die RunPod-Zeile
     #   davor, wuerde aus „warten" ein „aufgeben".
-    #   DocumentNotFound und TerminalOverwriteError SIND DatabaseError — stuende
-    #   die DatabaseError-Zeile davor, liefe ein geloeschtes Dokument dreimal.
+    #   DocumentNotFound, TerminalOverwriteError und UnstorableResultError SIND
+    #   DatabaseError — stuende die DatabaseError-Zeile davor, liefe ein
+    #   geloeschtes Dokument dreimal, und ein nicht speicherbares Ergebnis wuerde
+    #   dreimal bezahlt und bliebe doch ohne Ergebnis.
     #
     # Deshalb: die Sonderfaelle vor ihren Oberklassen.
 
     if isinstance(exc, InsufficientBalanceError):
         return FailureKind.BALANCE_PAUSE
 
-    if isinstance(exc, (DocumentNotFound, TerminalOverwriteError)):
+    if isinstance(
+        exc, (DocumentNotFound, TerminalOverwriteError, UnstorableResultError)
+    ):
         return FailureKind.TERMINAL
 
     if isinstance(exc, DatabaseError):

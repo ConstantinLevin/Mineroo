@@ -30,6 +30,7 @@ from mineru_ocr.errors import (
     TerminalRunPodError,
     TooLargeError,
     TransientRunPodError,
+    UnstorableResultError,
     UnsupportedTypeError,
     classify_failure,
 )
@@ -163,6 +164,21 @@ def test_ueberschreibversuch_ist_endgueltig() -> None:
     assert classify_failure(TerminalOverwriteError("fertig")) is FailureKind.TERMINAL
 
 
+def test_nicht_speicherbares_ergebnis_ist_endgueltig() -> None:
+    """UnstorableResultError ist ein DatabaseError und trotzdem TERMINAL.
+
+    Postgres hat das Ergebnis wegen seines Inhalts abgewiesen (etwa ein U+0000
+    im Text oder eine Groesse ueber der Grenze von jsonb). Derselbe Inhalt wird
+    beim naechsten Lauf wieder abgewiesen; wiederholt hiesse nur, ihn dreimal zu
+    bezahlen und am Ende ohne Ergebnis dazustehen (Mineroo#27).
+    """
+    from mineru_ocr.errors import should_run_again
+
+    assert issubclass(UnstorableResultError, DatabaseError)
+    assert classify_failure(UnstorableResultError("U+0000")) is FailureKind.TERMINAL
+    assert not should_run_again(UnstorableResultError("U+0000"))
+
+
 def test_unvollstaendiges_ergebnis_ist_endgueltig() -> None:
     """IncompleteResultError ist ebenfalls ein Programmierfehler."""
     assert classify_failure(IncompleteResultError("halb")) is FailureKind.TERMINAL
@@ -207,6 +223,7 @@ def test_klassifikation_hat_keine_seiteneffekte() -> None:
         (JobAufgegebenError("Zeitbudget"), FailureKind.RETRYABLE),
         (InsufficientBalanceError("402"), FailureKind.BALANCE_PAUSE),
         (DocumentNotFound("weg"), FailureKind.TERMINAL),
+        (UnstorableResultError("U+0000"), FailureKind.TERMINAL),
         (UnsupportedTypeError("zip"), FailureKind.TERMINAL),
         (httpx.ConnectTimeout("weg"), FailureKind.RETRYABLE),
         (asyncio.CancelledError(), FailureKind.RETRYABLE),
