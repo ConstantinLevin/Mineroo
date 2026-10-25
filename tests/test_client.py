@@ -14,7 +14,7 @@ import pytest
 from psycopg_pool import NullConnectionPool
 
 from mineru_ocr import client as client_modul
-from mineru_ocr import config, tasks
+from mineru_ocr import config, core, tasks
 from mineru_ocr import db as db_modul
 from mineru_ocr.client import OCRClient
 from mineru_ocr.config import Settings
@@ -1191,6 +1191,26 @@ def test_die_bibliothek_kennt_keine_pfade() -> None:
     assert not hasattr(wrapper, "OCRMegaWrapper")
     assert not hasattr(mineru_ocr, "OCRMegaWrapper")
     assert "OCRMegaWrapper" not in mineru_ocr.__all__
+
+
+def test_der_griff_ueberlebt_kopieren_und_pickeln_samt_seiner_angaben() -> None:
+    """`Submitted` ist ein `str` mit zwei Angaben. Ein Griff, der beim Kopieren
+    abstuerzt oder seine Angaben verliert, waere eine Falle fuer jeden, der Hashes
+    ueber Prozessgrenzen reicht (`multiprocessing`, `copy.deepcopy`)."""
+    import copy
+    import json
+    import pickle
+
+    griff = core.Submitted("ab" * 32, queued=True, status=DocumentStatus.NEW)
+
+    for kopie in (copy.copy(griff), copy.deepcopy(griff), pickle.loads(pickle.dumps(griff))):
+        assert kopie == "ab" * 32
+        assert isinstance(kopie, core.Submitted)
+        assert kopie.queued is True
+        assert kopie.status is DocumentStatus.NEW
+    assert json.dumps({"h": griff}) == json.dumps({"h": "ab" * 32})
+    als_schluessel: dict[str, int] = {griff: 1}
+    assert als_schluessel["ab" * 32] == 1
 
 
 def test_zeile_eingabe_und_job_entstehen_zusammen_oder_gar_nicht(

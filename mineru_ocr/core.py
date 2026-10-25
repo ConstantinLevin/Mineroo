@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from typing import Any
 
 from . import db
 from .chunking import check_fits_unsplit
@@ -120,3 +121,11 @@ class Submitted(str):
         gleich.queued = queued
         gleich.status = status
         return gleich
+
+    def __getnewargs_ex__(self) -> tuple[tuple[str], dict[str, Any]]:
+        """Damit Kopieren und Pickeln den Hash MIT seinen Angaben wiederherstellen.
+
+        Ohne das riefe `copy` `__new__` nur mit der Zeichenkette auf und stuerzte
+        ueber die fehlenden Schluesselwoerter ab.
+        """
+        return (str(self),), {"queued": self.queued, "status": self.status}
