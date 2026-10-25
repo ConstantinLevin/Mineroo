@@ -38,7 +38,7 @@ from mineru_ocr.db import (
     worker_heartbeats,
     write_terminal_async,
 )
-from mineru_ocr.errors import DocumentNotFound, TerminalOverwriteError
+from mineru_ocr.errors import DatabaseError, DocumentNotFound, TerminalOverwriteError
 
 HASH = "a" * 64
 
@@ -1022,6 +1022,30 @@ def test_das_alter_rechnet_mit_der_laufenden_uhr_der_datenbank(
 
         db_conn.execute("SELECT pg_sleep(2.5)")
         assert worker_heartbeats(db_conn) == []
+
+
+@pytest.mark.db
+def test_eine_unlesbare_worker_tabelle_laesst_eine_offene_transaktion_benutzbar(
+    db_conn: psycopg.Connection[Any],
+) -> None:
+    """Die Lebendigkeit ist nur Auskunft: Scheitert ihre Abfrage in einer
+    Transaktion des Aufrufers (`client.conn.transaction()`), bricht PostgreSQL
+    die ganze Transaktion ab, und jede Anweisung danach scheitert mit
+    `InFailedSqlTransaction` — auch wenn der Aufrufer den `DatabaseError` faengt.
+    Die Abfrage laeuft deshalb in einem Sicherungspunkt, und nur der wird
+    zurueckgerollt."""
+    db_conn.execute(
+        "ALTER TABLE procrastinate_workers RENAME TO procrastinate_workers_weg"
+    )
+    try:
+        with db_conn.transaction():
+            with pytest.raises(DatabaseError):
+                worker_heartbeats(db_conn)
+            assert db_conn.execute("SELECT 1").fetchone() == (1,)
+    finally:
+        db_conn.execute(
+            "ALTER TABLE procrastinate_workers_weg RENAME TO procrastinate_workers"
+        )
 
 
 def test_die_schwelle_ist_procrastinates_grenze_fuer_haengengebliebene_worker() -> None:

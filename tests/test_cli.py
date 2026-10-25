@@ -437,6 +437,9 @@ def test_status_sagt_unbekannt_wenn_die_lebendigkeit_nicht_lesbar_ist(
     assert ergebnis.exit_code == 0, ergebnis.output
     assert "Daemon:     unbekannt" in ergebnis.output
     assert "LAEUFT NICHT" not in ergebnis.output
+    # Auch der Hinweis „Es laeuft kein Daemon“ bleibt aus: Wer nicht weiss, ob
+    # einer laeuft, soll nicht zum Starten eines zweiten aufgefordert werden.
+    assert "kein Daemon" not in ergebnis.output
 
 
 def test_ocr_reiht_auch_ohne_daemon_ein_und_warnt_auf_stderr(

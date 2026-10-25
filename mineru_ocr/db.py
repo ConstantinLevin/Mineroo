@@ -1409,16 +1409,20 @@ def worker_heartbeats(conn: psycopg.Connection[Any]) -> list[tuple[int, datetime
     Kosten: keine.
     """
     try:
-        return [
-            (kennung, gesehen)
-            for kennung, gesehen in conn.execute(
+        # In einem Sicherungspunkt: Haelt der Aufrufer eine eigene Transaktion
+        # offen (`client.conn.transaction()`), bricht eine gescheiterte Abfrage
+        # sonst die ganze Transaktion ab, und der gefangene Fehler laesst eine
+        # Verbindung zurueck, auf der nichts mehr geht. Unter `autocommit` ist es
+        # eine kurze eigene Transaktion.
+        with conn.transaction():
+            zeilen = conn.execute(
                 "SELECT id, last_heartbeat FROM procrastinate_workers "
                 "WHERE last_heartbeat > "
                 "clock_timestamp() - make_interval(secs => %s::double precision) "
                 "ORDER BY last_heartbeat DESC",
                 (DAEMON_HEARTBEAT_MAX_AGE_SECONDS,),
             ).fetchall()
-        ]
+        return [(kennung, gesehen) for kennung, gesehen in zeilen]
     except psycopg.Error as fehler:
         raise DatabaseError(
             f"Die Worker-Lebenszeichen liessen sich nicht lesen: {fehler}\n"
