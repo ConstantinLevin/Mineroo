@@ -296,7 +296,11 @@ ist `inputs.job_id`.
 **`retry` geht Procrastinates eigenen Weg** (`OCRClient.retry(h)`, für viele
 `retry_all(hs)`; ohne Angabe wählt `retry_all` selbst jedes Dokument ohne
 gültiges Ergebnis, also jede stehende Eingabe). Je Dokument: Ergebnis `done`,
-`empty` oder `input_error` oder Job `todo`/`doing` → nichts. Job `failed` →
+`empty` oder `input_error` oder ein Job, den `document()` als wartend oder
+laufend zeigt (`db.derive_status`, dieselbe Regel; auch ein unbekannter
+Job-Zustand) → nichts. Vor dem Handeln sperrt `retry` die Eingabe
+(`db.lock_input`); ist sie inzwischen weg, wurde der Job eben fertig, und es
+geschieht ebenfalls nichts. Job `failed` →
 **erst** die `failed`-Zeile weg (eigene Transaktion), **dann**
 `retry_job_by_id` auf denselben Job; andersherum könnte der zurückgesetzte Job
 schon ein neues Ergebnis geschrieben haben, das das Wegnehmen löschte. Job
@@ -309,7 +313,8 @@ Zeitstempel-Vergleich gibt es dafür nicht. Gleichzeitige `retry` auf dasselbe
 Dokument laufen nacheinander (`db.retry_lock`, eine Advisory-Sperre der Sitzung um
 Lesen und Handeln): Ohne sie läsen zwei Aufrufer beide „kein Job“ und reihten
 zwei Jobs ein, die beide bezahlt würden. Fehler von Procrastinate gehen nach
-oben, keiner wird als „nicht wiederholt" verschluckt. Das Kommando `retry` (Ziel
+oben, keiner wird als „nicht wiederholt" verschluckt; ein abgelehntes
+Zurücksetzen kommt als `DatabaseError` des Pakets an. Das Kommando `retry` (Ziel
 oder `--all`) fragt vorher nach, außer mit `--yes`, und ruft genau eine der
 beiden Funktionen.
 
