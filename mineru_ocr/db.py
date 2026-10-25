@@ -852,6 +852,16 @@ das Unterscheidungsmerkmal, ohne das „nicht geladen" und „ist leer" dasselbe
 waeren."""
 
 
+_EINGABE_SQL: Final = (
+    "INSERT INTO inputs (sha256, content) VALUES (%s, %b) "
+    "ON CONFLICT (sha256) DO NOTHING RETURNING sha256"
+)
+"""Die Anweisung von `insert_input` und `insert_input_async`."""
+
+_KENNUNG_SQL: Final = "UPDATE inputs SET job_id = %s WHERE sha256 = %s"
+"""Die Anweisung von `set_input_job` und `set_input_job_async`."""
+
+
 def insert_input(
     conn: psycopg.Connection[Any], *, sha256: str, content: bytes
 ) -> bool:
@@ -885,12 +895,23 @@ def insert_input(
 
     Kosten: keine.
     """
-    ergebnis = conn.execute(
-        "INSERT INTO inputs (sha256, content) VALUES (%s, %b) "
-        "ON CONFLICT (sha256) DO NOTHING RETURNING sha256",
-        (sha256, content),
-    ).fetchone()
+    ergebnis = conn.execute(_EINGABE_SQL, (sha256, content)).fetchone()
     return ergebnis is not None
+
+
+async def insert_input_async(
+    conn: psycopg.AsyncConnection[Any], *, sha256: str, content: bytes
+) -> bool:
+    """Dasselbe wie `insert_input`, asynchron: fuer den `AsyncOCRClient`."""
+    cur = await conn.execute(_EINGABE_SQL, (sha256, content))
+    return await cur.fetchone() is not None
+
+
+async def set_input_job_async(
+    conn: psycopg.AsyncConnection[Any], *, sha256: str, job_id: int
+) -> None:
+    """Dasselbe wie `set_input_job`, asynchron: fuer den `AsyncOCRClient`."""
+    await conn.execute(_KENNUNG_SQL, (job_id, sha256))
 
 
 def set_input_job(conn: psycopg.Connection[Any], *, sha256: str, job_id: int) -> None:
@@ -905,9 +926,7 @@ def set_input_job(conn: psycopg.Connection[Any], *, sha256: str, job_id: int) ->
 
     Kosten: keine.
     """
-    conn.execute(
-        "UPDATE inputs SET job_id = %s WHERE sha256 = %s", (job_id, sha256)
-    )
+    conn.execute(_KENNUNG_SQL, (job_id, sha256))
 
 
 def lock_input(conn: psycopg.Connection[Any], sha256: str) -> bool:
@@ -1060,11 +1079,23 @@ def get_document(
     Zeichenkette durch, und `DocumentStatus` entsteht daraus in
     `DocumentRow.__post_init__`.
     """
-    spalten = _SPALTEN_VOLL if with_raw else _SPALTEN_OHNE_RAW
     with conn.cursor(row_factory=class_row(DocumentRow)) as cur:
-        return cur.execute(
-            f"SELECT {spalten} FROM documents WHERE sha256 = %s", (sha256,)
-        ).fetchone()
+        return cur.execute(_zeile_sql(with_raw), (sha256,)).fetchone()
+
+
+def _zeile_sql(with_raw: bool) -> str:
+    """Die Anweisung von `get_document` und `get_document_async`."""
+    spalten = _SPALTEN_VOLL if with_raw else _SPALTEN_OHNE_RAW
+    return f"SELECT {spalten} FROM documents WHERE sha256 = %s"
+
+
+async def get_document_async(
+    conn: psycopg.AsyncConnection[Any], sha256: str, *, with_raw: bool = True
+) -> DocumentRow | None:
+    """Dasselbe wie `get_document`, asynchron: fuer den `AsyncOCRClient`."""
+    async with conn.cursor(row_factory=class_row(DocumentRow)) as cur:
+        await cur.execute(_zeile_sql(with_raw), (sha256,))
+        return await cur.fetchone()
 
 
 def list_documents(
@@ -2060,22 +2091,49 @@ def worker_heartbeats(conn: psycopg.Connection[Any]) -> list[tuple[int, datetime
         # eine kurze eigene Transaktion.
         with conn.transaction():
             zeilen = conn.execute(
-                "SELECT id, last_heartbeat FROM procrastinate_workers "
-                "WHERE last_heartbeat > "
-                "clock_timestamp() - make_interval(secs => %s::double precision) "
-                "ORDER BY last_heartbeat DESC",
-                (DAEMON_HEARTBEAT_MAX_AGE_SECONDS,),
+                _HERZSCHLAG_SQL, (DAEMON_HEARTBEAT_MAX_AGE_SECONDS,)
             ).fetchall()
         return [(kennung, gesehen) for kennung, gesehen in zeilen]
     except psycopg.Error as fehler:
-        raise DatabaseError(
-            f"Die Worker-Lebenszeichen liessen sich nicht lesen: {fehler}\n"
-            f"ACHTUNG, UNDOKUMENTIERTE FLAECHE: `procrastinate_workers` wird in "
-            f"Procrastinates stabiler Dokumentation nicht als Schnittstelle "
-            f"gefuehrt; Name und Spalten sind am Objekt der installierten "
-            f"Fassung festgestellt (Feature-Verifikation Punkt 12). Wahrscheinlich"
-            f" hat ein Procrastinate-Upgrade sie geaendert. Nachzusehen in "
-            f"`procrastinate/sql/schema.sql` der installierten Fassung; die "
-            f"Abfrage steht ausschliesslich in dieser Funktion. Der Fehler liegt "
-            f"NICHT beim Aufrufer."
-        ) from fehler
+        raise _herzschlag_unlesbar(fehler) from fehler
+
+
+async def worker_heartbeats_async(
+    conn: psycopg.AsyncConnection[Any],
+) -> list[tuple[int, datetime]]:
+    """Dasselbe wie `worker_heartbeats`, asynchron: fuer den `AsyncOCRClient`.
+    Dieselbe Anweisung, derselbe Sicherungspunkt, derselbe Fehler."""
+    try:
+        async with conn.transaction():
+            cur = await conn.execute(
+                _HERZSCHLAG_SQL, (DAEMON_HEARTBEAT_MAX_AGE_SECONDS,)
+            )
+            zeilen = await cur.fetchall()
+        return [(kennung, gesehen) for kennung, gesehen in zeilen]
+    except psycopg.Error as fehler:
+        raise _herzschlag_unlesbar(fehler) from fehler
+
+
+_HERZSCHLAG_SQL: Final = (
+    "SELECT id, last_heartbeat FROM procrastinate_workers "
+    "WHERE last_heartbeat > "
+    "clock_timestamp() - make_interval(secs => %s::double precision) "
+    "ORDER BY last_heartbeat DESC"
+)
+"""Die Anweisung von `worker_heartbeats` und `worker_heartbeats_async` — die
+einzige Stelle, an der die undokumentierte Worker-Tabelle gelesen wird."""
+
+
+def _herzschlag_unlesbar(fehler: psycopg.Error) -> DatabaseError:
+    """Der Fehler, wenn sich die Lebenszeichen nicht lesen lassen."""
+    return DatabaseError(
+        f"Die Worker-Lebenszeichen liessen sich nicht lesen: {fehler}\n"
+        f"ACHTUNG, UNDOKUMENTIERTE FLAECHE: `procrastinate_workers` wird in "
+        f"Procrastinates stabiler Dokumentation nicht als Schnittstelle "
+        f"gefuehrt; Name und Spalten sind am Objekt der installierten "
+        f"Fassung festgestellt (Feature-Verifikation Punkt 12). Wahrscheinlich"
+        f" hat ein Procrastinate-Upgrade sie geaendert. Nachzusehen in "
+        f"`procrastinate/sql/schema.sql` der installierten Fassung; die "
+        f"Abfrage steht ausschliesslich in `_HERZSCHLAG_SQL`. Der Fehler liegt "
+        f"NICHT beim Aufrufer."
+    )

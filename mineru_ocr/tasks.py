@@ -143,6 +143,26 @@ def build_client_app(settings: Settings) -> procrastinate.App:
     )
 
 
+def build_async_client_app(settings: Settings) -> procrastinate.App:
+    """Baut die App des `AsyncOCRClient`: asynchroner Zugang, keine Tasks.
+
+    Dasselbe wie `build_client_app`, nur mit `PsycopgConnector`: Procrastinate
+    paart den asynchronen Konnektor mit `psycopg.AsyncConnection`, und mit ihr
+    reiht der Async-Client ein (`enqueue_document_async`). Fuer sync und async im
+    selben Prozess haelt Procrastinates eigener Abnahmetest genau zwei solche Apps;
+    ein Prozess mit beiden Clients hat sie ebenso.
+
+    Die App kommt UNGEOEFFNET zurueck. Der Client oeffnet sie mit einem Pool, den
+    er selbst anlegt und in derselben Ereignisschleife wieder schliesst
+    (`app.open_async(pool)`).
+
+    Kosten: keine.
+    """
+    return procrastinate.App(
+        connector=procrastinate.PsycopgConnector(conninfo=settings.db_dsn)
+    )
+
+
 def wird_erneut_vorgelegt(
     exception: BaseException, job: procrastinate.jobs.Job, settings: Settings
 ) -> bool:
@@ -492,12 +512,40 @@ def enqueue_document(
 
     Kosten: keine unmittelbar — mittelbar loest der Job Verarbeitung aus.
     """
+    return _ocr_task(app, connection, sha256).defer(sha256=sha256)
+
+
+async def enqueue_document_async(
+    app: procrastinate.App, connection: Any, sha256: str
+) -> int:
+    """Dasselbe wie `enqueue_document`, asynchron, fuer den `AsyncOCRClient`:
+    Name, Queue und Sperre gleich, eingereiht mit `defer_async` auf der
+    `AsyncConnection` des Aufrufers, in dessen Transaktion.
+
+    Args:
+        app: Die App des Async-Clients (`build_async_client_app`).
+        connection: Die `psycopg.AsyncConnection` des Aufrufers.
+        sha256: Welches Dokument.
+
+    Returns:
+        Die Kennung des Jobs, fuer `inputs.job_id`.
+
+    Kosten: keine unmittelbar — mittelbar loest der Job Verarbeitung aus.
+    """
+    return await _ocr_task(app, connection, sha256).defer_async(sha256=sha256)
+
+
+def _ocr_task(
+    app: procrastinate.App, connection: Any, sha256: str
+) -> procrastinate.jobs.JobDeferrer:
+    """Der Task des Daemons, per Namen, mit Queue, Sperre und Verbindung — die
+    eine Konfiguration hinter `enqueue_document` und `enqueue_document_async`."""
     return app.configure_task(
         name=config.TASK_OCR_DOCUMENT,
         queue=config.QUEUE_OCR,
         lock=sha256,
         connection=connection,
-    ).defer(sha256=sha256)
+    )
 
 
 def worker_context_resources(settings: Settings) -> dict[str, Any]:

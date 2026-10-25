@@ -15,9 +15,10 @@ import psycopg
 import pytest
 
 from mineru_ocr import db
+from mineru_ocr.client import AsyncOCRClient
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, list_documents, write_terminal_async
-from mineru_ocr.errors import IncompleteResultError
+from mineru_ocr.errors import ConfigurationError, IncompleteResultError
 from mineru_ocr.wrapper import OCRWrapper
 
 pytestmark = pytest.mark.db
@@ -363,3 +364,61 @@ def test_get_document_ohne_raw_laedt_raw_nicht(
     assert zeile.raw_loaded is False
     voll = db.get_document(db_conn, huelle.sha256)
     assert voll is not None and voll.raw_loaded is True
+
+
+# --- Huellen des asynchronen Clients --------------------------------------
+
+
+async def test_huellen_des_async_clients_tragen_raw_geladen(
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    settings: Settings,
+) -> None:
+    """Eine Eigenschaft kann nicht `await`en: Die Huellen des Async-Clients kommen
+    deshalb mit geladenem `raw`, aus `get`, `wait`, `wait_all` und
+    `as_completed`, und das Ergebnis ist auch nach dem Verlassen des Clients
+    lesbar, ohne Verbindung."""
+    huelle = _huelle(db_conn, settings, PNG_KOPF + b"async")
+    await write_terminal_async(
+        async_conn,
+        sha256=huelle.sha256,
+        status=DocumentStatus.DONE,
+        raw={"markdown": "geladen", "content_list": [], "images": {}},
+        endpoint_id="testendpoint",
+    )
+
+    async with AsyncOCRClient(db_dsn=settings.db_dsn) as klient:
+        huellen = [
+            await klient.get(huelle.sha256),
+            await klient.wait(huelle.sha256, timeout=5.0),
+            *await klient.wait_all([huelle.sha256], timeout=5.0),
+            *[h async for h in klient.as_completed([huelle.sha256], timeout=5.0)],
+        ]
+
+    for geholt in huellen:
+        assert geholt.row.raw_loaded is True
+        assert geholt["markdown"] == "geladen"
+        assert geholt.to_dict(raw=True)["raw"]["markdown"] == "geladen"
+
+
+async def test_refresh_einer_huelle_des_async_clients_nennt_den_weg(
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    settings: Settings,
+) -> None:
+    """Neu lesen kann eine Huelle des Async-Clients nicht selbst, denn sie haelt
+    keine Verbindung. `refresh()` sagt das und nennt den Weg, statt an einer
+    fehlenden Verbindung zu scheitern."""
+    huelle = _huelle(db_conn, settings, PNG_KOPF + b"async refresh")
+    await write_terminal_async(
+        async_conn,
+        sha256=huelle.sha256,
+        status=DocumentStatus.FAILED,
+        raw={},
+        endpoint_id="testendpoint",
+    )
+    async with AsyncOCRClient(db_dsn=settings.db_dsn) as klient:
+        geholt = await klient.get(huelle.sha256)
+
+    with pytest.raises(ConfigurationError, match="await client.get"):
+        geholt.refresh()

@@ -6,7 +6,7 @@ import contextlib
 import hashlib
 import logging
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,7 @@ from psycopg_pool import NullConnectionPool
 
 from mineru_ocr import client as client_modul
 from mineru_ocr import config, core, db, tasks
-from mineru_ocr.client import OCRClient
+from mineru_ocr.client import AsyncOCRClient, OCRClient
 from mineru_ocr.config import Settings
 from mineru_ocr.db import WAIT_APPLICATION_NAME, DocumentStatus, Phase, write_terminal_async
 from mineru_ocr.errors import (
@@ -2265,3 +2265,361 @@ def test_worker_mit_leerer_umgebung_ist_nicht_pruefbar(
     assert punkt["bewertung"] == "nicht_pruefbar"
     assert punkt["ist"] == {"w1": "(nicht angegeben)"}
     assert befund["drift"] == 0
+
+
+# --- Der asynchrone Client ------------------------------------------------
+
+
+@pytest.fixture
+async def offener_async_client(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any]
+) -> AsyncIterator[AsyncOCRClient]:
+    """Ein betretener Async-Client. Er hat keinen Preflight und fragt RunPod nie."""
+    async with AsyncOCRClient(db_dsn=_test_datenbank) as c:
+        yield c
+
+
+async def test_async_ocr_start_reiht_ein_und_gibt_den_hash(
+    offener_async_client: AsyncOCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Dieselbe Bedeutung wie im Sync-Client: Eingabe und Job entstehen, der Job
+    liegt in der Queue des Daemons, seine Kennung steht an der Eingabe, und eine
+    Ergebniszeile gibt es noch nicht."""
+    _worker_am_leben(db_conn)
+    inhalt = _png("async")
+
+    h = await offener_async_client.ocr_start(inhalt)
+
+    assert h == _hash(inhalt)
+    assert h.queued is True and h.status is None
+    jobs = db_conn.execute(
+        "SELECT id, task_name, queue_name, lock FROM procrastinate_jobs"
+    ).fetchall()
+    assert len(jobs) == 1
+    kennung, task, queue, sperre = jobs[0]
+    assert (task, queue, sperre) == (config.TASK_OCR_DOCUMENT, config.QUEUE_OCR, h)
+    eingabe = db_conn.execute("SELECT sha256, job_id FROM inputs").fetchall()
+    assert eingabe == [(h, kennung)]
+    assert _zaehlen(db_conn, "documents") == 0
+
+
+@pytest.mark.parametrize(
+    ("zustand", "eingaben_danach"),
+    [(DocumentStatus.DONE, 0), (DocumentStatus.FAILED, 1)],
+)
+async def test_async_ocr_start_liefert_einen_treffer_ohne_job(
+    offener_async_client: AsyncOCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    zustand: DocumentStatus,
+    eingaben_danach: int,
+) -> None:
+    """Ein Ergebnis ist ein Treffer, auch `failed`: nichts anlegen, nichts
+    einreihen, den Endzustand nennen."""
+    _worker_am_leben(db_conn)
+    inhalt = _png("treffer")
+    h = await offener_async_client.ocr_start(inhalt)
+    await write_terminal_async(
+        async_conn, sha256=h, status=zustand, raw={}, endpoint_id="testendpoint"
+    )
+    db_conn.execute("DELETE FROM procrastinate_jobs")
+
+    wieder = await offener_async_client.ocr_start(inhalt)
+
+    assert (wieder, wieder.queued, wieder.status) == (h, False, zustand)
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 0
+    assert _zaehlen(db_conn, "inputs") == eingaben_danach
+
+
+async def test_async_ocr_start_viele_gibt_je_dokument_den_hash_in_eingabereihenfolge(
+    offener_async_client: AsyncOCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Eine Folge gibt eine Liste in ihrer Reihenfolge; dasselbe Dokument zweimal
+    wird einmal eingereiht."""
+    _worker_am_leben(db_conn)
+    inhalte = [_png("c"), _png("a"), _png("c")]
+
+    hashes = await offener_async_client.ocr_start(inhalte)
+
+    assert hashes == [_hash(i) for i in inhalte]
+    assert [h.queued for h in hashes] == [True, True, False]
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 2
+
+
+async def test_async_ocr_start_prueft_erst_alle_und_reiht_dann_ein(
+    offener_async_client: AsyncOCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Bei einem abgewiesenen Element waeren die vorderen sonst schon abgeschickt."""
+    with pytest.raises(UnsupportedTypeError):
+        await offener_async_client.ocr_start([_png("gut"), b"nur Text, kein Dokument"])
+
+    for tabelle in ("documents", "inputs", "procrastinate_jobs"):
+        assert _zaehlen(db_conn, tabelle) == 0, tabelle
+
+
+async def test_async_ocr_start_weist_pfade_und_text_ab(
+    offener_async_client: AsyncOCRClient,
+) -> None:
+    """Wie im Sync-Client: Pfade und Text kennt die Bibliothek nicht."""
+    for falsch in (Path("scan.pdf"), "scan.pdf", bytearray(b"%PDF"), [Path("a.pdf")]):
+        with pytest.raises(TypeError, match="Bytes"):
+            await offener_async_client.ocr_start(falsch)  # type: ignore[arg-type]
+
+
+async def test_async_ocr_start_reiht_ohne_daemon_ein_und_warnt_je_phase_einmal(
+    offener_async_client: AsyncOCRClient,
+    db_conn: psycopg.Connection[Any],
+    abgestuerzter_worker: Callable[[], None],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Wie im Sync-Client: Ohne Daemon (auch mit der Zeile eines abgestuerzten)
+    wird eingereiht und einmal je daemonloser Phase gewarnt; nach einem gesehenen
+    Daemon ist sein Ausfall eine neue Phase."""
+    abgestuerzter_worker()
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        h = await offener_async_client.ocr_start(_png("0"))
+        await offener_async_client.ocr_start(_png("1"))
+        assert h.queued is True and _jobs_zaehlen(db_conn, h) == 1
+        assert _warnungen_des_clients(caplog) == 1
+        assert "kein Daemon" in caplog.text
+
+        _worker_am_leben(db_conn)
+        await offener_async_client.ocr_start(_png("2"))
+        assert _warnungen_des_clients(caplog) == 1
+
+        db_conn.execute("DELETE FROM procrastinate_workers")
+        await offener_async_client.ocr_start(_png("3"))
+        assert _warnungen_des_clients(caplog) == 2
+
+
+async def test_async_ocr_start_warnt_nicht_wenn_nichts_offen_ist(
+    offener_async_client: AsyncOCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Eine leere Folge oder lauter fertige Dokumente: Die Warnung waere falsch."""
+    _worker_am_leben(db_conn)
+    fertig = _png("fertig")
+    h = await offener_async_client.ocr_start(fertig)
+    await write_terminal_async(
+        async_conn, sha256=h, status=DocumentStatus.DONE, raw={}, endpoint_id="e"
+    )
+    db_conn.execute("DELETE FROM procrastinate_workers")
+
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        assert await offener_async_client.ocr_start([]) == []
+        assert (await offener_async_client.ocr_start(fertig)).queued is False
+
+    assert _warnungen_des_clients(caplog) == 0
+
+
+async def test_async_ocr_start_reiht_ein_wenn_die_lebendigkeit_nicht_lesbar_ist(
+    offener_async_client: AsyncOCRClient,
+    db_conn: psycopg.Connection[Any],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Die Lebendigkeit ist nur Auskunft: Scheitert ihr Lesen, wird trotzdem
+    eingereiht, und die Warnung nennt die Ursache."""
+
+    async def kaputt(conn: Any) -> Any:
+        try:
+            raise OSError("verbindung weg")
+        except OSError as ursache:
+            raise DatabaseError("procrastinate_workers sieht anders aus") from ursache
+
+    monkeypatch.setattr(db, "worker_heartbeats_async", kaputt)
+
+    with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
+        h = await offener_async_client.ocr_start(_png("a"))
+
+    assert h.queued is True and _jobs_zaehlen(db_conn, h) == 1
+    assert "nicht pruefbar" in caplog.text and "verbindung weg" in caplog.text
+
+
+async def test_async_wait_all_liefert_jeden_endzustand_in_eingabereihenfolge(
+    offener_async_client: AsyncOCRClient, async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """`wait_all` liefert in der Reihenfolge der Frage, auch doppelt; `wait` eines;
+    jeder Endzustand ist ein Ergebnis. Gewartet wird nicht auf der Verbindung des
+    Clients."""
+    hashes = [
+        await offener_async_client.ocr_start(_png(name)) for name in ("eins", "zwei")
+    ]
+    zustaende = [DocumentStatus.DONE, DocumentStatus.FAILED]
+    for h, zustand in reversed(list(zip(hashes, zustaende, strict=True))):
+        await write_terminal_async(
+            async_conn, sha256=h, status=zustand, raw={}, endpoint_id="e"
+        )
+
+    huellen = await offener_async_client.wait_all([*hashes, hashes[0]], timeout=5.0)
+    einzeln = await offener_async_client.wait(hashes[1], timeout=5.0)
+
+    assert [(h.sha256, h.status) for h in huellen] == [
+        (hashes[0], DocumentStatus.DONE),
+        (hashes[1], DocumentStatus.FAILED),
+        (hashes[0], DocumentStatus.DONE),
+    ]
+    assert (einzeln.sha256, einzeln.success) == (hashes[1], False)
+    cur = await offener_async_client._verbindung.execute(
+        "SELECT pg_listening_channels()"
+    )
+    assert await cur.fetchall() == []
+
+
+async def test_async_as_completed_liefert_jedes_sobald_es_fertig_ist(
+    offener_async_client: AsyncOCRClient, async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """Das zuerst fertige kommt zuerst; ein gescheitertes beendet das Warten auf die
+    uebrigen nicht."""
+    spaet = await offener_async_client.ocr_start(_png("spaet"))
+    frueh = await offener_async_client.ocr_start(_png("frueh"))
+    await write_terminal_async(
+        async_conn, sha256=frueh, status=DocumentStatus.FAILED, raw={}, endpoint_id="e"
+    )
+
+    fertige = offener_async_client.as_completed([spaet, frueh], timeout=5.0)
+    zuerst = await anext(fertige)
+    assert (zuerst.sha256, zuerst.status) == (frueh, DocumentStatus.FAILED)
+
+    await write_terminal_async(
+        async_conn, sha256=spaet, status=DocumentStatus.DONE, raw={}, endpoint_id="e"
+    )
+    danach = await anext(fertige)
+    assert (danach.sha256, danach.status) == (spaet, DocumentStatus.DONE)
+    with pytest.raises(StopAsyncIteration):
+        await anext(fertige)
+
+
+async def test_async_warten_meldet_unbekanntes_sofort_und_nennt_bei_ablauf_die_offenen(
+    offener_async_client: AsyncOCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+) -> None:
+    """Ein unbekannter Hash wirft sofort; die Frist gilt fuer den ganzen Aufruf,
+    ihr `WaitTimeoutError` nennt die offenen, und kein Job wird angefasst."""
+    with pytest.raises(DocumentNotFound):
+        await offener_async_client.wait("f" * 64, timeout=30.0)
+
+    fertig = await offener_async_client.ocr_start(_png("fertig"))
+    offen = await offener_async_client.ocr_start(_png("offen"))
+    await write_terminal_async(
+        async_conn, sha256=fertig, status=DocumentStatus.DONE, raw={}, endpoint_id="e"
+    )
+    jobs_vorher = db_conn.execute(
+        "SELECT id, status, attempts FROM procrastinate_jobs ORDER BY id"
+    ).fetchall()
+
+    with pytest.raises(WaitTimeoutError) as fehler:
+        await offener_async_client.wait_all([fertig, offen], timeout=0.5)
+
+    assert fehler.value.pending == (offen,)
+    assert db_conn.execute(
+        "SELECT id, status, attempts FROM procrastinate_jobs ORDER BY id"
+    ).fetchall() == jobs_vorher
+
+
+async def test_async_warten_prueft_ziele_und_frist_beim_aufruf(
+    _test_datenbank: str, offener_async_client: AsyncOCRClient
+) -> None:
+    """Ein einzelner Hash ist keine Folge von Hashes, ein Pfad kein Hash, `nan`
+    keine Frist, und ein nicht betretener Client hat keine Verbindung: Das sagt
+    der Aufruf selbst, auch bei `as_completed`, nicht erst das erste Weiterschalten."""
+    with pytest.raises(TypeError, match="wait"):
+        await offener_async_client.wait_all("f" * 64)
+    with pytest.raises(TypeError, match="wait"):
+        offener_async_client.as_completed("f" * 64)
+    with pytest.raises(TypeError, match="sha256"):
+        offener_async_client.as_completed([Path("scan.pdf")])  # type: ignore[list-item]
+    with pytest.raises(TypeError, match="sha256"):
+        await offener_async_client.wait(Path("scan.pdf"))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="Frist"):
+        offener_async_client.as_completed(["f" * 64], timeout=float("nan"))
+    with pytest.raises(ValueError, match="Frist"):
+        await offener_async_client.wait_all(["f" * 64], timeout=-1.0)
+
+    nicht_betreten = AsyncOCRClient(db_dsn=_test_datenbank)
+    with pytest.raises(ConfigurationError, match="betreten"):
+        nicht_betreten.as_completed(["f" * 64])
+    with pytest.raises(ConfigurationError, match="betreten"):
+        await nicht_betreten.ocr_start(_png("nie"))
+
+
+async def test_async_ocr_liefert_einen_treffer_und_prueft_die_frist_vor_dem_einreihen(
+    offener_async_client: AsyncOCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """`ocr` ist Abschicken plus Warten. Ein Treffer kommt sofort, ohne Job; eine
+    unbrauchbare Frist weist es ab, BEVOR es einreiht; ohne Daemon endet es mit
+    der Frist, und das Dokument bleibt unterwegs."""
+    inhalt = _png("schon da")
+    db_conn.execute(
+        "INSERT INTO documents (sha256, size_bytes, mime, endpoint_id, status, raw) "
+        "VALUES (%s, 1, 'image/png', 'e', 'done', %s::jsonb)",
+        (_hash(inhalt), '{"markdown": "steht da", "content_list": [], "images": {}}'),
+    )
+
+    ergebnis = await offener_async_client.ocr(inhalt, timeout=5.0)
+
+    assert ergebnis["markdown"] == "steht da"
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 0
+    with pytest.raises(ValueError, match="Frist"):
+        await offener_async_client.ocr(_png("nie"), timeout=float("nan"))
+    assert _zaehlen(db_conn, "inputs") == 0
+    with pytest.raises(WaitTimeoutError) as fehler:
+        await offener_async_client.ocr(_png("wartet"), timeout=0.3)
+    assert fehler.value.pending == (_hash(_png("wartet")),)
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 1
+
+
+async def test_async_get_unterscheidet_offen_und_unbekannt(
+    offener_async_client: AsyncOCRClient,
+) -> None:
+    """Eine Huelle gibt es nur zu einem Ergebnis; die Meldung sagt, ob das Dokument
+    offen oder unbekannt ist."""
+    with pytest.raises(DocumentNotFound, match="weder Ergebnis noch Eingabe"):
+        await offener_async_client.get("f" * 64)
+    h = await offener_async_client.ocr_start(_png("offen"))
+    with pytest.raises(DocumentNotFound, match="noch kein Ergebnis"):
+        await offener_async_client.get(h)
+
+
+async def test_async_ocr_start_reiht_ein_unterwegs_liegendes_nicht_nochmal_ein(
+    offener_async_client: AsyncOCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Eine stehende Eingabe ohne Ergebnis heisst unterwegs: kein zweiter Job."""
+    _worker_am_leben(db_conn)
+    inhalt = _png("unterwegs")
+    await offener_async_client.ocr_start(inhalt)
+
+    wieder = await offener_async_client.ocr_start(inhalt)
+
+    assert (wieder.queued, wieder.status) == (False, None)
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 1
+
+
+async def test_async_ocr_start_nennt_das_ergebnis_wenn_ein_anderer_schneller_war(
+    offener_async_client: AsyncOCRClient,
+    db_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zwischen Nachsehen und Ablegen legt ein anderer die Eingabe ab, und sein
+    Job endet `failed`: Dieser Aufruf legt keinen Job an und nennt den Zustand,
+    der inzwischen dasteht."""
+    inhalt = _png("rennen")
+
+    async def anderer_war_schneller(_conn: Any, *, sha256: str, content: bytes) -> bool:
+        db.insert_input(db_conn, sha256=sha256, content=content)
+        db_conn.execute(
+            "INSERT INTO documents (sha256, endpoint_id, status, raw) "
+            "VALUES (%s, 'e', 'failed', '{}'::jsonb)",
+            (sha256,),
+        )
+        return False
+
+    monkeypatch.setattr(db, "insert_input_async", anderer_war_schneller)
+
+    gereicht = await offener_async_client.ocr_start(inhalt)
+
+    assert (gereicht.queued, gereicht.status) == (False, DocumentStatus.FAILED)
+    assert _zaehlen(db_conn, "procrastinate_jobs") == 0

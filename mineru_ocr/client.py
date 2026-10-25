@@ -25,6 +25,7 @@ import concurrent.futures
 import contextlib
 import logging
 from collections.abc import (
+    AsyncGenerator,
     Awaitable,
     Callable,
     Coroutine,
@@ -41,7 +42,7 @@ import procrastinate.exceptions
 import psycopg
 from procrastinate import utils
 from procrastinate.jobs import Job
-from psycopg_pool import NullConnectionPool
+from psycopg_pool import AsyncNullConnectionPool, NullConnectionPool
 
 from . import core, db, tasks
 from .config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS, MASKE, Settings, ist_geheimnisname
@@ -72,6 +73,90 @@ def _nimmt_bytes(wert: object) -> str:
         f"ocr_start nimmt Bytes, nicht {type(wert).__name__}. "
         f"Pfade und Text kennt die Bibliothek nicht: Wer eine Datei "
         f"abschicken will, liest sie und reicht ihre Bytes herein."
+    )
+
+
+def _dokumente(data: object) -> list[bytes]:
+    """Was `ocr_start` bekam, als Liste von Dokumenten — fuer beide Clients.
+
+    Weist alles ab, was keine Bytes und keine Folge von Bytes ist.
+    """
+    if isinstance(data, bytes):
+        return [data]
+    if isinstance(data, (str, bytearray, memoryview)) or not isinstance(
+        data, Iterable
+    ):
+        # Eine Zeichenkette, ein Puffer oder ein Pfad ist KEINE Folge von
+        # Dokumenten; `list(...)` machte aus einem `bytearray` eine Liste
+        # von Zahlen und aus einem Pfad eine unverstaendliche Meldung.
+        raise TypeError(_nimmt_bytes(data))
+    dokumente = list(data)
+    for dokument in dokumente:
+        if not isinstance(dokument, bytes):
+            raise TypeError(_nimmt_bytes(dokument))
+    return dokumente
+
+
+def _daemon_warnung_geben(bisher: str | None, fehler: BaseException | None) -> str:
+    """Warnt, dass kein Daemon laeuft oder das nicht lesbar ist — einmal je Lage.
+
+    Die Entscheidung beider Clients, nachdem sie keinen frischen Herzschlag
+    gesehen haben (`fehler` None) oder ihn nicht lesen konnten. Eine Lage ist die
+    daemonlose Phase oder die nicht lesbare Lebendigkeit; nur eine neue Lage wird
+    gesagt.
+
+    Returns:
+        Die Lage, die der Client sich bis zum naechsten Mal merkt.
+    """
+    if fehler is None:
+        lage = "kein_daemon"
+        grund = (
+            "Es laeuft kein Daemon (kein Worker-Herzschlag juenger als "
+            f"{DAEMON_HEARTBEAT_MAX_AGE_SECONDS:g} s)"
+        )
+    else:
+        lage = "nicht_lesbar"
+        ursache = (str(fehler.__cause__ or fehler).splitlines() or [""])[0]
+        grund = f"Ob ein Daemon laeuft, ist nicht pruefbar ({ursache})"
+    if lage != bisher:
+        log.warning(
+            "%s. Offene Dokumente bleiben liegen, bis einer startet: "
+            "`mineru-ocr daemon`.",
+            grund,
+        )
+    return lage
+
+
+def _gefragte_hashes(hashes: object, timeout: float | None) -> list[str]:
+    """Die gefragten Hashes als Liste, fuer das Warten beider Clients; weist einen
+    einzelnen Hash, Pfade und eine unbrauchbare Frist ab."""
+    db.check_wait_timeout(timeout)
+    if isinstance(hashes, (str, bytes)) or not isinstance(hashes, Iterable):
+        raise TypeError(
+            "Erwartet wird eine Folge von Hashes, nicht "
+            f"{type(hashes).__name__}. Fuer EIN Dokument gibt es `wait(sha256)`."
+        )
+    gefragt = list(hashes)
+    for sha256 in gefragt:
+        _hash_pruefen(sha256)
+    return gefragt
+
+
+def _unbekannt(sha256: str) -> DocumentNotFound:
+    """Der Fehler fuer einen Hash ohne Ergebnis und ohne Eingabe."""
+    return DocumentNotFound(
+        f"Kein Dokument zu {sha256!r}: weder Ergebnis noch Eingabe. "
+        f"Angenommen wird der sha256, den `ocr_start` zurueckgab "
+        f"(vierundsechzig Zeichen aus 0-9a-f)."
+    )
+
+
+def _noch_offen(sha256: str) -> DocumentNotFound:
+    """Der Fehler von `get` fuer ein Dokument, das abgeschickt und offen ist."""
+    return DocumentNotFound(
+        f"{sha256} hat noch kein Ergebnis: Es ist abgeschickt und offen. "
+        f"Wo es steht, sagt `document()` (`mineru-ocr show {sha256}`); "
+        f"darauf warten `wait()` (`mineru-ocr wait {sha256}`)."
     )
 
 
@@ -706,20 +791,7 @@ class OCRClient:
         Kosten: keine unmittelbar. Mittelbar: alles, was der Daemon danach tut.
         """
         einzeln = isinstance(data, bytes)
-        if isinstance(data, bytes):
-            dokumente: list[bytes] = [data]
-        elif isinstance(data, (str, bytearray, memoryview)) or not isinstance(
-            data, Iterable
-        ):
-            # Eine Zeichenkette, ein Puffer oder ein Pfad ist KEINE Folge von
-            # Dokumenten; `list(...)` machte aus einem `bytearray` eine Liste
-            # von Zahlen und aus einem Pfad eine unverstaendliche Meldung.
-            raise TypeError(_nimmt_bytes(data))
-        else:
-            dokumente = list(data)
-        for dokument in dokumente:
-            if not isinstance(dokument, bytes):
-                raise TypeError(_nimmt_bytes(dokument))
+        dokumente = _dokumente(data)
         # ERST ALLES PRUEFEN, DANN EINREIHEN.
         vorbereitet = [core.prepare(dokument, self._settings) for dokument in dokumente]
 
@@ -768,26 +840,13 @@ class OCRClient:
         try:
             if self._lebenszeichen():
                 return
-            lage = "kein_daemon"
-            grund = (
-                "Es laeuft kein Daemon (kein Worker-Herzschlag juenger als "
-                f"{DAEMON_HEARTBEAT_MAX_AGE_SECONDS:g} s)"
-            )
-        except (DatabaseError, psycopg.Error) as fehler:
+            fehler = None
+        except (DatabaseError, psycopg.Error) as gefangen:
             # `db.worker_heartbeats` uebersetzt psycopgs Fehler in `DatabaseError`;
             # psycopg.Error steht dabei, damit auch ein Fehler, der an dieser
             # Uebersetzung vorbeigeht, das Abschicken nicht scheitern laesst.
-            lage = "nicht_lesbar"
-            ursache = (str(fehler.__cause__ or fehler).splitlines() or [""])[0]
-            grund = f"Ob ein Daemon laeuft, ist nicht pruefbar ({ursache})"
-        if lage == self._daemon_warnung:
-            return
-        self._daemon_warnung = lage
-        log.warning(
-            "%s. Offene Dokumente bleiben liegen, bis einer startet: "
-            "`mineru-ocr daemon`.",
-            grund,
-        )
+            fehler = gefangen
+        self._daemon_warnung = _daemon_warnung_geben(self._daemon_warnung, fehler)
 
     def _abschicken(self, data: bytes, bereit: core.Prepared) -> Submitted:
         """Schickt EIN geprueftes Dokument ab, in seiner eigenen Transaktion.
@@ -930,15 +989,7 @@ class OCRClient:
         """Die gefragten Hashes als Liste; weist einen einzelnen Hash, Pfade und
         eine unbrauchbare Frist ab, und prueft, dass der Client betreten ist —
         alles beim Aufruf, auch fuer den Iterator von `as_completed`."""
-        db.check_wait_timeout(timeout)
-        if isinstance(hashes, (str, bytes)) or not isinstance(hashes, Iterable):
-            raise TypeError(
-                "Erwartet wird eine Folge von Hashes, nicht "
-                f"{type(hashes).__name__}. Fuer EIN Dokument gibt es `wait(sha256)`."
-            )
-        gefragt = list(hashes)
-        for sha256 in gefragt:
-            _hash_pruefen(sha256)
+        gefragt = _gefragte_hashes(hashes, timeout)
         self.conn  # Nicht betreten: der Fehler jetzt, nicht beim ersten Ergebnis.
         return gefragt
 
@@ -1321,11 +1372,7 @@ class OCRClient:
         """
         stand = self._stand(sha256)
         if stand.row is None:
-            raise DocumentNotFound(
-                f"{sha256} hat noch kein Ergebnis: Es ist abgeschickt und offen. "
-                f"Wo es steht, sagt `document()` (`mineru-ocr show {sha256}`); "
-                f"darauf warten `wait()` (`mineru-ocr wait {sha256}`)."
-            )
+            raise _noch_offen(sha256)
         return OCRWrapper.from_row(stand.row, self.conn)
 
     def _stand(self, sha256: str) -> db.DocumentState:
@@ -1334,11 +1381,7 @@ class OCRClient:
         _hash_pruefen(sha256)
         (stand,) = db.read_states(self.conn, [sha256])
         if stand.is_unknown:
-            raise DocumentNotFound(
-                f"Kein Dokument zu {sha256!r}: weder Ergebnis noch Eingabe. "
-                f"Angenommen wird der sha256, den `ocr_start` zurueckgab "
-                f"(vierundsechzig Zeichen aus 0-9a-f)."
-            )
+            raise _unbekannt(sha256)
         return stand
 
     def credit(self) -> float:
@@ -1368,3 +1411,317 @@ class OCRClient:
         self._settings.require_endpoint_id()
         self._settings.require_api_key()
         return _runpod_fragen(self._settings, lambda z: z.workers())
+
+
+class AsyncOCRClient:
+    """Der asynchrone Zugang: dieselben Namen und dieselbe Bedeutung wie
+    `OCRClient`, jeweils mit `await`. Als `async with` benutzen.
+
+    `ocr_start`, `ocr`, `wait`, `wait_all`, `as_completed` und `get` gibt es hier;
+    `status`, `preflight`, `document` und `retry` nur im `OCRClient`. Der
+    Async-Client fragt RunPod nie und braucht weder Endpoint noch Schluessel.
+
+    Er ist die zweite duenne Schale um denselben Kern ohne Ein- und Ausgabe
+    (`core`, die SQL-Texte in `db`), ueber psycopgs `AsyncConnection` statt
+    `Connection`, so wie httpx es macht. Eine Bruecke wie asgiref oder anyio gibt
+    es auf diesem Weg nicht: Sie scheiterte in einer laufenden Ereignisschleife,
+    etwa in Jupyter, und hielte Strg-C auf.
+
+    Besitz und Lebensdauer wie beim Sync-Client, nur asynchron: `__aenter__`
+    oeffnet die Verbindung des Clients, einen `AsyncNullConnectionPool` ohne
+    stehende Verbindungen und die eigene Procrastinate-App
+    (`tasks.build_async_client_app`, `PsycopgConnector`); `__aexit__` schliesst
+    sie in derselben Ereignisschleife, den Pool selbst, denn `app.close_async()`
+    schliesst einen uebergebenen Pool nicht.
+
+    Nebenlaeufigkeit: Ein Client gehoert einer Aufgabe. Wer aus mehreren Aufgaben
+    zugleich abschickt, nimmt mehrere Clients; eine `AsyncConnection` fuehrt
+    Anweisungen nacheinander aus, und eine Transaktion des einen Aufrufs gehoerte
+    sonst auch dem anderen.
+    """
+
+    def __init__(self, db_dsn: str | None = None) -> None:
+        """Baut den Client. `db_dsn` geht an `Settings.load`: Fehlt die Angabe,
+        gilt die Konfiguration (Umgebung, dann Datei).
+
+        Kosten: keine. Der Konstruktor spricht mit niemandem — erst `__aenter__`.
+        """
+        self._settings = Settings.load(db_dsn=db_dsn)
+        self._conn: psycopg.AsyncConnection[Any] | None = None
+        self._pool: AsyncNullConnectionPool[psycopg.AsyncConnection[Any]] | None = None
+        self._app: procrastinate.App | None = None
+        self._daemon_warnung: str | None = None
+
+    async def __aenter__(self) -> AsyncOCRClient:
+        """Oeffnet Verbindung, Pool und App. Scheitert eines davon, wird wieder
+        zugemacht, was schon offen ist."""
+        try:
+            self._conn = await db.connect_async(self._settings.db_dsn)
+            pool: AsyncNullConnectionPool[psycopg.AsyncConnection[Any]] = (
+                AsyncNullConnectionPool(
+                    self._settings.db_dsn, max_size=1, num_workers=1, open=False
+                )
+            )
+            await pool.open()
+            self._pool = pool
+            self._app = await tasks.build_async_client_app(self._settings).open_async(
+                pool
+            )
+        except BaseException:
+            await self.__aexit__(None, None, None)
+            raise
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        # Dieselbe Reihenfolge wie im Sync-Client: App, Pool, Verbindung.
+        if self._app is not None:
+            await self._app.close_async()
+            self._app = None
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
+        if self._conn is not None:
+            await self._conn.close()
+            self._conn = None
+
+    @property
+    def settings(self) -> Settings:
+        """Die geltende Einstellung."""
+        return self._settings
+
+    @property
+    def _verbindung(self) -> psycopg.AsyncConnection[Any]:
+        """Die Verbindung des Clients.
+
+        Raises:
+            ConfigurationError: Der Client ist nicht betreten worden.
+        """
+        if self._conn is None:
+            raise ConfigurationError(
+                "Der Client ist nicht betreten worden. Er oeffnet seine "
+                "Verbindung erst dort: `async with AsyncOCRClient() as client: …`"
+            )
+        return self._conn
+
+    @property
+    def _procrastinate(self) -> procrastinate.App:
+        """Die App des Clients — fuer das Einreihen.
+
+        Raises:
+            ConfigurationError: Der Client ist nicht betreten worden.
+        """
+        if self._app is None:
+            raise ConfigurationError(
+                "Der Client ist nicht betreten worden. Er oeffnet seine "
+                "Procrastinate-App erst dort: `async with AsyncOCRClient() as "
+                "client: …`"
+            )
+        return self._app
+
+    @overload
+    async def ocr_start(self, data: bytes) -> Submitted: ...
+
+    @overload
+    async def ocr_start(self, data: Sequence[bytes]) -> list[Submitted]: ...
+
+    async def ocr_start(
+        self, data: bytes | Sequence[bytes]
+    ) -> Submitted | list[Submitted]:
+        """Schickt Dokumente ab: Bytes, eines oder viele. Wartet nicht.
+
+        Dieselbe Bedeutung wie `OCRClient.ocr_start`, dort ausfuehrlich: erst ALLE
+        pruefen, dann einreihen; ein Ergebnis ist ein Treffer (auch `failed`), und
+        es geschieht nichts; eine stehende Eingabe heisst unterwegs; sonst Eingabe
+        und Job in einer eigenen Transaktion je Dokument, die Kennung des Jobs in
+        `inputs.job_id`. Laeuft kein Daemon, wird trotzdem eingereiht und gewarnt.
+
+        Returns:
+            Bei Bytes ein `Submitted`, bei einer Folge eine Liste in der
+            Reihenfolge der Eingabe.
+
+        Raises:
+            TypeError: Ein Element ist keine Bytes — meist ein Pfad oder Text.
+            UnsupportedTypeError: Ein Typ, den das Paket nicht liest. Es ist dann
+                NICHTS eingereiht worden.
+            TooLargeError: Ein Dokument ist zu gross. Dito.
+
+        Kosten: keine unmittelbar. Mittelbar: alles, was der Daemon danach tut.
+        """
+        einzeln = isinstance(data, bytes)
+        dokumente = _dokumente(data)
+        # ERST ALLES PRUEFEN, DANN EINREIHEN.
+        vorbereitet = [core.prepare(dokument, self._settings) for dokument in dokumente]
+        ergebnisse = [
+            await self._abschicken(dokument, bereit)
+            for dokument, bereit in zip(dokumente, vorbereitet, strict=True)
+        ]
+        if any(e.status is None for e in ergebnisse):
+            await self._ohne_daemon_warnen()
+        if einzeln:
+            return ergebnisse[0]
+        return ergebnisse
+
+    async def wait(self, sha256: str, timeout: float | None = None) -> OCRWrapper:
+        """Wartet auf das Endergebnis EINES Dokuments, wie `OCRClient.wait`.
+
+        Die Huelle traegt `raw` geladen. Wirft nicht, weil ein Dokument
+        scheiterte: Jeder Endzustand ist ein Ergebnis.
+
+        Raises:
+            DocumentNotFound: Weder Ergebnis noch Eingabe — sofort.
+            ValueError: Die Frist ist `nan` oder negativ.
+            WaitTimeoutError: Die Frist lief ab; er nennt den Hash.
+
+        Kosten: keine.
+        """
+        _hash_pruefen(sha256)
+        (huelle,) = await self.wait_all([sha256], timeout=timeout)
+        return huelle
+
+    async def wait_all(
+        self, hashes: Sequence[str], timeout: float | None = None
+    ) -> list[OCRWrapper]:
+        """Wartet auf ALLE und liefert sie in der Reihenfolge der Frage, wie
+        `OCRClient.wait_all`; ein doppelt gefragter Hash steht zweimal da.
+
+        Raises:
+            TypeError: `hashes` ist ein einzelner Hash, oder ein Element ist kein
+                Hash.
+            ValueError: Die Frist ist `nan` oder negativ.
+            DocumentNotFound: Ein Hash ist unbekannt — sofort.
+            WaitTimeoutError: Die Frist lief ab; `pending` nennt die offenen.
+
+        Kosten: keine.
+        """
+        gefragt = self._hashes_pruefen(hashes, timeout)
+        fertig = {h.sha256: h async for h in self._fertige(gefragt, timeout)}
+        return [fertig[sha256] for sha256 in gefragt]
+
+    def as_completed(
+        self, hashes: Sequence[str], timeout: float | None = None
+    ) -> AsyncGenerator[OCRWrapper]:
+        """Liefert jedes Dokument, sobald es endgueltig ist, wie
+        `OCRClient.as_completed` — als async-Generator: `async for`.
+
+        Ein gewoehnlicher Aufruf und kein `async def`, damit Hashes, Frist und
+        Betreten beim AUFRUF geprueft werden, nicht erst beim ersten
+        Weiterschalten. Gewartet wird auf EINER eigenen Verbindung fuer den ganzen
+        Aufruf; sie schliesst, wenn der Generator erschoepft ist, mit einem Fehler
+        endet oder geschlossen wird (`aclose()`, oder `contextlib.aclosing`).
+
+        Raises:
+            TypeError, ValueError: Sofort beim Aufruf, wie bei `wait_all`.
+            DocumentNotFound: Beim ersten Weiterschalten, wenn ein Hash unbekannt
+                ist.
+            WaitTimeoutError: Die Frist lief ab; `pending` nennt die offenen.
+
+        Kosten: keine.
+        """
+        return self._fertige(self._hashes_pruefen(hashes, timeout), timeout)
+
+    def _hashes_pruefen(self, hashes: Sequence[str], timeout: float | None) -> list[str]:
+        """Wie `OCRClient._hashes_pruefen`: Ziele, Frist und Betreten beim Aufruf."""
+        gefragt = _gefragte_hashes(hashes, timeout)
+        self._verbindung  # Nicht betreten: der Fehler jetzt.
+        return gefragt
+
+    async def _fertige(
+        self, hashes: list[str], timeout: float | None
+    ) -> AsyncGenerator[OCRWrapper]:
+        """Die Warteschleife (`db.wait_for_terminal_async`) mit Huellen, die `raw`
+        tragen: Die Schleife liest ohne `raw`, und eine Eigenschaft kann nicht
+        `await`en; geladen wird hier, je fertigem Dokument, ueber die Verbindung
+        des Clients."""
+        async with contextlib.aclosing(
+            db.wait_for_terminal_async(
+                self._settings.db_dsn,
+                hashes,
+                timeout=timeout,
+                poll_seconds=self._settings.wait_poll_seconds,
+            )
+        ) as zeilen:
+            async for zeile in zeilen:
+                yield await self._huelle(zeile.sha256)
+
+    async def _huelle(self, sha256: str) -> OCRWrapper:
+        """Die Huelle zu einem Dokument mit Ergebnis, `raw` geladen.
+
+        Raises:
+            DocumentNotFound: Das Ergebnis ist inzwischen weg — `retry` nahm eine
+                `failed`-Zeile weg, und das Dokument ist wieder offen.
+        """
+        zeile = await db.get_document_async(self._verbindung, sha256)
+        if zeile is None:
+            raise _noch_offen(sha256)
+        return OCRWrapper.from_row(zeile, None)
+
+    async def ocr(self, data: bytes, timeout: float | None = None) -> OCRWrapper:
+        """Ein Dokument: abschicken und auf dieses eine warten, wie
+        `OCRClient.ocr`. Ein Treffer kommt sofort.
+
+        Raises:
+            ValueError: Die Frist ist `nan` oder negativ. Gemeldet, BEVOR
+                eingereiht wird.
+            WaitTimeoutError: Die Zeit lief ab; das Dokument bleibt unterwegs.
+
+        Kosten: JA, mittelbar.
+        """
+        db.check_wait_timeout(timeout)
+        return await self.wait(await self.ocr_start(data), timeout=timeout)
+
+    async def get(self, sha256: str) -> OCRWrapper:
+        """Holt die Huelle zu einem Dokument mit Ergebnis, ohne zu warten, wie
+        `OCRClient.get` — hier mit geladenem `raw`.
+
+        Raises:
+            DocumentNotFound: Es gibt (noch) kein Ergebnis; die Meldung sagt, ob
+                das Dokument offen oder unbekannt ist.
+
+        Kosten: keine.
+        """
+        _hash_pruefen(sha256)
+        (stand,) = await db.read_states_async(self._verbindung, [sha256])
+        if stand.is_unknown:
+            raise _unbekannt(sha256)
+        return await self._huelle(sha256)
+
+    async def _ohne_daemon_warnen(self) -> None:
+        """Wie `OCRClient._ohne_daemon_warnen`: einmal je Lage, und ein gesehener
+        Daemon beendet die daemonlose Phase. Nur Auskunft; scheitert das Lesen,
+        steht das in der Warnung, und eingereiht ist trotzdem."""
+        try:
+            if await db.worker_heartbeats_async(self._verbindung):
+                self._daemon_warnung = None
+                return
+            fehler = None
+        except (DatabaseError, psycopg.Error) as gefangen:
+            fehler = gefangen
+        self._daemon_warnung = _daemon_warnung_geben(self._daemon_warnung, fehler)
+
+    async def _abschicken(self, data: bytes, bereit: core.Prepared) -> Submitted:
+        """Wie `OCRClient._abschicken`: Treffer ohne `raw` lesen und nicht
+        anfassen, sonst Eingabe und Job in EINER Transaktion oder gar nicht."""
+        sha256 = bereit.sha256
+        conn = self._verbindung
+        vorhanden = await db.get_document_async(conn, sha256, with_raw=False)
+        if vorhanden is not None:
+            return Submitted(sha256, queued=False, status=vorhanden.status)
+        try:
+            async with conn.transaction():
+                if not await db.insert_input_async(conn, sha256=sha256, content=data):
+                    raise _SchonUnterwegs
+                kennung = await tasks.enqueue_document_async(
+                    self._procrastinate, conn, sha256
+                )
+                await db.set_input_job_async(conn, sha256=sha256, job_id=kennung)
+        except _SchonUnterwegs:
+            jetzt = await db.get_document_async(conn, sha256, with_raw=False)
+            return Submitted(
+                sha256, queued=False, status=jetzt.status if jetzt is not None else None
+            )
+        return Submitted(sha256, queued=True, status=None)

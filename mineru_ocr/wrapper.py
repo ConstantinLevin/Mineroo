@@ -31,7 +31,7 @@ import psycopg
 
 from . import assembly, db
 from .db import DocumentRow, DocumentStatus
-from .errors import DocumentNotFound, IncompleteResultError
+from .errors import ConfigurationError, DocumentNotFound, IncompleteResultError
 
 F = TypeVar("F")
 """Der erwartete Typ eines Feldes im gespeicherten Ergebnis (`OCRWrapper._feld`)
@@ -52,7 +52,9 @@ class OCRWrapper:
     """
 
     @classmethod
-    def from_row(cls, row: DocumentRow, conn: psycopg.Connection[Any]) -> OCRWrapper:
+    def from_row(
+        cls, row: DocumentRow, conn: psycopg.Connection[Any] | None
+    ) -> OCRWrapper:
         """Baut eine Huelle um eine bereits gelesene Zeile.
 
         Der Weg von einem Hash zu einem Ergebnis: `OCRClient.get` und `wait` bauen
@@ -63,7 +65,10 @@ class OCRWrapper:
                 bei `db.get_document(..., with_raw=False)` und `list_documents`),
                 laedt die Huelle es nach, sobald jemand das Ergebnis will, ueber
                 `conn`. Abschicken und Nachsehen lesen deshalb kein `raw`.
-            conn: Fuer das Nachladen und fuer `refresh()`.
+            conn: Fuer das Nachladen und fuer `refresh()`. `None` fuer die
+                Huellen des `AsyncOCRClient`: Sie kommen mit geladenem `raw`,
+                weil eine Eigenschaft nicht `await`en kann, und halten keine
+                Verbindung; neu lesen heisst dort `await client.get(sha256)`.
 
         Kosten: keine.
         """
@@ -309,8 +314,10 @@ class OCRWrapper:
 
         Raises:
             DocumentNotFound: Die Zeile gibt es nicht mehr.
+            ConfigurationError: Die Huelle stammt aus dem `AsyncOCRClient` und
+                haelt keine Verbindung; die Meldung nennt den Weg.
         """
-        zeile = db.get_document(self._conn, self.row.sha256)
+        zeile = db.get_document(self._verbindung(), self.row.sha256)
         if zeile is None:
             raise DocumentNotFound(
                 f"Die Zeile zu {self.row.sha256} gibt es nicht mehr."
@@ -351,8 +358,19 @@ class OCRWrapper:
 
     # -- Das Innere -------------------------------------------------------
 
-    _conn: psycopg.Connection[Any]
+    _conn: psycopg.Connection[Any] | None
     _zwischenspeicher: dict[str, Any]
+
+    def _verbindung(self) -> psycopg.Connection[Any]:
+        """Die Verbindung zum Neu- und Nachlesen — oder die Ansage, dass diese
+        Huelle keine hat."""
+        if self._conn is None:
+            raise ConfigurationError(
+                f"Die Huelle zu {self.row.sha256} stammt aus dem `AsyncOCRClient` "
+                f"und haelt keine Verbindung; sie traegt `raw` schon. Neu lesen "
+                f"heisst dort `await client.get({self.row.sha256!r})`."
+            )
+        return self._conn
 
     def _sicherstellen_dass_raw_geladen_ist(self) -> None:
         """Laedt `raw` nach, wenn die Zeile aus einer Liste stammt.
@@ -366,7 +384,7 @@ class OCRWrapper:
         """
         if self.row.raw_loaded:
             return
-        zeile = db.get_document(self._conn, self.row.sha256)
+        zeile = db.get_document(self._verbindung(), self.row.sha256)
         if zeile is None:
             raise DocumentNotFound(
                 f"Die Zeile zu {self.row.sha256} gibt es nicht mehr."
