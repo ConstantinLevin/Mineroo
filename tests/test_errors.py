@@ -7,6 +7,8 @@ Job noch einmal, während die Zeile schon `failed` sagt.
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import psycopg
 import pytest
@@ -122,6 +124,24 @@ def test_unbekannte_ausnahme_ist_endgueltig() -> None:
     assert classify_failure(AttributeError("None")) is FailureKind.TERMINAL
 
 
+def test_abbruch_beim_herunterfahren_ist_wiederholbar() -> None:
+    """Ein `asyncio.CancelledError` ergibt RETRYABLE, nicht „Unbekanntes".
+
+    Procrastinate fragt die Retry-Strategie auch dann, wenn das Herunterfahren
+    einen Job abbricht, und reiht ihn wieder ein, wenn sie ja sagt. Das ist die
+    Regel „jeder Job, der nicht neu eingereiht wird, schreibt ein Ergebnis"
+    (Mineroo#27): Ohne diese Einstufung endete jeder beim Herunterfahren
+    abgebrochene Job `aborted`, und sein Dokument bliebe ohne Ergebnis liegen.
+    `CancelledError` erbt von `BaseException`; die Einstufung haengt also nicht
+    an `Exception`.
+    """
+    from mineru_ocr.errors import should_run_again
+
+    assert not issubclass(asyncio.CancelledError, Exception)
+    assert classify_failure(asyncio.CancelledError()) is FailureKind.RETRYABLE
+    assert should_run_again(asyncio.CancelledError())
+
+
 def test_datenbankfehler_ist_wiederholbar() -> None:
     """psycopg-Fehler und DatabaseError ergeben RETRYABLE — die Datenbank ist
     lokal, ein Aussetzer ist fast immer voruebergehend."""
@@ -189,6 +209,7 @@ def test_klassifikation_hat_keine_seiteneffekte() -> None:
         (DocumentNotFound("weg"), FailureKind.TERMINAL),
         (UnsupportedTypeError("zip"), FailureKind.TERMINAL),
         (httpx.ConnectTimeout("weg"), FailureKind.RETRYABLE),
+        (asyncio.CancelledError(), FailureKind.RETRYABLE),
     ],
 )
 def test_die_heiklen_faelle_einzeln(fehler: BaseException, erwartet: FailureKind) -> None:
@@ -212,12 +233,13 @@ def test_zwei_gruppen_aus_drei_einstufungen() -> None:
     """
     from mineru_ocr.errors import should_run_again
 
-    noch_einmal: list[Exception] = [
+    noch_einmal: list[BaseException] = [
         TransientRunPodError("Gegenseite hustet"),
         ResultLostError("30 Minuten vorbei"),
         JobAufgegebenError("Zeitbudget abgelaufen, Abbruch ging hinaus"),
         InsufficientBalanceError("402"),
         DatabaseError("Postgres kurz weg"),
+        asyncio.CancelledError(),
     ]
     for fehler in noch_einmal:
         assert should_run_again(fehler), type(fehler).__name__

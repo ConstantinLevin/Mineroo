@@ -101,13 +101,15 @@ async def run(
     Herunterfahren:
         Auf SIGTERM oder SIGINT werden beide Worker abgebrochen. Laufende
         Dokumente werden bis zu `settings.shutdown_graceful_timeout` zu Ende
-        betreut; was dann noch laeuft, wird abgebrochen. Ein abgebrochener Job
-        endet `aborted` — endgueltig und OHNE automatische Wiederholung. Fuer
-        `aborted` gibt es kein Retry-Bordmittel (Feature-Verifikation Punkt 19);
-        das betroffene Dokument bleibt ohne Ergebnis und offen (die Eingabe
-        steht), der abgeleitete Zustand zeigt „endgueltig beendet ohne
-        Ergebnis"; `ocr_start` findet die stehende Eingabe und tut nichts, den
-        Rueckweg bringt `retry`. Kein Waechter noetig.
+        betreut; was dann noch laeuft, wird abgebrochen (`CancelledError`).
+        Procrastinate fragt dann die Retry-Strategie, und die reiht den Job neu
+        ein, solange Versuche uebrig sind (`errors.classify_failure` stuft den
+        Abbruch als wiederholbar ein); die Wiedervorlage zaehlt als Versuch, und
+        der naechste Daemon nimmt denselben Job wieder auf. Die Regel, die das
+        Modell traegt: Jeder Job, der nicht neu eingereiht wird, schreibt ein
+        Ergebnis (Mineroo#27). Endet ein Job doch ohne Ergebnis (etwa nach dem
+        zweiten Signal im letzten Versuch), bleibt die Eingabe stehen, und
+        `retry` bringt das Dokument zurueck.
 
         Ein zweites Signal waehrend des Herunterfahrens bricht sofort ab. Wer
         zweimal Strg-C drueckt, meint es so.

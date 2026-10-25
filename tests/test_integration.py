@@ -433,8 +433,8 @@ async def test_absturz_mitten_im_dokument_heilt_durch_den_waechter(
     ueberhaupt laeuft, nicht dass er ein haengendes Dokument heilt.
 
     Der Unterschied zum geordneten Herunterfahren (Szenario (e)) ist wesentlich:
-    Dort endet der Job `aborted`, weil der Worker sich abmeldet und seine Jobs
-    ordentlich beendet. Hier stirbt der Prozess, OHNE das zu tun — der Job bleibt
+    Dort reiht der Worker seine abgebrochenen Jobs selbst neu ein, bevor er sich
+    abmeldet. Hier stirbt der Prozess, OHNE das zu tun — der Job bleibt
     auf `doing` stehen, und niemand arbeitet mehr daran. Ohne den Waechter bliebe
     er dort fuer immer liegen, und das Dokument waere unsichtbar verloren: Es
     stuende offen da, saehe aus wie „laeuft" und wartete auf niemanden.
@@ -634,14 +634,18 @@ async def test_wartungs_queue_verhungert_nicht(
     assert hoechststand == int_settings.ocr_concurrency
 
 
-async def test_abbruch_beim_herunterfahren_heilt_durch_neu_einreihen(
+async def test_abbruch_beim_herunterfahren_wird_neu_eingereiht(
     db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
 ) -> None:
-    """(e) Job `aborted` (endgueltig, KEIN automatischer Retry — und
-    `retry_job_by_id` nimmt `aborted` nicht an, Feature-Verifikation Punkt 19),
-    kein Ergebnis, die Eingabe steht, abgeleiteter Zustand zeigt den beendeten
-    Job; erneutes Einreihen laesst das Dokument durchlaufen und es endet
-    `done`."""
+    """(e) Ein beim Herunterfahren abgebrochener Job wird neu eingereiht, und die
+    Wiedervorlage zaehlt als Versuch (Mineroo#27).
+
+    Procrastinate bricht den laufenden Job nach der Nachfrist mit
+    `CancelledError` ab, fragt die Retry-Strategie, und die sagt ja, solange
+    Versuche uebrig sind. Danach steht der Job wieder auf `todo`, `attempts` ist
+    gestiegen, es gibt kein Ergebnis, die Eingabe steht, und der RunPod-Job ist
+    abgebrochen. Der naechste Daemon laesst das Dokument durchlaufen.
+    """
     sha = _anlegen(db_conn, tmp_path, "e.png")
     erzeuger.einreihen(sha)
 
@@ -653,22 +657,18 @@ async def test_abbruch_beim_herunterfahren_heilt_durch_neu_einreihen(
 
     await _daemon_laufen_lassen(int_settings, haengend, bis=laeuft)
 
-    # Nach dem Herunterfahren: der Job ist beendet, ein Ergebnis gibt es nicht.
+    # Nach dem Herunterfahren: neu eingereiht, ein Versuch verbraucht, kein
+    # Ergebnis, die Eingabe steht, und RunPods Job ist abgebrochen.
     assert get_document(db_conn, sha) is None
     assert _eingabe_steht(db_conn, sha)
     jobs = _jobs_zu(db_conn, sha)
-    assert jobs[-1].status in ("aborted", "failed", "doing")
+    assert len(jobs) == 1
+    assert jobs[0].status == "todo"
+    assert jobs[0].attempts == 1
+    assert haengend.abgebrochen == ["job-1"]
 
-    # Und `retry_job_by_id` nimmt einen `aborted`-Job NICHT an — der Heilungsweg
-    # ist das erneute Einreihen.
-    if jobs[-1].status == "aborted":
-        kennung = jobs[-1].id
-        assert kennung is not None
-        with pytest.raises(procrastinate.exceptions.ProcrastinateException):
-            erzeuger.app.job_manager.retry_job_by_id(kennung, utils.utcnow())
-
-    # Erneutes Einreihen — und dann laeuft es durch.
-    erzeuger.einreihen(sha)
+    # Der naechste Daemon nimmt DENSELBEN Job wieder auf, ohne dass jemand
+    # einreiht, und das Dokument laeuft durch.
     gelingend = ProtokollRunPod(lambda nr: _fertig("Nach dem Neustart"))
 
     async def fertig() -> bool:
@@ -680,6 +680,7 @@ async def test_abbruch_beim_herunterfahren_heilt_durch_neu_einreihen(
     zeile = get_document(db_conn, sha)
     assert zeile is not None
     assert zeile.status is DocumentStatus.DONE
+    assert len(_jobs_zu(db_conn, sha)) == 1
 
 
 async def test_duplikat_waehrend_der_verarbeitung_ist_ein_nichts_tun(

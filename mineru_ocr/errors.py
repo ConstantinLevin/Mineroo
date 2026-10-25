@@ -22,6 +22,7 @@ Konto fuer eine Viertelstunde leer war. Es ist eine dritte Sache: warten.
 
 from __future__ import annotations
 
+import asyncio
 import enum
 
 import httpx
@@ -379,7 +380,8 @@ def classify_failure(exc: BaseException) -> FailureKind:
             `httpx.TimeoutException` und `httpx.TransportError`; `DatabaseError`
             und seine Unterklassen ausser `DocumentNotFound` (die Datenbank ist
             lokal, ein Aussetzer ist fast immer voruebergehend); rohe
-            `psycopg`-Fehler aus demselben Grund.
+            `psycopg`-Fehler aus demselben Grund; `asyncio.CancelledError`,
+            der Abbruch beim Herunterfahren (siehe unten).
 
             ENDGUELTIG — `TerminalRunPodError`; jede `InputError`;
             `ConfigurationError` samt `ConfigDriftError` (Wiederholen macht einen
@@ -408,6 +410,23 @@ def classify_failure(exc: BaseException) -> FailureKind:
         Die Voreinstellung „aufgeben und sichtbar scheitern" macht den Fehler in
         `status()` sofort sichtbar, statt ihn in einem stillen Retry-Karussell zu
         verstecken.
+
+    Warum der Abbruch WIEDERHOLBAR ist:
+        Faehrt der Daemon herunter, bricht Procrastinate die noch laufenden Jobs
+        mit `asyncio.CancelledError` ab und fragt dann die Retry-Strategie;
+        sagt sie ja, reiht es den Job wieder ein, und die Wiedervorlage zaehlt
+        als Versuch (gewollt und durch Procrastinates eigene Abnahmetests
+        abgesichert, PR #1215, steht aber nicht in seiner Doku zum
+        Herunterfahren). Als „Unbekanntes" eingestuft, endete jeder solche Job
+        `aborted`, und sein Dokument bliebe ohne Ergebnis liegen. Die Regel, die
+        das Modell traegt: Jeder Job, der nicht neu eingereiht wird, schreibt
+        ein Ergebnis (Mineroo#27). Im letzten Versuch schreibt der Executor
+        deshalb `failed` und wirft dann weiter; der Job endet `aborted`.
+
+        Dasselbe gilt fuer einen Abbruch ueber die API
+        (`cancel_job_by_id(…, abort=True)`): Procrastinate bricht einen
+        asynchronen Task dafuer ebenso mit `CancelledError` ab, und beide
+        Faelle sind an der Ausnahme nicht zu unterscheiden.
 
     Kosten: keine. Beruehrt weder Netz noch Datenbank.
     """
@@ -444,6 +463,11 @@ def classify_failure(exc: BaseException) -> FailureKind:
         return FailureKind.RETRYABLE
 
     if isinstance(exc, psycopg.Error):
+        return FailureKind.RETRYABLE
+
+    # Der Abbruch beim Herunterfahren. Er erbt von `BaseException`, nicht von
+    # `Exception`; Begruendung im Docstring.
+    if isinstance(exc, asyncio.CancelledError):
         return FailureKind.RETRYABLE
 
     # Alles Unbekannte ist mit hoher Wahrscheinlichkeit unser eigener Fehler.

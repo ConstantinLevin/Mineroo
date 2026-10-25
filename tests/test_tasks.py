@@ -11,6 +11,7 @@ denn der speicherinterne uebergeht sie; gegen echtes Postgres steht es in
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import inspect
 from collections.abc import Iterator
@@ -326,6 +327,32 @@ def test_strategie_fragt_die_gemeinsame_funktion(settings: Settings) -> None:
         assert (
             strategie.get_retry_decision(exception=fehler, job=_job()) is None
         ), type(fehler).__name__
+
+
+def test_abbruch_beim_herunterfahren_wird_neu_vorgelegt(settings: Settings) -> None:
+    """Ein beim Herunterfahren abgebrochener Job wird neu eingereiht, solange
+    das Budget reicht, und die Wiedervorlage zaehlt als Versuch.
+
+    Procrastinate fragt die Strategie bei einem `CancelledError` des
+    Herunterfahrens (`worker._process_job`, 3.10.0) und reiht den Job bei einer
+    Entscheidung wieder ein; `procrastinate_retry_job_v2` erhoeht dabei
+    `attempts`. Im letzten Versuch gibt es keine Entscheidung: Dann hat der
+    Executor `failed` geschrieben, und der Job endet `aborted` (Mineroo#27).
+    """
+    strategie = tasks.OCRRetryStrategy(settings)  # max_attempts = 3
+    for versuche in (0, 1):
+        assert (
+            strategie.get_retry_decision(
+                exception=asyncio.CancelledError(), job=_job(attempts=versuche)
+            )
+            is not None
+        ), versuche
+    assert (
+        strategie.get_retry_decision(
+            exception=asyncio.CancelledError(), job=_job(attempts=2)
+        )
+        is None
+    )
 
 
 def test_kein_retry_ergibt_none(settings: Settings) -> None:
