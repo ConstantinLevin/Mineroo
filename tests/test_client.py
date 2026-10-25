@@ -2769,6 +2769,35 @@ async def test_async_client_macht_bei_scheiterndem_betreten_alles_wieder_zu(
     assert _verbindungen_erreichen(db_conn, vorher), "Verbindung blieb offen"
 
 
+async def test_async_client_schliesst_die_verbindung_auch_wenn_der_abbruch_ins_verlassen_faellt(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any]
+) -> None:
+    """In asynchronem Code kann ein Abbruch an jedem `await` von `__aexit__`
+    ankommen. Faellt er auf das Schliessen des Pools, schliesst der Client die
+    Verbindung trotzdem und laesst kein halb zugemachtes Objekt zurueck."""
+    import asyncio
+
+    vorher = _verbindungen_stabil(db_conn)
+    klient = AsyncOCRClient(db_dsn=_test_datenbank)
+    await klient.__aenter__()
+    pool = klient._pool
+    assert pool is not None
+    schliessen = pool.close
+
+    async def abgebrochen(*_: Any, **__: Any) -> None:
+        raise asyncio.CancelledError
+
+    pool.close = abgebrochen  # type: ignore[method-assign]
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await klient.__aexit__(None, None, None)
+
+        assert (klient._conn, klient._pool, klient._app) == (None, None, None)
+    finally:
+        await schliessen()
+    assert _verbindungen_erreichen(db_conn, vorher), "Verbindung blieb offen"
+
+
 async def test_async_einreihen_holt_keine_verbindung_aus_dem_pool(
     offener_async_client: AsyncOCRClient,
     db_conn: psycopg.Connection[Any],

@@ -1482,16 +1482,21 @@ class AsyncOCRClient:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        # Dieselbe Reihenfolge wie im Sync-Client: App, Pool, Verbindung.
-        if self._app is not None:
-            await self._app.close_async()
-            self._app = None
-        if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
-        if self._conn is not None:
-            await self._conn.close()
-            self._conn = None
+        # Dieselbe Reihenfolge wie im Sync-Client: App, Pool, Verbindung. Jeder
+        # Schritt in einem `finally`: Ein Abbruch kann an jedem `await` ankommen,
+        # und die Verbindung des Clients schliesst dann trotzdem.
+        app, pool, conn = self._app, self._pool, self._conn
+        self._app = self._pool = self._conn = None
+        try:
+            if app is not None:
+                await app.close_async()
+        finally:
+            try:
+                if pool is not None:
+                    await pool.close()
+            finally:
+                if conn is not None:
+                    await conn.close()
 
     @property
     def settings(self) -> Settings:
