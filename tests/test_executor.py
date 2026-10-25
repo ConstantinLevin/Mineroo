@@ -1818,6 +1818,77 @@ async def test_abbruch_im_letzten_versuch_schreibt_failed_und_wirft_weiter(
     assert _eingabe_steht(db_conn, sha)
 
 
+@pytest.mark.parametrize("fall", ["endgueltig", "letzter_versuch"])
+async def test_abbruch_waehrend_des_failed_schreibens_unterbricht_es_nicht(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fall: str,
+) -> None:
+    """Kommt der Abbruch des Herunterfahrens, waehrend der Fehlerzweig gerade
+    `failed` schreibt, wird das Schreiben trotzdem fertig, und weitergeworfen
+    wird der Fehler, der in den Fehlerzweig fuehrte (Mineroo#27).
+
+    Sonst bliebe im letzten Versuch das Dokument ohne Ergebnis (die Regel, die
+    das Modell traegt), und bei einem endgueltigen Fehler kaeme statt seiner
+    der Abbruch heraus: Procrastinate reihte den Job neu ein, und das Dokument
+    liefe und kostete noch einmal, obwohl `failed` gemeint war.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+    erwartet: type[BaseException]
+    if fall == "endgueltig":
+
+        class Endgueltig(FalscherRunPod):
+            async def await_result(self, job_id: str) -> dict[str, Any]:
+                raise TerminalRunPodError("FAILED")
+
+        runpod: FalscherRunPod = Endgueltig([_fertige_antwort()])
+        erwartet = TerminalRunPodError
+    else:
+
+        async def aussetzer(*_a: Any, **_k: Any) -> Any:
+            raise psycopg.OperationalError("Postgres kurz weg")
+
+        monkeypatch.setattr(db_modul, "get_status_async", aussetzer)
+        runpod = FalscherRunPod([_fertige_antwort()])
+        erwartet = psycopg.OperationalError
+
+    echtes_schreiben = db_modul.write_terminal_async
+    schreiben_begonnen = asyncio.Event()
+    weiter = asyncio.Event()
+
+    async def langsames_schreiben(*a: Any, **k: Any) -> Any:
+        schreiben_begonnen.set()
+        await weiter.wait()
+        return await echtes_schreiben(*a, **k)
+
+    monkeypatch.setattr(db_modul, "write_terminal_async", langsames_schreiben)
+    lauf = asyncio.ensure_future(
+        process_document(
+            sha,
+            settings=exec_settings,
+            runpod=runpod,
+            pool=pool,
+            letzter_versuch=fall == "letzter_versuch",
+        )
+    )
+    await asyncio.wait_for(schreiben_begonnen.wait(), timeout=10)
+    lauf.cancel()
+    await asyncio.sleep(0)
+    weiter.set()
+    with pytest.raises(erwartet):
+        await lauf
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert _eingabe_steht(db_conn, sha)
+
+
 @pytest.mark.parametrize("schritt", ["get_status_async", "read_input_async"])
 async def test_datenbankfehler_vor_dem_lesen_im_letzten_versuch_schreibt_failed(
     db_conn: psycopg.Connection[Any],

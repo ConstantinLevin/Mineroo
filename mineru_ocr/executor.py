@@ -40,6 +40,7 @@ from typing import Any, TypeVar
 from psycopg_pool import AsyncConnectionPool
 
 from . import assembly, chunking, db, images
+from .abbruch import unabbrechbar_abwarten
 from .config import Settings
 from .errors import (
     CorruptDocumentError,
@@ -571,20 +572,35 @@ async def process_document(
             if isinstance(fehler, InputError)
             else db.DocumentStatus.FAILED
         )
-        async with pool.connection() as conn:
-            await db.write_terminal_async(
-                conn,
-                sha256=sha256,
-                status=status,
-                raw=ergebnis,
-                endpoint_id=endpoint,
-                mime=art,
-                size_bytes=groesse,
-                image_tag_at_submit=image_tag,
-                error=beschreibung,
-                notes=vermerke,
-                page_count=seitenzahl,
-            )
+
+        async def ergebnis_schreiben() -> None:
+            async with pool.connection() as conn:
+                await db.write_terminal_async(
+                    conn,
+                    sha256=sha256,
+                    status=status,
+                    raw=ergebnis,
+                    endpoint_id=endpoint,
+                    mime=art,
+                    size_bytes=groesse,
+                    image_tag_at_submit=image_tag,
+                    error=beschreibung,
+                    notes=vermerke,
+                    page_count=seitenzahl,
+                )
+
+        # Das Schreiben laeuft zu Ende, auch wenn das Herunterfahren den Job
+        # genau jetzt abbricht (Mineroo#27): Sonst bliebe im letzten Versuch
+        # das Dokument ohne Ergebnis. Weitergeworfen wird danach der Fehler,
+        # der hierher fuehrte, nicht der Abbruch: Er gehoert zur Zeile, die
+        # eben geschrieben wurde. Kaeme der Abbruch heraus, reihte
+        # Procrastinate einen endgueltig gescheiterten Job neu ein, und das
+        # Dokument liefe und kostete noch einmal. Der Task endet trotzdem
+        # sofort, nur eben mit diesem Fehler.
+        try:
+            await unabbrechbar_abwarten(ergebnis_schreiben())
+        except asyncio.CancelledError:
+            pass
         raise
 
 

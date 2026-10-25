@@ -441,6 +441,9 @@ Antwort als `letzter_versuch`. Daraus folgt:
   `failed` mit dem Vermerk „beim Herunterfahren im letzten Versuch abgebrochen“
   (`executor.ABBRUCH_IM_LETZTEN_VERSUCH`) und wirft dann weiter; der Job endet
   `aborted`. Der Abbruch bei RunPod (`/cancel`) geht in beiden Fällen hinaus.
+  Trifft der Abbruch den Fehlerzweig mitten im Schreiben von `failed`, läuft das
+  Schreiben zu Ende (`abbruch.unabbrechbar_abwarten`), und weitergeworfen wird
+  der Fehler, der in den Fehlerzweig führte, nicht der Abbruch.
 - **Nachsehen und Lesen im Fehlerzweig.** Das Nachsehen nach einem Ergebnis und
   das Lesen der Eingabe stehen im `try` des Exekutors, damit auch ein
   Datenbankfehler dort im letzten Versuch `failed` schreibt.
