@@ -966,16 +966,33 @@ def test_gleichzeitiges_abschicken_derselben_bytes_legt_einen_job_an(
     """Zwei Aufrufer schicken gleichzeitig dieselben Bytes: Postgres laesst den
     zweiten am Primaerschluessel von `inputs` auf den ersten warten, und danach
     tut der zweite nichts. Ohne Zeitrennen: Der erste haelt seine Transaktion
-    beim Einreihen offen, bis der zweite sicher wartet."""
+    beim Einreihen offen, bis Postgres den zweiten nachweislich warten laesst."""
     import threading
 
     inhalt = PNG_KOPF + b"gleichzeitig"
     echtes_einreihen = tasks.enqueue_document
     erster_haelt = threading.Event()
+    zweiter_wartete: list[bool] = []
 
     def langsam(app: Any, conn: Any, sha256: str) -> bool:
+        # Die Eingabe ist abgelegt, aber nicht festgeschrieben. Gehalten wird,
+        # bis Postgres den zweiten am Primaerschluessel warten laesst — keine
+        # feste Pause, die auf einer langsamen Maschine still verstriche und
+        # den Test dann nacheinander statt gleichzeitig laufen liesse.
         erster_haelt.set()
-        time.sleep(0.5)  # die Eingabe ist abgelegt, aber nicht festgeschrieben
+        frist = time.monotonic() + 10
+        with psycopg.connect(int_settings.db_dsn, autocommit=True) as beobachter:
+            while time.monotonic() < frist:
+                wartend = beobachter.execute(
+                    "SELECT 1 FROM pg_stat_activity "
+                    "WHERE datname = current_database() "
+                    "AND wait_event_type = 'Lock' "
+                    "AND query LIKE 'INSERT INTO inputs%'"
+                ).fetchone()
+                if wartend is not None:
+                    zweiter_wartete.append(True)
+                    break
+                time.sleep(0.01)
         return echtes_einreihen(app, conn, sha256)
 
     monkeypatch.setattr(tasks, "enqueue_document", langsam)
@@ -993,6 +1010,7 @@ def test_gleichzeitiges_abschicken_derselben_bytes_legt_einen_job_an(
     erster.join(20)
     zweiter.join(20)
 
+    assert zweiter_wartete, "der zweite hat nie auf den ersten gewartet"
     assert ergebnisse["erster"].queued is True
     assert ergebnisse["zweiter"].queued is False
     assert ergebnisse["zweiter"].status is None
