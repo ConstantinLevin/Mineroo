@@ -230,9 +230,16 @@ Was daraus folgt und nicht aus einer einzelnen Datei hervorgeht:
 - **Der Client reiht per Namen und mit ausdruecklicher Queue ein**, Name und Queue
   aus denselben `config`-Konstanten wie die Anmeldung des Daemons:
   `tasks.enqueue_document` ruft `app.configure_task(name=…, queue=…, lock=…,
-  queueing_lock=…, connection=…).defer(sha256=…)`. Ohne `queue=` landete der Job in
-  `default`, die der Daemon nie liest. Mit `connection=` laeuft das Einreihen auf
-  der eigenen Verbindung des Clients (`autocommit`), nicht auf einer aus dem Pool.
+  connection=…).defer(sha256=…)` und gibt die Kennung des Jobs zurueck. Ohne
+  `queue=` landete der Job in `default`, die der Daemon nie liest. Mit
+  `connection=` laeuft das Einreihen in der Transaktion des Clients, nicht auf
+  einer Verbindung aus dem Pool. Am Job steht nur `lock` = Hash, **kein
+  `queueing_lock`**: Die Sperre gegen Dubletten ist die Eingabe-Tabelle, und ein
+  `queueing_lock` daneben loeste Procrastinate-Issue #1446 aus (ein zweiter Job,
+  eingereiht waehrend der erste laeuft, blieb fuer immer auf „laeuft").
+- **Erfolgreiche Jobs loescht der Worker** (`delete_jobs = "successful"`, Feld
+  von `Settings`): An ihnen haengt kein Zustand mehr. Gescheiterte und
+  abgebrochene bleiben stehen; `retry` braucht sie.
 - **Ein Client haelt zwischen zwei Aufrufen keine Procrastinate-Verbindung.**
   `list_jobs`, `list_tasks` und `retry_job_by_id` laufen synchron ueber seine App,
   mit je einer kurzlebigen Verbindung. Je Agent bleibt so eine Verbindung: die
@@ -269,10 +276,11 @@ offen, keins von beiden heißt unbekannt. Zwei Abfragen nacheinander (erst
 fertig wird, fälschlich als unbekannt. Das Warten (`db.wait_for_terminal`) fragt
 Procrastinate nicht und lädt kein `raw`.
 
-„Läuft gerade" wird aus dem jüngsten verknüpften Procrastinate-Job **gelesen**
-(`queueing_lock = sha256`, `ORDER BY id DESC LIMIT 1`), von `OCRClient.document`
-(und von `retry_failed`, das den Job zum Wiederholen sucht), und nirgends
-gespiegelt. Wer das nicht weiß, sucht
+„Läuft gerade" wird aus dem Procrastinate-Job **gelesen**, dessen Kennung an der
+Eingabe steht (`inputs.job_id`, `list_jobs(id=…)`), von `OCRClient.document` und
+von `retry`, und nirgends gespiegelt. Die Kennung schreibt das Abschicken in
+derselben Transaktion wie Eingabe und Job, `retry`, wenn es einen neuen Job
+anlegt (`db.set_input_job`). Wer das nicht weiß, sucht
 vergeblich nach dem Feld — oder, schlimmer, führt es ein und erzeugt genau die
 zwei Bücher, die auseinanderlaufen. `document()` meldet den Endzustand, ein
 offenes Dokument samt dem Zustand seines Jobs (`Phase.WAITING`, `RUNNING` oder
@@ -283,7 +291,24 @@ Ergebnis, `db.count_open`).
 Daraus folgt: Es gibt keinen Aufräum-Wächter, der verwaiste Zeilen
 zurücksetzt, weil es keine gibt. Zuständig sind `db.DocumentStatus`,
 `db.DocumentState`, `db.derive_status` und `db.Phase`; die Verknüpfung zum Job
-entsteht in `tasks.py`.
+ist `inputs.job_id`.
+
+**`retry` geht Procrastinates eigenen Weg** (`OCRClient.retry(h)`, für viele
+`retry_all(hs)`; ohne Angabe wählt `retry_all` selbst jedes Dokument ohne
+gültiges Ergebnis, also jede stehende Eingabe). Je Dokument: Ergebnis `done`,
+`empty` oder `input_error` oder Job `todo`/`doing` → nichts. Job `failed` →
+**erst** die `failed`-Zeile weg (eigene Transaktion), **dann**
+`retry_job_by_id` auf denselben Job; andersherum könnte der zurückgesetzte Job
+schon ein neues Ergebnis geschrieben haben, das das Wegnehmen löschte. Job
+`aborted`, `cancelled`, `failed` mit `abort_requested` (ein Abbruch über die
+API; das Zurücksetzen scheitert am CHECK `check_not_todo_abort_requested`) oder
+kein Job → in **einer** Transaktion `failed`-Zeile weg, neuer Job, neue Kennung
+in `inputs.job_id`. Weil die `failed`-Zeile weggeht, ist das Dokument danach
+offen, und jedes Warten, in jedem Prozess, wartet auf den neuen Lauf; einen
+Zeitstempel-Vergleich gibt es dafür nicht. Fehler von Procrastinate gehen nach
+oben, keiner wird als „nicht wiederholt" verschluckt. Das Kommando `retry` (Ziel
+oder `--all`) fragt vorher nach, außer mit `--yes`, und ruft genau eine der
+beiden Funktionen.
 
 `empty` ist ein **gültiges** Ergebnis, kein Fehler: Der Gegenstand war leer. Als
 Erfolg geführt wäre es unsichtbarer Verlust, als Fehler geführt erzeugte es
@@ -292,7 +317,8 @@ endlose Wiedervorlage und Doppelkosten.
 ### Die Eingabe liegt als Bytes in der Datenbank, nicht als Pfad
 
 Die Bytes eines Dokuments stehen in der Tabelle `inputs` (`sha256 text PRIMARY
-KEY`, `content bytea NOT NULL`), **solange das Dokument kein Endergebnis hat**.
+KEY`, `content bytea NOT NULL`, `job_id bigint`), **solange das Dokument kein
+Endergebnis hat**.
 Pfade gibt es weder in `documents` noch im Job; der Job trägt nur den Hash, und
 `OCRClient.ocr_start` legt Eingabe und Job beim Abschicken in **einer**
 Transaktion an (`INSERT INTO inputs … ON CONFLICT DO NOTHING`, dann einreihen),

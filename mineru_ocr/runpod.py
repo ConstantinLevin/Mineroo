@@ -642,7 +642,7 @@ class RunPodClient:
             asyncio.CancelledError: Der Daemon faehrt herunter. Wird NICHT
                 gefangen und nicht in etwas anderes verwandelt — der Job endet
                 dann `aborted`, das Dokument bleibt ohne Ergebnis; den Rueckweg
-                bringt das Ticket #26 (Plan 5.3).
+                bringt `retry` (Plan 5.3).
 
         Kosten: keine ueber die von `submit` hinaus.
         """

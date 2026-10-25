@@ -244,12 +244,12 @@ class Phase(enum.Enum):
     """Offen, aber kein Job ist mehr unterwegs: Sein Job ist endgueltig zu
     Ende, ohne ein Ergebnis zu schreiben, oder es gibt keinen.
 
-    Der seltene Fall: harter Abschuss im Schreibfenster, Abbruch beim
-    Herunterfahren (`aborted`), ein von Hand abgesagter Job. Er ist KEIN
+    Der seltene Fall: harter Abschuss im Schreibfenster, ein ueber die API
+    abgebrochener (`aborted`) oder ein abgesagter Job (`cancelled`). Er ist KEIN
     Datenfehler, sondern genau der Zustand, den das Ein-Buch-Modell erwartet.
     Erneutes Abschicken heilt ihn NICHT: Die Eingabe steht, das Dokument gilt als
-    unterwegs. Der Weg zurueck ist `retry` (Ticket #26). „es wird dann ncohmal
-    und das wars wenns nicht fertig ist ists gefailed" (Plan 2.4).
+    unterwegs. Der Weg zurueck ist `retry`: Es reiht einen neuen Job ein. „es wird
+    dann ncohmal und das wars wenns nicht fertig ist ists gefailed" (Plan 2.4).
     """
 
 

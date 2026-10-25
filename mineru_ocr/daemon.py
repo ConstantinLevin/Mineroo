@@ -107,7 +107,7 @@ async def run(
         das betroffene Dokument bleibt ohne Ergebnis und offen (die Eingabe
         steht), der abgeleitete Zustand zeigt „endgueltig beendet ohne
         Ergebnis"; `ocr_start` findet die stehende Eingabe und tut nichts, den
-        Rueckweg bringt das Ticket #26. Kein Waechter noetig.
+        Rueckweg bringt `retry`. Kein Waechter noetig.
 
         Ein zweites Signal waehrend des Herunterfahrens bricht sofort ab. Wer
         zweimal Strg-C drueckt, meint es so.

@@ -630,7 +630,7 @@ class Settings:
     """Wie lange beim Beenden auf laufende Dokumente gewartet wird, bevor sie
     abgebrochen werden. Ein abgebrochener Job endet als `aborted`, und dafuer
     gibt es KEIN Retry-Bordmittel (Feature-Verifikation Punkt 19); sein
-    Rueckweg kommt mit dem Ticket #26. Deshalb ist der Wert eher grosszuegig:
+    Rueckweg ist `retry`, das einen neuen Job einreiht. Deshalb ist der Wert eher grosszuegig:
     dreissig Sekunden reichen, damit ein laufender Chunk seine Antwort noch
     abholt."""
 

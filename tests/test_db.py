@@ -170,7 +170,7 @@ def test_beendeter_job_ohne_ergebnis_wird_erkannt() -> None:
     Der Fall nach hartem Abschuss oder Herunterfahren. Kein Datenfehler,
     sondern genau der Zustand, den das Ein-Buch-Modell erwartet — erneutes
     Abschicken heilt ihn nicht (die Eingabe steht, das Dokument gilt als
-    unterwegs), den Rueckweg bringt das Ticket #26.
+    unterwegs), den Rueckweg bringt `retry`.
     """
     for status in ["succeeded", "failed", "cancelled", "aborted"]:
         abgeleitet = derive_status(HASH, None, _job(1, status))

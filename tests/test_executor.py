@@ -1738,7 +1738,7 @@ async def test_abbruch_wird_durchgereicht(
     tmp_path: Path,
 ) -> None:
     """`CancelledError` wird nicht gefangen: Der Job endet `aborted`, es entsteht
-    kein Ergebnis, das Dokument bleibt offen (den Rueckweg bringt das Ticket #26).
+    kein Ergebnis, das Dokument bleibt offen (den Rueckweg bringt `retry`).
 
     Der Test faengt einen echten Fehler ab, den man leicht macht: Waere hier
     `except BaseException` statt `except Exception`, wuerde der Abbruch als

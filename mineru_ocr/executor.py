@@ -274,7 +274,7 @@ async def process_document(
             entsteht kein Ergebnis, und die Eingabe bleibt: Das Dokument ist
             offen. Es gibt fuer `aborted` ausdruecklich kein Retry-Bordmittel
             (Feature-Verifikation Punkt 19), und erneutes Abschicken findet die
-            Eingabe und tut nichts — den Rueckweg bringt das Ticket #26.
+            Eingabe und tut nichts — den Rueckweg bringt `retry`.
 
     Endet das Warten auf einen Job mit einem Fehler, bei dem er bei RunPod
     weiterlaufen kann (jeder ausser der Zeitueberschreitung, nach der der Client

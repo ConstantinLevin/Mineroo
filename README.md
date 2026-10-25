@@ -169,7 +169,11 @@ with OCRClient() as client:
 
 Gibt es zu den Bytes schon ein Ergebnis (auch ein `failed`), ist das ein Treffer:
 Es wird nichts angelegt und nichts eingereiht; ein gescheitertes Dokument liest
-nur `retry` neu. Abschicken lädt kein `raw`; Hüllen laden es erst, wenn jemand das
+nur `retry` neu. `client.retry(h)` bringt ein Dokument ohne gültiges Ergebnis
+wieder in Gang (ein gescheiterter Job wird zurückgesetzt, für einen abgebrochenen
+oder abgesagten ein neuer eingereiht, ein laufender bleibt, wie er ist);
+`client.retry_all()` tut das für jedes. Auf der Kommandozeile `mineru-ocr retry
+<hash|pfad>` oder `mineru-ocr retry --all`, mit Rückfrage, weil es Geld kostet. Abschicken lädt kein `raw`; Hüllen laden es erst, wenn jemand das
 Ergebnis will.
 
 Kommandozeile und `import mineru_ocr` sind zwei Zugänge auf **dieselbe** Fläche;
