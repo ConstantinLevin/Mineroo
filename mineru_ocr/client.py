@@ -1428,7 +1428,8 @@ class AsyncOCRClient:
     etwa in Jupyter, und hielte Strg-C auf.
 
     Besitz und Lebensdauer wie beim Sync-Client, nur asynchron: `__aenter__`
-    oeffnet die Verbindung des Clients, einen `AsyncNullConnectionPool` ohne
+    oeffnet die Verbindung des Clients, prueft auf ihr das Schema
+    (`db.check_schema_async`), oeffnet einen `AsyncNullConnectionPool` ohne
     stehende Verbindungen und die eigene Procrastinate-App
     (`tasks.build_async_client_app`, `PsycopgConnector`); `__aexit__` schliesst
     sie in derselben Ereignisschleife, den Pool selbst, denn `app.close_async()`

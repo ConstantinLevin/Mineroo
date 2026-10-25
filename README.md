@@ -13,7 +13,7 @@ heraus. Der Worker, der MinerU auf RunPod ausführt, lebt in seinem eigenen Fork
 
 **Stand:** Das Paket ist gebaut und getestet gegen den bisherigen Endpoint und
 MinerU 3.4. Der Umbau auf MinerU 4, einen neuen Worker und einen neuen Endpoint,
-die asynchrone Bibliothek, der Agent-Skill und die Behebung der bekannten Fehler
+der Agent-Skill und die Behebung der bekannten Fehler
 sind in der Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1)
 beschrieben und werden in Tickets umgesetzt. **Wo dieses README und die Spec
 auseinandergehen, gilt die Spec.** Der große Lauf über viele Dokumente hat noch
@@ -186,6 +186,29 @@ oder abgesagten ein neuer eingereiht, ein laufender bleibt, wie er ist);
 `client.retry_all()` tut das für jedes. Auf der Kommandozeile `mineru-ocr retry
 <hash|pfad>` oder `mineru-ocr retry --all`, mit Rückfrage, weil es Geld kostet. Abschicken lädt kein `raw`; Hüllen laden es erst, wenn jemand das
 Ergebnis will.
+
+Asynchron gibt es dasselbe als `AsyncOCRClient`: dieselben Namen und dieselbe
+Bedeutung, jeweils mit `await`, und `as_completed` als async-Generator.
+`status`, `preflight`, `document` und `retry` gibt es nur synchron; der
+Async-Client fragt RunPod nie.
+
+```python
+from mineru_ocr import AsyncOCRClient
+
+async with AsyncOCRClient() as client:
+    hashes = await client.ocr_start([pdf_a, pdf_b])  # Bytes, wie oben
+    async for fertig in client.as_completed(hashes, timeout=600):
+        print(fertig.sha256, fertig.status)
+    alle = await client.wait_all(hashes)
+    print(alle[0].rendered_markdown)
+    ohne_warten = await client.get(hashes[0])
+```
+
+Seine Hüllen kommen mit geladenem `raw`, weil eine Eigenschaft nicht `await`en
+kann; sie halten keine Verbindung, und neu gelesen wird mit `await
+client.get(h)` statt `refresh()`. Beide Clients dürfen zugleich im selben Prozess
+laufen; jeder hält seine eigene Verbindung und, wie die Spec es verlangt, keine
+stehende Procrastinate-Verbindung.
 
 Kommandozeile und `import mineru_ocr` sind zwei Zugänge auf **dieselbe** Fläche;
 das Kommando enthält keine eigene Logik.

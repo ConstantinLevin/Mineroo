@@ -30,6 +30,17 @@ kennt nur die Kommandozeile. Der uebliche Weg:
         # Abschicken und warten in einem Zug, mit der vollstaendigen Antwort:
         antwort = client.ocr(Path("andere.pdf").read_bytes()).raw
 
+Dasselbe asynchron, mit denselben Namen und `await` (`status`, `preflight`,
+`document` und `retry` gibt es nur synchron):
+
+    from mineru_ocr import AsyncOCRClient
+
+    async with AsyncOCRClient() as client:
+        hashes = await client.ocr_start([pdf_a, pdf_b])
+        async for huelle in client.as_completed(hashes, timeout=600):
+            print(huelle.sha256, huelle.status)
+        fertig = await client.wait(hashes[0])   # die Huelle traegt `raw` geladen
+
 Und derselbe Dienst ueber die Kommandozeile, die Dateien und Ordner liest:
 
     mineru-ocr setup
@@ -52,7 +63,7 @@ jede Procrastinate-Stuetze ist einzeln belegt in
 
 from __future__ import annotations
 
-from .client import OCRClient
+from .client import AsyncOCRClient, OCRClient
 from .config import Settings
 from .core import RetryOutcome, Submitted
 from .db import DerivedStatus, DocumentRow, DocumentStatus, Phase
@@ -83,6 +94,7 @@ from .wrapper import OCRWrapper
 __all__ = [
     # Der uebliche Einstieg
     "OCRClient",
+    "AsyncOCRClient",
     "OCRWrapper",
     "Submitted",
     "RetryOutcome",

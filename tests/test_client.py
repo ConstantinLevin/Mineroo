@@ -2270,6 +2270,26 @@ def test_worker_mit_leerer_umgebung_ist_nicht_pruefbar(
 # --- Der asynchrone Client ------------------------------------------------
 
 
+def test_async_client_hat_die_namen_des_sync_clients_mit_await() -> None:
+    """Dieselben Namen und dieselbe Bedeutung, jeweils mit `await` (`as_completed`
+    als async-Generator); `status`, `preflight`, `document` und `retry` gibt es
+    nur synchron. Er gehoert zur zugesicherten Flaeche des Pakets."""
+    import inspect
+
+    import mineru_ocr
+
+    assert "AsyncOCRClient" in mineru_ocr.__all__
+    assert getattr(mineru_ocr, "AsyncOCRClient", None) is AsyncOCRClient
+    for name in ("ocr_start", "ocr", "wait", "wait_all", "get"):
+        assert hasattr(OCRClient, name), name
+        assert inspect.iscoroutinefunction(getattr(AsyncOCRClient, name)), name
+    assert hasattr(OCRClient, "as_completed")
+    assert inspect.isasyncgenfunction(AsyncOCRClient._fertige)
+    for name in ("status", "preflight", "document", "retry", "retry_all"):
+        assert hasattr(OCRClient, name), name
+        assert not hasattr(AsyncOCRClient, name), name
+
+
 @pytest.fixture
 async def offener_async_client(
     _test_datenbank: str, db_conn: psycopg.Connection[Any]

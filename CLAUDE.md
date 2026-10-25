@@ -88,8 +88,9 @@ mineru-ocr ocr ~/Scans  # einreihen; nennt je Datei Pfad und Hash
 mineru-ocr status
 ```
 
-Nur `setup` legt das Schema an. Daemon und jeder `OCRClient` prüfen es beim
-Öffnen rein lesend (`db.check_schema`): Fehlt es oder stammt die Tabelle aus der
+Nur `setup` legt das Schema an. Daemon und jeder Client prüfen es beim
+Öffnen rein lesend (`db.check_schema`, im `AsyncOCRClient` `db.check_schema_async`;
+beide lesen den Katalog in einer Anweisung, `db._KATALOG_SQL`): Fehlt es oder stammt die Tabelle aus der
 Zeit vor dem letzten Update (mit `new`), endet der Start mit `DatabaseError` und
 dem Weg, statt dass ein Job an einer alten Zeile ohne Ergebnis endet. Ausgenommen
 ist `preflight` (`OCRClient(schema_check=False)`): Er liest beide Tabellen nicht
@@ -176,7 +177,8 @@ Preflight berichtet den Ist-Wert und bewertet ihn als „nicht prüfbar“.
 
 **Pfade kennt nur die CLI.** Die Bibliothek nimmt Bytes und gibt Hashes
 (`OCRClient.ocr_start(bytes | Sequence[bytes])`, `ocr`, `wait`, `wait_all`,
-`as_completed`, `get`, `document`);
+`as_completed`, `get`, `document`; dieselben Namen bis auf `document` mit `await`
+im `AsyncOCRClient`);
 `cli.py` liest Dateien und Ordner, hasht sie und nennt die Zuordnung von Pfad zu
 Hash. `ocr --json` gibt je Dokument Hash, Zustand (`null`, solange es offen ist)
 und ob eingereiht, dazu die übersprungenen Dateien. `show` zeigt, was `document()`
@@ -234,6 +236,7 @@ keine), und nirgends wird ein Konnektor zur Laufzeit umgeschaltet — kein
 |---|---|---|---|
 | `mineru-ocr daemon` | **genau eine**: `PsycopgConnector`, die Tasks samt Retry-Strategie und der Waechter angemeldet | `tasks.build_daemon_app` | der des Daemons (`AsyncConnectionPool`, `check=AsyncConnectionPool.check_connection`), per `app.open_async(pool=…)` uebergeben |
 | jeder `OCRClient` (auch hinter dem Kommando) | **eine eigene**: `SyncPsycopgConnector`, **keine** angemeldeten Tasks | `tasks.build_client_app`, geoeffnet in `OCRClient.__enter__` | `NullConnectionPool(max_size=1, num_workers=1)`, vom Client angelegt **und** geschlossen |
+| jeder `AsyncOCRClient` | **eine eigene**: `PsycopgConnector`, **keine** angemeldeten Tasks | `tasks.build_async_client_app`, geoeffnet in `AsyncOCRClient.__aenter__` per `app.open_async(pool)` | `AsyncNullConnectionPool(max_size=1, num_workers=1)`, vom Client in derselben Ereignisschleife angelegt **und** geschlossen |
 | `mineru-ocr setup` | eine fluechtige, nur fuers Schema | `db._procrastinate_schema_anwenden_falls_noetig` | der Konnektor-eigene |
 
 Was daraus folgt und nicht aus einer einzelnen Datei hervorgeht:
@@ -241,11 +244,13 @@ Was daraus folgt und nicht aus einer einzelnen Datei hervorgeht:
 - **Der Daemon-Prozess baut keine zweite App.** Jede weitere App im selben Prozess
   benennt Procrastinates eingebauten Task `remove_old_jobs` um. (Die Tests haben
   zwei Apps im Prozess, das ist harmlos; dieses Paket benutzt `remove_old_jobs`
-  nicht.)
+  nicht.) Ein Prozess mit `OCRClient` und `AsyncOCRClient` haelt zwei Client-Apps,
+  wie Procrastinates eigener Abnahmetest fuer sync und async im selben Prozess.
 - **Der Client reiht per Namen und mit ausdruecklicher Queue ein**, Name und Queue
   aus denselben `config`-Konstanten wie die Anmeldung des Daemons:
   `tasks.enqueue_document` ruft `app.configure_task(name=…, queue=…, lock=…,
-  connection=…).defer(sha256=…)` und gibt die Kennung des Jobs zurueck. Ohne
+  connection=…).defer(sha256=…)` und gibt die Kennung des Jobs zurueck (im
+  Async-Client `tasks.enqueue_document_async`, dasselbe mit `defer_async`). Ohne
   `queue=` landete der Job in `default`, die der Daemon nie liest. Mit
   `connection=` laeuft das Einreihen in der Transaktion des Clients, nicht auf
   einer Verbindung aus dem Pool. Am Job steht nur `lock` = Hash, **kein
@@ -257,7 +262,8 @@ Was daraus folgt und nicht aus einer einzelnen Datei hervorgeht:
   abgebrochene bleiben stehen; `retry` braucht sie.
 - **Ein Client haelt zwischen zwei Aufrufen keine Procrastinate-Verbindung.**
   `list_jobs`, `list_tasks` und `retry_job_by_id` laufen synchron ueber seine App,
-  mit je einer kurzlebigen Verbindung. Je Agent bleiben so ein bis zwei
+  mit je einer kurzlebigen Verbindung; der `AsyncOCRClient` fragt Procrastinate
+  nur beim Einreihen, und das ueber seine eigene Verbindung. Je Agent bleiben so ein bis zwei
   Verbindungen: die des Clients und, solange er wartet, die eigene der
   Warteschleife (siehe „Warten“).
   `client._synchron_ausfuehren` gibt es nur noch fuer die kurzen Lesefragen an
@@ -311,7 +317,10 @@ Frist (`wait --timeout`). Die Frist gilt für den ganzen Aufruf, auch fürs
 Verbinden (`connect_timeout`); vor ihrem Ablauf wird ein letztes Mal gelesen, und
 ihr `WaitTimeoutError` (ein `TimeoutError`) nennt die Hashes, die dann noch offen
 sind; Frist und Strg-C fassen keinen Job an. Der Client
-(`wait`, `wait_all`, `as_completed`) liefert daraus Hüllen.
+(`wait`, `wait_all`, `as_completed`) liefert daraus Hüllen; der `AsyncOCRClient`
+mit dem async-Generator und mit geladenem `raw` (eine Eigenschaft kann nicht
+`await`en), seine Hüllen halten keine Verbindung (`refresh()` nennt den Weg über
+`await client.get(h)`).
 
 „Läuft gerade" wird aus dem Procrastinate-Job **gelesen**, dessen Kennung an der
 Eingabe steht (`inputs.job_id`, `list_jobs(id=…)`), von `OCRClient.document` und
@@ -537,8 +546,10 @@ hinweg, und eine Vereinigung behielte nur das letzte.)
   Bibliothek.
 - `core.py` ist der Kern des Abschickens ohne Ein- und Ausgabe (Hash,
   Typ- und Größenprüfung, `Submitted`, dazu `RetryOutcome`, das Bibliothek und
-  Kommando teilen), und `client.py` ist die dünne Schale darüber
-  (psycopgs `Connection`; die asynchrone Schale über `AsyncConnection` kommt später).
+  Kommando teilen), und `client.py` hält die zwei dünnen Schalen darüber:
+  `OCRClient` über psycopgs `Connection`, `AsyncOCRClient` über `AsyncConnection`.
+  Was beide teilen, ohne Ein- und Ausgabe, steht als Funktion auf Modulebene
+  (`_dokumente`, `_gefragte_hashes`, `_daemon_warnung_geben`), die SQL-Texte in `db`.
   Auf dem Weg Abschicken–Warten gibt es keine Brücke wie asgiref oder anyio.
 
 ---
