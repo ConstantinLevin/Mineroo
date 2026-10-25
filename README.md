@@ -89,9 +89,12 @@ Jeder Schlüssel außer der Tabelle hat eine Umgebungsvariable, zum Beispiel
 `MINERU_OCR_IDLE_TIMEOUT`; die Rechenzentren stehen dort durch Kommas getrennt in
 `MINERU_OCR_ALLOWED_DATA_CENTERS`.
 
-Der Preflight zeigt die Werte der Variablen aus `[endpoint_env]`. Heißt eine
-`KEY`, `SECRET`, `TOKEN`, `PASSW…` oder `CREDENTIAL` im Namen, wird sie verglichen
-und als `***` gezeigt.
+Der Preflight zeigt die Werte der Variablen aus `[endpoint_env]`. Ist ein ganzer
+Namensteil (getrennt an `_` und `-`) `KEY`, `KEYS`, `APIKEY`, `SECRET`,
+`SECRETS`, `TOKEN`, `PASSWORD`, `PASSWD`, `PASS`, `PASSPHRASE`, `PWD`,
+`CREDENTIAL(S)`, `AUTH`, `AUTHORIZATION` oder `BEARER`, wird die Variable
+verglichen und als `***` gezeigt, im Befund wie in `repr(Settings)`. Teilwörter
+zählen nicht: `HF_TOKEN` wird verdeckt, `MAX_TOKENS` und `MONKEY` nicht.
 
 **Der RunPod-Schlüssel bleibt in `~/.runpod/config.toml`**, Feld `apikey`, und
 steht nie in dieser Konfiguration. „Nur EU" heißt EWR — EU-Staaten plus Island und
@@ -114,7 +117,8 @@ Templates und jedes Workers gegen `expected_image_tag`, die Endpoint-Variablen
 nach Wert an der Umgebung aller zuletzt gelaufenen Worker (auch der beendeten),
 dass alle Rechenzentren in der zulässigen Liste liegen, und die Sollwerte des
 Endpoints. FlashBoot wird berichtet. Was sich nicht feststellen lässt — kein
-Worker, keine Rechenzentren in der Antwort, kein erwarteter Tag —, heißt „nicht
+Worker oder einer ohne Umgebung, keine Rechenzentren in der Antwort, kein
+erwarteter Tag —, heißt „nicht
 prüfbar" und ausdrücklich nicht „in Ordnung".
 
 Neun Kommandos gibt es: `setup`, `daemon`, `ocr`, `status`, `show`, `wait`,

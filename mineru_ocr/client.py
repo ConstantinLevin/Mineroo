@@ -449,7 +449,7 @@ class OCRClient:
                 zustaende: list[str] = []
                 for kennung, eintrag in arbeiter:
                     umgebung = eintrag.get("env")
-                    if not isinstance(umgebung, dict):
+                    if not isinstance(umgebung, dict) or not umgebung:
                         ist_je_worker[kennung] = OHNE_ANGABE
                         zustaende.append("unbekannt")
                         continue

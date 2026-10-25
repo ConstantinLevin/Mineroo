@@ -1295,3 +1295,20 @@ def test_geheimnisvariable_mit_richtigem_wert_ist_in_ordnung_und_bleibt_verdeckt
     runpod.endpoint = _guter_endpoint(workers=[ohne, sonst])
     punkt = _befund(_pruefen(_test_datenbank), "env:RUNPOD_AI_API_KEY")
     assert punkt["ist"] == {"w2": None, "w3": "(nicht angegeben)"}
+
+
+def test_worker_mit_leerer_umgebung_ist_nicht_pruefbar(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Eine leere `env` sagt nichts ueber die Variablen: Sie ist wie eine fehlende
+    „nicht pruefbar" und kein Abbruch."""
+    _worker_am_leben(db_conn)
+    leer = _worker("w1")
+    leer["env"] = {}
+    runpod.endpoint = _guter_endpoint(workers=[leer])
+
+    befund = _pruefen(_test_datenbank, strict=True)  # wirft NICHT
+    punkt = _befund(befund, "env:MINERU_MAX_CONCURRENCY")
+    assert punkt["bewertung"] == "nicht_pruefbar"
+    assert punkt["ist"] == {"w1": "(nicht angegeben)"}
+    assert befund["drift"] == 0

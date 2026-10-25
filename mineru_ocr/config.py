@@ -98,21 +98,30 @@ gelesen, nie geschrieben."""
 MASKE: Final = "***"
 """Was anstelle des Schluessels in jeder Ausgabe steht."""
 
-_GEHEIMNIS_NAME: Final = re.compile(
-    r"(^|_)(\w*KEY|SECRET|TOKEN|PASSW\w*|PASSPHRASE|PWD|CREDENTIALS?|AUTH|BEARER|PRIVATE)(_|$)",
-    re.IGNORECASE,
+_GEHEIMNIS_TEILE: Final = frozenset(
+    {
+        "KEY", "KEYS", "APIKEY", "APIKEYS", "SECRET", "SECRETS", "SECRETKEY",
+        "TOKEN", "PASSWORD", "PASSWD", "PASS", "PASSPHRASE", "PWD",
+        "CREDENTIAL", "CREDENTIALS", "AUTH", "AUTHORIZATION", "BEARER",
+    }
 )
+"""Die Namensteile, die eine Variable zum Geheimnis machen (grossgeschrieben)."""
 
 
 def ist_geheimnisname(name: str) -> bool:
     """Ob der Wert einer Umgebungsvariable dieses Namens nie angezeigt wird.
 
-    Gegen Namensteile zwischen Unterstrichen, nicht gegen Teilwoerter:
-    `HF_TOKEN` und `RUNPOD_AI_API_KEY` ja, `MAX_TOKENS` und `AUTHOR` nein. Eine
-    Liste von Namen bleibt unvollstaendig; sie gilt nur fuer Variablen, die der
-    Betreiber selbst in `[endpoint_env]` nennt.
+    Der Name wird an allem zerlegt, was kein Buchstabe oder keine Ziffer ist
+    (`HF_TOKEN`, `hf-token`), und ein GANZER Teil muss in `_GEHEIMNIS_TEILE`
+    stehen: `HF_TOKEN`, `RUNPOD_AI_API_KEY`, `API_KEYS`, `DB_PASS` ja,
+    `MAX_TOKENS`, `MONKEY` und `AUTHOR` nein. Ein Teilwort zaehlt nicht, sonst
+    laese sich eine echte Abweichung nicht mehr; ein Teil wie `KEY` in
+    `SORT_KEY` zaehlt dagegen, weil Verdecken der sichere Fehler ist. Die Liste
+    bleibt unvollstaendig; sie gilt nur fuer Variablen, die der Betreiber selbst
+    in `[endpoint_env]` nennt.
     """
-    return _GEHEIMNIS_NAME.search(name) is not None
+    teile = re.split(r"[^A-Z0-9]+", name.upper())
+    return any(teil in _GEHEIMNIS_TEILE for teil in teile)
 
 
 def _schluessel_aus_datei() -> str:
@@ -715,13 +724,16 @@ class Settings:
         Einstellung landet frueher oder spaeter in einem Log, einer Fehlermeldung
         oder einer Debugger-Ausgabe. `api_key` erscheint dort NIE im Klartext —
         stattdessen die Zeichenkette `***`. Wer den Schluessel wirklich braucht,
-        liest ihn aus dem Feld, und das ist dann eine bewusste Handlung.
+        liest ihn aus dem Feld, und das ist dann eine bewusste Handlung. Dasselbe
+        gilt fuer die Sollwerte in `endpoint_env`, deren Name ein Geheimnis
+        nennt (`ist_geheimnisname`, etwa `HF_TOKEN`).
 
         WIE WEIT DIE ZUSAGE REICHT, damit sich niemand zu viel darauf verlaesst:
         Sie deckt `repr()` und darueber auch `str()`. Sie deckt NICHT
         `dataclasses.asdict(settings)` und nichts, was daraus JSON macht — dieser
-        Weg geht an der Methode vorbei und schreibt den Schluessel im Klartext.
-        Wer die Einstellung serialisiert, muss das Feld selbst entfernen. Es gibt
+        Weg geht an der Methode vorbei und schreibt Schluessel und Sollwerte im
+        Klartext. Wer die Einstellung serialisiert, muss diese Felder selbst
+        entfernen. Es gibt
         im Paket keine Stelle, die das tut, und es soll auch keine geben.
 
         (Dass eine Dataclass diese Methode nicht ueberschreibt, ist geprueft:
