@@ -29,6 +29,7 @@ from types import TracebackType
 from typing import Any, Final, TypeVar, overload
 
 import procrastinate
+import procrastinate.exceptions
 import psycopg
 from procrastinate import utils
 from procrastinate.jobs import Job
@@ -884,7 +885,9 @@ class OCRClient:
 
            * `todo` oder `doing`: nichts, der Job ist unterwegs (`UNDERWAY`). Ein
              laufender Job wird nicht zurueckgesetzt, und zweimal `retry` laesst
-             ein Dokument nicht doppelt laufen.
+             ein Dokument nicht doppelt laufen. Unterwegs heisst, was `document()`
+             als wartend oder laufend zeigt (`db.derive_status`, dieselbe Regel):
+             auch ein Job-Zustand, den das Paket nicht kennt.
            * `failed`: Erst geht die `failed`-Zeile weg (eigene Transaktion), dann
              setzt `retry_job_by_id` DENSELBEN Job zurueck (`RESET`). So
              dokumentiert und benutzt Procrastinate es selbst („Retry a Job
@@ -896,7 +899,11 @@ class OCRClient:
              `check_not_todo_abort_requested`) oder kein Job: Procrastinate legt
              sie nicht wieder vor. In EINER Transaktion geht eine `failed`-Zeile
              weg, ein neuer Job entsteht, und seine Kennung kommt an die Eingabe
-             (`REQUEUED`); er liest die Eingabe samt ihren Einstellungen.
+             (`REQUEUED`); er liest die Eingabe samt ihren Einstellungen. Die
+             Eingabe wird dabei zuerst gesperrt: Ist sie inzwischen weg (der Job
+             wurde zwischen Lesen und Einreihen fertig, und das Ergebnis loeschte
+             sie), hat das Dokument ein Ergebnis, und es geschieht nichts
+             (`HAS_RESULT`).
 
         Warum die `failed`-Zeile weggeht: Dann ist „offen" wieder eine Tatsache
         der Datenbank (Eingabe da, kein Ergebnis), und jeder, der wartet, wartet
@@ -914,9 +921,9 @@ class OCRClient:
         unterwegs, statt einen zweiten einzureihen, der noch einmal bezahlt wuerde.
 
         Lese-Einstellungen nimmt `retry` keine: Es wiederholt einen Job. Ein Fehler
-        von Procrastinate (etwa ein Job, der zwischen Lesen und Zuruecksetzen
-        seinen Zustand aenderte) geht nach oben, statt als „nicht wiederholt"
-        verbucht zu werden.
+        von Procrastinate (etwa ein Job, den jemand anderes zwischen Lesen und
+        Zuruecksetzen zuruecksetzte) geht als `DatabaseError` nach oben, statt als
+        „nicht wiederholt" verbucht zu werden.
 
         Args:
             sha256: Der Hash des Dokuments, wie `ocr_start` ihn gab.
@@ -927,7 +934,9 @@ class OCRClient:
         Raises:
             DocumentNotFound: Weder Ergebnis noch Eingabe.
             DatabaseError: Ein `failed`-Ergebnis ohne Eingabe; ein neuer Lauf
-                haette nichts zu lesen, und es bleibt, wie es ist.
+                haette nichts zu lesen, und es bleibt, wie es ist. Oder
+                Procrastinate lehnte das Zuruecksetzen ab; die `failed`-Zeile ist
+                dann schon weg, und ein neues `retry` liest den Stand.
 
         Kosten: JA, mittelbar, bei `RESET` und `REQUEUED` — das Dokument wird neu
         verarbeitet und neu bezahlt.
@@ -949,7 +958,13 @@ class OCRClient:
                 f"nicht, solange das Ergebnis steht; es bleibt, wie es ist."
             )
         job = self._job(stand)
-        if job is not None and job.status in ("todo", "doing"):
+        # Dieselbe Regel wie `document()`: Was es als wartend oder laufend zeigt,
+        # ist unterwegs, auch ein Job-Zustand, den das Paket nicht kennt. Ohne
+        # Ergebnis gelesen, weil nur noch `failed` oder keins da sein kann.
+        if db.derive_status(sha256, None, job).phase in (
+            db.Phase.WAITING,
+            db.Phase.RUNNING,
+        ):
             return RetryOutcome.UNDERWAY
         if (
             job is not None
@@ -959,11 +974,24 @@ class OCRClient:
         ):
             with self.conn.transaction():
                 db.delete_failed_result(self.conn, sha256)
-            self._procrastinate.job_manager.retry_job_by_id(
-                job.id, utils.utcnow(), job.priority, job.queue, job.lock
-            )
+            try:
+                self._procrastinate.job_manager.retry_job_by_id(
+                    job.id, utils.utcnow(), job.priority, job.queue, job.lock
+                )
+            except procrastinate.exceptions.ProcrastinateException as fehler:
+                raise DatabaseError(
+                    f"Procrastinate lehnte das Zuruecksetzen von Job {job.id} fuer "
+                    f"{sha256} ab ({fehler}); vermutlich hat ihn jemand anderes "
+                    f"gleichzeitig zurueckgesetzt. Die `failed`-Zeile ist schon "
+                    f"weg; ein neues `retry` liest den Stand und tut, was noch "
+                    f"fehlt."
+                ) from fehler
             return RetryOutcome.RESET
         with self.conn.transaction():
+            if not db.lock_input(self.conn, sha256):
+                # Die Eingabe ist weg, seit `_stand` sie sah: Der Job wurde
+                # fertig, und sein Ergebnis loeschte sie. Nichts einzureihen.
+                return RetryOutcome.HAS_RESULT
             db.delete_failed_result(self.conn, sha256)
             kennung = tasks.enqueue_document(self._procrastinate, self.conn, sha256)
             db.set_input_job(self.conn, sha256=sha256, job_id=kennung)

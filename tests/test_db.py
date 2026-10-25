@@ -333,6 +333,27 @@ def test_check_schema_weist_die_alte_form_ab_und_aendert_nichts(
 
 
 @pytest.mark.db
+@pytest.mark.parametrize(
+    "aenderung",
+    [
+        "ALTER TABLE inputs ALTER COLUMN job_id SET NOT NULL",
+        "ALTER TABLE inputs ALTER COLUMN job_id TYPE text",
+    ],
+)
+def test_check_schema_weist_eine_falsche_form_von_job_id_ab(
+    db_conn: psycopg.Connection[Any], aenderung: str
+) -> None:
+    """`job_id` muss `bigint` sein und leer sein duerfen: Das Abschicken legt die
+    Eingabe ohne Kennung an und schreibt sie erst danach. Eine Tabelle mit
+    `job_id ... NOT NULL` liesse sonst jedes Abschicken scheitern, obwohl die
+    Pruefung sie durchgelassen haette."""
+    with db_conn.transaction(force_rollback=True):
+        db_conn.execute(aenderung)
+        with pytest.raises(DatabaseError, match="job_id"):
+            check_schema(db_conn)
+
+
+@pytest.mark.db
 def test_check_schema_nennt_ein_fehlendes_schema_und_setup(
     db_conn: psycopg.Connection[Any],
 ) -> None:

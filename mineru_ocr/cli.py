@@ -440,8 +440,9 @@ def show(
 
     Ruft `OCRClient.document` und laedt dabei `raw` nicht. Der Job-Teil ist die
     Antwort auf „warum passiert nichts?" — er zeigt, ob ein offenes Dokument
-    wartet, laeuft, wie oft es schon versucht wurde, oder ob sein juengster Job
-    endete, ohne ein Ergebnis zu schreiben (dann hilft `retry`).
+    wartet, laeuft, wie oft es schon versucht wurde, oder ob sein Job (der,
+    dessen Kennung an der Eingabe steht) endete, ohne ein Ergebnis zu schreiben
+    (dann hilft `retry`).
 
     `--raw` gibt die vollstaendige Antwort aus (`OCRClient.get(...).to_dict(
     raw=True)`), immer als JSON: die Angaben und unter `raw` alles, was MinerU
@@ -599,9 +600,10 @@ def retry(
         gemeint = sha256 if sha256 is not None else "Jedes Dokument ohne gueltiges Ergebnis"
         typer.echo(
             f"{gemeint}: Ohne gueltiges Ergebnis und ohne laufenden Job wird es "
-            f"VOLLSTAENDIG NEU VERARBEITET — das kostet Geld."
+            f"VOLLSTAENDIG NEU VERARBEITET — das kostet Geld.",
+            err=True,
         )
-        if not yes and not typer.confirm("Fortfahren?"):
+        if not yes and not typer.confirm("Fortfahren?", err=True):
             raise typer.Exit(code=0)
         with OCRClient(preflight=False) as klient:
             if sha256 is not None:

@@ -563,7 +563,8 @@ def _datenbank_anlegen_falls_noetig(dsn: str) -> None:
 INPUT_SPALTEN: Final = frozenset({"sha256", "content", "job_id"})
 """Die Spalten von `inputs`. Die Tabelle hat keine Zeilenklasse (der Executor
 liest nur `content`), also steht die Erwartung hier, und `_schema_abgleichen`
-vergleicht gegen sie. Typ, NOT NULL und Primaerschluessel stehen dort selbst."""
+vergleicht gegen sie. Typ, NOT NULL und Primaerschluessel prueft `check_schema`
+selbst, fuer jede der drei Spalten."""
 
 MAX_INPUT_BYTES: Final = 1_000_000_000
 """Die groesste Eingabe, die sich ablegen laesst. Postgres begrenzt ein Feld und
@@ -697,12 +698,16 @@ def _schema_abgleichen(conn: psycopg.Connection[Any]) -> None:
             if (
                 form["sha256"][0] != "text"
                 or form["content"] != ("bytea", True)
+                # Leer erlaubt: Das Abschicken legt die Eingabe ohne Kennung an
+                # und schreibt sie erst, wenn `defer` sie zurueckgab.
+                or form["job_id"] != ("bigint", False)
                 or schluessel != {"sha256"}
             ):
                 abweichungen.append(
                     "Die Tabelle `inputs` hat die erwarteten Spalten, aber nicht "
-                    "ihre Form: erwartet `sha256 text PRIMARY KEY` und "
-                    "`content bytea NOT NULL`, gefunden "
+                    "ihre Form: erwartet `sha256 text PRIMARY KEY`, "
+                    "`content bytea NOT NULL` und `job_id bigint` (ohne NOT "
+                    "NULL), gefunden "
                     f"{form} mit Primaerschluessel {sorted(schluessel)}."
                 )
     if not abweichungen:
@@ -872,6 +877,27 @@ def set_input_job(conn: psycopg.Connection[Any], *, sha256: str, job_id: int) ->
     """
     conn.execute(
         "UPDATE inputs SET job_id = %s WHERE sha256 = %s", (job_id, sha256)
+    )
+
+
+def lock_input(conn: psycopg.Connection[Any], sha256: str) -> bool:
+    """Sperrt die Eingabe eines Dokuments bis zum Ende der Transaktion.
+
+    Fuer `retry`, bevor es einen neuen Job einreiht: Steht die Eingabe noch,
+    kann sie bis zum Commit niemand loeschen (das Endschreiben eines Jobs wartet).
+    Ist sie weg, wurde der Job fertig, seit `retry` las, und sein Ergebnis
+    loeschte sie; einzureihen gibt es dann nichts.
+
+    Returns:
+        True, wenn die Eingabe steht und gesperrt ist; False, wenn es keine gibt.
+
+    Kosten: keine.
+    """
+    return (
+        conn.execute(
+            "SELECT 1 FROM inputs WHERE sha256 = %s FOR UPDATE", (sha256,)
+        ).fetchone()
+        is not None
     )
 
 

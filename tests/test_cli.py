@@ -1274,7 +1274,9 @@ def test_retry_mit_yes_fragt_nicht_und_ein_offenes_dokument_ist_unterwegs(
 
     assert ergebnis.exit_code == 0, ergebnis.output
     assert "Fortfahren" not in ergebnis.output
-    assert f"{sha} unterwegs" in ergebnis.stdout
+    # Auf stdout nur die Daten; die Kostenwarnung ist eine Meldung (stderr).
+    assert ergebnis.stdout == f"{sha} unterwegs\n"
+    assert "kostet Geld" in ergebnis.stderr
     assert _jobs(db_conn) == 1
 
 
@@ -1303,7 +1305,13 @@ async def test_retry_all_nimmt_jedes_dokument_ohne_gueltiges_ergebnis(
     ergebnis = cli.invoke(app, ["retry", "--all"], input="y\n")
 
     assert ergebnis.exit_code == 0, ergebnis.output
-    assert "Fortfahren" in ergebnis.output
+    # Rueckfrage und Warnung sind Meldungen (stderr); auf stdout stehen die
+    # Zeilen je Dokument. (Die Antwort „y“ steht dort nur, weil CliRunner die
+    # Eingabe mitschreibt, im Terminal schreibt sie der Benutzer.)
+    assert "Fortfahren" in ergebnis.stderr
+    assert "kostet Geld" in ergebnis.stderr
+    assert "Fortfahren" not in ergebnis.stdout
+    assert "kostet Geld" not in ergebnis.stdout
     assert f"{gescheitert} zurueckgesetzt" in ergebnis.stdout
     assert f"{abgesagt} neu eingereiht" in ergebnis.stdout
     assert "1 zurueckgesetzt, 1 neu eingereiht, 0 unterwegs, 0 mit Ergebnis" in ergebnis.stderr
@@ -1313,7 +1321,8 @@ def test_retry_all_ohne_offene_dokumente_tut_nichts(cli: CliRunner) -> None:
     """Nichts zu wiederholen ist kein Fehler — und kostet nichts."""
     ergebnis = cli.invoke(app, ["retry", "--all", "--yes"])
     assert ergebnis.exit_code == 0
-    assert "Nichts zu wiederholen" in ergebnis.output
+    assert "Nichts zu wiederholen" in ergebnis.stderr
+    assert ergebnis.stdout == ""
 
 
 async def test_markdown_schreibt_in_eine_datei(
