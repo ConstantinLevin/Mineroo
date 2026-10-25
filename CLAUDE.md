@@ -320,7 +320,9 @@ sind; Frist und Strg-C fassen keinen Job an. Der Client
 (`wait`, `wait_all`, `as_completed`) liefert daraus Hüllen; der `AsyncOCRClient`
 mit dem async-Generator und mit geladenem `raw` (eine Eigenschaft kann nicht
 `await`en), seine Hüllen halten keine Verbindung (`refresh()` nennt den Weg über
-`await client.get(h)`).
+`await client.get(h)`). Läuft zwischen dem Lesen der Schleife und dem Laden ein
+`retry`, trägt die Hülle wie im Sync-Client den gesehenen Endzustand, ohne `raw`,
+und `raw` meldet `DocumentNotFound`.
 
 „Läuft gerade" wird aus dem Procrastinate-Job **gelesen**, dessen Kennung an der
 Eingabe steht (`inputs.job_id`, `list_jobs(id=…)`), von `OCRClient.document` und

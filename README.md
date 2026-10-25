@@ -206,7 +206,9 @@ async with AsyncOCRClient() as client:
 
 Seine Hüllen kommen mit geladenem `raw`, weil eine Eigenschaft nicht `await`en
 kann; sie halten keine Verbindung, und neu gelesen wird mit `await
-client.get(h)` statt `refresh()`. Beide Clients dürfen zugleich im selben Prozess
+client.get(h)` statt `refresh()`. Läuft während des Wartens ein `retry`
+dazwischen, endet das Warten wie im Sync-Client mit dem gesehenen `failed`, und
+`raw` dieser Hülle meldet `DocumentNotFound`. Beide Clients dürfen zugleich im selben Prozess
 laufen; jeder hält seine eigene Verbindung und, wie die Spec es verlangt, keine
 stehende Procrastinate-Verbindung.
 
