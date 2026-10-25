@@ -1602,8 +1602,9 @@ class _Warteplan:
         Verbindungszeichenkette sagt). Ohne sie haenge ein Verbinden zu einem
         Rechner, der gar nicht antwortet, bis zur Voreinstellung des
         Betriebssystems, gleich welche Frist der Aufrufer setzte. psycopg hebt
-        Werte unter zwei Sekunden auf zwei an."""
-        if self.ende is None:
+        Werte unter zwei Sekunden auf zwei an. Eine unendliche Frist ist keine
+        Grenze und gibt deshalb auch None."""
+        if self.ende is None or math.isinf(self.ende):
             return None
         return max(1, math.ceil(self.ende - time.monotonic()))
 

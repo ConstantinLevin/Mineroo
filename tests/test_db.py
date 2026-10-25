@@ -1473,6 +1473,19 @@ async def test_eine_frist_die_keine_zahl_ist_wird_abgewiesen(art: str) -> None:
         assert isinstance(fehler, ValueError), (frist, fehler)
 
 
+@pytest.mark.db
+@ARTEN
+async def test_eine_unendliche_frist_ist_keine_frist(
+    art: str, async_conn: psycopg.AsyncConnection[Any], _test_datenbank: str
+) -> None:
+    """`inf` ist eine gueltige Frist und heisst unbegrenzt — auch fuers
+    Verbinden, dem sich keine unendliche Sekundenzahl mitgeben laesst."""
+    await _schreiben(async_conn, HASH)
+    geliefert, fehler = await _warten(art, _test_datenbank, [HASH], timeout=float("inf"))
+    assert fehler is None
+    assert [z.sha256 for z in geliefert] == [HASH]
+
+
 @ARTEN
 async def test_ein_einzelner_hash_ist_keine_folge_von_hashes(art: str) -> None:
     """Auch die Schleife selbst weist einen einzelnen Hash ab — fuer jeden
