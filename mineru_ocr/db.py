@@ -543,8 +543,10 @@ def _datenbank_anlegen_falls_noetig(dsn: str) -> str:
     angaben = psycopg.conninfo.conninfo_to_dict(dsn)
     zielname = angaben.get("dbname")
     if not isinstance(zielname, str) or not zielname:
+        # Ohne die Verbindungszeichenkette: Sie kommt aus Konfiguration oder
+        # Umgebung und kann ein Passwort tragen.
         raise ConfigurationError(
-            f"Die Verbindungszeichenkette nennt keine Datenbank (`dbname`): {dsn!r}"
+            "Die Verbindungszeichenkette nennt keine Datenbank (`dbname`)."
         )
 
     try:

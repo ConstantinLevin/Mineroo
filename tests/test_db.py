@@ -258,6 +258,18 @@ def test_setup_ist_mehrfach_aufrufbar(
     assert _eingabe(db_conn, "b" * 64)
 
 
+def test_setup_ohne_dbname_nennt_das_passwort_nicht() -> None:
+    """Die DSN kommt aus Konfiguration oder Umgebung und kann ein Passwort tragen
+    (Mineroo#3). Nennt sie keine Datenbank, sagt `setup` das, ohne sie zu zeigen."""
+    for dsn in (
+        "host=localhost port=5437 user=jurgen password=nur-ein-testwert",
+        "postgresql://jurgen:nur-ein-testwert@localhost:5437",
+    ):
+        with pytest.raises(ConfigurationError, match="dbname") as fehler:
+            setup(dsn)
+        assert "nur-ein-testwert" not in str(fehler.value), dsn
+
+
 @pytest.mark.db
 def test_setup_meldet_abweichendes_schema(
     db_conn: psycopg.Connection[Any], _test_datenbank: str
