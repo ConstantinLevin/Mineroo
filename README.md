@@ -1,9 +1,10 @@
 # Mineroo — ein MinerU-Wrapper für OCR auf Abruf
 
 Mineroo ist eine Python-Bibliothek (das Paket `mineru_ocr`) mit einer CLI
-(`mineru-ocr`), die Dokumente an **MinerU** auf einem warteschlangenbasierten
-Serverless-Endpoint bei **RunPod** schickt und die vollständige Antwort
-zurückgibt: ein Dokument oder viele, über die Bibliothek oder die Kommandozeile.
+(`mineru-ocr`) und einem Agent-Skill, die Dokumente an **MinerU** auf einem
+warteschlangenbasierten Serverless-Endpoint bei **RunPod** schickt und die
+vollständige Antwort zurückgibt: ein Dokument oder viele, über die Bibliothek,
+die Kommandozeile oder einen Agenten.
 Die Antwort steht in Postgres; wer dasselbe Dokument noch einmal abschickt,
 bekommt sie ohne neue Kosten aus der Datenbank.
 
@@ -12,9 +13,8 @@ heraus. Der Worker, der MinerU auf RunPod ausführt, lebt in seinem eigenen Fork
 `ConstantinLevin/mineru-runpod`.
 
 **Stand:** Das Paket ist gebaut und getestet gegen den bisherigen Endpoint und
-MinerU 3.4. Der Umbau auf MinerU 4, einen neuen Worker und einen neuen Endpoint,
-der Agent-Skill und die Behebung der bekannten Fehler
-sind in der Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1)
+MinerU 3.4. Der Umbau auf MinerU 4, einen neuen Worker und einen neuen Endpoint
+und die Behebung der bekannten Fehler sind in der Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1)
 beschrieben und werden in Tickets umgesetzt. **Wo dieses README und die Spec
 auseinandergehen, gilt die Spec.** Der große Lauf über viele Dokumente hat noch
 nicht stattgefunden; er kostet Geld und ist eine Entscheidung des Eigentümers.
@@ -217,6 +217,21 @@ stehende Procrastinate-Verbindung.
 
 Kommandozeile und `import mineru_ocr` sind zwei Zugänge auf **dieselbe** Fläche;
 das Kommando enthält keine eigene Logik.
+
+### Für Agenten: der Skill
+
+Agenten, die Dokumente lesen lassen wollen, finden in
+[`skills/mineroo/SKILL.md`](skills/mineroo/SKILL.md), wann und wie sie Mineroo
+benutzen: über die Bibliothek oder die CLI, wie sie auf viele warten und die
+vollständige Antwort holen, warum ein Daemon laufen muss, was Lesen kostet und
+was für personenbezogene Daten gilt. Damit er überall verfügbar ist, wird er wie
+die Installation einmal aus dem Haupt-Checkout in die Skill-Verzeichnisse der
+Agenten verlinkt (Claude Code und die übrigen Agenten):
+
+```bash
+ln -s "$PWD/skills/mineroo" ~/.claude/skills/mineroo
+ln -s "$PWD/skills/mineroo" ~/.agents/skills/mineroo
+```
 
 ### Die eine Überraschung, die jeder einmal hat
 
