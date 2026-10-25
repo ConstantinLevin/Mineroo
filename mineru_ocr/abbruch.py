@@ -1,9 +1,13 @@
 """Warten, das ein Abbruch nicht unterbricht.
 
-Eine Stelle fuer das eine Muster, das Daemon und Executor beide brauchen: Arbeit,
-die beim Herunterfahren fertig werden MUSS, obwohl der eigene Task schon
-abgebrochen ist (Worker einsammeln, Betriebsmittel schliessen, ein Ergebnis
-schreiben).
+Zwei Muster fuer Arbeit, die beim Herunterfahren fertig werden soll, obwohl der
+eigene Task schon abgebrochen ist:
+
+- `unabbrechbar_abwarten` haelt JEDEN Abbruch fern und holt ihn danach nach.
+  Fuer `daemon.run`: Worker einsammeln, Betriebsmittel schliessen.
+- `abwarten_bis_zum_zweiten_abbruch` haelt einen Abbruch fern, den zweiten
+  nicht, und holt nichts nach. Fuer das Schreiben eines Ergebnisses im
+  Fehlerzweig des Executors.
 """
 
 from __future__ import annotations
@@ -17,15 +21,21 @@ T = TypeVar("T")
 steht ueber dem Einsammeln der Worker (liefert deren Ergebnisliste) und ueber dem
 Schliessen der Betriebsmittel (liefert nichts) — daher generisch."""
 
+AUFRAEUMFRIST_SEKUNDEN = 5.0
+"""Wie lange `abwarten_bis_zum_zweiten_abbruch` nach dem zweiten Abbruch darauf
+wartet, dass die abgebrochene Arbeit aufgeraeumt hat. Ohne Frist hielte ein
+unerreichbarer Datenbankserver den Daemon trotz des zweiten Signals fest:
+psycopg wartet nach einem Abbruch auf seine Antwort."""
+
 
 async def unabbrechbar_abwarten(arbeit: Awaitable[T]) -> T:
     """Wartet, bis `arbeit` WIRKLICH fertig ist — auch bei wiederholtem Abbruch.
 
     Wozu es diese Funktion gibt: Beim Herunterfahren gibt es zwei Schritte, die
-    fertig werden MUESSEN, bevor `run` zurueckkehrt — die Worker einsammeln und
-    die Betriebsmittel schliessen, in dieser Reihenfolge. Beides steht in einem
-    `finally`, und beides wird also genau in dem Moment ausgefuehrt, in dem der
-    eigene Task schon abgebrochen ist.
+    fertig werden MUESSEN, bevor `daemon.run` zurueckkehrt — die Worker
+    einsammeln und die Betriebsmittel schliessen, in dieser Reihenfolge. Beides
+    steht in einem `finally`, und beides wird also genau in dem Moment
+    ausgefuehrt, in dem der eigene Task schon abgebrochen ist.
 
     Was dabei wirklich passiert, ist am 08.08.2026 mit drei kleinen Programmen
     gemessen worden, weil hier vorher eine falsche Annahme im Kommentar stand:
@@ -99,8 +109,9 @@ async def abwarten_bis_zum_zweiten_abbruch(arbeit: Awaitable[T]) -> T:
     `kill -9` hilft.
 
     Gezaehlt werden die Abbrueche des eigenen Tasks (`Task.cancelling()`), auch
-    der, der schon vor dem Warten kam: Fuehrte ein Abbruch in den Fehlerzweig,
-    ist schon der naechste der zweite.
+    die, die schon vor dem Warten kamen: Fuehrte ein Abbruch in den Fehlerzweig,
+    ist schon der naechste der zweite, und kamen schon zwei, laeuft die Arbeit
+    gar nicht erst an.
 
     Anders als `unabbrechbar_abwarten` holt diese Funktion einen abgehaltenen
     Abbruch NICHT nach: Sie gibt das Ergebnis zurueck, und der Aufrufer
@@ -114,19 +125,36 @@ async def abwarten_bis_zum_zweiten_abbruch(arbeit: Awaitable[T]) -> T:
 
     Raises:
         asyncio.CancelledError: Beim zweiten Abbruch (die Arbeit wird dann
-            abgebrochen) oder wenn `arbeit` selbst abgebrochen wurde.
+            abgebrochen; auf ihr Aufraeumen wird hoechstens
+            `AUFRAEUMFRIST_SEKUNDEN` gewartet) oder wenn `arbeit` selbst
+            abgebrochen wurde. Was `arbeit` selbst wirft, kommt heraus.
 
     Kosten: keine.
     """
     aufgabe = asyncio.ensure_future(arbeit)
     eigener = asyncio.current_task()
+
+    def schon_zweimal() -> bool:
+        return eigener is not None and eigener.cancelling() > 1
+
+    if schon_zweimal():
+        # Die Arbeit laeuft gar nicht erst an: Eine abgebrochene Aufgabe, die
+        # noch keinen Schritt getan hat, fuehrt ihren Rumpf nie aus.
+        aufgabe.cancel()
+        raise asyncio.CancelledError
     while True:
         try:
             return await asyncio.shield(aufgabe)
         except asyncio.CancelledError:
             if aufgabe.done():
-                raise
-            if eigener is not None and eigener.cancelling() > 1:
+                # Fertig heisst nicht abgebrochen: Wurde die Arbeit im selben
+                # Augenblick fertig, in dem der Abbruch kam, gilt ihr Ergebnis
+                # (oder ihr Fehler). `result()` wirft den Abbruch selbst nur,
+                # wenn die ARBEIT abgebrochen wurde.
+                return aufgabe.result()
+            if schon_zweimal():
                 aufgabe.cancel()
-                await asyncio.wait([aufgabe])
+                # Mit Frist: psycopg wartet nach einem Abbruch auf die Antwort
+                # des Servers, und ein unerreichbarer Server antwortet nie.
+                await asyncio.wait([aufgabe], timeout=AUFRAEUMFRIST_SEKUNDEN)
                 raise

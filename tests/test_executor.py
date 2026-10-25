@@ -1899,8 +1899,9 @@ async def test_zweiter_abbruch_waehrend_des_failed_schreibens_gewinnt(
     """Haengt das Schreiben von `failed` (eine blockierte Datenbank), beendet ein
     zweiter Abbruch es doch: Das zweite Signal an den Daemon bricht sofort ab
     (`daemon.run`). Sonst hielte eine haengende Datenbank den Daemon fest, bis
-    nur noch `kill -9` hilft. Das Dokument bleibt dann ohne Ergebnis; dafuer ist
-    `retry` der Weg zurueck."""
+    nur noch `kill -9` hilft. Es entsteht kein Ergebnis: Mit Restbudget reiht
+    Procrastinate den Job neu ein, im letzten Versuch ist `retry` der Weg
+    zurueck."""
     sha, _ = _anlegen(
         db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
     )

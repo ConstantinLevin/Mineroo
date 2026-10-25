@@ -1378,6 +1378,110 @@ async def test_daemon_faengt_die_signale_selbst_und_gibt_sie_wieder_frei(
     assert signal_modul.getsignal(signal_modul.SIGTERM) is voreinstellung
 
 
+@pytest.mark.parametrize("zweites_signal", ["nach_der_nachfrist", "in_der_nachfrist"])
+async def test_zweites_signal_beendet_den_daemon_auch_wenn_das_failed_schreiben_haengt(
+    db_conn: psycopg.Connection[Any],
+    int_settings: Settings,
+    erzeuger: Erzeuger,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    zweites_signal: str,
+) -> None:
+    """Haengt das Schreiben von `failed` an einer blockierten Datenbank, beendet
+    ein zweites Signal den Daemon trotzdem (Mineroo#27; `daemon.run`: „Ein
+    zweites Signal waehrend des Herunterfahrens bricht sofort ab").
+
+    Zwei Lagen, weil Procrastinate sie verschieden behandelt:
+
+        Nach der Nachfrist: Das erste Signal fuehrt nach der Nachfrist zum
+        Abbruch des Jobs, sein Fehlerzweig schreibt, und das Schreiben haengt.
+        Das zweite Signal erreicht den Job als zweiter Abbruch.
+
+        In der Nachfrist: Der Job haengt schon im Schreiben, als die Signale
+        kommen. Procrastinates Herunterfahren kann dabei unterbrochen werden,
+        bevor es die Jobs abbricht; dann bleibt der Job-Task nach der Rueckkehr
+        von `run` zurueck und muss enden, wenn ihn der Abbau des Prozesses
+        (`asyncio.run`) abbricht.
+
+    Hier werden echte Signale an den eigenen Prozess geschickt, aber nur,
+    waehrend der Daemon sie haelt: vom Start bis zum Ende seines
+    Herunterfahrens, und das blockierte Schreiben haelt ihn genau dort.
+    """
+    import os
+    import signal as signal_modul
+
+    einstellungen = dataclasses.replace(int_settings, max_attempts=1)
+    sha = _anlegen(db_conn, tmp_path, "z.png")
+    erzeuger.einreihen(sha)
+
+    schreiben_begonnen = asyncio.Event()
+    aufraeumen = asyncio.Event()
+
+    async def haengendes_schreiben(*_a: Any, **_k: Any) -> Any:
+        schreiben_begonnen.set()
+        await aufraeumen.wait()
+        raise psycopg.OperationalError("blockiert")
+
+    monkeypatch.setattr(db, "write_terminal_async", haengendes_schreiben)
+    if zweites_signal == "nach_der_nachfrist":
+        runpod = ProtokollRunPod()
+        runpod.freigabe = asyncio.Event()  # RunPod rechnet, bis abgebrochen wird
+    else:
+        runpod = ProtokollRunPod(lambda nr: {"id": "j", "status": "FAILED"})
+
+    voreinstellung = signal_modul.getsignal(signal_modul.SIGTERM)
+    echte_mittel = tasks.worker_context_resources
+
+    def mit_doppel(s: Settings) -> dict[str, Any]:
+        mittel = echte_mittel(s)
+        mittel["runpod"] = runpod
+        return mittel
+
+    monkeypatch.setattr(tasks, "worker_context_resources", mit_doppel)
+    lauf = asyncio.create_task(daemon.run(einstellungen))
+    try:
+        async with asyncio.timeout(15.0):
+            if zweites_signal == "nach_der_nachfrist":
+                await runpod.gestartet.wait()
+            else:
+                await schreiben_begonnen.wait()
+            while signal_modul.getsignal(signal_modul.SIGTERM) is voreinstellung:
+                await asyncio.sleep(0.01)
+        os.kill(os.getpid(), signal_modul.SIGTERM)
+        if zweites_signal == "nach_der_nachfrist":
+            async with asyncio.timeout(15.0):
+                await schreiben_begonnen.wait()
+        else:
+            await asyncio.sleep(0.2)
+        assert not lauf.done()
+        os.kill(os.getpid(), signal_modul.SIGTERM)
+
+        async with asyncio.timeout(8.0):
+            await asyncio.wait([lauf])
+
+        # Wie `asyncio.run` beim Abbau des Prozesses: Was dann noch laeuft (in
+        # der Nachfrist bleibt der Job-Task zurueck), wird EINMAL abgebrochen
+        # und muss danach enden, obwohl das Schreiben weiter haengt. Sonst
+        # hinge der Prozess nach der Rueckkehr von `run`.
+        uebrig = [
+            aufgabe
+            for aufgabe in asyncio.all_tasks()
+            if aufgabe is not asyncio.current_task() and not aufgabe.done()
+        ]
+        for aufgabe in uebrig:
+            aufgabe.cancel()
+        if uebrig:
+            async with asyncio.timeout(5.0):
+                await asyncio.wait(uebrig)
+    finally:
+        aufraeumen.set()
+        if not lauf.done():
+            lauf.cancel()
+            await asyncio.wait([lauf])
+
+    assert get_document(db_conn, sha) is None
+
+
 async def test_gestorbener_worker_beendet_den_daemon_mit_fehler(
     db_conn: psycopg.Connection[Any], int_settings: Settings
 ) -> None:

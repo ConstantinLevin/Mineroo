@@ -598,8 +598,10 @@ async def process_document(
         # Dokument liefe und kostete noch einmal. Der Task endet trotzdem
         # sofort, nur eben mit diesem Fehler. Ein zweiter Abbruch (das zweite
         # Signal an den Daemon) bricht das Schreiben dagegen ab und kommt
-        # heraus; dann bleibt das Dokument ohne Ergebnis, und `retry` ist der
-        # Weg zurueck.
+        # heraus. Mit Restbudget reiht Procrastinate den Job dann neu ein, und
+        # das Dokument laeuft noch einmal (auch nach einem endgueltigen
+        # Fehler); im letzten Versuch bleibt es ohne Ergebnis, und `retry` ist
+        # der Weg zurueck.
         await abwarten_bis_zum_zweiten_abbruch(ergebnis_schreiben())
         raise
 
