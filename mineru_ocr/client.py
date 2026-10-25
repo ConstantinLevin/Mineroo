@@ -958,6 +958,55 @@ class OCRClient:
             db.set_input_job(self.conn, sha256=sha256, job_id=kennung)
         return RetryOutcome.REQUEUED
 
+    def retry_all(
+        self, hashes: Sequence[str] | None = None
+    ) -> dict[str, RetryOutcome]:
+        """Bringt viele Dokumente wieder in Gang: jedes wie `retry`.
+
+        Ohne Angabe waehlt die Bibliothek selbst aus: jedes Dokument ohne
+        gueltiges Ergebnis, also jede stehende Eingabe (`inputs`). Das sind die
+        gescheiterten (`failed` laesst die Eingabe stehen) und die offenen, auch
+        die, deren Job abgebrochen, abgesagt oder weg ist; wartende und laufende
+        meldet `retry` als unterwegs und laesst sie, wie sie sind. Ein Dokument mit
+        gueltigem Ergebnis hat keine Eingabe mehr und kommt nicht vor.
+
+        Mit Angabe werden erst ALLE Hashes geprueft, dann wird wiederholt: Sonst
+        waeren bei einem unbekannten Hash die vorderen schon neu vorgelegt, und der
+        Aufrufer bekaeme eine Ausnahme statt ihrer Ausgaenge.
+
+        Je Dokument eine Abfrage seines Jobs (`list_jobs(id=…)`); waehrend eines
+        grossen Laufs mit vielen offenen Dokumenten sind das entsprechend viele.
+
+        Args:
+            hashes: Die Dokumente, oder None fuer jedes ohne gueltiges Ergebnis.
+
+        Returns:
+            Je Dokument, was geschehen ist, in der Reihenfolge der Angabe (ohne
+            Angabe nach Hash geordnet). Ein doppelt genannter Hash steht einmal.
+
+        Raises:
+            DocumentNotFound: Ein genannter Hash ist unbekannt; dann ist NICHTS
+                geschehen.
+            DatabaseError: Wie bei `retry`; die Dokumente davor sind dann schon
+                wiederholt.
+
+        Kosten: JA, mittelbar — jedes zurueckgesetzte oder neu eingereihte
+        Dokument wird neu verarbeitet und neu bezahlt.
+        """
+        if hashes is None:
+            ziele = db.input_hashes(self.conn)
+        else:
+            ziele = list(dict.fromkeys(hashes))
+            for sha256 in ziele:
+                _hash_pruefen(sha256)
+            for stand in db.read_states(self.conn, ziele):
+                if stand.is_unknown:
+                    raise DocumentNotFound(
+                        f"Kein Dokument zu {stand.sha256!r}: weder Ergebnis noch "
+                        f"Eingabe. Es ist nichts wiederholt worden."
+                    )
+        return {sha256: self.retry(sha256) for sha256 in ziele}
+
     def retry_failed(self, target: OCRWrapper | Sequence[OCRWrapper]) -> int:
         """Legt gescheiterte Dokumente erneut vor. Duenner Durchgriff, kein Eigenbau.
 

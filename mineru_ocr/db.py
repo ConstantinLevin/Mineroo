@@ -874,6 +874,18 @@ def set_input_job(conn: psycopg.Connection[Any], *, sha256: str, job_id: int) ->
     )
 
 
+def input_hashes(conn: psycopg.Connection[Any]) -> list[str]:
+    """Die Hashes aller stehenden Eingaben, geordnet: jedes Dokument ohne
+    gueltiges Ergebnis (gescheitert oder offen). Ohne `content`.
+
+    Kosten: keine.
+    """
+    return [
+        zeile[0]
+        for zeile in conn.execute("SELECT sha256 FROM inputs ORDER BY sha256").fetchall()
+    ]
+
+
 def delete_failed_result(conn: psycopg.Connection[Any], sha256: str) -> None:
     """Nimmt ein Ergebnis `failed` weg, und nur dieses — fuer `retry`.
 

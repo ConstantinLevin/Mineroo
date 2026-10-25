@@ -34,7 +34,7 @@ from mineru_ocr.client import OCRClient
 from mineru_ocr.config import Settings
 from mineru_ocr.core import RetryOutcome
 from mineru_ocr.db import DocumentStatus, Phase, derive_status, get_document
-from mineru_ocr.errors import ConfigurationError, DatabaseError
+from mineru_ocr.errors import ConfigurationError, DatabaseError, DocumentNotFound
 from mineru_ocr.runpod import RunPodClient
 
 pytestmark = pytest.mark.db
@@ -1872,3 +1872,60 @@ def _zaehlen_jobs(conn: psycopg.Connection[Any]) -> int:
     zeile = conn.execute("SELECT count(*) FROM procrastinate_jobs").fetchone()
     assert zeile is not None
     return int(zeile[0])
+
+
+async def test_retry_all_nimmt_ohne_angabe_jedes_dokument_ohne_gueltiges_ergebnis(
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    int_settings: Settings,
+) -> None:
+    """Ohne Angabe waehlt `retry_all` selbst aus: jedes Dokument ohne gueltiges
+    Ergebnis, also jede stehende Eingabe — gescheiterte wie offene, deren Job
+    abgesagt ist —, und behandelt jedes wie `retry`. Ein fertiges Dokument hat
+    keine Eingabe mehr und kommt nicht vor; mit ausdruecklicher Angabe meldet es
+    `HAS_RESULT`."""
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        fertig = klient.ocr_start(PNG_KOPF + b"alle fertig")
+        await db.write_terminal_async(
+            async_conn, sha256=fertig, status=DocumentStatus.DONE, raw={},
+            endpoint_id="testendpoint",
+        )
+        laeuft = klient.ocr_start(PNG_KOPF + b"alle laeuft")
+        gescheitert = klient.ocr_start(PNG_KOPF + b"alle gescheitert")
+        await db.write_terminal_async(
+            async_conn, sha256=gescheitert, status=DocumentStatus.FAILED, raw={},
+            endpoint_id="testendpoint",
+        )
+        abgesagt = klient.ocr_start(PNG_KOPF + b"alle abgesagt")
+        for sha, zustand in ((laeuft, "doing"), (gescheitert, "failed"), (abgesagt, "cancelled")):
+            db_conn.execute(
+                "UPDATE procrastinate_jobs SET status = %s WHERE lock = %s",
+                (zustand, sha),
+            )
+
+        alle = klient.retry_all()
+        genannt = klient.retry_all([fertig])
+
+    assert alle == {
+        laeuft: RetryOutcome.UNDERWAY,
+        gescheitert: RetryOutcome.RESET,
+        abgesagt: RetryOutcome.REQUEUED,
+    }
+    assert genannt == {fertig: RetryOutcome.HAS_RESULT}
+    assert get_document(db_conn, gescheitert) is None
+
+
+def test_retry_all_prueft_erst_alle_hashes(
+    db_conn: psycopg.Connection[Any], int_settings: Settings
+) -> None:
+    """Ein unbekannter Hash in der Angabe haelt alles auf, bevor etwas geschieht:
+    Sonst waeren die vorderen schon neu vorgelegt, und der Aufrufer bekaeme eine
+    Ausnahme statt ihrer Ausgaenge."""
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(PNG_KOPF + b"vorne")
+        db_conn.execute("UPDATE procrastinate_jobs SET status = 'cancelled'")
+        with pytest.raises(DocumentNotFound):
+            klient.retry_all([sha, "e" * 64])
+
+    (job,) = _jobs_zu(db_conn, sha)
+    assert job.status == "cancelled"
