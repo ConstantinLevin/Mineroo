@@ -5,10 +5,14 @@ erste Bild. Ein mehrseitiges Fax als TIFF endete sonst als einseitiges `done`, u
 alle Seiten nach der ersten gingen still verloren — ohne ein Fehlersignal, das
 einer bemerkte. Der Job fragt deshalb vor jedem RunPod-Kontakt.
 
-Gefragt wird nur „mehr als eines?", nicht „wie viele?": `Image.seek(1)` springt
-zum zweiten Bild und kostet bei TIFF einen einzigen Verzeichniseintrag, waehrend
-`n_frames` jede Seite durchlaeuft — bei einem TIFF mit Zehntausenden Seiten
-Sekunden, die auf der Ereignisschleife des Daemons alle anderen Dokumente anhalten.
+Gefragt wird nur „mehr als eines?", nicht „wie viele?". Bei TIFF springt
+`Image.seek(1)` zum zweiten Bild und kostet einen einzigen Verzeichniseintrag,
+waehrend `n_frames` jede Seite durchlaeuft — bei Zehntausenden Seiten Sekunden.
+Bei GIF, PNG und WebP ist es umgekehrt: Dort dekodiert `seek(1)` das erste Bild
+(ein GIF mit 8192 x 8192 Pixeln: rund 120 ms und hunderte MB), und `is_animated`
+antwortet aus den Kopfdaten. Beide Fragen laufen im Job in einem Thread
+(`asyncio.to_thread`): Pillow ist anders als PDFium threadsicher genug dafuer,
+solange jedes Bild nur in einem Thread geoeffnet wird.
 
 Pillow oeffnet lazy: `Image.open` liest nur den Kopf, die Pixel werden nicht
 geladen.
@@ -41,7 +45,9 @@ def has_several_images(data: bytes) -> bool:
     """
     try:
         with Image.open(io.BytesIO(data)) as bild:
-            bild.seek(1)
+            if bild.format == "TIFF":
+                bild.seek(1)  # EOFError: es gibt kein zweites Bild
+                return True
+            return bool(getattr(bild, "is_animated", False))
     except Exception:  # noqa: BLE001 — EOFError heisst „nur ein Bild", der Rest „nicht zu lesen"
         return False
-    return True

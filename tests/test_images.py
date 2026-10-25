@@ -6,7 +6,13 @@ import io
 from typing import Any
 
 import pytest
-from PIL import Image, TiffImagePlugin
+from PIL import (
+    GifImagePlugin,
+    Image,
+    PngImagePlugin,
+    TiffImagePlugin,
+    WebPImagePlugin,
+)
 
 from mineru_ocr.images import has_several_images
 from mineru_ocr.mime import DocumentType
@@ -77,6 +83,35 @@ def test_gefragt_wird_per_sprung_zum_zweiten_bild_nicht_per_durchzaehlen(
     )
 
     assert has_several_images(_bild("TIFF", 3)) is True
+
+
+@pytest.mark.parametrize(
+    ("dateiformat", "klasse"),
+    [
+        ("GIF", GifImagePlugin.GifImageFile),
+        ("PNG", PngImagePlugin.PngImageFile),
+        ("WEBP", WebPImagePlugin.WebPImageFile),
+    ],
+)
+def test_bei_gif_png_und_webp_wird_kein_bild_dekodiert(
+    monkeypatch: pytest.MonkeyPatch, dateiformat: str, klasse: type
+) -> None:
+    """Bei diesen Formaten dekodiert der Sprung zum zweiten Bild das erste: Ein
+    kleines GIF mit 8192 x 8192 Pixeln kostete so rund 120 ms und hunderte MB. Die
+    Frage beantwortet dort `is_animated` aus den Kopfdaten."""
+
+    echtes_seek = klasse.seek  # type: ignore[attr-defined]
+
+    def _nicht_springen(self: Any, frame: int) -> None:
+        # Der Rueckweg zu Bild 0 ist harmlos; der Sprung nach vorn dekodiert.
+        if frame != 0:
+            pytest.fail("seek dekodiert das erste Bild")
+        echtes_seek(self, frame)
+
+    monkeypatch.setattr(klasse, "seek", _nicht_springen)
+
+    assert has_several_images(_bild(dateiformat, 3)) is True
+    assert has_several_images(_bild(dateiformat, 1)) is False
 
 
 def test_jpeg_und_bmp_sind_keine_bildfolgen() -> None:

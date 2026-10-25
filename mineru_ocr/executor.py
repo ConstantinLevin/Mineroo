@@ -337,7 +337,7 @@ async def process_document(
 
         # --- 3.: zerlegen, absenden, abholen ----------------------------
         # Zuerst wird geprueft, was sich billig ohne RunPod pruefen laesst (eine
-        # PDF oeffnen, bei einer Bilddatei die Bilder zaehlen, bei allem anderen
+        # PDF oeffnen, bei einer Bilddatei nach einem zweiten Bild fragen, bei allem anderen
         # die Groesse gegen die Anfragegrenze). Erst DANACH kommt der erste
         # Kontakt mit RunPod: die Herkunft des Images (`_image_tag_lesen`), dann
         # die Kontostandsabfrage. Eine Eingabe, die nicht verarbeitbar ist, endet
@@ -385,21 +385,26 @@ async def process_document(
                 )
         else:
             seiten = None
-            if typ.can_hold_several_images and images.has_several_images(rohbytes):
-                # Die Engine liest von einer Bilddatei nur das erste Bild. Mehr
-                # als eines (ein mehrseitiges Fax als TIFF) hiesse: alle Seiten
-                # nach der Ersten gehen still verloren. Gefragt wird VOR jedem
-                # RunPod-Kontakt; ein Bild, das sich nicht lesen laesst, geht
-                # weiter (`images.has_several_images`).
+            # Nicht zerlegbar — also muss es ungeteilt passen. Zuerst die Groesse:
+            # Sie ist billig, und Pillow soll nur Bytes lesen, die ohnehin an
+            # RunPod gehen koennten.
+            chunking.check_fits_unsplit(
+                size_bytes=len(rohbytes), doc_type=typ, settings=settings
+            )
+            # Die Engine liest von einer Bilddatei nur das erste Bild. Mehr als
+            # eines (ein mehrseitiges Fax als TIFF) hiesse: alle Seiten nach der
+            # ersten gehen still verloren. Gefragt wird VOR jedem RunPod-Kontakt;
+            # ein Bild, das sich nicht lesen laesst, geht weiter. In einem Thread,
+            # damit ein boesartig gebautes Bild die Ereignisschleife nicht anhaelt
+            # (`images.py`).
+            if typ.can_hold_several_images and await asyncio.to_thread(
+                images.has_several_images, rohbytes
+            ):
                 raise MultiImageError(
                     "Die Bilddatei enthaelt mehr als ein Bild, gelesen wuerde "
                     "nur das erste. Bitte als PDF einreichen. Es wurde nichts "
                     "bezahlt."
                 )
-            # Nicht zerlegbar — also muss es ungeteilt passen.
-            chunking.check_fits_unsplit(
-                size_bytes=len(rohbytes), doc_type=typ, settings=settings
-            )
             image_tag = await _image_tag_lesen(runpod, vermerke)
             await wait_for_balance(runpod, settings)
             await _stuecke_verarbeiten(

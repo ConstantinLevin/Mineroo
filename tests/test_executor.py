@@ -988,6 +988,54 @@ async def test_image_tag_wird_mitgeschrieben(
     assert zeile.image_tag_at_submit == ":abc12345"
 
 
+async def test_image_tag_wird_auch_bei_einer_pdf_mitgeschrieben(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Die PDF-Strecke liest die Herkunft des Images an ihrer eigenen Stelle; ohne
+    diesen Test liesse sich der Aufruf dort loeschen, ohne dass einer scheitert."""
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(1))
+    runpod = FalscherRunPod([_fertige_antwort()], marke=":pdf12345")
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.image_tag_at_submit == ":pdf12345"
+    # Zuerst die Herkunft, dann der Kontostand, dann erst bezahlt.
+    assert runpod.kontakte[0] == "image_tag"
+    assert runpod.kontakte[1] == "balance"
+
+
+async def test_zu_grosses_bild_wird_abgelehnt_bevor_pillow_es_liest(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Die Groessenpruefung ist billig, das Lesen mit Pillow nicht (ein GIF mit
+    Kommentarbloecken brauchte Sekunden bis Minuten): Die Groesse kommt zuerst."""
+    from mineru_ocr import images
+    from mineru_ocr.errors import TooLargeError
+
+    def _nicht_lesen(daten: bytes) -> bool:
+        pytest.fail("Pillow liest ein Bild, das ohnehin zu gross ist")
+
+    monkeypatch.setattr(images, "has_several_images", _nicht_lesen)
+    zu_gross = b"GIF89a" + b"x" * (exec_settings.max_payload_bytes + 1000)
+    sha, _ = _anlegen(
+        db_conn, tmp_path, zu_gross, name="riesig.gif", typ=DocumentType.GIF
+    )
+
+    runpod = FalscherRunPod([_fertige_antwort()])
+    with pytest.raises(TooLargeError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert runpod.kontakte == []
+
+
 async def test_unlesbarer_image_tag_kostet_kein_dokument(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
@@ -1543,9 +1591,8 @@ async def test_zu_grosses_bild_wird_abgelehnt_ohne_zu_bezahlen(
             timeout=5,
         )
 
-    # DIE ZUSICHERUNG, an der Geld haengt: kein einziger Aufruf.
-    assert runpod.abgesendet == []
-    assert runpod.abgeholt == []
+    # DIE ZUSICHERUNG, an der Geld haengt: kein einziger Aufruf, auch kein lesender.
+    assert runpod.kontakte == []
 
     zeile = get_document(db_conn, sha)
     assert zeile is not None
