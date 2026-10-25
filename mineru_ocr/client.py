@@ -97,6 +97,20 @@ def _dokumente(data: object) -> list[bytes]:
     return dokumente
 
 
+def _ein_dokument_pruefen(data: object) -> None:
+    """Weist ab, was `ocr` beider Clients nicht als EIN Dokument nehmen kann.
+
+    Vor dem Einreihen: Eine Folge von Dokumenten nahme `ocr_start` an, und erst
+    das Warten fiele ueber die Liste — die Jobs liefen und kosteten, und der
+    Aufrufer bekaeme keine Hashes (Mineroo#24).
+    """
+    if not isinstance(data, bytes):
+        raise TypeError(
+            f"ocr nimmt EIN Dokument als Bytes, nicht {type(data).__name__}. "
+            f"Fuer viele gibt es `ocr_start` und `wait_all`."
+        )
+
+
 def _daemon_warnung_geben(bisher: str | None, fehler: BaseException | None) -> str:
     """Warnt, dass kein Daemon laeuft oder das nicht lesbar ist — einmal je Lage.
 
@@ -1028,6 +1042,8 @@ class OCRClient:
             Die Huelle zum Endzustand, auch bei `failed`.
 
         Raises:
+            TypeError: `data` sind keine Bytes, etwa eine Liste. Gemeldet, BEVOR
+                eingereiht wird; fuer viele gibt es `ocr_start` und `wait_all`.
             ValueError: Die Frist ist `nan` oder negativ. Gemeldet, BEVOR
                 eingereiht wird: Sonst liefe ein bezahlter Job fuer einen Aufruf,
                 der mit einem Fehler endete.
@@ -1037,6 +1053,7 @@ class OCRClient:
 
         Kosten: JA, mittelbar.
         """
+        _ein_dokument_pruefen(data)
         db.check_wait_timeout(timeout)
         return self.wait(self.ocr_start(data), timeout=timeout)
 
@@ -1713,6 +1730,8 @@ class AsyncOCRClient:
         `OCRClient.ocr`. Ein Treffer kommt sofort.
 
         Raises:
+            TypeError: `data` sind keine Bytes, etwa eine Liste. Gemeldet, BEVOR
+                eingereiht wird.
             ValueError: Die Frist ist `nan` oder negativ. Gemeldet, BEVOR
                 eingereiht wird.
             WaitTimeoutError: Die Zeit lief ab; das Dokument bleibt unterwegs.
@@ -1721,6 +1740,7 @@ class AsyncOCRClient:
 
         Kosten: JA, mittelbar.
         """
+        _ein_dokument_pruefen(data)
         db.check_wait_timeout(timeout)
         return await self.wait(await self.ocr_start(data), timeout=timeout)
 

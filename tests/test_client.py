@@ -1748,6 +1748,18 @@ def test_ocr_weist_eine_unbrauchbare_frist_ab_bevor_es_einreiht(
     assert _zaehlen(db_conn, "procrastinate_jobs") == 0
 
 
+def test_ocr_weist_eine_folge_von_dokumenten_ab_bevor_es_einreiht(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """`ocr` nimmt EIN Dokument. Eine Liste reihte `ocr_start` ein, und erst das
+    Warten fiele dann ueber die Liste: bezahlte Jobs, aber keine Hashes beim
+    Aufrufer (Mineroo#24). Die Meldung nennt den Weg fuer viele."""
+    with pytest.raises(TypeError, match="wait_all"):
+        offener_client.ocr([_png("a"), _png("b")])  # type: ignore[arg-type]
+    for tabelle in ("documents", "inputs", "procrastinate_jobs"):
+        assert _zaehlen(db_conn, tabelle) == 0, tabelle
+
+
 def test_get_und_document_auf_unbekannten_hash_werfen(
     offener_client: OCRClient,
 ) -> None:
@@ -2616,6 +2628,17 @@ async def test_async_ocr_liefert_einen_treffer_und_prueft_die_frist_vor_dem_einr
         await offener_async_client.ocr(_png("wartet"), timeout=0.3)
     assert fehler.value.pending == (_hash(_png("wartet")),)
     assert _zaehlen(db_conn, "procrastinate_jobs") == 1
+
+
+async def test_async_ocr_weist_eine_folge_von_dokumenten_ab_bevor_es_einreiht(
+    offener_async_client: AsyncOCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Wie im Sync-Client: `ocr` nimmt EIN Dokument, und eine Liste wird nicht erst
+    eingereiht und dann abgewiesen (Mineroo#24)."""
+    with pytest.raises(TypeError, match="wait_all"):
+        await offener_async_client.ocr([_png("a"), _png("b")])  # type: ignore[arg-type]
+    for tabelle in ("documents", "inputs", "procrastinate_jobs"):
+        assert _zaehlen(db_conn, tabelle) == 0, tabelle
 
 
 async def test_async_get_unterscheidet_offen_und_unbekannt(
