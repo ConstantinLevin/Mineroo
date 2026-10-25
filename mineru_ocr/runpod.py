@@ -640,9 +640,10 @@ class RunPodClient:
             ResultLostError: siehe `status`. Ebenfalls wiederholbar — der Job
                 wird dann neu geschickt, nicht das Dokument aufgegeben.
             asyncio.CancelledError: Der Daemon faehrt herunter. Wird NICHT
-                gefangen und nicht in etwas anderes verwandelt — der Job endet
-                dann `aborted`, das Dokument bleibt ohne Ergebnis; den Rueckweg
-                bringt `retry` (Plan 5.3).
+                gefangen und nicht in etwas anderes verwandelt — der Executor
+                schickt den Abbruch, und die Warteschlange reiht den Job neu
+                ein; im letzten Versuch schreibt der Executor vorher `failed`
+                (Mineroo#27).
 
         Kosten: keine ueber die von `submit` hinaus.
         """

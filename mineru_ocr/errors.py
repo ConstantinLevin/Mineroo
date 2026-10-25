@@ -423,10 +423,11 @@ def classify_failure(exc: BaseException) -> FailureKind:
         ein Ergebnis (Mineroo#27). Im letzten Versuch schreibt der Executor
         deshalb `failed` und wirft dann weiter; der Job endet `aborted`.
 
-        Dasselbe gilt fuer einen Abbruch ueber die API
-        (`cancel_job_by_id(…, abort=True)`): Procrastinate bricht einen
-        asynchronen Task dafuer ebenso mit `CancelledError` ab, und beide
-        Faelle sind an der Ausnahme nicht zu unterscheiden.
+        Ein Abbruch ueber die API (`cancel_job_by_id(…, abort=True)`) kommt
+        beim Task als derselbe `CancelledError` an und ist an der Ausnahme nicht
+        zu unterscheiden. Neu eingereiht wird er trotzdem nicht:
+        `procrastinate_retry_job_v2` setzt einen Job mit `abort_requested` auf
+        `failed` statt auf `todo` (Procrastinate 3.10.0).
 
     Kosten: keine. Beruehrt weder Netz noch Datenbank.
     """

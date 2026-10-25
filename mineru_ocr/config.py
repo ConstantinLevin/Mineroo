@@ -628,11 +628,12 @@ class Settings:
 
     shutdown_graceful_timeout: float = 30.0
     """Wie lange beim Beenden auf laufende Dokumente gewartet wird, bevor sie
-    abgebrochen werden. Ein abgebrochener Job endet als `aborted`, und dafuer
-    gibt es KEIN Retry-Bordmittel (Feature-Verifikation Punkt 19); sein
-    Rueckweg ist `retry`, das einen neuen Job einreiht. Deshalb ist der Wert eher grosszuegig:
-    dreissig Sekunden reichen, damit ein laufender Chunk seine Antwort noch
-    abholt."""
+    abgebrochen werden. Ein abgebrochener Job wird neu eingereiht, solange
+    Versuche uebrig sind, und die Wiedervorlage zaehlt als Versuch; im letzten
+    Versuch endet er `failed` (Mineroo#27). Das abgebrochene Dokument beginnt
+    von vorn und bezahlt seine Teilstuecke neu. Deshalb ist der Wert eher
+    grosszuegig: dreissig Sekunden reichen, damit ein laufender Chunk seine
+    Antwort noch abholt."""
 
     # -- Geld --------------------------------------------------------------
 

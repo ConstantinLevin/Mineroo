@@ -775,6 +775,43 @@ async def test_abbruch_beim_herunterfahren_im_letzten_versuch_endet_failed(
     assert _eingabe_steht(db_conn, sha)
 
 
+async def test_abbruch_ueber_die_api_wird_nicht_neu_eingereiht(
+    db_conn: psycopg.Connection[Any], int_settings: Settings, erzeuger: Erzeuger, tmp_path: Path
+) -> None:
+    """(e3) Ein Abbruch ueber die API (`cancel_job_by_id(…, abort=True)`) kommt
+    beim Task als derselbe `CancelledError` an wie das Herunterfahren, und die
+    Retry-Strategie sagt ja. Neu eingereiht wird er trotzdem nicht:
+    `procrastinate_retry_job_v2` setzt einen Job mit `abort_requested` auf
+    `failed`. Vor dem letzten Versuch endet das Dokument damit ohne Ergebnis,
+    einer der Faelle, fuer die `retry` der Weg zurueck ist (Mineroo#27,
+    CLAUDE.md). Der RunPod-Job ist abgebrochen.
+    """
+    sha = _anlegen(db_conn, tmp_path, "e3.png")
+    erzeuger.einreihen(sha)
+
+    haengend = ProtokollRunPod()
+    haengend.freigabe = asyncio.Event()
+    abgesagt = False
+
+    async def abgebrochen() -> bool:
+        nonlocal abgesagt
+        if haengend.gestartet.is_set() and not abgesagt:
+            kennung = _jobs_zu(db_conn, sha)[0].id
+            assert kennung is not None
+            assert erzeuger.app.job_manager.cancel_job_by_id(kennung, abort=True)
+            abgesagt = True
+        return abgesagt and _jobs_zu(db_conn, sha)[0].status != "doing"
+
+    await _daemon_laufen_lassen(int_settings, haengend, bis=abgebrochen)
+
+    jobs = _jobs_zu(db_conn, sha)
+    assert len(jobs) == 1
+    assert jobs[0].status == "failed"
+    assert get_document(db_conn, sha) is None
+    assert _eingabe_steht(db_conn, sha)
+    assert haengend.abgebrochen == ["job-1"]
+
+
 async def test_duplikat_waehrend_der_verarbeitung_ist_ein_nichts_tun(
     db_conn: psycopg.Connection[Any],
     async_conn: psycopg.AsyncConnection[Any],

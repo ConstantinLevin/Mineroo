@@ -251,8 +251,10 @@ class Phase(enum.Enum):
     """Offen, aber kein Job ist mehr unterwegs: Sein Job ist endgueltig zu
     Ende, ohne ein Ergebnis zu schreiben, oder es gibt keinen.
 
-    Der seltene Fall: harter Abschuss im Schreibfenster, ein ueber die API
-    abgebrochener (`aborted`) oder ein abgesagter Job (`cancelled`). Er ist KEIN
+    Der seltene Fall, denn jeder Job, der nicht neu eingereiht wird, schreibt
+    ein Ergebnis (Mineroo#27): ein Abbruch ueber die API, ein von Hand
+    abgesagter Job, ein unbekannter Task-Name, ein Endschreiben, das im letzten
+    Versuch an der Datenbank scheitert. Er ist KEIN
     Datenfehler, sondern genau der Zustand, den das Ein-Buch-Modell erwartet.
     Erneutes Abschicken heilt ihn NICHT: Die Eingabe steht, das Dokument gilt als
     unterwegs. Der Weg zurueck ist `retry`: Es reiht einen neuen Job ein. „es wird
@@ -1954,9 +1956,10 @@ def derive_status(
     elif job.status == "doing":
         phase = Phase.RUNNING
     elif job.status in _TERMINALE_JOB_ZUSTAENDE:
-        # Der Job ist fertig, ein Ergebnis gibt es aber nicht: harter Abschuss
-        # im Schreibfenster, Abbruch, Absage. Kein Datenfehler — der Zustand, den
-        # das Ein-Buch-Modell erwartet; `retry` bringt ihn wieder in Gang.
+        # Der Job ist fertig, ein Ergebnis gibt es aber nicht: einer der
+        # seltenen Faelle an `Phase.ENDED_WITHOUT_RESULT`. Kein Datenfehler —
+        # der Zustand, den das Ein-Buch-Modell erwartet; `retry` bringt ihn
+        # wieder in Gang.
         phase = Phase.ENDED_WITHOUT_RESULT
     else:
         # Ein Job-Zustand, den Procrastinate erst spaeter eingefuehrt hat. Ihn

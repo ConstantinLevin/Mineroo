@@ -424,6 +424,46 @@ einen Job endgültig gemacht, während der Exekutor ihn als wiederholbar warf. W
 an einer der beiden Stellen eine eigene Fallunterscheidung einbaut, stellt genau
 diesen Fehler wieder her.
 
+### Jeder Job, der nicht neu eingereiht wird, schreibt ein Ergebnis
+
+Das ist die Regel, die das Modell trägt (Mineroo#27): Sonst bleibt ein Dokument
+offen, ohne dass jemand daran arbeitet, und `wait` hängt ewig. Ob ein Versuch der
+letzte ist, beantwortet `tasks.wird_erneut_vorgelegt` für Retry-Strategie,
+`ocr_document` und Wächter mit derselben Rechnung; der Exekutor bekommt die
+Antwort als `letzter_versuch`. Daraus folgt:
+
+- **Herunterfahren.** Procrastinate bricht die nach der Nachfrist noch laufenden
+  Jobs mit `asyncio.CancelledError` ab und fragt dann die Retry-Strategie.
+  `classify_failure` stuft den Abbruch als wiederholbar ein, also reiht
+  Procrastinate den Job neu ein, und die Wiedervorlage zählt als Versuch (gewollt
+  und durch Procrastinates Abnahmetests abgesichert, PR #1215, aber nicht in
+  seiner Doku zum Herunterfahren). Im letzten Versuch schreibt der Exekutor
+  `failed` mit dem Vermerk „beim Herunterfahren im letzten Versuch abgebrochen“
+  (`executor.ABBRUCH_IM_LETZTEN_VERSUCH`) und wirft dann weiter; der Job endet
+  `aborted`. Der Abbruch bei RunPod (`/cancel`) geht in beiden Fällen hinaus.
+- **Nachsehen und Lesen im Fehlerzweig.** Das Nachsehen nach einem Ergebnis und
+  das Lesen der Eingabe stehen im `try` des Exekutors, damit auch ein
+  Datenbankfehler dort im letzten Versuch `failed` schreibt.
+- **`retry_stalled`** legt einen hängenden Job nur vor, solange Versuche übrig
+  sind. Danach schreibt es `failed` („Worker wiederholt abgestürzt“), aber nur,
+  wenn noch kein Ergebnis da ist (`executor.write_failure_if_no_result`; ein
+  vorhandenes `failed` mit bezahltem `raw` bleibt), und beendet den Job über
+  `JobManager.finish_job` als `failed`, mit derselben Löschregel wie der Worker.
+
+Ohne Ergebnis enden kann danach nur noch Seltenes oder von Hand Ausgelöstes: ein
+Abbruch über die API (`cancel_job_by_id(…, abort=True)`), die Absage eines
+wartenden Jobs (Shell `cancel` oder API), ein unbekannter Task-Name (Daemon und
+Bibliothek in verschiedenen Ständen), ein Endschreiben, das im letzten Versuch
+an einem Datenbankausfall scheitert. Für all diese Fälle ist `retry` der Weg
+zurück; `document()` zeigt sie als `Phase.ENDED_WITHOUT_RESULT`.
+
+Der API-Abbruch hat eine Eigenheit, die man kennen muss: Er kommt beim Task als
+derselbe `CancelledError` an wie das Herunterfahren, und die Retry-Strategie sagt
+ja. Neu eingereiht wird er trotzdem nicht, denn `procrastinate_retry_job_v2`
+setzt einen Job mit `abort_requested` auf `failed` statt auf `todo` (Procrastinate
+3.10.0, am laufenden Daemon geprüft). Im letzten Versuch hat der Exekutor vorher
+schon `failed` geschrieben; dann steht ein Ergebnis da.
+
 ### Teilstücke sind vor Postgres vollständig abstrahiert
 
 Hinein geht das ganze Dokument, heraus kommt das ganze Dokument. Dass ein PDF
