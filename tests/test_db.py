@@ -8,11 +8,13 @@ Abfrage ist Handwerk.
 
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 from datetime import UTC, datetime
 from typing import Any
 
+import procrastinate.worker
 import psycopg
 import pytest
 from procrastinate.jobs import Job
@@ -980,27 +982,52 @@ def test_alter_herzschlag_zaehlt_nicht_als_laufender_daemon(
 
 
 @pytest.mark.db
-def test_die_schwelle_gilt_an_der_datenbankuhr_und_ist_einstellbar(
+def test_die_schwelle_liegt_zwischen_20_und_40_sekunden(
     db_conn: psycopg.Connection[Any],
 ) -> None:
-    """Das Alter rechnet die Datenbank: `last_heartbeat` und die Schwelle werden
-    in der Abfrage gegeneinander gehalten, nie gegen die Uhr des Clients.
-
-    Gezeigt an der Grenze: Ein 20 Sekunden alter Herzschlag liegt unter der
-    Voreinstellung (30 s), aber ueber einer Schwelle von 10 s.
-    """
+    """Die Grenze: Ein 20 Sekunden alter Herzschlag liegt unter der Schwelle von
+    30 s und zaehlt, ein 40 Sekunden alter liegt darueber und zaehlt nicht."""
     db_conn.execute(
         "INSERT INTO procrastinate_workers (last_heartbeat) "
         "VALUES (now() - interval '20 seconds')"
     )
     assert len(worker_heartbeats(db_conn)) == 1
-    assert len(worker_heartbeats(db_conn, max_age_seconds=60)) == 1
-    assert worker_heartbeats(db_conn, max_age_seconds=10) == []
+
+    db_conn.execute(
+        "INSERT INTO procrastinate_workers (last_heartbeat) "
+        "VALUES (now() - interval '40 seconds')"
+    )
+    assert len(worker_heartbeats(db_conn)) == 1
 
 
-def test_die_voreingestellte_schwelle_deckt_drei_verpasste_herzschlaege() -> None:
+@pytest.mark.db
+def test_das_alter_rechnet_mit_der_laufenden_uhr_der_datenbank(
+    db_conn: psycopg.Connection[Any],
+) -> None:
+    """In einer offenen Transaktion bleibt `now()` auf deren Beginn stehen,
+    `clock_timestamp()` laeuft weiter. Ein Herzschlag, der beim Einfuegen 29 s alt
+    war, ist anderthalb Sekunden spaeter aelter als die Schwelle — und das muss
+    die Abfrage sehen. Mit `now()` bliebe er fuer immer 29 s alt, und ein
+    Client, der eine Transaktion offen haelt, saehe einen toten Daemon als
+    lebend."""
+    with db_conn.transaction():
+        db_conn.execute(
+            "INSERT INTO procrastinate_workers (last_heartbeat) "
+            "VALUES (clock_timestamp() - interval '29 seconds')"
+        )
+        assert len(worker_heartbeats(db_conn)) == 1
+
+        db_conn.execute("SELECT pg_sleep(1.5)")
+        assert worker_heartbeats(db_conn) == []
+
+
+def test_die_schwelle_ist_procrastinates_grenze_fuer_haengengebliebene_worker() -> None:
     """Die Schwelle ist Procrastinates eigene Grenze fuer „gilt als haengengeblieben"
-    (`stalled_worker_timeout`, Voreinstellung 30 s) und liegt damit ueber dem
-    Herzschlag-Abstand (`update_heartbeat_interval`, Voreinstellung 10 s): Ein
-    einzelner verspaeteter Herzschlag macht den Daemon nicht tot."""
-    assert DAEMON_HEARTBEAT_MAX_AGE_SECONDS == 30.0
+    (`stalled_worker_timeout`) und deckt mindestens drei Herzschlag-Abstaende
+    (`update_heartbeat_interval`): Ein einzelner verspaeteter Herzschlag macht den
+    Daemon nicht tot. Gelesen wird die Voreinstellung der installierten Fassung —
+    der Daemon aendert sie nicht —, damit ein Upgrade, das sie verschiebt, hier
+    auffaellt und nicht erst im Betrieb."""
+    parameter = inspect.signature(procrastinate.worker.Worker.__init__).parameters
+    assert DAEMON_HEARTBEAT_MAX_AGE_SECONDS == parameter["stalled_worker_timeout"].default
+    assert DAEMON_HEARTBEAT_MAX_AGE_SECONDS >= 3 * parameter["update_heartbeat_interval"].default

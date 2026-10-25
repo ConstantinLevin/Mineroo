@@ -1339,11 +1339,7 @@ def derive_status(row: DocumentRow, jobs: Sequence[Job]) -> DerivedStatus:
 # --------------------------------------------------------------------------
 
 
-def worker_heartbeats(
-    conn: psycopg.Connection[Any],
-    *,
-    max_age_seconds: float = DAEMON_HEARTBEAT_MAX_AGE_SECONDS,
-) -> list[tuple[int, datetime]]:
+def worker_heartbeats(conn: psycopg.Connection[Any]) -> list[tuple[int, datetime]]:
     """Liest Procrastinates Worker-Lebenszeichen. UNDOKUMENTIERT — mit Vorsicht.
 
     Diese Funktion greift auf eine Tabelle zu, die Procrastinate in der
@@ -1386,7 +1382,8 @@ def worker_heartbeats(
     selbst (`Worker.run` ruft `prune_stalled_workers`) —, und ihr Alter ist das
     Merkmal: Eine 67 Tage alte Zeile liess frueher „der Daemon laeuft" sagen. Als
     Lebenszeichen gilt deshalb nur ein Herzschlag, der juenger ist als
-    `max_age_seconds`. Das Alter rechnet DIE DATENBANK (`clock_timestamp()` gegen
+    `config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS`. Das Alter rechnet DIE DATENBANK
+    (`clock_timestamp()` gegen
     `last_heartbeat`, beides ihre Uhr): Der Client kann eine andere Zeit oder
     Zeitzone haben, und ein Vergleich mit seiner Uhr wuerde einen laufenden
     Daemon fuer tot erklaeren oder einen toten fuer lebendig. `clock_timestamp()`
@@ -1397,10 +1394,6 @@ def worker_heartbeats(
     ist „es passiert nichts" bei totem Daemon. Producer legen Zeilen an, Jobs
     stapeln sich, und alles sieht normal aus — nur arbeitet niemand. Der Client
     soll das SAGEN, statt es einen suchen zu lassen.
-
-    Args:
-        max_age_seconds: Wie alt der Herzschlag hoechstens sein darf. Die
-            Voreinstellung ist `config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS`.
 
     Returns:
         Ein Eintrag je lebendem Worker mit Kennung und letztem Lebenszeichen,
@@ -1424,7 +1417,7 @@ def worker_heartbeats(
                 "WHERE last_heartbeat > "
                 "clock_timestamp() - make_interval(secs => %s::double precision) "
                 "ORDER BY last_heartbeat DESC",
-                (max_age_seconds,),
+                (DAEMON_HEARTBEAT_MAX_AGE_SECONDS,),
             ).fetchall()
         ]
     except psycopg.Error as fehler:
