@@ -325,6 +325,27 @@ def test_markdown_in_dokumentreihenfolge_und_vollfassung_nur_ganz() -> None:
     assert assemble([teile[0], ohne])["markdown_full"] is None
 
 
+def test_fehlt_die_vollfassung_in_einem_teilstueck_bleiben_die_anderen_erhalten() -> None:
+    """Die Abruf-Regel: Ohne zusammengesetzte Vollfassung steht die bezahlte
+    Vollfassung jedes Teilstuecks, das sie trug, trotzdem in `raw`, an ihrer
+    Stelle in der Reihenfolge der Teilstuecke."""
+    teile = _zwei_teilstuecke()
+    ohne = dataclasses.replace(teile[1], markdown_full=None)
+    ergebnis = assemble([teile[0], ohne])
+
+    erste = ergebnis["markdown_full_je_teilstueck"][0]
+    assert erste is not None and "Seite eins" in erste
+    assert ergebnis["markdown_full_je_teilstueck"][1] is None
+    # Die Verweise darin zeigen wie ueberall auf das eigene Bild.
+    (verweis,) = re.findall(r"!\[\]\(([^)]+)\)", erste)
+    assert _bild_unter(ergebnis, verweis) == b"bild aus teilstueck 0"
+    # Ist die Vollfassung ganz, steht sie nur einmal da; traegt sie kein
+    # Teilstueck, gibt es nichts aufzuheben.
+    assert "markdown_full_je_teilstueck" not in assemble(teile)
+    keins = [dataclasses.replace(teil, markdown_full=None) for teil in teile]
+    assert "markdown_full_je_teilstueck" not in assemble(keins)
+
+
 def test_jede_datei_steht_je_teilstueck_und_als_json() -> None:
     """`middle_json`, `structured_content`, `model_output`, `envelopes` und
     `extras` tragen je Teilstueck einen Eintrag, und das Ganze ist JSON-faehig

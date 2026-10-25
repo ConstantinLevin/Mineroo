@@ -577,7 +577,8 @@ gibt keine Chunk-Tabelle und keine Teil-Zeilen.
 
 Jede Datei der Antwort hat in `raw` ihren eigenen Schlüssel: `markdown` und
 `markdown_full` als Text über alle Teilstücke (`markdown_full` ist `None`, wenn
-es einem Teilstück fehlt), `middle_json`, `structured_content` und
+es einem Teilstück fehlt; die bezahlten Vollfassungen der übrigen stehen dann
+unter `markdown_full_je_teilstueck`), `middle_json`, `structured_content` und
 `model_output` als Liste mit einem Eintrag je Teilstück, als JSON-Struktur. In
 `middle_json` und `structured_content` zählt jedes Seiten-`page_idx` die Seite
 des Originals (`assembly._seiten_verschoben`). **Bilder bekommen je Teilstück

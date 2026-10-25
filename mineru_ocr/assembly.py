@@ -465,9 +465,11 @@ def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
 
         `markdown_full`: ebenso aus `markdown_full.md`. Fehlt die Datei in
         EINEM Teilstueck, ist der Wert None: Ein Text, dem ein Teilstueck fehlt,
-        saehe vollstaendig aus und waere es nicht. Was die anderen Teilstuecke
-        trugen, ist dann nicht verloren, sondern fehlt nur hier; ihr Inhalt
-        steht in derselben Form im `middle_json`.
+        saehe vollstaendig aus und waere es nicht. Die Vollfassungen der
+        anderen Teilstuecke sind dann trotzdem bezahlt und gehen nicht verloren
+        (Abruf-Regel): Sie stehen unter `markdown_full_je_teilstueck`, je
+        Teilstueck ein Eintrag, None fuer das fehlende. Den Schluessel gibt es
+        NUR in diesem Fall; ist die Vollfassung ganz, steht sie einmal da.
 
         `middle_json`, `structured_content`, `model_output`: je Teilstueck ein
         Eintrag, in Dokumentreihenfolge, als JSON-Struktur — ausdruecklich NICHT
@@ -548,7 +550,7 @@ def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
     voll: str | None = None
     if all(text is not None for text in volle):
         voll = "\n\n".join(text for text in volle if text is not None)
-    return {
+    ergebnis: dict[str, Any] = {
         "markdown": "\n\n".join(markdowns),
         "markdown_full": voll,
         "middle_json": middles,
@@ -558,6 +560,9 @@ def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
         "envelopes": [teil.envelope for teil in parts],
         "extras": [teil.extras for teil in parts],
     }
+    if voll is None and any(text is not None for text in volle):
+        ergebnis["markdown_full_je_teilstueck"] = volle
+    return ergebnis
 
 
 T = TypeVar("T")
