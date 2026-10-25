@@ -439,9 +439,8 @@ Antwort als `letzter_versuch`. Daraus folgt:
   und durch Procrastinates Abnahmetests abgesichert, PR #1215, aber nicht in
   seiner Doku zum Herunterfahren). Im letzten Versuch schreibt der Exekutor
   `failed` mit dem Vermerk „im letzten Versuch abgebrochen (Herunterfahren oder
-  Abbruch ueber die API)“
-  (`executor.ABBRUCH_IM_LETZTEN_VERSUCH`) und wirft dann weiter; der Job endet
-  `aborted`. Der Abbruch bei RunPod (`/cancel`) geht in beiden Fällen hinaus.
+  Abbruch ueber die API)“ (`executor.ABBRUCH_IM_LETZTEN_VERSUCH`) und wirft dann
+  weiter; der Job endet `aborted`. Der Abbruch bei RunPod (`/cancel`) geht in beiden Fällen hinaus.
   Trifft der Abbruch den Fehlerzweig mitten im Schreiben von `failed`, läuft das
   Schreiben zu Ende (`abbruch.abwarten_bis_zum_zweiten_abbruch`), und
   weitergeworfen wird der Fehler, der in den Fehlerzweig führte, nicht der
@@ -472,8 +471,8 @@ Abbruch über die API (`cancel_job_by_id(…, abort=True)`), die Absage eines
 wartenden Jobs (Shell `cancel` oder API), ein unbekannter Task-Name (Daemon und
 Bibliothek in verschiedenen Ständen), ein Endschreiben, das im letzten Versuch
 an einem Datenbankausfall scheitert oder das ein zweites Signal an den Daemon
-abbricht. Für all diese Fälle ist `retry` der Weg
-zurück; `document()` zeigt sie als `Phase.ENDED_WITHOUT_RESULT`.
+abbricht. Für all diese Fälle ist `retry` der Weg zurück (ein neuer Job, siehe
+oben); `document()` zeigt sie als `Phase.ENDED_WITHOUT_RESULT`.
 
 Der API-Abbruch hat eine Eigenheit, die man kennen muss: Er kommt beim Task als
 derselbe `CancelledError` an wie das Herunterfahren, und die Retry-Strategie sagt
