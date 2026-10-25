@@ -317,7 +317,10 @@ async def process_document(
             geschrieben, und Procrastinate reiht den Job neu ein. Im letzten
             Versuch steht vorher `failed` mit dem Vermerk
             `ABBRUCH_IM_LETZTEN_VERSUCH` da, und der Job endet `aborted`
-            (Mineroo#27). Die Eingabe bleibt in beiden Faellen stehen.
+            (Mineroo#27). Die Eingabe bleibt in beiden Faellen stehen. Kommt
+            der Abbruch erst waehrend des Schreibens von `done` oder `empty`,
+            laeuft das Schreiben zu Ende, und die Funktion kehrt ohne Fehler
+            zurueck: Das Ergebnis ist bezahlt und steht.
 
     Endet das Warten auf einen Job mit einem Fehler, bei dem er bei RunPod
     weiterlaufen kann (jeder ausser der Zeitueberschreitung, nach der der Client
@@ -497,19 +500,28 @@ async def process_document(
             }
         )
 
-        async with pool.connection() as conn:
-            await db.write_terminal_async(
-                conn,
-                sha256=sha256,
-                status=status,
-                raw=ergebnis,
-                endpoint_id=endpoint,
-                mime=art,
-                size_bytes=groesse,
-                image_tag_at_submit=image_tag,
-                notes=vermerke,
-                page_count=seitenzahl,
-            )
+        async def endergebnis_schreiben() -> None:
+            async with pool.connection() as conn:
+                await db.write_terminal_async(
+                    conn,
+                    sha256=sha256,
+                    status=status,
+                    raw=ergebnis,
+                    endpoint_id=endpoint,
+                    mime=art,
+                    size_bytes=groesse,
+                    image_tag_at_submit=image_tag,
+                    notes=vermerke,
+                    page_count=seitenzahl,
+                )
+
+        # Abgeschirmt wie das Schreiben von `failed` unten (Mineroo#27): Das
+        # Ergebnis ist bezahlt. Bricht das Herunterfahren den Job genau jetzt
+        # ab, laeuft das Schreiben zu Ende, und der Job endet ohne Fehler;
+        # sonst reihte Procrastinate ihn neu ein, und das Dokument liefe und
+        # kostete noch einmal, im letzten Versuch stuende `failed` statt
+        # `done`. Ein zweiter Abbruch bricht das Schreiben ab wie dort.
+        await abwarten_bis_zum_zweiten_abbruch(endergebnis_schreiben())
 
     except (Exception, asyncio.CancelledError) as fehler:
         # `asyncio.CancelledError` erbt von `BaseException` und steht deshalb

@@ -1939,6 +1939,97 @@ async def test_zweiter_abbruch_waehrend_des_failed_schreibens_gewinnt(
     assert _eingabe_steht(db_conn, sha)
 
 
+@pytest.mark.parametrize("letzter_versuch", [False, True])
+async def test_abbruch_waehrend_des_done_schreibens_behaelt_das_bezahlte_ergebnis(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    letzter_versuch: bool,
+) -> None:
+    """Bricht das Herunterfahren den Job genau waehrend des Schreibens von
+    `done` ab, laeuft das Schreiben zu Ende, und der Job endet ohne Fehler
+    (Mineroo#27).
+
+    Sonst ging das bezahlte Ergebnis verloren: Mit Restbudget reihte
+    Procrastinate den Job neu ein, und das Dokument liefe und kostete noch
+    einmal; im letzten Versuch stuende statt `done` ein `failed` da.
+    """
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+    echtes_schreiben = db_modul.write_terminal_async
+    schreiben_begonnen = asyncio.Event()
+    weiter = asyncio.Event()
+
+    async def langsames_schreiben(*a: Any, **k: Any) -> Any:
+        schreiben_begonnen.set()
+        await weiter.wait()
+        return await echtes_schreiben(*a, **k)
+
+    monkeypatch.setattr(db_modul, "write_terminal_async", langsames_schreiben)
+    lauf = asyncio.ensure_future(
+        process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod([_fertige_antwort()]),
+            pool=pool,
+            letzter_versuch=letzter_versuch,
+        )
+    )
+    await asyncio.wait_for(schreiben_begonnen.wait(), timeout=10)
+    lauf.cancel()
+    await asyncio.sleep(0)
+    weiter.set()
+    await asyncio.wait_for(lauf, timeout=10)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    assert not _eingabe_steht(db_conn, sha)
+
+
+async def test_zweiter_abbruch_waehrend_des_done_schreibens_gewinnt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Haengt das Schreiben von `done`, beendet ein zweiter Abbruch es doch,
+    wie beim Schreiben von `failed`: Eine blockierte Datenbank haelt den Daemon
+    gegen das zweite Signal nicht fest. Es entsteht kein Ergebnis, und die
+    Eingabe bleibt stehen; mit Restbudget reiht Procrastinate den Job neu ein."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
+    )
+    schreiben_begonnen = asyncio.Event()
+
+    async def haengendes_schreiben(*_a: Any, **_k: Any) -> Any:
+        schreiben_begonnen.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(db_modul, "write_terminal_async", haengendes_schreiben)
+    lauf = asyncio.ensure_future(
+        process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod([_fertige_antwort()]),
+            pool=pool,
+        )
+    )
+    await asyncio.wait_for(schreiben_begonnen.wait(), timeout=10)
+    lauf.cancel()
+    await asyncio.sleep(0)
+    lauf.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(lauf, timeout=10)
+
+    assert get_document(db_conn, sha) is None
+    assert _eingabe_steht(db_conn, sha)
+
+
 @pytest.mark.parametrize("schritt", ["get_status_async", "read_input_async"])
 async def test_datenbankfehler_vor_dem_lesen_im_letzten_versuch_schreibt_failed(
     db_conn: psycopg.Connection[Any],

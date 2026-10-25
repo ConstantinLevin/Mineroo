@@ -453,7 +453,11 @@ Antwort als `letzter_versuch`. Daraus folgt:
   `abbruch.AUFRAEUMFRIST_SEKUNDEN` doch fertig (die Datenbank hatte schon
   bestätigt), gilt es als geschrieben, und weitergeworfen wird wieder der Fehler,
   der in den Fehlerzweig führte. Kamen zwei Abbrüche schon vor dem Schreiben,
-  beginnt es gar nicht erst.
+  beginnt es gar nicht erst. Das Schreiben von `done` und `empty` ist genauso
+  abgeschirmt: Trifft es der Abbruch, läuft es zu Ende, und der Job endet ohne
+  Fehler, statt ein bezahltes Ergebnis zu verwerfen und das Dokument noch einmal
+  laufen zu lassen. (`input_error` geht durch den Fehlerzweig und ist damit schon
+  abgeschirmt.)
 - **Nachsehen und Lesen im Fehlerzweig.** Das Nachsehen nach einem Ergebnis und
   das Lesen der Eingabe stehen im `try` des Exekutors, damit auch ein
   Datenbankfehler dort im letzten Versuch `failed` schreibt.
