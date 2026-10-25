@@ -771,7 +771,10 @@ async def test_abbruch_beim_herunterfahren_im_letzten_versuch_endet_failed(
     assert zeile is not None
     assert zeile.status is DocumentStatus.FAILED
     assert zeile.error is not None
-    assert "beim Herunterfahren im letzten Versuch abgebrochen" in zeile.error
+    assert (
+        "im letzten Versuch abgebrochen (Herunterfahren oder Abbruch ueber die API)"
+        in zeile.error
+    )
     # Die Eingabe bleibt, damit `retry` etwas zu lesen hat.
     assert _eingabe_steht(db_conn, sha)
 

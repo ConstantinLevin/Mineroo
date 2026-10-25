@@ -1806,11 +1806,14 @@ async def test_abbruch_im_letzten_versuch_schreibt_failed_und_wirft_weiter(
     assert zeile is not None
     assert zeile.status is DocumentStatus.FAILED
     assert zeile.error is not None
-    assert "beim Herunterfahren im letzten Versuch abgebrochen" in zeile.error
+    assert (
+        "im letzten Versuch abgebrochen (Herunterfahren oder Abbruch ueber die API)"
+        in zeile.error
+    )
     assert zeile.raw is not None
     assert zeile.raw["failure"]["type"] == "CancelledError"
     assert (
-        "beim Herunterfahren im letzten Versuch abgebrochen"
+        "im letzten Versuch abgebrochen (Herunterfahren oder Abbruch ueber die API)"
         in zeile.raw["failure"]["message"]
     )
     assert zeile.notes[-1]["kind"] == "gescheitert"

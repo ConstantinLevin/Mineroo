@@ -438,7 +438,8 @@ Antwort als `letzter_versuch`. Daraus folgt:
   Procrastinate den Job neu ein, und die Wiedervorlage zählt als Versuch (gewollt
   und durch Procrastinates Abnahmetests abgesichert, PR #1215, aber nicht in
   seiner Doku zum Herunterfahren). Im letzten Versuch schreibt der Exekutor
-  `failed` mit dem Vermerk „beim Herunterfahren im letzten Versuch abgebrochen“
+  `failed` mit dem Vermerk „im letzten Versuch abgebrochen (Herunterfahren oder
+  Abbruch ueber die API)“
   (`executor.ABBRUCH_IM_LETZTEN_VERSUCH`) und wirft dann weiter; der Job endet
   `aborted`. Der Abbruch bei RunPod (`/cancel`) geht in beiden Fällen hinaus.
   Trifft der Abbruch den Fehlerzweig mitten im Schreiben von `failed`, läuft das

@@ -109,13 +109,18 @@ def _vermerk_gescheitert(teilstuecke_bezahlt: int, detail: str) -> dict[str, Any
     }
 
 
-ABBRUCH_IM_LETZTEN_VERSUCH = "beim Herunterfahren im letzten Versuch abgebrochen"
+ABBRUCH_IM_LETZTEN_VERSUCH = (
+    "im letzten Versuch abgebrochen (Herunterfahren oder Abbruch ueber die API)"
+)
 """Der Vermerk an einem Dokument, dessen letzter Versuch abgebrochen wurde.
 
 Ein `CancelledError` traegt keinen Text; ohne diesen Vermerk stuende in `error`
 nur „CancelledError: ", und niemand saehe, dass das Dokument nicht an sich
-scheiterte, sondern an einem Herunterfahren zur falschen Zeit. Ein `retry`
-bringt es wieder in Gang."""
+scheiterte, sondern an einem Abbruch zur falschen Zeit. Neutral formuliert,
+weil der Task nicht unterscheiden kann, woher der Abbruch kam: Das
+Herunterfahren des Daemons und ein Abbruch ueber die API
+(`cancel_job_by_id(..., abort=True)`) kommen als derselbe `CancelledError` an.
+Ein `retry` bringt das Dokument wieder in Gang."""
 
 
 def _fehlernachricht(fehler: BaseException) -> str:
