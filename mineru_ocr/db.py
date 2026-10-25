@@ -104,10 +104,10 @@ nur ein Kommentar ist, wird irgendwann von einem falsch geschriebenen Zustand
 verletzt, den niemand bemerkt. Die Datenbank bemerkt ihn.
 
 Der Index folgt der Abfrage, die es tatsaechlich gibt: die Zaehlung nach Zustand
-fuer `status()`/`report()`. Mehr Indizes waeren geraten; dieser ist hergeleitet.
+fuer `status()`. Mehr Indizes waeren geraten; dieser ist hergeleitet.
 
 Eine dritte Abfrage gibt es, und sie hat bewusst KEINEN Index: die offenen
-Aufruest-Faelle in `status()`/`report()` — `status = 'input_error'` mit einem
+Aufruest-Faelle in `status()` — `status = 'input_error'` mit einem
 entsprechenden Eintrag in `notes`. Sie laeuft ueber eine jsonb-Filterung, aber
 erst NACH dem Zustandsfilter, und `input_error` ist der mit Abstand seltenste
 Zustand: Bei dreissigtausend Dokumenten bleiben davon eine Handvoll uebrig,
@@ -869,7 +869,7 @@ def list_documents(
 
 
 def counts_by_status(conn: psycopg.Connection[Any]) -> dict[DocumentStatus, int]:
-    """Zaehlt die Zeilen je Zustand. Grundlage von `status()` und `report()`.
+    """Zaehlt die Zeilen je Zustand. Grundlage von `status()`.
 
     Zusicherung:
         Jeder Zustand kommt im Ergebnis vor, auch mit Null. Ein fehlender

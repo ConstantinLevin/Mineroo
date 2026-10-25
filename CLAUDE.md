@@ -84,7 +84,7 @@ Neun Unterkommandos in `mineru_ocr/cli.py`: `setup`, `daemon`, `ocr`, `status`,
 ```bash
 mineru-ocr setup        # Schema anlegen (documents, inputs + Procrastinates Tabellen)
 mineru-ocr daemon       # EIGENES Fenster: hier läuft der Exekutor
-mineru-ocr ocr ~/Scans  # einreihen
+mineru-ocr ocr ~/Scans  # einreihen; nennt je Datei Pfad und Hash
 mineru-ocr status
 ```
 
@@ -134,6 +134,17 @@ prüft, übergibt `environ=` und `config_path=` ausdrücklich. Der Sollwert des
 GPU-Speicheranteils (`MINERU_VIRTUAL_VRAM_SIZE`) ist bis zur Messung offen: Der
 Preflight berichtet den Ist-Wert und bewertet ihn als „nicht prüfbar“.
 
+**Pfade kennt nur die CLI.** Die Bibliothek nimmt Bytes und gibt Hashes
+(`OCRClient.ocr_start(bytes | Sequence[bytes])`, `ocr`, `wait`, `get`, `document`);
+`cli.py` liest Dateien und Ordner, hasht sie und nennt die Zuordnung von Pfad zu
+Hash. `ocr --json` gibt je Dokument Hash, Zustand und ob eingereiht, dazu die
+übersprungenen Dateien. Eine ausdrücklich genannte, nicht unterstützte oder zu große
+Datei hält die übrigen nicht auf, `ocr` endet dann mit Exit-Code 1; in Ordnern
+werden solche Dateien übersprungen und gezählt. Auf stdout stehen nur Daten,
+Meldungen und Warnungen (auch die der Bibliothek) gehen auf stderr. Es gibt in der
+Bibliothek keinen Parameter, der ein Pfad ist; `ocr_path`, `OCRWrapper.from_path`,
+`from_bytes` und `OCRMegaWrapper` gibt es nicht mehr.
+
 ---
 
 ## Aufbau — was man nicht aus einer einzelnen Datei sieht
@@ -143,8 +154,8 @@ Preflight berichtet den Ist-Wert und bewertet ihn als „nicht prüfbar“.
 Einreihen und Abarbeiten sind getrennt. `ocr_start` bzw. `mineru-ocr ocr` legt
 Jobs an und kehrt sofort zurück; läuft kein `mineru-ocr daemon`, passiert danach
 gar nichts, und es sieht aus wie ein Hänger. Das ist die häufigste Überraschung
-dieses Aufbaus — `preflight` sagt es einem ausdrücklich, statt es einen suchen zu
-lassen.
+dieses Aufbaus — das Abschicken warnt, und `status` und `preflight` sagen es einem
+ausdrücklich, statt es einen suchen zu lassen.
 
 **Abschicken hängt nicht vom Daemon ab und warnt nur.** `ocr_start` und
 `mineru-ocr ocr` reihen auch ohne laufenden Daemon ein; die Warnung steht im
@@ -152,9 +163,10 @@ Logger `mineru_ocr.client`, die Kommandozeile schreibt sie auf stderr. Abgebroch
 wird nichts, und weder Bibliothek noch Kommandozeile starten selbst einen Daemon —
 den startet der Betreiber. Es gibt keinen `strict`-Abbruch und keine
 `--strict`-Option am Kommando `ocr`; `strict` betrifft nur Konfigurations-
-Abweichungen im Preflight. Die Eingaben liegen ab dem Bauen der Hüllen in
-`inputs`; ohne Daemon bleibt in erfolgreichen Läufen trotzdem zu jeder ein Job
-zurück, nur `--no-start` legt ab, ohne einzureihen.
+Abweichungen im Preflight. Zeile, Eingabe und Job entstehen je Dokument in einer
+Transaktion; ohne Daemon bleibt deshalb zu jeder Eingabe ein Job zurück. Gewarnt
+wird einmal je daemonloser Phase eines Clients und nur, wenn wirklich etwas
+eingereiht wurde. Ein `--no-start`, das nur ablegt, gibt es nicht mehr.
 
 Ein Daemon **läuft**, wenn ein Worker einen Herzschlag hat, der jünger ist als
 `config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS` (30 s, Procrastinates
@@ -231,9 +243,21 @@ endlose Wiedervorlage und Doppelkosten.
 Die Bytes eines Dokuments stehen in der Tabelle `inputs` (`sha256 text PRIMARY
 KEY`, `content bytea NOT NULL`), **solange das Dokument kein Endergebnis hat**.
 Pfade gibt es weder in `documents` noch im Job; der Job trägt nur den Hash, und
-`mineru_ocr/wrapper.py` legt Zeile und Eingabe beim Abschicken in **einer**
-Transaktion an. Es entsteht keine Datei, und das Einreihen öffnet keine PDF: Die
-Seitenzahl bestimmt der Job aus den Bytes und schreibt sie mit dem Endergebnis.
+`OCRClient.ocr_start` legt Zeile, Eingabe und Job beim Abschicken in **einer**
+Transaktion an, **je Dokument** in einer eigenen und nie mehrere in einer (zwei
+Aufrufer mit überlappenden Mengen in verschiedener Reihenfolge würden sich sonst an
+den Eindeutigkeitsprüfungen gegenseitig blockieren). Es entsteht keine Datei, und das
+Einreihen öffnet keine PDF: Die Seitenzahl bestimmt der Job aus den Bytes und
+schreibt sie mit dem Endergebnis.
+
+Abschicken prüft **erst alle** übergebenen Dokumente (`core.prepare`), dann reiht es
+ein; sonst wären bei einem abgewiesenen Element die vorderen schon abgeschickt.
+Abgewiesen wird, woraus nichts Neues entstehen kann: ein Typ, den das Paket nicht
+liest, und ein Ganzdokument-Format oder Bild über `max_payload_bytes`. Gibt es eine
+Ergebniszeile, ist das ein **Treffer**, auch bei `failed`, und es geschieht nichts
+(ein gescheitertes Dokument liest nur `retry` neu); eine Zeile `new` heißt
+unterwegs. Der Treffer wird ohne `raw` gelesen: ein erneuter Lauf über 30.000
+fertige Dokumente zöge sonst rund 34 GB.
 
 Der Job liest `content` über den Hash auf einer **eigenen kurzlebigen
 Verbindung** (`db.read_input_async`), immer mit `binary=True`, und prüft den Hash
@@ -249,9 +273,9 @@ also bis zum Löschen an zwei Stellen ablesbar, an der Zeile `new` und an der
 Eingabe; dass die Zeile erst am Ende des Jobs entsteht, ist ein eigenes Ticket.
 
 Eine Eingabe über `db.MAX_INPUT_BYTES` (1 GB, Postgres begrenzt ein Feld auf knapp
-1 GiB) weist das Abschicken mit `TooLargeError` ab, bevor die Datei gelesen wird;
-`OCRMegaWrapper.from_dir` zählt sie als `zu_gross`. Das gilt auch für PDFs, die
-der Job später in Stücke schneiden würde.
+1 GiB) weist das Abschicken mit `TooLargeError` ab; die CLI prüft Typ und Größe schon
+vor dem Lesen einer Datei und zählt sie in Ordnern als `zu_gross`. Das gilt auch für
+PDFs, die der Job später in Stücke schneiden würde.
 
 ### Drei Antworten auf einen Fehlschlag — an genau einer Stelle entschieden
 
@@ -307,7 +331,12 @@ hinweg, und eine Vereinigung behielte nur das letzte.)
   in `pyproject.toml` gilt genau dafür; importiert es jemand woanders, meldet
   mypy es sofort.
 - `client.py` und `cli.py` sind zwei Zugänge auf **dieselbe** Fläche. Das
-  Kommando enthält keine eigene Logik.
+  Kommando enthält keine eigene Logik; jedes ruft genau eine Funktion der
+  Bibliothek.
+- `core.py` ist der Kern des Abschickens ohne Ein- und Ausgabe (Hash,
+  Typ- und Größenprüfung, `Submitted`), und `client.py` ist die dünne Schale darüber
+  (psycopgs `Connection`; die asynchrone Schale über `AsyncConnection` kommt später).
+  Auf dem Weg Abschicken–Warten gibt es keine Brücke wie asgiref oder anyio.
 
 ---
 

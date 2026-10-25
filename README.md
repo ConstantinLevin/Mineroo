@@ -108,7 +108,7 @@ Norwegen, denn dort gilt die DSGVO —, und die zulässige Liste ist der Sollwer
 mineru-ocr setup         # legt Datenbank und Schema an. Mehrfach aufrufbar.
 mineru-ocr preflight     # prueft Endpoint, Konto und Daemon. VERAENDERT NICHTS.
 mineru-ocr daemon        # in einem EIGENEN Fenster: hier laeuft der Exekutor
-mineru-ocr ocr ~/Scans   # einreihen — kehrt sofort zurueck
+mineru-ocr ocr ~/Scans   # einreihen — kehrt sofort zurueck, nennt Pfad und Hash
 mineru-ocr status
 ```
 
@@ -124,25 +124,45 @@ erwarteter Tag —, heißt „nicht prüfbar" und ausdrücklich nicht „in Ordn
 Neun Kommandos gibt es: `setup`, `daemon`, `ocr`, `status`, `show`, `wait`,
 `markdown`, `retry`, `preflight`. Die Exit-Codes sind belegt (0/1/2/3).
 
+**Pfade kennt nur die CLI.** Sie liest Dateien und Ordner (in Ordnern über das
+Muster `--glob`), hasht sie und nennt in ihrer Ausgabe die Zuordnung von Pfad zu
+Hash; `ocr --json` gibt je Dokument den Hash, den Zustand und ob es eingereiht
+wurde, dazu die übersprungenen Dateien. Eine ausdrücklich genannte, nicht
+unterstützte oder zu große Datei hält die übrigen nicht auf: Sie wird mit Grund
+gemeldet, und `ocr` endet mit Exit-Code 1. In Ordnern werden solche Dateien
+übersprungen und gezählt. Ziele für `show`, `wait`, `markdown` und `retry` sind
+Hashes oder Pfade, die die CLI selbst hasht. Auf stdout stehen nur Daten;
+Meldungen und Warnungen gehen auf stderr.
+
 ### Und dieselbe Fläche aus Python
+
+Die Bibliothek nimmt **Bytes** und gibt **Hashes**; einen Pfad kennt sie nicht.
 
 ```python
 from pathlib import Path
-from mineru_ocr import OCRClient, OCRMegaWrapper
+from mineru_ocr import OCRClient
 
 with OCRClient() as client:
-    mega = OCRMegaWrapper.from_dir(
-        Path("~/Scans").expanduser(), client.conn, client.settings
-    )
-    client.ocr_start(mega)          # kehrt SOFORT zurueck, es laeuft noch nichts
+    # Bytes rein, Hash raus; kehrt SOFORT zurueck, es laeuft noch nichts. Eines oder
+    # viele (`ocr_start([a, b, c])` gibt eine Liste). Erst werden alle geprueft,
+    # dann eingereiht.
+    h = client.ocr_start(Path("scan.pdf").read_bytes())
     print(client.status())
 
-    fertig = client.wait("<sha256>")
+    fertig = client.wait(h)          # oder spaeter, auch aus einem anderen Prozess
     print(fertig.rendered_markdown)  # das GANZE Dokument als Markdown
     print(fertig["markdown"])        # das nackte Markdown der Engine
     print(fertig["content_list"])    # jeder Block einzeln, mit type und page_idx
-    print(fertig.raw)                # alles, ungefiltert
+    print(fertig.raw)                # die vollstaendige Antwort, ungefiltert
+
+    antwort = client.ocr(b"...")     # Abschicken und Warten in einem Zug
+    ohne_warten = client.get(h)      # holt ein Ergebnis ab, ohne zu warten
 ```
+
+Gibt es zu den Bytes schon ein Ergebnis (auch ein `failed`), ist das ein Treffer:
+Es wird nichts angelegt und nichts eingereiht; ein gescheitertes Dokument liest
+nur `retry` neu. Abschicken lädt kein `raw`; Hüllen laden es erst, wenn jemand das
+Ergebnis will.
 
 Kommandozeile und `import mineru_ocr` sind zwei Zugänge auf **dieselbe** Fläche;
 das Kommando enthält keine eigene Logik.
@@ -150,11 +170,11 @@ das Kommando enthält keine eigene Logik.
 ### Die eine Überraschung, die jeder einmal hat
 
 **Der Daemon ist ein eigener Prozess.** `ocr_start` bzw. das Kommando `ocr` legt
-Jobs an und kehrt sofort zurück. Läuft kein `daemon`, passiert danach gar nichts
-— und es sieht aus wie ein Hänger. Deshalb sagt `preflight` es einem
-ausdrücklich, statt es einen suchen zu lassen. Abschicken reiht auch ohne
-laufenden Daemon ein und warnt nur (das Kommando `ocr` auf stderr); einen Daemon
-startet der Betreiber. Als laufend gilt ein Daemon, wenn ein Worker einen
+Jobs an und kehrt sofort zurück. Läuft kein `daemon`, wird trotzdem eingereiht —
+aber danach passiert gar nichts, und es sieht aus wie ein Hänger. Deshalb warnt
+das Abschicken (auf stderr bzw. dem Logger `mineru_ocr.client`), und `status` und
+`preflight` sagen es einem ausdrücklich, statt es einen suchen zu lassen; einen
+Daemon startet der Betreiber. Als laufend gilt ein Daemon, wenn ein Worker einen
 Herzschlag hat, der jünger ist als 30 Sekunden — gemessen an der Uhr der
 Datenbank, damit die Zeile eines abgestürzten Daemons nicht weiter „läuft" sagt.
 

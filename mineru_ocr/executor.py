@@ -546,8 +546,8 @@ def _ergebnis_fuer_endzustand(
     Was das kostete: Saemtliche bezahlten Teilstuecke des Laufs waren weg — sie
     lagen nur im Arbeitsspeicher. Der Job endete `failed`, die Zeile blieb `new`.
     Damit zaehlte das Dokument fuer immer als `pending` und nie als `failed`, und
-    weil `OCRMegaWrapper.pending` genau die Menge ist, die ein Ordner-Durchlauf
-    anfasst, bezahlte JEDER erneute Durchlauf das ganze Dokument neu und
+    weil damals jede Zeile ohne Endergebnis bei einem Ordner-Durchlauf erneut
+    eingereiht wurde, bezahlte JEDER erneute Durchlauf das ganze Dokument neu und
     scheiterte deterministisch wieder an derselben Stelle. Eine Endlosschleife
     aus vollen Neubezahlungen, ohne dass irgendwo ein Fehler sichtbar wurde.
 

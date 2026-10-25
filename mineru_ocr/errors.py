@@ -87,11 +87,12 @@ class UnsupportedTypeError(InputError):
     """Der Dateityp gehoert nicht zu den unterstuetzten.
 
     Sonderfall im Ablauf: Diese Ausnahme erreicht die Datenbank NIE als
-    `input_error`, weil sie schon in der Fassade fliegt, bevor eine Zeile
-    angelegt wird (Plan 4.1, `OCRWrapper.from_path` wirft sofort — Jurgens
-    Vorgabe 2.1: „rejected falls nicht unterstuetzter type"). Nur `from_dir`
-    faengt sie, zaehlt sie und geht weiter, statt an der ersten `.DS_Store` zu
-    sterben.
+    `input_error`, weil sie schon beim Abschicken fliegt, bevor eine Zeile
+    angelegt wird (Plan 4.1, `OCRClient.ocr_start` wirft sofort — Jurgens
+    Vorgabe 2.1: „rejected falls nicht unterstuetzter type"), und zwar bevor
+    irgendein Dokument derselben Sendung eingereiht ist. Nur die Kommandozeile
+    faengt sie in einem Ordner, zaehlt sie und geht weiter, statt an der ersten
+    `.DS_Store` zu sterben.
     """
 
 
@@ -117,15 +118,15 @@ class TooLargeError(InputError):
     Drei Faelle: eine einzelne PDF-Seite ueber der Grenze, eine Nicht-PDF-Datei
     ueber der Grenze (DOCX, TIFF — nicht seitenweise zerlegbar), und beim
     Abschicken eine Eingabe ueber `db.MAX_INPUT_BYTES`, die sich nicht in
-    `inputs` ablegen laesst (dann entsteht keine Zeile; `OCRMegaWrapper.from_dir`
-    zaehlt sie als uebersprungen). Die ersten beiden sind laut
+    `inputs` ablegen laesst (dann entsteht keine Zeile; die Kommandozeile zaehlt
+    sie in einem Ordner als uebersprungen). Die ersten beiden sind laut
     Festlegung des Auftraggebers vorerst ein Fehler MIT Hinweis, kein stiller
     Rettungsversuch: „error fuers erste aber so dass man einen hinweis bekommt es
     nachtraeglich aufzuruesten und es auch als TODO reintun" (Plan 2.4).
 
     Der Hinweis landet als Eintrag in `notes` der Zeile. Den Aufgaben-Eintrag legt
-    NICHT der Daemon an — er wird ueber `report()`/`status()` sichtbar, und der
-    Mensch bzw. die Sitzung, die den Report liest, legt ihn an (Plan 4.1). Ein
+    NICHT der Daemon an — er wird ueber `status()` sichtbar, und der Mensch
+    bzw. die Sitzung, die den Bericht liest, legt ihn an (Plan 4.1). Ein
     Hintergrundprozess, der Tickets erzeugt, ist ein Seiteneffekt, den niemand
     erwartet.
 

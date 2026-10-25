@@ -14,6 +14,9 @@ beiden Wege auf. Ein Kommando, das nur uebersetzt, kann das nicht.
 Die Exit-Codes sind Teil des Vertrags, weil in einer Shell darauf verzweigt wird:
     0  Erfolg.
     1  Betriebsfehler — Endpoint nicht erreichbar, Datenbank weg, Konto leer.
+       Auch bei `ocr`, wenn eine ausdruecklich genannte Datei nicht abgeschickt
+       werden konnte (nicht unterstuetzt, zu gross, nicht lesbar): Die uebrigen sind
+       dann trotzdem eingereiht.
     2  Aufruffehler — falsche Argumente, unbekannter Pfad. Setzt typer selbst.
     3  Nur bei `wait` und `markdown`: Das Dokument ist endgueltig, aber NICHT
        erfolgreich (`failed` oder `input_error`). Ein eigener Code, weil das
