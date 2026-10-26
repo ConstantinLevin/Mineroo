@@ -570,7 +570,7 @@ T = TypeVar("T")
 
 _HTML_BILDQUELLE: Final = re.compile(
     r"(?P<vor><img\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*?\s+src\s*=\s*)"
-    r"(?:(?P<zeichen>[\"'])(?P<gequotet>.*?)(?P=zeichen)|(?P<ungequotet>[^\s>]+))",
+    r"(?:(?P<anfuehrung>[\"'])(?P<gequotet>.*?)(?P=anfuehrung)|(?P<ungequotet>[^\s>]+))",
     re.IGNORECASE | re.DOTALL,
 )
 """Die Quelle eines HTML-Bildes, genau wie DocVortex 0.5.16 sie findet, wenn es
@@ -606,10 +606,10 @@ def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:
     )
 
     def html_quelle(treffer: re.Match[str]) -> str:
-        zeichen = treffer.group("zeichen") or ""
-        quelle = treffer.group("gequotet") if zeichen else treffer.group("ungequotet")
+        anfuehrung = treffer.group("anfuehrung") or ""
+        quelle = treffer.group("gequotet") if anfuehrung else treffer.group("ungequotet")
         neu = umbenannt.get(quelle, quelle)
-        return f"{treffer.group('vor')}{zeichen}{neu}{zeichen}"
+        return f"{treffer.group('vor')}{anfuehrung}{neu}{anfuehrung}"
 
     def ersetzen(teil: Any) -> Any:
         if isinstance(teil, str):
@@ -865,6 +865,9 @@ eine Entity aussieht). Andere Entities im Markdown hat DocVortex nicht
 geschrieben, etwa im Inline-Code, den es roh ausgibt; sie bleiben, wie man sie
 liest."""
 
+_ENTITY_ZEICHEN: Final = {"amp": "&", "lt": "<", "gt": ">"}
+"""Das Zeichen zu jeder Entity von `_DOCVORTEX_ENTITY`."""
+
 
 def _ohne_backslash(text: str) -> str:
     """Der Text ohne einen Backslash vor `*`, `_`, `` ` ``, `~` und `$`.
@@ -886,9 +889,8 @@ def _ohne_maskierung(markdown: str) -> str:
     zudem als Entity (`&lt;Az 12/34&gt;`, `_DOCVORTEX_ENTITY`). Ausgegeben wird
     das Markdown immer unveraendert.
     """
-    zeichen = {"amp": "&", "lt": "<", "gt": ">"}
     return _DOCVORTEX_ENTITY.sub(
-        lambda treffer: zeichen[treffer.group(1)], _ohne_backslash(markdown)
+        lambda treffer: _ENTITY_ZEICHEN[treffer.group(1)], _ohne_backslash(markdown)
     )
 
 
