@@ -870,6 +870,21 @@ def _randbloecke(middles: list[Any]) -> list[str]:
     return texte
 
 
+def middle_json_lesbar(middle: Any) -> None:
+    """Prueft, ob die Darstellung das Middle-JSON eines Teilstuecks lesen kann.
+
+    Dieselben Leser wie `rendered_markdown` (`_randbloecke`), damit die
+    Vollstaendigkeitspruefung (`vollstaendigkeit.teilstueck_pruefen`) kein
+    Teilstueck durchlaesst, dessen Darstellung danach dauerhaft scheitert.
+
+    Raises:
+        IncompleteResultError: siehe `_randbloecke`.
+
+    Kosten: keine.
+    """
+    _randbloecke([middle])
+
+
 _MASKIERT: Final = re.compile(r"\\([*_`~$])")
 """Ein Zeichen, das DocVortex 0.5.16 im Markdown mit einem Backslash maskiert
 (`render/_internal/markdown/escaping.py`, `escape_conservative_markdown_text`:

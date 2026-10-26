@@ -248,6 +248,52 @@ class TerminalRunPodError(RunPodError):
     """
 
 
+class IncompleteResponseError(TerminalRunPodError):
+    """Die Antwort eines Teilstuecks ist erfolgreich, aber unvollstaendig.
+
+    Der Worker meldet `COMPLETED`, und trotzdem fehlt etwas, das das Paket
+    braucht: Seiten, die MinerU nicht verarbeitet hat (`MissingPagesError`),
+    oder eine Datei, ohne die das Ergebnis nicht darstellbar ist
+    (`MissingArtifactError`). Geprueft wird nach jedem Teilstueck
+    (`vollstaendigkeit.teilstueck_pruefen`, Mineroo#12).
+
+    ENDGUELTIG ueber die Oberklasse, also ueber `classify_failure` und nicht
+    ueber eine eigene Fallunterscheidung: Ein weiterer Versuch kaufte mit hoher
+    Wahrscheinlichkeit dieselbe Antwort (eine Seite, die MinerU verwirft,
+    verwirft es wieder). Das Dokument endet `failed`, nicht `input_error`:
+    Gefehlt hat etwas in der Antwort der Engine, und ob es an der Datei lag,
+    sagt die Antwort nicht. Die bezahlte Antwort steht dabei vollstaendig in
+    `raw`, und `retry` liest das Dokument neu, wenn jemand es noch einmal will.
+
+    Ohne diese Pruefung endete ein solches Dokument `done`: Fehlende Seiten
+    fielen niemandem auf, und ohne `middle_json.json` scheiterte jede
+    Darstellung danach dauerhaft, ohne dass `retry` oder erneutes Abschicken es
+    zurueckholte (Code-Review zu Mineroo#11, Befund A1).
+    """
+
+
+class MissingPagesError(IncompleteResponseError):
+    """MinerU hat andere Seiten verarbeitet, als das Paket geschickt hat.
+
+    Verglichen werden die Seiten des Middle-JSON eines Teilstuecks mit dem
+    Seitenbereich, den das Paket geschickt hat, bei PDFs; ein Bild zaehlt als
+    eine Seite. Ein Dokument wird nur `done`, wenn MinerU so viele Seiten
+    verarbeitet hat, wie das Paket geschickt hat (Mineroo#1, Story 13).
+    """
+
+
+class MissingArtifactError(IncompleteResponseError):
+    """Der Antwort fehlt eine Datei, die das Paket braucht, oder der Worker meldet sie verloren.
+
+    Welche Dateien das Paket braucht, steht an einer Stelle,
+    `vollstaendigkeit.BENOETIGTE_DATEIEN`. Fehlt eine davon im Archiv, oder
+    nennt der Worker sie in `degraded` (Job-Vertrag, „Incomplete responses":
+    eine Datei, die er nicht lesen konnte, fehlt dann oder kommt als leerer
+    Ersatzwert), endet das Dokument terminal. Eine andere Datei in `degraded`
+    wird nur vermerkt (Mineroo#1, Story 14).
+    """
+
+
 class JobAufgegebenError(TransientRunPodError):
     """Das Paket hat einen Job aufgegeben und `/cancel` dafuer bereits versucht.
 
@@ -479,7 +525,9 @@ def classify_failure(exc: BaseException) -> FailureKind:
             `psycopg`-Fehler aus demselben Grund; `asyncio.CancelledError`,
             der Abbruch beim Herunterfahren (siehe unten).
 
-            ENDGUELTIG — `TerminalRunPodError`; jede `InputError`;
+            ENDGUELTIG — `TerminalRunPodError`, auch die unvollstaendige
+            Antwort (`IncompleteResponseError`: fehlende Seiten, eine fehlende
+            Datei, die das Paket braucht); jede `InputError`;
             `ConfigurationError` samt `ConfigDriftError` (Wiederholen macht einen
             untauglichen Schluessel nicht gueltig); `DocumentNotFound` (die Zeile
             ist geloescht, dreimal nachsehen aendert daran nichts);

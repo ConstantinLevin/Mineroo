@@ -313,7 +313,9 @@ endlose Wiedervorlage und Doppelkosten.
 **Teilstücke sind vor Postgres vollständig abstrahiert.** Hinein geht das ganze
 Dokument, heraus kommt das ganze Dokument. Dass ein PDF unterwegs in Stücke
 zerfällt, sieht die Datenbank nie: Der Exekutor setzt die Teilergebnisse **vor**
-dem Schreiben zusammen. Es gibt keine Chunk-Tabelle.
+dem Schreiben zusammen. Es gibt keine Chunk-Tabelle. Nach jedem Teilstück
+prüft er, ob die Antwort vollständig ist: Fehlen Seiten oder eine Datei, die das
+Paket braucht, endet das Dokument `failed`, statt still `done` zu werden.
 
 **Die Abruf-Regel — alles holen, alles persistieren, nie filtern — ist als
 Bauweise umgesetzt, nicht als Vorsatz.** Die Ergebnisse liegen auf der Gegenseite

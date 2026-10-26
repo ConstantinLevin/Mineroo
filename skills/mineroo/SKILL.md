@@ -115,7 +115,12 @@ ohne Ergebnis endete. Im letzten Fall und bei `failed` hilft
 `mineru-ocr retry ZIEL --yes`, nachdem der Nutzer zugestimmt hat (siehe Kosten).
 Nennt `show` als Fehler `UnstorableResultError`, liess sich das Ergebnis nicht
 speichern; ein `retry` bezahlt das Dokument neu und scheitert voraussichtlich
-wieder. Das sagst du dem Nutzer, bevor er zustimmt.
+wieder. Das sagst du dem Nutzer, bevor er zustimmt. Ebenso bei
+`MissingPagesError` (MinerU hat nicht alle geschickten Seiten verarbeitet) und
+`MissingArtifactError` (der Antwort fehlte eine Datei, die das Paket braucht):
+Die bezahlte Antwort steht in `show ZIEL --raw`, und ein `retry` bezahlt das
+Dokument neu; eine Seite, die MinerU verwirft, verwirft es voraussichtlich
+wieder.
 
 ## Was Lesen kostet
 

@@ -78,6 +78,16 @@ class DocumentType(enum.Enum):
         return self is DocumentType.PDF
 
     @property
+    def is_image(self) -> bool:
+        """Ob dieser Typ eine Bilddatei ist.
+
+        Ein Bild zaehlt als eine Seite: Nach seinem Teilstueck prueft das Paket,
+        ob MinerU genau eine Seite verarbeitet hat (Mineroo#12). Mehrbildige
+        Dateien kommen gar nicht so weit (`can_hold_several_images`).
+        """
+        return self in _BILDER
+
+    @property
     def can_hold_several_images(self) -> bool:
         """Ob dieser Typ eine Bilddatei ist, die eine Folge von Seiten tragen kann.
 
@@ -100,6 +110,17 @@ class DocumentType(enum.Enum):
         """Die Endung mit fuehrendem Punkt."""
         return _TABELLE[self][1]
 
+
+_BILDER: Final[frozenset[DocumentType]] = frozenset(
+    {
+        DocumentType.PNG,
+        DocumentType.JPEG,
+        DocumentType.GIF,
+        DocumentType.BMP,
+        DocumentType.TIFF,
+        DocumentType.WEBP,
+    }
+)
 
 _BILDFOLGEN: Final[frozenset[DocumentType]] = frozenset(
     {
