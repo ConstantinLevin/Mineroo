@@ -595,7 +595,7 @@ def _echte_teilstuecke() -> list[ChunkArtifacts]:
     ]
 
 
-def _image_paths(middle: dict[str, Any]) -> list[str]:
+def _bildpfade(middle: dict[str, Any]) -> list[str]:
     pfade: list[str] = []
     stapel = [block for seite in middle["pages"] for block in seite.get("blocks", [])]
     while stapel:
@@ -622,7 +622,7 @@ def test_echte_teilstuecke_kollidieren_und_jeder_verweis_zeigt_auf_sein_bild() -
 
     assert len(ergebnis["images"]) == sum(len(teil.images) for teil in teile) == 12
     for nummer, (teil, middle) in enumerate(zip(teile, ergebnis["middle_json"])):
-        pfade = _image_paths(middle)
+        pfade = _bildpfade(middle)
         assert pfade
         for pfad in pfade:
             name = pfad.removeprefix(f"images/teilstueck_{nummer}/")
