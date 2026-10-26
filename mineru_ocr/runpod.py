@@ -705,6 +705,12 @@ class RunPodClient:
                 `abgebrochen`, damit der Executor ihn noch einmal versucht.
             ResultLostError: siehe `status`. Ebenfalls wiederholbar — der Job
                 wird dann neu geschickt, nicht das Dokument aufgegeben.
+            InsufficientBalanceError: HTTP 402, auch beim Schlussabruf. Der
+                Executor pausiert und setzt danach denselben Job fort.
+            ConfigurationError: HTTP 401/403 oder fehlende Konfiguration,
+                unveraendert wie beim regulaeren Abruf.
+            TerminalRunPodError: Andere endgueltige Abfragefehler, ebenfalls
+                unveraendert; das Zeitbudget macht sie nicht wiederholbar.
             asyncio.CancelledError: Der Daemon faehrt herunter. Wird NICHT
                 gefangen und nicht in etwas anderes verwandelt — der Executor
                 schickt den Abbruch, und die Warteschlange reiht den Job neu
@@ -750,12 +756,14 @@ class RunPodClient:
                 # Vor dem Aufgeben ein letztes Mal fragen: Wird der Job im
                 # letzten Takt fertig, ist er bezahlt, und ihn abzubrechen und neu
                 # abzusenden zahlte ihn ein zweites Mal.
+                # Wie beim regulaeren Abruf werden nur transiente Fehler hier
+                # behandelt; Kontopause und andere Fehler bleiben beim Executor.
                 try:
                     letzte = await self.status(job_id)
                 except ResultLostError:
                     # Eine bereits verlorene Antwort wird durch Warten nicht
                     # wieder abholbar, wie im regulaeren Abruf unten.
-                    letzte = None
+                    raise
                 except TransientRunPodError as fehler:
                     letzter_fehler = fehler
                     if fehler_seit is None:
@@ -767,8 +775,6 @@ class RunPodClient:
                         abstand = min(abstand * 2, 60.0)
                         await asyncio.sleep(abstand)
                         continue
-                    letzte = None
-                except Exception:  # noqa: BLE001 — der Grund zum Aufgeben steht
                     letzte = None
                 if letzte is not None and letzte.get("status") in TERMINAL_STATUSES:
                     return letzte

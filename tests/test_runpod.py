@@ -894,6 +894,76 @@ async def test_nach_zeitbudget_endet_die_erste_wieder_erfolgreiche_abfrage(
     assert sum("/cancel/" in a.url.path for a in anfragen) == 1
 
 
+async def test_402_im_schlussabruf_erlaubt_das_fortsetzen_desselben_jobs(
+    echte_settings: Settings, uhr: _Uhr
+) -> None:
+    """503 bei 290 s, 402 bei 310 s: Die Kontopause bekommt ihren Fehler und
+    kann danach denselben bezahlten Job abholen, ohne ihn abzubrechen."""
+    einstellung = dataclasses.replace(
+        echte_settings, job_timeout_seconds=300.0, poll_interval_seconds=10.0
+    )
+    bezahlt = {"status": "COMPLETED", "output": {"markdown": "Bezahlter Text"}}
+    client, transport = _client(
+        einstellung,
+        Aufzeichnung(
+            [_antwort({"status": "IN_PROGRESS"})] * 29
+            + [_antwort({"error": "voruebergehend"}, code=503)]
+            + [_antwort({"error": "Konto leer"}, code=402)]
+            + [_antwort(bezahlt)]
+        ),
+    )
+
+    with pytest.raises(InsufficientBalanceError, match="Konto leer"):
+        await client.await_result("j")
+    assert uhr.jetzt == 310.0
+    assert await client.await_result("j") == bezahlt
+    assert all(a.url.path.endswith("/status/j") for a in transport.anfragen)
+
+
+@pytest.mark.parametrize(
+    ("fehlerantwort", "erwartet"),
+    [
+        (_antwort({"error": "kein Zugang"}, code=401), ConfigurationError),
+        (_antwort({"error": "verboten"}, code=403), ConfigurationError),
+        (_antwort({"error": "ungueltig"}, code=400), TerminalRunPodError),
+        (_antwort({"error": "zu viele Anfragen"}, code=429), TerminalRunPodError),
+        (_antwort({"error": "nicht mehr da"}, code=404), ResultLostError),
+        (httpx.Response(200, text="kein JSON"), TerminalRunPodError),
+        (httpx.Response(200, json=[]), TerminalRunPodError),
+    ],
+    ids=["401", "403", "400", "429", "404", "kein-json", "kein-objekt"],
+)
+async def test_schlussabruf_reicht_fehler_wie_der_regulaere_abruf_durch(
+    echte_settings: Settings,
+    uhr: _Uhr,
+    fehlerantwort: httpx.Response,
+    erwartet: type[Exception],
+) -> None:
+    """Ein abgelaufenes Zeitbudget aendert weder Typ noch Meldung eines
+    Abfragefehlers: Ueber Wiederholung und Abbruch entscheidet der Executor."""
+    einstellung = dataclasses.replace(
+        echte_settings, job_timeout_seconds=300.0, poll_interval_seconds=10.0
+    )
+    regulaer, _ = _client(einstellung, Aufzeichnung(fehlerantwort))
+    with pytest.raises(erwartet) as urspruenglich:
+        await regulaer.await_result("j")
+
+    schluss, transport = _client(
+        einstellung,
+        Aufzeichnung(
+            [_antwort({"status": "IN_PROGRESS"})] * 29
+            + [_antwort({"error": "voruebergehend"}, code=503)]
+            + [fehlerantwort]
+        ),
+    )
+    with pytest.raises(erwartet) as am_schluss:
+        await schluss.await_result("j")
+
+    assert str(am_schluss.value) == str(urspruenglich.value)
+    assert uhr.jetzt == 310.0
+    assert all(a.url.path.endswith("/status/j") for a in transport.anfragen)
+
+
 async def test_ein_gelungenes_abfragen_setzt_die_fehlerfrist_zurueck(
     echte_settings: Settings, uhr: _Uhr
 ) -> None:
