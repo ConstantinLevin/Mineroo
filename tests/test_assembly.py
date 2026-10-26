@@ -330,6 +330,25 @@ def test_ein_entgleistes_img_haelt_das_zusammensetzen_nicht_auf(inhalt: str) -> 
     assert ergebnis["middle_json"][0]["pages"][0]["blocks"][0]["content"][0]["content"] == inhalt
 
 
+def test_eine_html_quelle_wird_nur_als_ganzes_umbenannt() -> None:
+    """Eine HTML-Quelle, die mit dem Pfad eines eigenen Bildes beginnt, aber mehr
+    traegt (`images/page_0_image_1.jpg?x=1`), ist nicht der Name, unter dem
+    DocVortex das Bild ablegt, und bleibt stehen."""
+    inhalt = f'<img src="{ersatz.bild_pfad(0, 1)}?x=1">'
+    tabelle = {
+        "type": "table",
+        "index": 0,
+        "content": [{"type": "table_body", "index": 0, "content": inhalt}],
+    }
+    teil = _teil_aus(
+        Chunk(0, 0),
+        [ersatz.seite(0, [tabelle, ersatz.bild_block(1, 0)])],
+        {ersatz.bild_pfad(0, 1): b"eigenes"},
+    )
+    ergebnis = assemble([teil])
+    assert ergebnis["middle_json"][0]["pages"][0]["blocks"][0]["content"][0]["content"] == inhalt
+
+
 def test_ein_name_ist_kein_praefix_eines_anderen() -> None:
     """`images/page_0_image_1.jpg` und `images/page_0_image_10.jpg` sind zwei
     Bilder; das Umbenennen des einen trifft den Verweis auf das andere nicht."""
