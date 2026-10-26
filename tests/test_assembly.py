@@ -758,6 +758,24 @@ def test_echte_normale_seite_traegt_alle_fuenf_randklassen_einmal_an_ihrer_stell
     assert not is_empty(ergebnis)
 
 
+def test_echte_teilstuecke_ergeben_den_ganzen_text_mit_jeder_seitenzahl_einmal() -> None:
+    """Der Text fuer Abnehmer ist das ganze Dokument, auch ueber Teilstuecke: Die
+    zwoelf Seiten des echten Berichts tragen je ihre Kopfzeile und ihre
+    Seitenzahl, die `markdown.md` weglaesst, jede Seitenzahl genau einmal und in
+    der Reihenfolge der Seiten."""
+    ergebnis = assemble(_echte_teilstuecke())
+    assert "Seite 1 von 12" not in ergebnis["markdown"]
+
+    dargestellt = rendered_markdown(ergebnis)
+
+    assert dargestellt.count("Technischer Bericht Kuehlanlagen – Messkampagne 2025") == 12
+    seitenzahlen = [f"Seite {nummer} von 12" for nummer in range(1, 13)]
+    for seitenzahl in seitenzahlen:
+        assert dargestellt.count(seitenzahl) == 1, seitenzahl
+    stellen = [dargestellt.index(seitenzahl) for seitenzahl in seitenzahlen]
+    assert stellen == sorted(stellen)
+
+
 def test_echte_bild_deutungen_stehen_hinter_ihrem_bild_im_text() -> None:
     """Mit eingeschalteter Bildanalyse schreibt MinerU die Deutung jedes Bildes
     hinter das Bild, als eingeklappten Block (`<details>`), auch fuer Bilder,
