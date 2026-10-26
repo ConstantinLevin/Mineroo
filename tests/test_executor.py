@@ -613,7 +613,7 @@ async def test_job_bestimmt_die_seitenzahl_und_schreibt_sie_mit_dem_ergebnis(
     await process_document(
         sha,
         settings=exec_settings,
-        runpod=FalscherRunPod([ersatz.fertige_antwort()]),
+        runpod=FalscherRunPod([ersatz.fertige_antwort(seiten=3)]),
         pool=pool,
     )
 
@@ -782,7 +782,7 @@ async def test_kleines_pdf_geht_ungeschnitten_hinaus(
     """
     inhalt = _pdf(3)
     sha, _ = _anlegen(db_conn, tmp_path, inhalt)
-    runpod = FalscherRunPod([ersatz.fertige_antwort()])
+    runpod = FalscherRunPod([ersatz.fertige_antwort(seiten=3)])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     assert len(runpod.abgesendet) == 1
@@ -800,7 +800,13 @@ async def test_grosses_pdf_wird_geschnitten(
     eng = dataclasses.replace(exec_settings, max_pages_per_chunk=2)
     inhalt = _pdf(5)
     sha, _ = _anlegen(db_conn, tmp_path, inhalt)
-    runpod = FalscherRunPod([ersatz.fertige_antwort("Stueck")])
+    runpod = FalscherRunPod(
+        [
+            ersatz.fertige_antwort("Stueck", seiten=2),
+            ersatz.fertige_antwort("Stueck", seiten=2),
+            ersatz.fertige_antwort("Stueck"),
+        ]
+    )
     await process_document(sha, settings=eng, runpod=runpod, pool=pool)
 
     # 5 Seiten bei Schwelle 2 → 2 + 2 + 1.
@@ -1361,6 +1367,335 @@ async def test_scheitert_das_endschreiben_stehen_die_lese_vermerke_einmal(
     arten = [v["kind"] for v in zeile.notes]
     assert arten.count("lese_einstellungen_abweichend") == 1
     assert zeile.mineru_version == "4.0.11"
+
+
+# --- Vollstaendigkeit: Seiten und degraded (Mineroo#12) ------------------------
+
+_DEGRADED_MIDDLE_JSON: dict[str, Any] = {
+    "count": 1,
+    "items": [
+        {
+            "artifact": "middle_json",
+            "file": "middle_json.json",
+            "reason": "unreadable",
+            "error_type": "JSONDecodeError",
+        }
+    ],
+}
+
+_DEGRADED_STRUCTURED_CONTENT: dict[str, Any] = {
+    "count": 1,
+    "items": [
+        {
+            "artifact": "structured_content",
+            "file": "structured_content.json",
+            "reason": "unreadable",
+            "error_type": "JSONDecodeError",
+        }
+    ],
+}
+
+
+@pytest.fixture
+def degraded_middle_json() -> dict[str, Any]:
+    """Eine Antwort, in der der Worker `middle_json.json` verloren meldet.
+
+    ABGELEITET aus der echten Antwort `normale_seite`
+    (`artifacts/2026-10-26-mineru-4.0.12-endpoint/antworten/`, Job
+    `c7c9eae9-…-e2`, Eingabe `material/normale_seite.pdf`): Das Mitglied
+    `middle_json.json` ist aus dem Archiv entfernt, und im Ergebnis-Eintrag ist
+    das Feld `degraded` gesetzt, auf `_DEGRADED_MIDDLE_JSON`. Alles andere ist
+    die echte Antwort. So liefert der Worker eine Datei, die er nicht lesen
+    konnte, beim Transport `tarball_b64` (Job-Vertrag des Forks, `api.mdx`,
+    „Incomplete responses": das Archiv ohne das Mitglied, `degraded` mit
+    `count` und `items`). Abgeleitet, weil der Endpoint `degraded` nicht gezielt
+    liefert: Die echten Antworten tragen keins, und erzwingen liesse es sich nur
+    mit einer Datei, die beim Schreiben im Worker kaputtgeht."""
+    return ersatz.abgeleitete_antwort(
+        "normale_seite", ohne=("middle_json.json",), degraded=_DEGRADED_MIDDLE_JSON
+    )
+
+
+@pytest.fixture
+def degraded_structured_content() -> dict[str, Any]:
+    """Eine Antwort, in der der Worker eine Datei verloren meldet, die das Paket nicht braucht.
+
+    ABGELEITET aus der echten Antwort `normale_seite` wie `degraded_middle_json`:
+    Das Mitglied `structured_content.json` ist aus dem Archiv entfernt, und im
+    Ergebnis-Eintrag ist das Feld `degraded` gesetzt, auf
+    `_DEGRADED_STRUCTURED_CONTENT`. Alles andere ist die echte Antwort."""
+    return ersatz.abgeleitete_antwort(
+        "normale_seite",
+        ohne=("structured_content.json",),
+        degraded=_DEGRADED_STRUCTURED_CONTENT,
+    )
+
+
+def _echtes_material(name: str) -> bytes:
+    return (ersatz.ECHT_ENDPOINT / "material" / name).read_bytes()
+
+
+async def test_degraded_benoetigte_datei_endet_failed_mit_der_antwort_in_raw(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    degraded_middle_json: dict[str, Any],
+) -> None:
+    """Der Fall aus dem Code-Review zu Mineroo#11 (A1): Der Worker meldet
+    `middle_json.json` verloren. Frueher endete das Dokument `done`, und jede
+    Darstellung scheiterte danach dauerhaft. Jetzt endet es `failed`, die
+    bezahlte Antwort steht in `raw` (Text, `degraded`), und die Eingabe bleibt
+    stehen: `retry` kann das Dokument neu lesen."""
+    from mineru_ocr.errors import MissingArtifactError
+
+    sha, _ = _anlegen(db_conn, tmp_path, _echtes_material("normale_seite.pdf"))
+    with pytest.raises(MissingArtifactError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod([degraded_middle_json]),
+            pool=pool,
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.error is not None and "MissingArtifactError" in zeile.error
+    assert "middle_json.json" in zeile.error
+    assert zeile.raw is not None
+    assert "Geschaeftsverlauf" in zeile.raw["markdown"]
+    assert len(zeile.raw["images"]) == 2
+    assert zeile.raw["middle_json"] == [None]
+    assert zeile.raw["extras"][0]["degraded"] == _DEGRADED_MIDDLE_JSON
+    assert zeile.raw["failure"]["type"] == "MissingArtifactError"
+    assert _eingabe_steht(db_conn, sha)
+
+
+async def test_degraded_andere_datei_endet_done_mit_vermerk(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    degraded_structured_content: dict[str, Any],
+) -> None:
+    """Eine Datei, die das Paket nicht braucht, in `degraded`: Das Dokument wird
+    `done`, und `notes` vermerkt das `degraded` samt Teilstueck und Job, damit
+    der Verlust nicht nur tief in `raw` steht."""
+    sha, _ = _anlegen(db_conn, tmp_path, _echtes_material("normale_seite.pdf"))
+    await process_document(
+        sha,
+        settings=exec_settings,
+        runpod=FalscherRunPod([degraded_structured_content]),
+        pool=pool,
+    )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    vermerke = [v for v in zeile.notes if v.get("kind") == "unvollstaendige_antwort"]
+    assert len(vermerke) == 1
+    assert vermerke[0]["degraded"] == _DEGRADED_STRUCTURED_CONTENT
+    assert vermerke[0]["teilstueck"] == {"first_page": 0, "last_page": 0}
+    assert vermerke[0]["job_id"] == "job-0"
+    assert zeile.raw is not None
+    assert zeile.raw["structured_content"] == [None]
+
+
+async def test_intakte_antwort_hat_keinen_vermerk(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """`degraded` fehlt in einer intakten Antwort, also gibt es nichts zu
+    vermerken: Die echte normale Seite endet `done` ohne Vermerk."""
+    sha, _ = _anlegen(db_conn, tmp_path, _echtes_material("normale_seite.pdf"))
+    await process_document(
+        sha,
+        settings=exec_settings,
+        runpod=FalscherRunPod([ersatz.echte_antwort("normale_seite")]),
+        pool=pool,
+    )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    assert not [v for v in zeile.notes if v.get("kind") == "unvollstaendige_antwort"]
+
+
+async def test_verworfene_seite_im_mehrteiler_endet_failed_ohne_weitere_kosten(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Der zwoelfseitige Bericht in drei Teilstuecken (0-4, 5-9, 10-11), und im
+    zweiten verarbeitet MinerU nur vier von fuenf Seiten (abgeleitet aus der
+    echten Antwort `mehrteilig_1_seiten_5-9`: die Seite mit `page_idx` 2 aus dem
+    Middle-JSON entfernt). Das Dokument endet `failed`, sobald das zweite
+    Teilstueck da ist: Das dritte wird nicht mehr bezahlt. Die zwei bezahlten
+    Antworten stehen zusammengesetzt in `raw`, mit den Seitenzahlen des
+    Originals; Seite 7 fehlt, und die Meldung nennt sie."""
+    from mineru_ocr.errors import MissingPagesError
+
+    def ohne_seite_2(middle: dict[str, Any]) -> dict[str, Any]:
+        middle["pages"] = [s for s in middle["pages"] if s["page_idx"] != 2]
+        return middle
+
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=5)
+    sha, _ = _anlegen(db_conn, tmp_path, _echtes_material("mehrteilig.pdf"))
+    runpod = FalscherRunPod(
+        [
+            ersatz.echte_antwort("mehrteilig_0_seiten_0-4"),
+            ersatz.abgeleitete_antwort(
+                "mehrteilig_1_seiten_5-9", middle_json_aendern=ohne_seite_2
+            ),
+            ersatz.echte_antwort("mehrteilig_2_seiten_10-11"),
+        ]
+    )
+    with pytest.raises(MissingPagesError):
+        await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    assert len(runpod.abgesendet) == 2
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.page_count == 12
+    assert zeile.error is not None and "[7]" in zeile.error
+    assert zeile.raw is not None
+    assert [[s["page_idx"] for s in m["pages"]] for m in zeile.raw["middle_json"]] == [
+        [0, 1, 2, 3, 4],
+        [5, 6, 8, 9],
+    ]
+    assert _eingabe_steht(db_conn, sha)
+
+
+async def test_ungeschnittene_pdf_mit_fehlender_seite_endet_failed(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Auch ungeschnitten ist die PDF ein Teilstueck: drei Seiten geschickt, zwei
+    verarbeitet, also `failed` statt `done`."""
+    from mineru_ocr.errors import MissingPagesError
+
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(3))
+    with pytest.raises(MissingPagesError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod([ersatz.fertige_antwort(seiten=2)]),
+            pool=pool,
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+
+
+async def test_bild_zaehlt_als_eine_seite(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ein Bild ist eine Seite. Die echte leere Seite als PNG (eine Seite ohne
+    Bloecke) endet `empty`; eine Antwort ohne jede Seite endet `failed`, denn
+    dann hat MinerU das Bild nicht verarbeitet."""
+    from mineru_ocr.errors import MissingPagesError
+
+    sha, _ = _anlegen(
+        db_conn, tmp_path, _echtes_material("leere_seite.png"), name="a.png",
+        typ=DocumentType.PNG,
+    )
+    await process_document(
+        sha,
+        settings=exec_settings,
+        runpod=FalscherRunPod([ersatz.echte_antwort("leere_seite_bild")]),
+        pool=pool,
+    )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.EMPTY
+
+    def ohne_seiten(middle: dict[str, Any]) -> dict[str, Any]:
+        middle["pages"] = []
+        return middle
+
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"anderes bild", name="b.png", typ=DocumentType.PNG
+    )
+    with pytest.raises(MissingPagesError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod(
+                [
+                    ersatz.abgeleitete_antwort(
+                        "leere_seite_bild", middle_json_aendern=ohne_seiten
+                    )
+                ]
+            ),
+            pool=pool,
+        )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+
+
+async def test_ganzdokument_format_hat_keine_seitenzahl(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ein DOCX liest MinerU als ganzes Dokument; eine Seitenzahl kennt das Paket
+    dafuer nicht, und der Vergleich entfaellt. Die echte DOCX-Antwort endet
+    `done`."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, _echtes_material("dokument.docx"), name="d.docx",
+        typ=DocumentType.DOCX,
+    )
+    await process_document(
+        sha,
+        settings=exec_settings,
+        runpod=FalscherRunPod([ersatz.echte_antwort("dokument_docx")]),
+        pool=pool,
+    )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+
+
+async def test_ganzdokument_format_ohne_middle_json_endet_failed(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Die benoetigten Dateien gelten fuer jedes Format: Fehlt der echten
+    DOCX-Antwort `middle_json.json` (abgeleitet: das Mitglied aus dem Archiv
+    entfernt, ohne `degraded`), endet auch sie `failed`."""
+    from mineru_ocr.errors import MissingArtifactError
+
+    sha, _ = _anlegen(
+        db_conn, tmp_path, _echtes_material("dokument.docx"), name="d.docx",
+        typ=DocumentType.DOCX,
+    )
+    with pytest.raises(MissingArtifactError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod(
+                [ersatz.abgeleitete_antwort("dokument_docx", ohne=("middle_json.json",))]
+            ),
+            pool=pool,
+        )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
 
 
 async def test_leeres_ergebnis_wird_empty(

@@ -185,6 +185,21 @@ def test_nur_pdf_ist_zerlegbar() -> None:
         assert typ.is_pdf is (typ is DocumentType.PDF)
 
 
+def test_bilder_sind_genau_die_bildtypen() -> None:
+    """`is_image` ist fuer die sechs Bildtypen wahr: Ein Bild zaehlt als eine
+    Seite (Mineroo#12). PDF und die Office-Formate sind keine Bilder."""
+    bilder = {
+        DocumentType.PNG,
+        DocumentType.JPEG,
+        DocumentType.GIF,
+        DocumentType.BMP,
+        DocumentType.TIFF,
+        DocumentType.WEBP,
+    }
+    for typ in DocumentType:
+        assert typ.is_image is (typ in bilder), typ
+
+
 def test_jeder_typ_hat_mime_und_endung() -> None:
     """Die Tabelle ist vollstaendig — ein Typ ohne Eintrag flaege erst beim
     Anlegen einer Zeile auf."""

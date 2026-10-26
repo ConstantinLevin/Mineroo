@@ -375,15 +375,23 @@ def tarball_antwort(dateien: Mapping[str, bytes], **einstellungen: Any) -> dict[
 
 
 def fertige_antwort(
-    text: str = "Text", *, page_idx: Any = 0, **gemeldet: Any
+    text: str = "Text", *, page_idx: Any = 0, seiten: int = 1, **gemeldet: Any
 ) -> dict[str, Any]:
     """Die gewoehnliche Erfolgsantwort fuer Tests, die nur einen Text brauchen:
-    eine Seite, darauf ein Textblock mit `text` (ohne Text: eine Seite ohne
-    Block). `page_idx` ist fuer Tests, die eine kaputte Seitenangabe brauchen;
+    `seiten` Seiten, auf der ersten ein Textblock mit `text` (ohne Text: Seiten
+    ohne Block). `page_idx` ist fuer Tests, die eine kaputte Seitenangabe
+    brauchen; es gilt fuer die erste Seite, die weiteren zaehlen ab 1.
     `gemeldet` setzt, was der Worker meldet (`tier`, `ocr_mode`,
-    `image_analysis`, `mineru_version`, siehe `antwort`)."""
-    eine = seite(page_idx, [text_block(0, text)] if text else [])
-    return tarball_antwort(dokument_dateien(middle_json([eine])), **gemeldet)
+    `image_analysis`, `mineru_version`, siehe `antwort`).
+
+    `seiten` muss zu dem passen, was der Test schickt: Nach jedem Teilstueck
+    prueft der Executor, ob MinerU so viele Seiten verarbeitet hat, wie das
+    Paket geschickt hat (Mineroo#12)."""
+    erste = seite(page_idx, [text_block(0, text)] if text else [])
+    return tarball_antwort(
+        dokument_dateien(middle_json([erste] + [seite(nr, []) for nr in range(1, seiten)])),
+        **gemeldet,
+    )
 
 
 def fehlerantwort(fehler: str) -> dict[str, Any]:

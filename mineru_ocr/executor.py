@@ -39,7 +39,7 @@ from typing import Any, Final, TypeVar
 
 from psycopg_pool import AsyncConnectionPool
 
-from . import assembly, chunking, db, images
+from . import assembly, chunking, db, images, vollstaendigkeit
 from .abbruch import abwarten_bis_zum_zweiten_abbruch
 from .config import ReadSettings, Settings
 from .errors import (
@@ -464,6 +464,8 @@ async def process_document(
                     runpod=runpod,
                     teile=teile,
                     unverwertbar=unverwertbar,
+                    vermerke=vermerke,
+                    seiten_zaehlen=True,
                 )
         else:
             seiten = None
@@ -489,6 +491,8 @@ async def process_document(
                 )
             image_tag = await _image_tag_lesen(runpod, vermerke)
             await wait_for_balance(runpod, settings)
+            # Ein Bild ist eine Seite; eine Datei, die MinerU als ganzes Dokument
+            # liest (Office), hat keine Seitenzahl, die das Paket kennt.
             await _stuecke_verarbeiten(
                 [(chunking.Chunk(first_page=0, last_page=0), rohbytes)],
                 settings=settings,
@@ -496,6 +500,8 @@ async def process_document(
                 runpod=runpod,
                 teile=teile,
                 unverwertbar=unverwertbar,
+                vermerke=vermerke,
+                seiten_zaehlen=typ.is_image,
             )
 
         # --- 3.: nachrechnen, zusammensetzen, EINMAL schreiben ----------
@@ -1150,6 +1156,8 @@ async def _stuecke_verarbeiten(
     runpod: RunPodAccess,
     teile: list[assembly.ChunkArtifacts],
     unverwertbar: list[dict[str, Any]],
+    vermerke: list[dict[str, Any]],
+    seiten_zaehlen: bool,
 ) -> None:
     """Schickt Teilstueck fuer Teilstueck hinaus und holt jedes SOFORT ab.
 
@@ -1158,6 +1166,14 @@ async def _stuecke_verarbeiten(
     Felder: `runpod.submit` nimmt sie einzeln, weil die Nutzlast auch Werte
     tragen koennen muss, die das Paket nie bilden wuerde (die erzwungene
     Fehlerantwort der Aufnahmen schickt eine Stufe, die es nicht gibt).
+
+    Nach jedem Teilstueck wird geprueft, ob seine Antwort vollstaendig ist
+    (`vollstaendigkeit.teilstueck_pruefen`, Mineroo#12): ob jede Datei da ist,
+    die das Paket braucht, und, wenn `seiten_zaehlen` (PDF und Bild), ob MinerU
+    genau die geschickten Seiten verarbeitet hat. Fehlt etwas, geht die
+    endgueltige Ausnahme nach oben, und die folgenden Teilstuecke werden nicht
+    mehr bezahlt. Ein `degraded`, das nur Dateien nennt, die das Paket nicht
+    braucht, landet als Vermerk in `vermerke`.
 
     NACHEINANDER, und das ist eine Zusicherung und keine Absicht: Ein fertiges
     Ergebnis liegt auf der Gegenseite nur rund dreissig Minuten bereit. Wuerde
@@ -1267,7 +1283,7 @@ async def _stuecke_verarbeiten(
             # nur als Zeichenkette in `raw["failure"]["message"]` vorhanden,
             # nicht als abfragbares JSON.
             _endzustand_uebersetzen(antwort, job)
-            teile.append(assembly.unpack_response(antwort, chunk))
+            teil = assembly.unpack_response(antwort, chunk)
         except Exception as fehler:
             # DIE ANTWORT IST BEZAHLT und liegt in genau diesem Moment zum
             # letzten Mal greifbar vor — auf der Gegenseite ist sie nach rund
@@ -1294,6 +1310,27 @@ async def _stuecke_verarbeiten(
                 }
             )
             raise
+        # Ausgepackt ist die Antwort bezahlt und verwertbar: Sie gehoert in
+        # `teile`, BEVOR geprueft wird, ob sie vollstaendig ist. Fehlt etwas,
+        # steht sie damit zusammengesetzt im `raw` des `failed`, und die
+        # folgenden Teilstuecke werden nicht mehr bezahlt (Mineroo#12).
+        teile.append(teil)
+        zu_vermerken = vollstaendigkeit.teilstueck_pruefen(
+            teil, seiten_geschickt=chunk.page_count if seiten_zaehlen else None
+        )
+        if zu_vermerken is not None:
+            vermerke.append(
+                {
+                    "kind": "unvollstaendige_antwort",
+                    "at": _jetzt(),
+                    "teilstueck": {
+                        "first_page": chunk.first_page,
+                        "last_page": chunk.last_page,
+                    },
+                    "job_id": job,
+                    "degraded": zu_vermerken,
+                }
+            )
 
 
 async def _abbruch_hinausschicken(runpod: RunPodAccess, job: str) -> None:
