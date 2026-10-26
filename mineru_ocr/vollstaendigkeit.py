@@ -31,11 +31,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Final
 
-from .assembly import DATEI_MARKDOWN, DATEI_MIDDLE_JSON, ChunkArtifacts, middle_json_lesbar
+from .assembly import (
+    DATEI_MARKDOWN,
+    DATEI_MARKDOWN_FULL,
+    DATEI_MIDDLE_JSON,
+    ChunkArtifacts,
+    middle_json_lesbar,
+)
 from .errors import IncompleteResultError, MissingArtifactError, MissingPagesError
 
 BENOETIGTE_DATEIEN: Final[Mapping[str, str]] = {
     DATEI_MARKDOWN: "markdown",
+    DATEI_MARKDOWN_FULL: "markdown_full",
     DATEI_MIDDLE_JSON: "middle_json",
 }
 """Die Dateien einer Antwort, ohne die das Paket ein Dokument nicht `done` werden laesst.
@@ -44,20 +51,22 @@ Je Datei ihr Schluessel als Artefakt, wie ihn `degraded` nennt (`items[].artifac
 Job-Vertrag) und wie das Feld von `assembly.ChunkArtifacts` heisst. Die Liste
 ergibt sich aus dem Code, der ein gespeichertes Ergebnis liest:
 
-    `markdown.md`: der Text des Dokuments. `assembly.rendered_markdown` beginnt
-    damit; ohne ihn laesst schon der Worker den Job scheitern, und
-    `assembly.unpack_response` weist eine Antwort ohne ihn ab.
+    `markdown.md`: der Text des Dokuments ohne die Randklassen. Ohne ihn laesst
+    schon der Worker den Job scheitern, und `assembly.unpack_response` weist
+    eine Antwort ohne ihn ab.
 
-    `middle_json.json`: `assembly.rendered_markdown` liest daraus die
-    Randbloecke (`_pflichtfeld`, `_randbloecke`), `assembly.is_empty` die
-    Bloecke, und die Seitenzaehlung dieses Moduls die Seiten. Fehlte es, endete
-    das Dokument `done`, und jede Darstellung scheiterte danach dauerhaft
-    (Code-Review zu Mineroo#11, Befund A1).
+    `markdown_full.md`: die Vollmodus-Fassung, der Text fuer Abnehmer.
+    `assembly.rendered_markdown` ist diese Datei (Mineroo#13); fehlte sie einem
+    Teilstueck, endete das Dokument `done`, und die Darstellung scheiterte
+    danach dauerhaft.
+
+    `middle_json.json`: `assembly.is_empty` liest daraus die Bloecke und die
+    Seitenzaehlung dieses Moduls die Seiten (Code-Review zu Mineroo#11,
+    Befund A1).
 
 Wer Code schreibt, der eine weitere Datei des gespeicherten Ergebnisses
-braucht, traegt sie hier ein; mit Mineroo#13 kommt `markdown_full.md` dazu
-(`rendered_markdown` wird dann die Vollmodus-Fassung). Eine Datei, die hier
-nicht steht, darf fehlen: Ein `degraded`-Eintrag zu ihr wird vermerkt."""
+braucht, traegt sie hier ein. Eine Datei, die hier nicht steht, darf fehlen:
+Ein `degraded`-Eintrag zu ihr wird vermerkt."""
 
 
 def teilstueck_pruefen(
@@ -86,10 +95,10 @@ def teilstueck_pruefen(
        Teilstueck nicht als vollstaendig: Ein faelschlich `done` verbuchtes
        Dokument mit fehlender Seite faellt nie auf.
 
-    4. Fuer jeden Typ, auch ohne Seitenzahl: Das Middle-JSON hat die Form, die
-       die Darstellung liest (`assembly.middle_json_lesbar`, dieselben Leser
-       wie `rendered_markdown`). Sonst endete das Dokument `done`, und jede
-       Darstellung scheiterte danach dauerhaft (Code-Review zu Mineroo#12).
+    4. Fuer jeden Typ, auch ohne Seitenzahl: Das Middle-JSON hat die Form des
+       Schemas (`assembly.middle_json_lesbar`, derselbe Leser wie
+       `assembly.is_empty`). Sonst endete das Dokument `done` mit Bloecken,
+       die sich nicht lesen lassen (Code-Review zu Mineroo#12).
 
     Ein `degraded`-Eintrag, der kein Objekt ist, faellt allein heraus; die
     gueltigen daneben werden in Schritt 1 trotzdem geprueft.

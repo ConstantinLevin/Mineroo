@@ -676,7 +676,7 @@ und damit `failed` mit der Antwort zusammengesetzt in `raw` ist: eine Datei aus
 bei PDF und Bild (`seiten_zaehlen`; ein Bild ist eine Seite) sind die `page_idx`
 des Middle-JSON nicht genau die geschickten Seiten, und bei jedem Typ hat das
 Middle-JSON nicht die Form, die die Darstellung liest
-(`assembly.middle_json_lesbar`, dieselben Leser wie `rendered_markdown`). Die
+(`assembly.middle_json_lesbar`, derselbe Leser wie `assembly.is_empty`). Die
 folgenden Teilstücke werden
 dann nicht mehr bezahlt. Ein `degraded` zu einer anderen Datei geht als Vermerk
 `unvollstaendige_antwort` nach `notes`. `BENOETIGTE_DATEIEN` ist die eine Liste
