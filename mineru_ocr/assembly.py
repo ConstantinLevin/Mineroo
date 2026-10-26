@@ -569,14 +569,23 @@ T = TypeVar("T")
 
 
 _HTML_BILDQUELLE: Final = re.compile(
-    r"(?P<vor><img\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*?\s+src\s*=\s*)"
+    r"(?P<vor><img\b(?:[^<>\"'\s]++|\s++(?!src\s*=)|\"[^\"]*\"|'[^']*')*\s+src\s*=\s*)"
     r"(?:(?P<anfuehrung>[\"'])(?P<gequotet>.*?)(?P=anfuehrung)|(?P<ungequotet>[^\s>]+))",
     re.IGNORECASE | re.DOTALL,
 )
-"""Die Quelle eines HTML-Bildes, genau wie DocVortex 0.5.16 sie findet, wenn es
-die Bilder visuellen HTMLs ablegt (`export/_images.py`, `_HTML_IMAGE_SOURCE_RE`):
+"""Die Quelle eines HTML-Bildes, wie DocVortex 0.5.16 sie findet, wenn es die
+Bilder visuellen HTMLs ablegt (`export/_images.py`, `_HTML_IMAGE_SOURCE_RE`):
 `<img … src=…>` in jeder Schreibweise, mit oder ohne Anfuehrungszeichen.
-DocVortex ersetzt nur den Wert und behaelt den Rest, wie das Modell ihn schrieb."""
+DocVortex ersetzt nur den Wert und behaelt den Rest, wie das Modell ihn schrieb.
+
+Anders als bei DocVortex liest der Ausdruck die Attribute vor `src` als Folgen
+ohne Leerraum, Leerraum, auf den kein `src=` folgt, und Werte in
+Anfuehrungszeichen, die ersten beiden possessiv (sie werden nie anders
+aufgeteilt), und ein `<` ausserhalb von Anfuehrungszeichen beendet das Tag. So
+braucht er lineare Zeit und findet auf allen Zeichenketten der echten Antworten
+und den bekannten HTML-Formen dieselben Quellen wie DocVortex. DocVortex' Ausdruck brauchte fuer ein `<img` ohne
+`>` oder mit viel Leerraum quadratische Zeit, und das Zusammensetzen laeuft im
+Daemon synchron: Ein entgleistes Dokument hielte alle Jobs an."""
 
 
 def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:

@@ -17,6 +17,7 @@ import io
 import json
 import re
 import tarfile
+import time
 from typing import Any
 
 import pytest
@@ -298,6 +299,35 @@ def test_verweise_im_html_einer_tabelle_werden_mit_umbenannt(src: str) -> None:
         (verweis,) = re.findall(r"""(?i)src\s*=\s*["']?([^"'\s>]+)""", html)
         assert verweis in ergebnis["images"]
         assert _bild_unter(ergebnis, verweis) == erwartet
+
+
+@pytest.mark.parametrize(
+    "inhalt",
+    [
+        "<img" + " " * 40_000 + ">",
+        "Text <img alt=x weiter\n" * 4_000,
+    ],
+    ids=["viel_leerraum", "ohne_schluss"],
+)
+def test_ein_entgleistes_img_haelt_das_zusammensetzen_nicht_auf(inhalt: str) -> None:
+    """Ein `<img` mit sehr viel Leerraum oder viele `<img` ohne schliessendes `>`
+    (entgleiste Modellausgabe, OCR-Text) setzt sich in linearer Zeit zusammen.
+    Das Zusammensetzen laeuft im Daemon synchron; eine Rueckwaertssuche in
+    quadratischer Zeit hielte alle Jobs und den Herzschlag sekundenlang an."""
+    tabelle = {
+        "type": "table",
+        "index": 0,
+        "content": [{"type": "table_body", "index": 0, "content": inhalt}],
+    }
+    teil = _teil_aus(
+        Chunk(0, 0),
+        [ersatz.seite(0, [tabelle, ersatz.bild_block(1, 0)])],
+        {ersatz.bild_pfad(0, 1): b"eigenes"},
+    )
+    beginn = time.perf_counter()
+    ergebnis = assemble([teil])
+    assert time.perf_counter() - beginn < 1.0
+    assert ergebnis["middle_json"][0]["pages"][0]["blocks"][0]["content"][0]["content"] == inhalt
 
 
 def test_ein_name_ist_kein_praefix_eines_anderen() -> None:
