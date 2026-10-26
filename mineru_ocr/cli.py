@@ -59,11 +59,12 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, Final
 
+import click
 import typer
 
 from . import core, db, mime
 from .client import OCRClient
-from .config import Settings
+from .config import GUELTIGE_OCR_MODI, GUELTIGE_STUFEN, Settings
 from .core import RetryOutcome
 from .errors import (
     DocumentNotFound,
@@ -266,8 +267,36 @@ def ocr(
     paths: Annotated[list[Path], typer.Argument(help="Dateien oder Verzeichnisse.")],
     glob: Annotated[str, typer.Option(help="Welche Dateien in Verzeichnissen.")] = "**/*",
     json_out: Annotated[bool, typer.Option("--json", help="Maschinenlesbar ausgeben.")] = False,
+    tier: Annotated[
+        str | None,
+        typer.Option(
+            click_type=click.Choice(sorted(GUELTIGE_STUFEN)),
+            help="Stufe, mit der MinerU liest; ohne Angabe die Voreinstellung.",
+        ),
+    ] = None,
+    ocr_mode: Annotated[
+        str | None,
+        typer.Option(
+            click_type=click.Choice(sorted(GUELTIGE_OCR_MODI)),
+            help="Woher der Text kommt; ohne Angabe die Voreinstellung.",
+        ),
+    ] = None,
+    image_analysis: Annotated[
+        bool | None,
+        typer.Option(
+            "--image-analysis/--no-image-analysis",
+            help="Bilder und Diagramme beschreiben lassen (nur in `advanced`); "
+            "ohne Angabe die Voreinstellung.",
+        ),
+    ] = None,
 ) -> None:
     """Liest Dateien, schickt sie ab und kehrt sofort zurueck. Blockiert nicht.
+
+    `--tier`, `--ocr-mode` und `--image-analysis/--no-image-analysis` sind die
+    Lese-Einstellungen dieses Laufs, fuer jede Datei; ohne Angabe gelten die
+    Voreinstellungen der Konfiguration. Sie gelten nur fuer Dateien, die dieser
+    Lauf einreiht: Eine mit Ergebnis oder eine, die schon unterwegs ist, behaelt
+    ihre.
 
     Die Kommandozeile ist die einzige, die Pfade kennt: Sie liest die Dateien (in
     Verzeichnissen ueber ein Muster), hasht sie und nennt in der Ausgabe je Datei
@@ -313,7 +342,12 @@ def ocr(
                 )
                 for datei in kandidaten:
                     try:
-                        gereicht = klient.ocr_start(_lesen(datei))
+                        gereicht = klient.ocr_start(
+                            _lesen(datei),
+                            tier=tier,
+                            ocr_mode=ocr_mode,
+                            image_analysis=image_analysis,
+                        )
                     except (UnsupportedTypeError, TooLargeError, OSError) as fehler:
                         grund = _grund(fehler)
                         uebersprungen.append(

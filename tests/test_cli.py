@@ -927,6 +927,53 @@ def test_ocr_json_nennt_je_dokument_hash_zustand_und_ob_eingereiht(
     assert _jobs(db_conn) == 1
 
 
+def _lese_einstellungen(db_conn: psycopg.Connection[Any], sha: str) -> tuple[Any, ...]:
+    zeile = db_conn.execute(
+        "SELECT tier, ocr_mode, image_analysis FROM inputs WHERE sha256 = %s", (sha,)
+    ).fetchone()
+    assert zeile is not None
+    return tuple(zeile)
+
+
+def test_ocr_nimmt_die_lese_einstellungen_als_optionen(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Je Lauf gewaehlt (Mineroo#14): `--tier`, `--ocr-mode` und
+    `--image-analysis/--no-image-analysis` gelten fuer jede Datei des Laufs, auch
+    in Ordnern; ohne Angabe gelten die Voreinstellungen."""
+    vorein, sha_vorein = _datei(tmp_path / "vorein", "a.png")
+    _, sha_b = _datei(tmp_path / "gewaehlt", "b.png")
+    _, sha_c = _datei(tmp_path / "gewaehlt", "c.png")
+
+    assert cli.invoke(app, ["ocr", str(vorein)]).exit_code == 0
+    ergebnis = cli.invoke(
+        app,
+        [
+            "ocr", str(tmp_path / "gewaehlt"),
+            "--tier", "standard", "--ocr-mode", "txt", "--no-image-analysis",
+        ],
+    )
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert _lese_einstellungen(db_conn, sha_vorein) == ("advanced", "ocr", True)
+    for sha in (sha_b, sha_c):
+        assert _lese_einstellungen(db_conn, sha) == ("standard", "txt", False)
+
+
+def test_ocr_weist_eine_unbekannte_lese_einstellung_ab_bevor_es_etwas_einreiht(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Ein Tippfehler ist ein Aufruffehler (Exit-Code 2) und reiht nichts ein;
+    die gueltigen Werte nennt die Meldung."""
+    datei, _ = _datei(tmp_path, "a.png")
+
+    for falsch in (["--tier", "advance"], ["--ocr-mode", "OCR"]):
+        ergebnis = cli.invoke(app, ["ocr", str(datei), *falsch])
+        assert ergebnis.exit_code == 2, ergebnis.output
+        assert falsch[1] in ergebnis.output
+    assert _jobs(db_conn) == 0
+
+
 async def test_ocr_json_nennt_ein_ergebnis_als_treffer_und_reiht_nichts_ein(
     cli: CliRunner,
     db_conn: psycopg.Connection[Any],
@@ -1022,11 +1069,11 @@ def test_ocr_nennt_nach_strg_c_mitten_im_lauf_die_bis_dahin_eingereihten(
     echtes = client_modul.OCRClient.ocr_start
     aufrufe = {"n": 0}
 
-    def zweiter_wird_unterbrochen(self: Any, data: Any) -> Any:
+    def zweiter_wird_unterbrochen(self: Any, data: Any, **lesen: Any) -> Any:
         aufrufe["n"] += 1
         if aufrufe["n"] == 2:
             raise KeyboardInterrupt
-        return echtes(self, data)
+        return echtes(self, data, **lesen)
 
     monkeypatch.setattr(client_modul.OCRClient, "ocr_start", zweiter_wird_unterbrochen)
 
@@ -1233,11 +1280,11 @@ def test_ocr_nennt_nach_einem_betriebsfehler_mitten_im_lauf_die_bis_dahin_einger
     echtes = client_modul.OCRClient.ocr_start
     aufrufe = {"n": 0}
 
-    def dritter_scheitert(self: Any, data: Any) -> Any:
+    def dritter_scheitert(self: Any, data: Any, **lesen: Any) -> Any:
         aufrufe["n"] += 1
         if aufrufe["n"] == 3:
             raise DatabaseError("Verbindung weg")
-        return echtes(self, data)
+        return echtes(self, data, **lesen)
 
     monkeypatch.setattr(client_modul.OCRClient, "ocr_start", dritter_scheitert)
 
