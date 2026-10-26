@@ -828,11 +828,11 @@ def rendered_markdown(result: dict[str, Any]) -> str:
     `middle_json`).
 
     Die Randbloecke kommen aus dem Middle-JSON, der massgeblichen Datei unter
-    MinerU 4 (Mineroo#11). Ob der Vollmodus-Markdown des Workers sie alle an
-    ihrer Stelle traegt und damit an die Stelle dieser Ergaenzung treten kann,
-    zeigen erst die Aufnahmen; das ist das Ticket „Text fuer Abnehmer"
-    (Mineroo#13). Bis dahin gilt die Regel aus der Zeit von MinerU 3.4, auf das
-    neue Format uebertragen.
+    MinerU 4 (Mineroo#11). Die Aufnahmen des Endpoints zeigen, dass der
+    Vollmodus-Markdown des Workers (`markdown_full.md`) alle fuenf Randklassen
+    traegt (`FURNITURE_TYPES`); ob er damit an die Stelle dieser Ergaenzung
+    tritt, entscheidet das Ticket „Text fuer Abnehmer" (Mineroo#13). Bis dahin
+    gilt die Regel aus der Zeit von MinerU 3.4, auf das neue Format uebertragen.
 
     WARUM DIE RANDBLOECKE ZAEHLEN: In ihnen liegt das Aktenzeichen. „Der Filter
     trifft nicht die Kennung, sondern die Zone." Die volle Rechnung steht bei
