@@ -364,7 +364,8 @@ _DOCVORTEX_HTML_BILDQUELLE = re.compile(
     r"(?:(?P<quote>[\"'])(?P<quoted>.*?)(?P=quote)|(?P<unquoted>[^\s>]+))",
     re.IGNORECASE | re.DOTALL,
 )
-"""`_HTML_IMAGE_SOURCE_RE` aus DocVortex 0.5.16 (`export/_images.py`), woertlich."""
+"""`_HTML_IMAGE_SOURCE_RE` aus DocVortex 0.5.16 (`export/_images.py`), woertlich.
+Wechselt der Worker auf eine andere DocVortex-Version, wird die Kopie mitgezogen."""
 
 
 def test_html_quellen_werden_umbenannt_wie_docvortex_sie_findet() -> None:
