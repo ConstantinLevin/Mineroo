@@ -841,17 +841,28 @@ _MASKIERT: Final = re.compile(r"\\([*_`~$])")
 `*`, `_`, `` ` ``, `~`, `$`)."""
 
 
+def _ohne_backslash(text: str) -> str:
+    """Der Text ohne einen Backslash vor `*`, `_`, `` ` ``, `~` und `$`.
+
+    Fuer beide Seiten des Vergleichs eines Randblocks mit dem Markdown: Im
+    Markdown setzt DocVortex den Backslash (`2025\\_17`), und im Rohtext steht
+    er manchmal schon, weil MinerU ein `$` wie in LaTeX als `\\$` liefert (am
+    Endpoint gemessen, QA zu Mineroo#11); DocVortex maskiert ein Zeichen hinter
+    einem Backslash dann nicht noch einmal. Ohne Backslash lauten beide gleich.
+    """
+    return _MASKIERT.sub(r"\1", text)
+
+
 def _ohne_maskierung(markdown: str) -> str:
     """Das Markdown, wie es ohne DocVortex' Maskierung lautete.
 
-    Nur fuer den Vergleich mit dem Rohtext eines Randblocks: Der steht im
-    Middle-JSON unmaskiert, im Markdown aber als `2025\\_17`, und Text, der wie
-    ein HTML-Tag oder eine Entity aussieht, als Entity (`&lt;Az 12/34&gt;`;
-    DocVortex 0.5.16, `render/_internal/markdown/inline.py`,
-    `_escape_plain_markdown_text`). Ausgegeben wird das Markdown immer
-    unveraendert.
+    Nur fuer den Vergleich mit dem Rohtext eines Randblocks (`_ohne_backslash`):
+    Text, der wie ein HTML-Tag oder eine Entity aussieht, steht im Markdown
+    zudem als Entity (`&lt;Az 12/34&gt;`; DocVortex 0.5.16,
+    `render/_internal/markdown/inline.py`, `_escape_plain_markdown_text`).
+    Ausgegeben wird das Markdown immer unveraendert.
     """
-    return html.unescape(_MASKIERT.sub(r"\1", markdown))
+    return html.unescape(_ohne_backslash(markdown))
 
 
 def rendered_markdown(result: dict[str, Any]) -> str:
@@ -882,9 +893,10 @@ def rendered_markdown(result: dict[str, Any]) -> str:
         Weitere ist angehaengt. Es wird nie etwas entfernt, nur ergaenzt.
 
         Angehaengt wird ein Randblock nur, wenn sein Text im Markdown FEHLT.
-        Verglichen wird mit dem Markdown ohne DocVortex' Maskierung
-        (`_ohne_maskierung`): Dort steht `2025_17` als `2025\\_17`, und das ist
-        derselbe Text. Verglichen wird gegen das Markdown und nicht gegen die bereits
+        Verglichen wird ohne Maskierung, auf beiden Seiten
+        (`_ohne_maskierung`, `_ohne_backslash`): Im Markdown steht `2025_17` als
+        `2025\\_17`, im Rohtext ein `$` manchmal schon als `\\$`, und das ist
+        jeweils derselbe Text. Verglichen wird gegen das Markdown und nicht gegen die bereits
         angehaengten: Elf Seiten mit derselben Fusszeile sind elfmal dieselbe
         Fusszeile, kein Duplikat. Die Randbloecke kommen in Dokumentreihenfolge,
         ohne eingefuegte Marker.
@@ -922,7 +934,9 @@ def rendered_markdown(result: dict[str, Any]) -> str:
 
     vergleich = _ohne_maskierung(markdown)
     angehaengt = [
-        text for text in _randbloecke(middles) if text and text not in vergleich
+        text
+        for text in _randbloecke(middles)
+        if text and _ohne_backslash(text) not in vergleich
     ]
     if not angehaengt:
         return markdown

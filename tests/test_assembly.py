@@ -677,6 +677,17 @@ def test_eine_fussnote_mit_maskierten_zeichen_wird_nicht_doppelt_angehaengt() ->
     assert rendered_markdown(ergebnis) == ergebnis["markdown"]
 
 
+def test_eine_fussnote_mit_schon_maskiertem_rohtext_wird_nicht_doppelt_angehaengt() -> None:
+    """Am Endpoint liefert MinerU ein `$` im Text schon als `\\$` (QA zu
+    Mineroo#11, eine Fussnote „12 US-$ netto"). DocVortex maskiert ein Zeichen
+    hinter einem Backslash nicht noch einmal, im Markdown steht also ebenfalls
+    `US-\\$`."""
+    ergebnis = _fussnote_im_markdown(
+        r"Preis je Einheit 12 US-\$ netto", r"Preis je Einheit 12 US-\$ netto"
+    )
+    assert rendered_markdown(ergebnis) == ergebnis["markdown"]
+
+
 def test_eine_fussnote_mit_text_wie_ein_html_tag_wird_nicht_doppelt_angehaengt() -> None:
     """Text, der wie ein HTML-Tag aussieht, schreibt DocVortex als Entities
     (`inline.py`, `_escape_plain_markdown_text`: `html.escape`), damit ihn kein
