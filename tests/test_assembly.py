@@ -458,13 +458,20 @@ def test_randbloecke_im_markdown_werden_nicht_doppelt_angehaengt() -> None:
 
 
 def test_alle_fuenf_randklassen_werden_erfasst() -> None:
-    bloecke = [
-        ersatz.text_block(nummer, f"Rand {typ}", typ=typ)
-        for nummer, typ in enumerate(sorted(FURNITURE_TYPES))
-    ]
+    """Die fuenf Klassen sind hier unabhaengig von `FURNITURE_TYPES` aufgezaehlt,
+    aus DocVortex' Blocktypen und der echten normalen Seite: Fehlte eine in der
+    Konstante, fehlte ihr Text in der Darstellung."""
+    klassen = ["header", "footer", "page_number", "aside_text", "page_footnote"]
+    bloecke = [ersatz.text_block(nummer, f"Rand {typ}", typ=typ) for nummer, typ in enumerate(klassen)]
     ergebnis = _ergebnis([ersatz.seite(0, bloecke)])
     ergebnis["markdown"] = ""
-    assert rendered_markdown(ergebnis).split("\n\n") == [f"Rand {typ}" for typ in sorted(FURNITURE_TYPES)]
+    assert rendered_markdown(ergebnis).split("\n\n") == [
+        "Rand header",
+        "Rand footer",
+        "Rand page_number",
+        "Rand aside_text",
+        "Rand page_footnote",
+    ]
 
 
 def _mit_bloecken(bloecke: list[Any]) -> dict[str, Any]:
