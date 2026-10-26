@@ -578,8 +578,8 @@ def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:
     """Eine Kopie von `wert`, in deren Zeichenketten jeder Bildverweis umbenannt ist.
 
     Ein Verweis ist ein Schluessel von `umbenannt` (`images/{name}`) in den
-    Formen, in denen MinerU 4 ein Bild nennt: als GANZES Feld (`image_path` im
-    Middle-JSON, `image_source` im strukturierten Inhalt), als Ziel eines
+    Formen, in denen MinerU 4 ein Bild nennt: als GANZES Bildreferenz-Feld
+    (`image_path` im Middle-JSON, `image_source` im strukturierten Inhalt), als Ziel eines
     Markdown-Bildes (`![…](images/…)`, DocVortex `build_markdown_image`) und als
     GANZE Quelle eines HTML-Bildes (`<img src="images/…">` in jeder
     Schreibweise, `_HTML_BILDQUELLE`). Die echten Antworten des Endpoints tragen
@@ -608,14 +608,17 @@ def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:
         neu = umbenannt.get(quelle, quelle)
         return f"{treffer.group('vor')}{anfuehrung}{neu}{anfuehrung}"
 
-    def ersetzen(teil: Any) -> Any:
+    def ersetzen(teil: Any, feld: str | None = None) -> Any:
         if isinstance(teil, str):
-            if teil in umbenannt:
+            if feld in {"image_path", "image_source"} and teil in umbenannt:
                 return umbenannt[teil]
             teil = _HTML_BILDQUELLE.sub(html_quelle, teil)
             return muster.sub(lambda treffer: umbenannt[treffer.group(1)], teil)
         if isinstance(teil, dict):
-            return {schluessel: ersetzen(inhalt) for schluessel, inhalt in teil.items()}
+            return {
+                schluessel: ersetzen(inhalt, schluessel)
+                for schluessel, inhalt in teil.items()
+            }
         if isinstance(teil, list):
             return [ersetzen(inhalt) for inhalt in teil]
         return teil
