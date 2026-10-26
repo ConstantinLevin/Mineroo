@@ -11,6 +11,17 @@ Ausnahmen sind `IncompleteResponseError`, also `TerminalRunPodError`, und der
 Executor schreibt `failed` mit der bezahlten Antwort in `raw`. Was in `degraded`
 steht und das Paket nicht braucht, wird nur vermerkt.
 
+AM ENDPOINT GEPRUEFT (26.10.2026, MinerU 4.0.12, Image `2bccaebd0`): Eine PDF,
+deren Seitenbaum vier Seiten behauptet, von denen PDFium die vierte nicht laden
+kann, laesst MinerU nicht still auf drei Seiten schrumpfen; der ganze Job
+scheitert (`RuntimeError: PDF render worker PdfiumError: Failed to load page.`)
+und endet `failed`. Die Seitenpruefung ist das Netz fuer jeden anderen Weg, auf
+dem eine Seite fehlt. Ihre Grenze steht in MinerUs Quellen
+(`mineru/parser/mineru_parser.py`, `_insert_broken_pages`): Mit einem
+Seitenbereich setzt MinerU fuer eine kaputte Seite einen leeren Platzhalter
+`{"page_idx": n}` ein, der wie eine leere Seite aussieht. Das Paket schickt
+keinen Seitenbereich; wer das aendert, muss diese Luecke schliessen.
+
 Dieses Modul liest nur, was `assembly.unpack_response` ausgepackt hat. Es
 kennt weder Datenbank noch RunPod.
 """
