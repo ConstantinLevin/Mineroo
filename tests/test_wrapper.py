@@ -16,7 +16,7 @@ import pytest
 
 from mineru_ocr import db
 from mineru_ocr.client import AsyncOCRClient
-from mineru_ocr.config import Settings
+from mineru_ocr.config import ReadSettings, Settings
 from mineru_ocr.db import DocumentStatus, list_documents, write_terminal_async
 from mineru_ocr.errors import ConfigurationError, IncompleteResultError
 from mineru_ocr.wrapper import OCRWrapper
@@ -44,7 +44,7 @@ def _huelle(
             "VALUES (%s, %s, %s, 'failed', %s)",
             (sha256, len(inhalt), "image/png", settings.require_endpoint_id()),
         )
-        db.insert_input(conn, sha256=sha256, content=inhalt)
+        db.insert_input(conn, sha256=sha256, content=inhalt, read_settings=ReadSettings())
     zeile = db.get_document(conn, sha256, with_raw=False)
     assert zeile is not None
     return OCRWrapper.from_row(zeile, conn)

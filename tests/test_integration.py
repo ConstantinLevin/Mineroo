@@ -33,7 +33,7 @@ from psycopg_pool import NullConnectionPool
 import ersatz_antworten as ersatz
 from mineru_ocr import config, daemon, db, tasks
 from mineru_ocr.client import OCRClient
-from mineru_ocr.config import Settings
+from mineru_ocr.config import ReadSettings, Settings
 from mineru_ocr.core import RetryOutcome
 from mineru_ocr.db import DocumentStatus, Phase, derive_status, get_document
 from mineru_ocr.errors import ConfigurationError, DatabaseError, DocumentNotFound
@@ -115,10 +115,22 @@ class ProtokollRunPod:
         self.gestartet = asyncio.Event()
         self.freigabe: asyncio.Event | None = None
         self.abgebrochen: list[str] = []
+        # Je abgesendeter Datei die Lese-Einstellungen, mit denen sie hinausging.
+        self.lese_einstellungen: dict[bytes, list[tuple[str, str, bool]]] = {}
 
-    async def submit(self, *, file_b64: str, **_: Any) -> str:
+    async def submit(
+        self,
+        *,
+        file_b64: str,
+        tier: str = "",
+        ocr_mode: str = "",
+        image_analysis: bool = False,
+        **_: Any,
+    ) -> str:
         self.aufrufe += 1
-        self.dateien.append(base64.b64decode(file_b64))
+        datei = base64.b64decode(file_b64)
+        self.dateien.append(datei)
+        self.lese_einstellungen.setdefault(datei, []).append((tier, ocr_mode, image_analysis))
         return f"job-{self.aufrufe}"
 
     async def await_result(self, job_id: str) -> dict[str, Any]:
@@ -153,7 +165,7 @@ def _anlegen(conn: psycopg.Connection[Any], tmp_path: Path, name: str) -> str:
     pfad = tmp_path / name
     pfad.write_bytes(inhalt)
     sha = hashlib.sha256(inhalt).hexdigest()
-    db.insert_input(conn, sha256=sha, content=inhalt)
+    db.insert_input(conn, sha256=sha, content=inhalt, read_settings=ReadSettings())
     return sha
 
 
@@ -1043,6 +1055,48 @@ async def test_vom_client_eingereihter_job_wird_vom_daemon_abgearbeitet(
     assert _jobs_zu(db_conn, sha) == []
 
 
+async def test_die_lese_einstellungen_jedes_dokuments_kommen_auch_in_einem_grossen_lauf_an(
+    db_conn: psycopg.Connection[Any], int_settings: Settings
+) -> None:
+    """Story 8 (Mineroo#14): Die Einstellungen, die ein Dokument beim Abschicken
+    bekam, gehen genau so an RunPod, auch wenn der Daemon viele Dokumente
+    gleichzeitig abarbeitet, gemischt mit anderen Einstellungen. Die Einstellung
+    des Daemons selbst (hier mit keinem Dokument gleich) wirkt auf keines; an
+    jeder Zeile stehen die bestellten."""
+    daemon_einstellung = dataclasses.replace(
+        int_settings, tier="standard", ocr_mode="auto", image_analysis=False,
+        ocr_concurrency=4,
+    )
+    sorten: list[tuple[dict[str, Any], tuple[str, str, bool]]] = [
+        ({}, ("advanced", "ocr", True)),
+        ({"tier": "basic", "ocr_mode": "txt"}, ("basic", "txt", False)),
+        ({"ocr_mode": "auto", "image_analysis": False}, ("advanced", "auto", False)),
+    ]
+    erwartet: dict[str, tuple[bytes, tuple[str, str, bool]]] = {}
+    with OCRClient(db_dsn=int_settings.db_dsn, preflight=False) as klient:
+        for nr in range(12):
+            angaben, bestellt = sorten[nr % len(sorten)]
+            inhalt = PNG_KOPF + f"grosser lauf {nr}".encode()
+            erwartet[klient.ocr_start(inhalt, **angaben)] = (inhalt, bestellt)
+
+        async def alle_fertig() -> bool:
+            return all(get_document(db_conn, h) is not None for h in erwartet)
+
+        runpod = ProtokollRunPod()
+        await _daemon_laufen_lassen(daemon_einstellung, runpod, bis=alle_fertig, zeit=30.0)
+
+    for sha, (inhalt, bestellt) in erwartet.items():
+        assert runpod.lese_einstellungen[inhalt] == [bestellt], sha
+        zeile = get_document(db_conn, sha)
+        assert zeile is not None and zeile.status is DocumentStatus.DONE
+        assert zeile.read_settings is not None
+        assert (
+            zeile.read_settings.tier,
+            zeile.read_settings.ocr_mode,
+            zeile.read_settings.image_analysis,
+        ) == bestellt
+
+
 # --------------------------------------------------------------------------
 # Die Ergebniszeile entsteht am Ende des Jobs
 # --------------------------------------------------------------------------
@@ -1598,7 +1652,7 @@ async def test_daemon_auf_der_alten_tabelle_startet_nicht_und_laesst_die_jobs_li
         "VALUES (%s, 'e', 'image/png', 1)",
         (sha,),
     )
-    db.insert_input(db_conn, sha256=sha, content=b"alt")
+    db.insert_input(db_conn, sha256=sha, content=b"alt", read_settings=ReadSettings())
     assert erzeuger.einreihen(sha)
 
     def keine_betriebsmittel(_s: Settings) -> dict[str, Any]:

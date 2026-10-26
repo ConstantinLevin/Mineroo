@@ -178,7 +178,22 @@ with OCRClient() as client:
 
     antwort = client.ocr(b"...")     # Abschicken und Warten in einem Zug
     ohne_warten = client.get(h)      # holt ein Ergebnis ab, ohne zu warten
+
+    # Lese-Einstellungen je Lauf (ohne Angabe: advanced, OCR, Bildanalyse an)
+    digital = client.ocr_start(Path("digital.pdf").read_bytes(), ocr_mode="txt")
+    gelesen = client.wait(digital)
+    print(gelesen.mineru_version, gelesen.read_settings)  # womit gelesen wurde
 ```
+
+Stufe, OCR-Modus und Bildanalyse (`tier=`, `ocr_mode=`, `image_analysis=`, auf der
+Kommandozeile `ocr --tier … --ocr-mode … --no-image-analysis`) gelten für jedes
+Dokument des Aufrufs, das neu eingereiht wird. Sie stehen an seiner Eingabe, und
+der Daemon schickt genau diese an RunPod, auch in einem großen Lauf. An jedem
+Ergebnis stehen die bestellten Einstellungen und die MinerU-Version, die der
+Worker meldet; meldet er andere Einstellungen als bestellt oder die Teilstücke
+verschiedene Versionen, steht ein Vermerk in `notes`. `show` zeigt beides, und
+`status` zählt, wie viele Dokumente mit welcher Version und welchen Einstellungen
+gelesen sind.
 
 Gibt es zu den Bytes schon ein Ergebnis (auch ein `failed`), ist das ein Treffer:
 Es wird nichts angelegt und nichts eingereiht; ein gescheitertes Dokument liest

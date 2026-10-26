@@ -24,7 +24,7 @@ from mineru_ocr import client as client_modul
 from mineru_ocr import db
 from mineru_ocr.cli import app
 from mineru_ocr.config import Settings as _Settings
-from mineru_ocr.config import Settings
+from mineru_ocr.config import ReadSettings, Settings
 from mineru_ocr.db import DocumentStatus, write_terminal_async
 from mineru_ocr.errors import DatabaseError
 from mineru_ocr.wrapper import OCRWrapper
@@ -138,7 +138,7 @@ def _anlegen(
                 Settings.load(db_dsn=dsn, api_key=SCHLUESSEL).require_endpoint_id(),
             ),
         )
-        db.insert_input(db_conn, sha256=sha256, content=inhalt)
+        db.insert_input(db_conn, sha256=sha256, content=inhalt, read_settings=ReadSettings())
     zeile = db.get_document(db_conn, sha256, with_raw=False)
     assert zeile is not None
     return OCRWrapper.from_row(zeile, db_conn)
@@ -274,7 +274,7 @@ async def _endgueltig(
 def _offen(db_conn: psycopg.Connection[Any], tmp_path: Path, name: str) -> str:
     """Eine Datei, deren Eingabe steht und die kein Ergebnis hat: offen."""
     pfad, sha256 = _datei(tmp_path, name)
-    db.insert_input(db_conn, sha256=sha256, content=pfad.read_bytes())
+    db.insert_input(db_conn, sha256=sha256, content=pfad.read_bytes(), read_settings=ReadSettings())
     return sha256
 
 
@@ -772,6 +772,7 @@ async def test_show_zeigt_was_document_sagt_und_raw_die_vollstaendige_antwort(
         status=DocumentStatus.DONE,
         raw=antwort,
         endpoint_id="testendpoint",
+        mineru_version="4.0.12",
     )
 
     stand = json.loads(cli.invoke(app, ["show", huelle.sha256, "--json"]).stdout)
@@ -785,6 +786,10 @@ async def test_show_zeigt_was_document_sagt_und_raw_die_vollstaendige_antwort(
     assert text.exit_code == 0, text.output
     assert "Zustand:   done" in text.stdout and "terminal" in text.stdout
     assert f"Typ:       image/png  {huelle.size_bytes} Byte" in text.stdout
+    # Womit gelesen wurde (Mineroo#14): die Version, die der Worker meldete, und
+    # die bestellten Lese-Einstellungen.
+    assert "Gelesen:   MinerU 4.0.12, advanced, ocr, Bildanalyse an" in text.stdout
+    assert stand["mineru_version"] == "4.0.12" and stand["tier"] == "advanced"
     assert "ganz" not in text.stdout  # kein raw
 
     # Ein Eingabefehler ohne Eingabe hat weder Typ noch Groesse: Das sagt die
@@ -804,6 +809,17 @@ async def test_show_zeigt_was_document_sagt_und_raw_die_vollstaendige_antwort(
     assert "Fehler:    Eingabe fehlt" in text.stdout
     (typ_zeile,) = [z for z in text.stdout.splitlines() if "Typ:" in z]
     assert "None" not in typ_zeile
+    # Ohne Eingabe gab es keine Bestellung und ohne Antwort keine Version: dann
+    # keine Zeile. Meldete der Worker eine Version, fehlt nur die Bestellung, und
+    # das sagt die Ausgabe in Worten (Mineroo#14).
+    assert "Gelesen:" not in text.stdout
+    gemeldet = "e" * 64
+    await write_terminal_async(
+        async_conn, sha256=gemeldet, status=DocumentStatus.INPUT_ERROR, raw={},
+        error="abgewiesen", endpoint_id="testendpoint", mineru_version="4.0.12",
+    )
+    text = cli.invoke(app, ["show", gemeldet])
+    assert "Gelesen:   MinerU 4.0.12, Einstellungen unbekannt" in text.stdout
 
     ergebnis = cli.invoke(app, ["show", huelle.sha256, "--raw"])
     assert ergebnis.exit_code == 0, ergebnis.output
@@ -822,6 +838,31 @@ def test_status_sagt_wenn_kein_daemon_laeuft(
     assert ergebnis.exit_code == 0
     assert "LAEUFT NICHT" in ergebnis.output
     assert "mineru-ocr daemon" in ergebnis.output
+
+
+async def test_status_nennt_die_verteilung_nach_version_und_lese_einstellungen(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    """Je Version und bestellten Lese-Einstellungen eine Zeile mit der Zahl der
+    gelesenen Dokumente; mit `--json` unter `readings` (Mineroo#14)."""
+    huelle = _anlegen(db_conn, tmp_path, "gelesen.png", _test_datenbank)
+    await write_terminal_async(
+        async_conn, sha256=huelle.sha256, status=DocumentStatus.DONE, raw={},
+        endpoint_id="e", mineru_version="4.0.12",
+    )
+
+    text = cli.invoke(app, ["status"])
+    assert text.exit_code == 0, text.output
+    assert "Gelesen:    1  MinerU 4.0.12, advanced, ocr, Bildanalyse an" in text.stdout
+    als_json = json.loads(cli.invoke(app, ["status", "--json"]).stdout)
+    assert als_json["readings"] == [
+        {"mineru_version": "4.0.12", "tier": "advanced", "ocr_mode": "ocr",
+         "image_analysis": True, "documents": 1}
+    ]
 
 
 def test_status_zaehlt_einen_alten_herzschlag_nicht_als_daemon(
@@ -927,6 +968,61 @@ def test_ocr_json_nennt_je_dokument_hash_zustand_und_ob_eingereiht(
     assert _jobs(db_conn) == 1
 
 
+def test_ocr_nimmt_die_lese_einstellungen_als_optionen(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    lese_einstellungen_der_eingabe: Callable[[str], tuple[Any, ...]],
+) -> None:
+    """Je Lauf gewaehlt (Mineroo#14): `--tier`, `--ocr-mode` und
+    `--image-analysis/--no-image-analysis` gelten fuer jede Datei des Laufs, auch
+    in Ordnern; ohne Angabe gelten die Voreinstellungen."""
+    vorein, sha_vorein = _datei(tmp_path / "vorein", "a.png")
+    _, sha_b = _datei(tmp_path / "gewaehlt", "b.png")
+    _, sha_c = _datei(tmp_path / "gewaehlt", "c.png")
+
+    assert cli.invoke(app, ["ocr", str(vorein)]).exit_code == 0
+    ergebnis = cli.invoke(
+        app,
+        [
+            "ocr", str(tmp_path / "gewaehlt"),
+            "--tier", "standard", "--ocr-mode", "txt", "--no-image-analysis",
+        ],
+    )
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert lese_einstellungen_der_eingabe(sha_vorein) == ("advanced", "ocr", True)
+    for sha in (sha_b, sha_c):
+        assert lese_einstellungen_der_eingabe(sha) == ("standard", "txt", False)
+
+    # Die Bildanalyse ausdruecklich an: wirkt in `advanced`, ausserhalb davon ist
+    # sie als aus bestellt.
+    an, sha_an = _datei(tmp_path / "an", "d.png")
+    basic, sha_basic = _datei(tmp_path / "basic", "e.png")
+    assert cli.invoke(
+        app, ["ocr", str(an), "--ocr-mode", "auto", "--image-analysis"]
+    ).exit_code == 0
+    assert cli.invoke(
+        app, ["ocr", str(basic), "--tier", "basic", "--image-analysis"]
+    ).exit_code == 0
+    assert lese_einstellungen_der_eingabe(sha_an) == ("advanced", "auto", True)
+    assert lese_einstellungen_der_eingabe(sha_basic) == ("basic", "ocr", False)
+
+
+def test_ocr_weist_eine_unbekannte_lese_einstellung_ab_bevor_es_etwas_einreiht(
+    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+) -> None:
+    """Ein Tippfehler ist ein Aufruffehler (Exit-Code 2) und reiht nichts ein;
+    die gueltigen Werte nennt die Meldung."""
+    datei, _ = _datei(tmp_path, "a.png")
+
+    for falsch in (["--tier", "advance"], ["--ocr-mode", "OCR"]):
+        ergebnis = cli.invoke(app, ["ocr", str(datei), *falsch])
+        assert ergebnis.exit_code == 2, ergebnis.output
+        assert falsch[1] in ergebnis.output
+    assert _jobs(db_conn) == 0
+
+
 async def test_ocr_json_nennt_ein_ergebnis_als_treffer_und_reiht_nichts_ein(
     cli: CliRunner,
     db_conn: psycopg.Connection[Any],
@@ -1022,11 +1118,11 @@ def test_ocr_nennt_nach_strg_c_mitten_im_lauf_die_bis_dahin_eingereihten(
     echtes = client_modul.OCRClient.ocr_start
     aufrufe = {"n": 0}
 
-    def zweiter_wird_unterbrochen(self: Any, data: Any) -> Any:
+    def zweiter_wird_unterbrochen(self: Any, data: Any, **lesen: Any) -> Any:
         aufrufe["n"] += 1
         if aufrufe["n"] == 2:
             raise KeyboardInterrupt
-        return echtes(self, data)
+        return echtes(self, data, **lesen)
 
     monkeypatch.setattr(client_modul.OCRClient, "ocr_start", zweiter_wird_unterbrochen)
 
@@ -1233,11 +1329,11 @@ def test_ocr_nennt_nach_einem_betriebsfehler_mitten_im_lauf_die_bis_dahin_einger
     echtes = client_modul.OCRClient.ocr_start
     aufrufe = {"n": 0}
 
-    def dritter_scheitert(self: Any, data: Any) -> Any:
+    def dritter_scheitert(self: Any, data: Any, **lesen: Any) -> Any:
         aufrufe["n"] += 1
         if aufrufe["n"] == 3:
             raise DatabaseError("Verbindung weg")
-        return echtes(self, data)
+        return echtes(self, data, **lesen)
 
     monkeypatch.setattr(client_modul.OCRClient, "ocr_start", dritter_scheitert)
 

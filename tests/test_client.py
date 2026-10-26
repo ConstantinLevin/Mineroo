@@ -17,7 +17,7 @@ from psycopg_pool import AsyncNullConnectionPool, NullConnectionPool
 from mineru_ocr import client as client_modul
 from mineru_ocr import config, core, db, tasks
 from mineru_ocr.client import AsyncOCRClient, OCRClient
-from mineru_ocr.config import Settings
+from mineru_ocr.config import ReadSettings, Settings
 from mineru_ocr.db import WAIT_APPLICATION_NAME, DocumentStatus, Phase, write_terminal_async
 from mineru_ocr.errors import (
     ConfigDriftError,
@@ -1069,7 +1069,7 @@ def test_retry_reiht_auch_ohne_daemon_ein_und_warnt(
     #4). Auch `retry_all` warnt, und zwar einmal."""
     inhalte = [_png("ohne Job 1"), _png("ohne Job 2")]
     for inhalt in inhalte:
-        db.insert_input(db_conn, sha256=_hash(inhalt), content=inhalt)
+        db.insert_input(db_conn, sha256=_hash(inhalt), content=inhalt, read_settings=ReadSettings())
 
     with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
         ausgaenge = offener_client.retry_all()
@@ -1133,7 +1133,7 @@ def test_retry_warnt_nicht_bei_laufendem_daemon(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     inhalt = _png("ohne Job")
-    db.insert_input(db_conn, sha256=_hash(inhalt), content=inhalt)
+    db.insert_input(db_conn, sha256=_hash(inhalt), content=inhalt, read_settings=ReadSettings())
     _worker_am_leben(db_conn)
     with caplog.at_level(logging.WARNING, logger="mineru_ocr.client"):
         assert offener_client.retry(_hash(inhalt)) is core.RetryOutcome.REQUEUED
@@ -1351,6 +1351,75 @@ def test_ocr_start_reiht_ein_unterwegs_liegendes_dokument_nicht_nochmal_ein(
     assert wieder.queued is False
     assert wieder.status is None
     assert _zaehlen(db_conn, "procrastinate_jobs") == 1
+
+
+def test_ocr_start_legt_die_lese_einstellungen_an_der_eingabe_ab(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    lese_einstellungen_der_eingabe: Callable[[str], tuple[Any, ...]],
+) -> None:
+    """Je Dokument gewaehlt (Mineroo#14): Ohne Angabe gelten die Voreinstellungen,
+    angegebene ersetzen sie, und sie stehen an der Eingabe, von der der Job sie
+    nimmt. Ausserhalb von `advanced` ist die Bildanalyse als aus bestellt."""
+    _worker_am_leben(db_conn)
+    vorein = offener_client.ocr_start(_png("voreingestellt"))
+    gewaehlt = offener_client.ocr_start(
+        [_png("a"), _png("b")], tier="standard", ocr_mode="txt", image_analysis=False
+    )
+    nur_stufe = offener_client.ocr_start(_png("c"), tier="basic")
+
+    assert lese_einstellungen_der_eingabe(vorein) == ("advanced", "ocr", True)
+    for h in gewaehlt:
+        assert lese_einstellungen_der_eingabe(h) == ("standard", "txt", False)
+    assert lese_einstellungen_der_eingabe(nur_stufe) == ("basic", "ocr", False)
+
+
+def test_ocr_start_weist_ungueltige_lese_einstellungen_ab_ohne_etwas_einzureihen(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Ein Tippfehler kostete sonst einen Kaltstart je Dokument."""
+    with pytest.raises(ConfigurationError, match="kennt der Worker nicht"):
+        offener_client.ocr_start([_png("gut")], tier="advance")
+    for tabelle in ("inputs", "procrastinate_jobs"):
+        assert _zaehlen(db_conn, tabelle) == 0, tabelle
+
+
+async def test_treffer_und_unterwegs_gelten_unabhaengig_von_den_lese_einstellungen(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    lese_einstellungen_der_eingabe: Callable[[str], tuple[Any, ...]],
+) -> None:
+    """Ein Ergebnis ist ein Treffer, gleich mit welchen Einstellungen verlangt
+    wird; ein unterwegs liegendes Dokument behaelt die Einstellungen, mit denen
+    es eingereiht wurde. Mit welchen ein Ergebnis entstand, steht an der Huelle."""
+    _worker_am_leben(db_conn)
+    unterwegs = _png("unterwegs")
+    h = offener_client.ocr_start(unterwegs, ocr_mode="txt")
+    wieder = offener_client.ocr_start(unterwegs, ocr_mode="ocr", tier="basic")
+    assert wieder.queued is False and wieder.status is None
+    assert lese_einstellungen_der_eingabe(h) == ("advanced", "txt", True)
+
+    fertig = _png("fertig")
+    h_fertig = offener_client.ocr_start(fertig)
+    await write_terminal_async(
+        async_conn, sha256=h_fertig, status=DocumentStatus.DONE, raw={}, endpoint_id="e"
+    )
+    treffer = offener_client.ocr_start(fertig, tier="flash")
+    assert (treffer.queued, treffer.status) == (False, DocumentStatus.DONE)
+    assert _jobs_zaehlen(db_conn, h_fertig) == 1
+
+
+def test_ocr_reicht_die_lese_einstellungen_an_das_abschicken(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    lese_einstellungen_der_eingabe: Callable[[str], tuple[Any, ...]],
+) -> None:
+    """`ocr` ist Abschicken plus Warten, mit denselben Optionen."""
+    _worker_am_leben(db_conn)
+    with pytest.raises(WaitTimeoutError):
+        offener_client.ocr(_png("ocr"), timeout=0.1, ocr_mode="auto")
+    assert lese_einstellungen_der_eingabe(_hash(_png("ocr"))) == ("advanced", "auto", True)
 
 
 def test_ocr_start_mit_demselben_dokument_mehrfach_reiht_es_einmal_ein(
@@ -1973,6 +2042,39 @@ async def test_document_meldet_endzustand_offen_samt_job_und_unbekannt_ohne_raw(
         assert "raw" not in ohne_platzhalter, f"document() liest raw: {anweisung}"
 
 
+async def test_document_und_huelle_nennen_mineru_version_und_bestellte_lese_einstellungen(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+) -> None:
+    """Mit welcher MinerU-Version und welchen bestellten Einstellungen ein
+    Ergebnis entstand, sagen `document()` und die Huelle (Mineroo#14)."""
+    h = offener_client.ocr_start(_png("gelesen"), tier="standard", ocr_mode="txt")
+    await write_terminal_async(
+        async_conn,
+        sha256=h,
+        status=DocumentStatus.DONE,
+        raw={"markdown": "x"},
+        endpoint_id="testendpoint",
+        mineru_version="4.0.12",
+    )
+
+    angaben = offener_client.document(h).to_dict()
+    assert {
+        name: angaben[name]
+        for name in ("mineru_version", "tier", "ocr_mode", "image_analysis")
+    } == {
+        "mineru_version": "4.0.12",
+        "tier": "standard",
+        "ocr_mode": "txt",
+        "image_analysis": False,
+    }
+    huelle = offener_client.get(h)
+    assert huelle.mineru_version == "4.0.12"
+    assert huelle.read_settings == ReadSettings("standard", "txt", False)
+    assert huelle.to_dict()["mineru_version"] == "4.0.12"
+
+
 # --- Nachsehen ------------------------------------------------------------
 
 
@@ -2005,6 +2107,48 @@ async def test_status_zaehlt_in_summen(
     assert set(uebersicht["documents"]) == {
         z.value for z in DocumentStatus
     } | {"open"}
+
+
+async def test_status_zeigt_die_verteilung_nach_version_und_lese_einstellungen(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+) -> None:
+    """Wie viele Dokumente mit welcher MinerU-Version und welchen bestellten
+    Lese-Einstellungen gelesen sind (Mineroo#14): `done` und `empty`, in Summen
+    mit einem `GROUP BY`. Gescheiterte zaehlen nicht als gelesen. Geordnet nach
+    Version wie MinerU sie zaehlt (PEP 440, 4.0.9 vor 4.0.12; eine unlesbare
+    Angabe vorn, wie sie auch als die niedrigste gilt), ohne Version am Ende."""
+    _worker_am_leben(db_conn)
+    faelle = [
+        ("a", "ocr", "4.0.12", DocumentStatus.DONE),
+        ("b", "ocr", "4.0.12", DocumentStatus.EMPTY),
+        ("c", "txt", "4.0.12", DocumentStatus.DONE),
+        ("d", "ocr", "4.0.9", DocumentStatus.DONE),
+        ("e", "ocr", "4.0.12", DocumentStatus.FAILED),
+        ("f", "ocr", None, DocumentStatus.DONE),
+        ("g", "ocr", "unknown", DocumentStatus.DONE),
+    ]
+    for name, modus, version, zustand in faelle:
+        h = offener_client.ocr_start(_png(name), ocr_mode=modus)
+        await write_terminal_async(
+            async_conn, sha256=h, status=zustand, raw={}, endpoint_id="e",
+            mineru_version=version,
+        )
+
+    verteilung = offener_client.status()["readings"]
+    assert verteilung == [
+        {"mineru_version": "unknown", "tier": "advanced", "ocr_mode": "ocr",
+         "image_analysis": True, "documents": 1},
+        {"mineru_version": "4.0.9", "tier": "advanced", "ocr_mode": "ocr",
+         "image_analysis": True, "documents": 1},
+        {"mineru_version": "4.0.12", "tier": "advanced", "ocr_mode": "ocr",
+         "image_analysis": True, "documents": 2},
+        {"mineru_version": "4.0.12", "tier": "advanced", "ocr_mode": "txt",
+         "image_analysis": True, "documents": 1},
+        {"mineru_version": None, "tier": "advanced", "ocr_mode": "ocr",
+         "image_analysis": True, "documents": 1},
+    ]
 
 
 def test_credit_wird_live_geholt(
@@ -2501,6 +2645,35 @@ async def test_async_ocr_start_liefert_einen_treffer_ohne_job(
     assert (wieder, wieder.queued, wieder.status) == (h, False, zustand)
     assert _zaehlen(db_conn, "procrastinate_jobs") == 0
     assert _zaehlen(db_conn, "inputs") == eingaben_danach
+
+
+async def test_async_ocr_start_und_ocr_legen_die_lese_einstellungen_an_der_eingabe_ab(
+    offener_async_client: AsyncOCRClient,
+    db_conn: psycopg.Connection[Any],
+    lese_einstellungen_der_eingabe: Callable[[str], tuple[Any, ...]],
+) -> None:
+    """Dieselben Optionen wie im Sync-Client (Mineroo#14), auch bei `ocr`; ein
+    ungueltiger Wert reiht nichts ein."""
+    _worker_am_leben(db_conn)
+    vorein = await offener_async_client.ocr_start(_png("async vorein"))
+    gewaehlt = await offener_async_client.ocr_start(
+        [_png("async a")], tier="standard", ocr_mode="txt"
+    )
+    with pytest.raises(WaitTimeoutError):
+        await offener_async_client.ocr(
+            _png("async ocr"), timeout=0.1, image_analysis=False
+        )
+    with pytest.raises(ConfigurationError):
+        await offener_async_client.ocr_start(_png("async falsch"), ocr_mode="ocr ")
+
+    assert lese_einstellungen_der_eingabe(vorein) == ("advanced", "ocr", True)
+    assert lese_einstellungen_der_eingabe(gewaehlt[0]) == ("standard", "txt", False)
+    assert lese_einstellungen_der_eingabe(_hash(_png("async ocr"))) == (
+        "advanced",
+        "ocr",
+        False,
+    )
+    assert _zaehlen(db_conn, "inputs") == 3
 
 
 async def test_async_ocr_start_viele_gibt_je_dokument_den_hash_in_eingabereihenfolge(
@@ -3074,8 +3247,10 @@ async def test_async_ocr_start_nennt_das_ergebnis_wenn_ein_anderer_schneller_war
     der inzwischen dasteht."""
     inhalt = _png("rennen")
 
-    async def anderer_war_schneller(_conn: Any, *, sha256: str, content: bytes) -> bool:
-        db.insert_input(db_conn, sha256=sha256, content=content)
+    async def anderer_war_schneller(
+        _conn: Any, *, sha256: str, content: bytes, **_: Any
+    ) -> bool:
+        db.insert_input(db_conn, sha256=sha256, content=content, read_settings=ReadSettings())
         db_conn.execute(
             "INSERT INTO documents (sha256, endpoint_id, status, raw) "
             "VALUES (%s, 'e', 'failed', '{}'::jsonb)",

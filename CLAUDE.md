@@ -397,7 +397,8 @@ endlose Wiedervorlage und Doppelkosten.
 ### Die Eingabe liegt als Bytes in der Datenbank, nicht als Pfad
 
 Die Bytes eines Dokuments stehen in der Tabelle `inputs` (`sha256 text PRIMARY
-KEY`, `content bytea NOT NULL`, `job_id bigint`), **solange das Dokument kein
+KEY`, `content bytea NOT NULL`, die Lese-Einstellungen `tier`, `ocr_mode`,
+`image_analysis`, alle NOT NULL, und `job_id bigint`), **solange das Dokument kein
 Endergebnis hat**.
 Pfade gibt es weder in `documents` noch im Job; der Job trägt nur den Hash, und
 `OCRClient.ocr_start` legt Eingabe und Job beim Abschicken in **einer**
@@ -440,6 +441,57 @@ Eine Eingabe über `db.MAX_INPUT_BYTES` (1 GB, Postgres begrenzt ein Feld auf kn
 1 GiB) weist das Abschicken mit `TooLargeError` ab; die CLI prüft Typ und Größe schon
 vor dem Lesen einer Datei und zählt sie in Ordnern als `zu_gross`. Das gilt auch für
 PDFs, die der Job später in Stücke schneiden würde.
+
+### Die Lese-Einstellungen eines Dokuments stehen an seiner Eingabe
+
+Stufe, OCR-Modus und Bildanalyse reisen als **ein Wert**, `config.ReadSettings`
+(Mineroo#14). Er prüft beim Bilden gegen `config.GUELTIGE_STUFEN` und
+`GUELTIGE_OCR_MODI` und bestellt die Bildanalyse außerhalb von `advanced` als aus;
+was er sagt, geht an RunPod und an die Zeile. Wo er auf dem Weg steht:
+
+- **Gewählt** beim Abschicken: `ocr_start` und `ocr` (beide Clients) nehmen
+  `tier=`, `ocr_mode=`, `image_analysis=`, das Kommando `ocr` `--tier`,
+  `--ocr-mode` und `--image-analysis/--no-image-analysis`. Was fehlt, kommt aus
+  `Settings.read_settings`, also aus den Feld-Voreinstellungen von `Settings`
+  (`advanced`, `ocr`, an); Schlüssel der Konfigurationsdatei sind sie nicht.
+  Geprüft wird vor dem ersten Einreihen eines Aufrufs.
+- **Abgelegt** an der Eingabe (`db.insert_input`). Der Job trägt weiter nur den
+  Hash; die Einstellungen als Job-Argument mitzugeben ist ausdrücklich nicht
+  gemeint. Ein Dokument, das schon unterwegs ist, behält die Einstellungen, mit
+  denen es eingereiht wurde; ein Treffer gilt unabhängig von den verlangten.
+  `retry` nimmt keine: Ein zurückgesetzter wie ein neuer Job liest dieselbe Eingabe.
+- **Gesendet** vom Job: `db.read_input_async` liest sie mit den Bytes in einer
+  Anweisung, und jedes Teilstück geht mit ihnen hinaus. **Die `tier`, `ocr_mode` und
+  `image_analysis` in der Einstellung des Daemons wirken auf keinen Job**; sie sind
+  nur die Voreinstellung des Abschickens. Erst an der Leitung zerfällt der Wert:
+  `RunPodAccess.submit` und `runpod.job_eingabe` nehmen die drei Felder einzeln,
+  weil die Nutzlast auch Werte tragen können muss, die das Paket nie bilden würde
+  (die erzwungene Fehlerantwort der Aufnahmen schickt eine Stufe, die es nicht gibt).
+- **Vermerkt** an der Ergebniszeile: `documents` trägt `tier`, `ocr_mode`,
+  `image_analysis` (die BESTELLTEN; `db.write_terminal_async` nimmt sie in derselben
+  Anweisung aus der Eingabe, also auch beim `failed` des Wächters, und ohne Eingabe
+  bleiben sie leer) und `mineru_version` (die der Worker meldet, auch in einer
+  Fehlerantwort; bei mehreren Teilstücken die niedrigste nach PEP 440, eine
+  unlesbare zählt als die niedrigste, `db.mineru_versionsrang`; beim Überschreiben
+  eines `failed` die des neuen Laufs, auch keine). Ein U+0000 in dem, was der
+  Worker meldet, steht in Spalte und Vermerken als `\u0000`, sonst ließe sich
+  auch das `failed` ohne Inhalt nicht schreiben. Was MinerU tatsächlich nahm, steht im
+  Rohergebnis unter `envelopes[…]["output_meta"]`; bei `auto` der Modus, den es für
+  die Datei wählte. `DocumentRow.read_settings`, die Hülle (`mineru_version`,
+  `read_settings`), `document()` und `show` nennen sie.
+- **Abweichungen** sind Vermerke, kein Fehler, und das Ergebnis gilt trotzdem
+  (`executor._lesung_vermerken`): `lese_einstellungen_abweichend`, wenn ein
+  Teilstück andere Einstellungen meldet als bestellt (`auto` passt zu `txt` wie zu
+  `ocr`, eine fehlende Meldung passt nicht), auch eine bezahlte, unverwertbare
+  Antwort, sofern sie Einstellungen meldet (eine Fehlerantwort tut es nicht), und
+  `mineru_versionen_verschieden`. Bestimmt werden beide einmal; scheitert das
+  Endschreiben, nimmt der Fehlerzweig sie.
+  DOCX und HTML meldet der Worker heute als `flash`/`txt`, gleich was bestellt war;
+  die Ausnahmen für Ganzdokument-Formate regelt Mineroo#17.
+- **Gezählt** in `status()["readings"]` (`db.counts_by_reading`): je Version und
+  bestellten Einstellungen die Zahl der Dokumente mit `done` oder `empty`, nach
+  Version geordnet wie MinerU sie zählt (4.0.9 vor 4.0.12), ohne Version am Ende. Bei
+  einer neuen MinerU-Version geschieht nichts; ein Neu-Lesen gibt es nicht.
 
 ### Drei Antworten auf einen Fehlschlag — an genau einer Stelle entschieden
 
@@ -543,11 +595,11 @@ Harness-Bibliothek `runpod-doc-worker` legen die Antwortform fest. MinerU-3.4-
 Ergebnisse gibt es nicht zu bedienen (Mineroo#1, „Nur noch MinerU 4").
 
 - **Abgeschickt** werden `tier`, `ocr_mode` und `image_analysis` (Voreinstellung
-  `advanced`, `ocr`, `true`; Felder von `Settings`, geprüft gegen
-  `config.GUELTIGE_STUFEN` und `config.GUELTIGE_OCR_MODI`), nie `backend`, das der
-  Worker abweist. Außerhalb von `advanced` bestellt `runpod.RunPodClient.submit`
-  die Bildanalyse als aus, weil sie dort nicht wirkt. Je Dokument einstellbar
-  werden die drei mit Mineroo#14; bis dahin gelten die Einstellungen des Daemons.
+  `advanced`, `ocr`, `true`), je Dokument aus seiner Eingabe (siehe „Die
+  Lese-Einstellungen eines Dokuments stehen an seiner Eingabe"), nie `backend`,
+  das der Worker abweist. Außerhalb von `advanced` ist die Bildanalyse als aus
+  bestellt (`config.ReadSettings`, und `runpod.job_eingabe` noch einmal), weil sie
+  dort nicht wirkt.
 - **Zurück** kommt im Tarball (`tarball_b64`, gzip-Tar) je Teilstück:
   `markdown.md`, `markdown_full.md` (Vollmodus, vom Worker gerendert),
   `middle_json.json` (Schema `docvortex.middle` 2.0: Seiten mit `page_idx` und

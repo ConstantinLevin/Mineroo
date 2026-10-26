@@ -37,6 +37,15 @@ dependencies = [
     # Paket benutzt rich nirgends. Sie ist weg — wer spaeter rich benutzt, traegt
     # es wieder ein, und dann stimmt es auch.
     "typer>=0.19.2",
+    # click bringt typer mit; die Kommandozeile importiert es selbst fuer
+    # `click.Choice`, damit die Auswahl von `--tier` und `--ocr-mode` aus den
+    # Listen in config stammt und nicht ein zweites Mal getippt wird. 8.3.1 ist
+    # die Fassung der Miniconda-Base.
+    "click>=8.3.1",
+    # packaging vergleicht MinerU-Versionen nach PEP 440 (executor: die
+    # niedrigste der Teilstuecke kommt an die Zeile, Mineroo#14). 24.2 ist die
+    # Fassung der Miniconda-Base.
+    "packaging>=24.2",
 ]
 
 [project.optional-dependencies]

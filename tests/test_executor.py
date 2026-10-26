@@ -25,7 +25,7 @@ from psycopg_pool import AsyncConnectionPool
 
 import ersatz_antworten as ersatz
 from mineru_ocr import db as db_modul
-from mineru_ocr.config import Settings
+from mineru_ocr.config import ReadSettings, Settings
 from mineru_ocr.db import DocumentStatus, get_document, insert_input, write_terminal_async
 from mineru_ocr.errors import (
     ConfigurationError,
@@ -164,6 +164,7 @@ def _anlegen(
     *,
     name: str = "x.pdf",
     typ: DocumentType = DocumentType.PDF,
+    lesen: ReadSettings = ReadSettings(),
 ) -> tuple[str, Path]:
     """Legt die Eingabe an, wie das Abschicken es tut (keine Ergebniszeile), und
     gibt Hash und einen Pfad zurueck, den es NICHT gibt.
@@ -176,7 +177,7 @@ def _anlegen(
     pfad = tmp_path / name
     daten = _als(typ, inhalt)
     sha = hashlib.sha256(daten).hexdigest()
-    insert_input(conn, sha256=sha, content=daten)
+    insert_input(conn, sha256=sha, content=daten, read_settings=lesen)
     return sha, pfad
 
 
@@ -239,7 +240,7 @@ async def test_guard_haelt_fertige_dokumente_an(
             async_conn, sha256=sha, status=status, raw={"erste": nr},
             endpoint_id="testendpoint",
         )
-        insert_input(db_conn, sha256=sha, content=b"wieder abgelegt")
+        insert_input(db_conn, sha256=sha, content=b"wieder abgelegt", read_settings=ReadSettings())
 
         runpod = FalscherRunPod([ersatz.fertige_antwort()])
         await process_document(
@@ -289,23 +290,36 @@ async def test_guard_laesst_failed_durch(
     assert zeile.raw["markdown"] == "Jetzt geklappt"
 
 
-async def test_lese_einstellungen_der_einstellung_gehen_an_runpod(
+async def test_der_job_schickt_die_lese_einstellungen_seiner_eingabe(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    """Der Job schickt die Stufe, den OCR-Modus und die Bildanalyse aus den
-    Einstellungen, nicht feste Werte (Mineroo#11; je Dokument erst Mineroo#14)."""
-    sha, _ = _anlegen(db_conn, tmp_path, b"ein bild", name="a.png", typ=DocumentType.PNG)
-    eingestellt = dataclasses.replace(
-        exec_settings, tier="basic", ocr_mode="txt", image_analysis=False
+    """Je Dokument, nicht je Daemon (Mineroo#14): Stufe, OCR-Modus und Bildanalyse
+    kommen aus der Eingabe-Zeile, fuer jedes Teilstueck; was in der Einstellung
+    des Daemons steht, wirkt auf keinen Job."""
+    daemon = dataclasses.replace(
+        exec_settings, tier="advanced", ocr_mode="ocr", image_analysis=True,
+        max_pages_per_chunk=2,
+    )
+    bild, _ = _anlegen(
+        db_conn, tmp_path, b"ein bild", name="a.png", typ=DocumentType.PNG,
+        lesen=ReadSettings("basic", "txt", False),
+    )
+    pdf, _ = _anlegen(
+        db_conn, tmp_path, _pdf(3), lesen=ReadSettings("advanced", "auto", False)
     )
 
     runpod = FalscherRunPod([ersatz.fertige_antwort("Text")])
-    await process_document(sha, settings=eingestellt, runpod=runpod, pool=pool)
+    await process_document(bild, settings=daemon, runpod=runpod, pool=pool)
+    await process_document(pdf, settings=daemon, runpod=runpod, pool=pool)
 
-    assert runpod.lese_einstellungen == [("basic", "txt", False)]
+    assert runpod.lese_einstellungen == [
+        ("basic", "txt", False),
+        ("advanced", "auto", False),
+        ("advanced", "auto", False),
+    ]
 
 
 # --- Eingang --------------------------------------------------------------
@@ -1011,6 +1025,342 @@ async def test_echte_mineru4_antworten_ergeben_ein_dokument(
     assert len(zeile.raw["images"]) == 12
     for verweis in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", zeile.raw["markdown"]):
         assert verweis in zeile.raw["images"]
+    # Die echten Antworten melden MinerU 4.0.12 und genau die bestellten
+    # Einstellungen: kein Vermerk (Mineroo#14).
+    assert zeile.mineru_version == "4.0.12"
+    assert zeile.read_settings == ReadSettings("advanced", "ocr", True)
+    arten = {v["kind"] for v in zeile.notes}
+    assert not arten & {"lese_einstellungen_abweichend", "mineru_versionen_verschieden"}
+
+
+def _vermerk(zeile: Any, art: str) -> dict[str, Any]:
+    (vermerk,) = [v for v in zeile.notes if v["kind"] == art]
+    return dict(vermerk)
+
+
+async def test_nicht_passende_gemeldete_einstellungen_ergeben_einen_vermerk(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Meldet der Worker Einstellungen, die nicht zur Bestellung passen, kommt ein
+    Vermerk an die Zeile, und das Ergebnis gilt trotzdem (Mineroo#14). Der Vermerk
+    nennt Bestellung und je abweichendem Teilstueck, was gemeldet wurde."""
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=2)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(3), lesen=ReadSettings("advanced", "ocr", True))
+    runpod = FalscherRunPod(
+        [
+            ersatz.fertige_antwort("eins"),
+            ersatz.fertige_antwort("zwei", tier="flash", ocr_mode="txt", image_analysis=False),
+        ]
+    )
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    vermerk = _vermerk(zeile, "lese_einstellungen_abweichend")
+    assert vermerk["bestellt"] == {"tier": "advanced", "ocr_mode": "ocr", "image_analysis": True}
+    assert vermerk["abweichend"] == [
+        {
+            "teilstueck": 1,
+            "seiten": [2, 2],
+            "gemeldet": {"tier": "flash", "ocr_mode": "txt", "image_analysis": False},
+        }
+    ]
+
+
+async def test_auto_passt_zu_txt_wie_zu_ocr(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Bei `auto` waehlt MinerU den Modus je Datei und meldet `txt` oder `ocr`; beides
+    passt zur Bestellung. Eine Meldung ganz ohne Einstellungen passt nicht."""
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(2), lesen=ReadSettings("advanced", "auto", True))
+    runpod = FalscherRunPod(
+        [ersatz.fertige_antwort("eins", ocr_mode="txt"), ersatz.fertige_antwort("zwei")]
+    )
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert all(v["kind"] != "lese_einstellungen_abweichend" for v in zeile.notes)
+
+    ohne = ersatz.fertige_antwort("ohne")
+    for feld in ("tier", "ocr_mode", "image_analysis"):
+        del ohne["output"][feld]
+    stumm, _ = _anlegen(db_conn, tmp_path, b"s", name="s.png", typ=DocumentType.PNG)
+    await process_document(
+        stumm, settings=exec_settings, runpod=FalscherRunPod([ohne]), pool=pool
+    )
+    zeile = get_document(db_conn, stumm)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    assert _vermerk(zeile, "lese_einstellungen_abweichend")["abweichend"][0]["gemeldet"] == {
+        "tier": None,
+        "ocr_mode": None,
+        "image_analysis": None,
+    }
+
+
+async def test_verschiedene_versionen_in_den_teilstuecken_ergeben_einen_vermerk(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Gaben die Teilstuecke verschiedene MinerU-Versionen an, nennt ein Vermerk
+    alle, und die Spalte traegt die niedrigste, nach PEP 440 verglichen: 4.0.9
+    liegt vor 4.0.12 (Mineroo#14)."""
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(3))
+    runpod = FalscherRunPod(
+        [
+            ersatz.fertige_antwort("a", mineru_version="4.0.12"),
+            ersatz.fertige_antwort("b", mineru_version="4.0.9"),
+            ersatz.fertige_antwort("c", mineru_version="4.0.12"),
+        ]
+    )
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    assert zeile.mineru_version == "4.0.9"
+    vermerk = _vermerk(zeile, "mineru_versionen_verschieden")
+    assert vermerk["versionen"] == ["4.0.12", "4.0.9", "4.0.12"]
+    assert vermerk["gespeichert"] == "4.0.9"
+
+
+async def test_eine_gleiche_version_in_allen_teilstuecken_ergibt_keinen_vermerk(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(2))
+    runpod = FalscherRunPod([ersatz.fertige_antwort("a"), ersatz.fertige_antwort("b")])
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.mineru_version == ersatz.MINERU_VERSION
+    assert all(v["kind"] != "mineru_versionen_verschieden" for v in zeile.notes)
+
+
+@pytest.mark.parametrize(
+    ("bestellt", "gemeldet"),
+    [
+        # Je Feld allein: Stufe, OCR-Modus, Bildanalyse.
+        (ReadSettings("advanced", "ocr", True), {"tier": "standard"}),
+        (ReadSettings("advanced", "ocr", True), {"ocr_mode": "txt"}),
+        (ReadSettings("advanced", "txt", True), {"ocr_mode": "ocr"}),
+        (ReadSettings("advanced", "ocr", True), {"image_analysis": False}),
+        # Ein Text ist kein Wahrheitswert, auch wenn er wie einer aussieht.
+        (ReadSettings("advanced", "ocr", True), {"image_analysis": "true"}),
+        (ReadSettings("basic", "ocr", False), {"image_analysis": 0}),
+    ],
+)
+async def test_schon_ein_abweichendes_feld_ergibt_den_vermerk(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    bestellt: ReadSettings,
+    gemeldet: dict[str, Any],
+) -> None:
+    """Jedes der drei Felder zaehlt fuer sich (Mineroo#14): Weicht nur eines ab,
+    kommt der Vermerk, und die uebrigen gemeldet wie bestellt aendern daran nichts."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG, lesen=bestellt
+    )
+    wie_bestellt = {
+        "tier": bestellt.tier,
+        "ocr_mode": "ocr" if bestellt.ocr_mode == "auto" else bestellt.ocr_mode,
+        "image_analysis": bestellt.image_analysis,
+    }
+    antwort = ersatz.fertige_antwort("Text", **{**wie_bestellt, **gemeldet})
+    await process_document(
+        sha, settings=exec_settings, runpod=FalscherRunPod([antwort]), pool=pool
+    )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    (abweichend,) = _vermerk(zeile, "lese_einstellungen_abweichend")["abweichend"]
+    assert abweichend["gemeldet"] == {**wie_bestellt, **gemeldet}
+
+
+async def test_eine_unverwertbare_antwort_mit_anderen_einstellungen_ergibt_den_vermerk(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Auch eine bezahlte Antwort, die sich nicht auspacken liess, meldet, womit
+    der Worker las (Mineroo#14); weicht das von der Bestellung ab, steht der
+    Vermerk an der Zeile wie bei einem ausgepackten Teilstueck."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG,
+        lesen=ReadSettings("advanced", "ocr", True),
+    )
+    dateien = ersatz.dokument_dateien(ersatz.middle_json([ersatz.seite(0, [])]))
+    del dateien["markdown.md"]
+    antwort = ersatz.tarball_antwort(
+        dateien, tier="basic", ocr_mode="txt", image_analysis=False
+    )
+    with pytest.raises(TerminalRunPodError):
+        await process_document(
+            sha, settings=exec_settings, runpod=FalscherRunPod([antwort]), pool=pool
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+    vermerk = _vermerk(zeile, "lese_einstellungen_abweichend")
+    assert vermerk["abweichend"] == [
+        {
+            "unverwertbar": 0,
+            "seiten": [0, 0],
+            "gemeldet": {"tier": "basic", "ocr_mode": "txt", "image_analysis": False},
+        }
+    ]
+    assert zeile.notes[-1]["kind"] == "gescheitert"
+
+
+async def test_eine_fehlerantwort_ohne_einstellungen_ergibt_keinen_vermerk(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    echte_fehlerantwort: dict[str, Any],
+) -> None:
+    """Eine Fehlerantwort meldet keine Lese-Einstellungen (die echte des Endpoints
+    nicht); daran ist nichts zu vergleichen, also kein Vermerk."""
+    sha, _ = _anlegen(db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG)
+    with pytest.raises(TerminalRunPodError):
+        await process_document(
+            sha, settings=exec_settings, runpod=FalscherRunPod([echte_fehlerantwort]),
+            pool=pool,
+        )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+    assert all(v["kind"] != "lese_einstellungen_abweichend" for v in zeile.notes)
+
+
+async def test_eine_unlesbare_version_gilt_als_die_niedrigste(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Eine Angabe, die keine Versionsnummer nach PEP 440 ist, zaehlt als aelter als
+    jede (Mineroo#14), und eine fehlende Meldung neben einer gemeldeten ergibt den
+    Vermerk, ohne die Spalte zu leeren."""
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
+    unlesbar, _ = _anlegen(db_conn, tmp_path, _pdf(2))
+    runpod = FalscherRunPod(
+        [
+            ersatz.fertige_antwort("a", mineru_version="4.0.12"),
+            ersatz.fertige_antwort("b", mineru_version="vier-null"),
+        ]
+    )
+    await process_document(unlesbar, settings=eng, runpod=runpod, pool=pool)
+    zeile = get_document(db_conn, unlesbar)
+    assert zeile is not None and zeile.mineru_version == "vier-null"
+    assert _vermerk(zeile, "mineru_versionen_verschieden")["versionen"] == [
+        "4.0.12", "vier-null"
+    ]
+
+    ohne = ersatz.fertige_antwort("d")
+    del ohne["output"]["mineru_version"]
+    fehlend, _ = _anlegen(db_conn, tmp_path, _pdf(3))
+    runpod = FalscherRunPod(
+        [ersatz.fertige_antwort("c", mineru_version="4.0.12"), ohne, ersatz.fertige_antwort("e")]
+    )
+    await process_document(fehlend, settings=eng, runpod=runpod, pool=pool)
+    zeile = get_document(db_conn, fehlend)
+    assert zeile is not None and zeile.mineru_version == "4.0.12"
+    assert _vermerk(zeile, "mineru_versionen_verschieden")["versionen"] == [
+        "4.0.12", None, "4.0.12"
+    ]
+
+
+async def test_eine_riesige_versionsangabe_haelt_das_ergebnis_nicht_auf(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Eine Ziffernfolge ueber Pythons Grenze fuer Ganzzahl-Umwandlung laesst
+    `packaging` mit `ValueError` scheitern statt mit `InvalidVersion`; sie gilt
+    als unlesbare Angabe, und das Dokument endet wie jedes andere."""
+    riesig = "4." + "9" * 5000
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(2))
+    runpod = FalscherRunPod(
+        [
+            ersatz.fertige_antwort("a", mineru_version="4.0.12"),
+            ersatz.fertige_antwort("b", mineru_version=riesig),
+        ]
+    )
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    assert zeile.mineru_version == riesig
+
+
+async def test_ein_nullzeichen_in_den_meldungen_verhindert_das_ergebnis_nicht(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Meldet der Worker Version oder Einstellungen mit einem U+0000, kann Postgres
+    weder `raw` noch den Text so speichern. Das Dokument endet trotzdem: `failed`
+    ohne den Inhalt (Mineroo#27), und Spalte und Vermerk tragen das Gemeldete mit
+    dem Nullzeichen sichtbar als `\\u0000`."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG,
+        lesen=ReadSettings("advanced", "ocr", True),
+    )
+    antwort = ersatz.fertige_antwort(
+        "Text", mineru_version="4.0.12\x00", tier="adv\x00anced"
+    )
+    with pytest.raises(UnstorableResultError):
+        await process_document(
+            sha, settings=exec_settings, runpod=FalscherRunPod([antwort]), pool=pool
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+    assert zeile.mineru_version == "4.0.12\\u0000"
+    (abweichend,) = _vermerk(zeile, "lese_einstellungen_abweichend")["abweichend"]
+    assert abweichend["gemeldet"]["tier"] == "adv\\u0000anced"
+    assert any(v["kind"] == "ergebnis_nicht_speicherbar" for v in zeile.notes)
+
+
+async def test_scheitert_das_endschreiben_stehen_die_lese_vermerke_einmal(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Der Erfolgsweg hat Version und Vermerke schon bestimmt, wenn das
+    Endschreiben scheitert; der Fehlerzweig nimmt sie, statt sie ein zweites Mal
+    anzuhaengen."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG,
+        lesen=ReadSettings("advanced", "ocr", True),
+    )
+    antwort = ersatz.fertige_antwort("vor\x00nach", tier="flash", mineru_version="4.0.11")
+    with pytest.raises(UnstorableResultError):
+        await process_document(
+            sha, settings=exec_settings, runpod=FalscherRunPod([antwort]), pool=pool
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+    arten = [v["kind"] for v in zeile.notes]
+    assert arten.count("lese_einstellungen_abweichend") == 1
+    assert zeile.mineru_version == "4.0.11"
 
 
 async def test_leeres_ergebnis_wird_empty(
@@ -1057,6 +1407,77 @@ async def test_image_tag_wird_mitgeschrieben(
     zeile = get_document(db_conn, sha)
     assert zeile is not None
     assert zeile.image_tag_at_submit == ":abc12345"
+
+
+async def test_die_zeile_traegt_mineru_version_und_bestellte_lese_einstellungen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Zu jedem Ergebnis die MinerU-Version, die der Worker meldet, und die
+    Lese-Einstellungen, die das Abschicken bestellt hat (Mineroo#14), neben dem
+    Image-Tag wie bisher. Was MinerU tatsaechlich nahm (bei `auto` den Modus, den
+    es fuer die Datei waehlte), steht im Rohergebnis."""
+    bestellt = ReadSettings("advanced", "auto", True)
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG, lesen=bestellt
+    )
+    runpod = FalscherRunPod(
+        [ersatz.fertige_antwort(ocr_mode="txt", mineru_version="4.0.12")],
+        marke=":abc12345",
+    )
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.mineru_version == "4.0.12"
+    assert (zeile.tier, zeile.ocr_mode, zeile.image_analysis) == ("advanced", "auto", True)
+    assert zeile.read_settings == bestellt
+    assert zeile.image_tag_at_submit == ":abc12345"
+    assert zeile.raw is not None
+    assert zeile.raw["envelopes"][0]["output_meta"]["ocr_mode"] == "txt"
+
+
+async def test_auch_ein_gescheitertes_dokument_traegt_version_und_bestellte_einstellungen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """„Zu jedem Ergebnis": auch zu `input_error` und `failed`, ohne Lauf (der
+    Waechter) und mit einem. Die Version ist die, die der Worker meldete, auch in
+    einer Fehlerantwort; ohne Antwort gibt es keine."""
+    bestellt = ReadSettings("basic", "txt", False)
+    kaputt, _ = _anlegen(db_conn, tmp_path, b"%PDF-1.7\nnur ein Kopf", lesen=bestellt)
+    with pytest.raises(CorruptDocumentError):
+        await process_document(
+            kaputt, settings=exec_settings, runpod=FalscherRunPod([]), pool=pool
+        )
+    zeile = get_document(db_conn, kaputt)
+    assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.read_settings == bestellt
+    assert zeile.mineru_version is None
+
+    liegen, _ = _anlegen(
+        db_conn, tmp_path, b"l", name="l.png", typ=DocumentType.PNG, lesen=bestellt
+    )
+    await write_failure_if_no_result(
+        liegen, settings=exec_settings, pool=pool, grund="Worker wiederholt abgestuerzt"
+    )
+    zeile = get_document(db_conn, liegen)
+    assert zeile is not None and zeile.read_settings == bestellt
+
+    abgewiesen, _ = _anlegen(
+        db_conn, tmp_path, b"f", name="f.png", typ=DocumentType.PNG, lesen=bestellt
+    )
+    runpod = FalscherRunPod([ersatz.fehlerantwort("RuntimeError: kaputt im Worker")])
+    with pytest.raises(TerminalRunPodError):
+        await process_document(abgewiesen, settings=exec_settings, runpod=runpod, pool=pool)
+    zeile = get_document(db_conn, abgewiesen)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+    assert zeile.read_settings == bestellt
+    assert zeile.mineru_version == ersatz.MINERU_VERSION
 
 
 async def test_image_tag_wird_auch_bei_einer_pdf_mitgeschrieben(
@@ -1813,7 +2234,7 @@ async def test_eingabeprobleme_enden_input_error_nicht_failed(
     # am Inhalt, wie das Abschicken).
     unbekannt = b"kein bekannter dateikopf"
     sha_mime = hashlib.sha256(unbekannt).hexdigest()
-    insert_input(db_conn, sha256=sha_mime, content=unbekannt)
+    insert_input(db_conn, sha256=sha_mime, content=unbekannt, read_settings=ReadSettings())
     runpod = FalscherRunPod([ersatz.fertige_antwort()])
     with pytest.raises(UnsupportedTypeError):
         await process_document(

@@ -59,11 +59,12 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, Final
 
+import click
 import typer
 
 from . import core, db, mime
 from .client import OCRClient
-from .config import Settings
+from .config import GUELTIGE_OCR_MODI, GUELTIGE_STUFEN, Settings
 from .core import RetryOutcome
 from .errors import (
     DocumentNotFound,
@@ -266,8 +267,36 @@ def ocr(
     paths: Annotated[list[Path], typer.Argument(help="Dateien oder Verzeichnisse.")],
     glob: Annotated[str, typer.Option(help="Welche Dateien in Verzeichnissen.")] = "**/*",
     json_out: Annotated[bool, typer.Option("--json", help="Maschinenlesbar ausgeben.")] = False,
+    tier: Annotated[
+        str | None,
+        typer.Option(
+            click_type=click.Choice(sorted(GUELTIGE_STUFEN)),
+            help="Stufe, mit der MinerU liest; ohne Angabe die Voreinstellung.",
+        ),
+    ] = None,
+    ocr_mode: Annotated[
+        str | None,
+        typer.Option(
+            click_type=click.Choice(sorted(GUELTIGE_OCR_MODI)),
+            help="Woher der Text kommt; ohne Angabe die Voreinstellung.",
+        ),
+    ] = None,
+    image_analysis: Annotated[
+        bool | None,
+        typer.Option(
+            "--image-analysis/--no-image-analysis",
+            help="Bilder und Diagramme beschreiben lassen (nur in `advanced`); "
+            "ohne Angabe die Voreinstellung.",
+        ),
+    ] = None,
 ) -> None:
     """Liest Dateien, schickt sie ab und kehrt sofort zurueck. Blockiert nicht.
+
+    `--tier`, `--ocr-mode` und `--image-analysis/--no-image-analysis` sind die
+    Lese-Einstellungen dieses Laufs, fuer jede Datei; ohne Angabe gelten die
+    Voreinstellungen (`advanced`, `ocr`, Bildanalyse an). Sie gelten nur fuer
+    Dateien, die dieser Lauf einreiht: Eine mit Ergebnis oder eine, die schon
+    unterwegs ist, behaelt ihre. Womit ein Dokument gelesen wurde, zeigt `show`.
 
     Die Kommandozeile ist die einzige, die Pfade kennt: Sie liest die Dateien (in
     Verzeichnissen ueber ein Muster), hasht sie und nennt in der Ausgabe je Datei
@@ -313,7 +342,12 @@ def ocr(
                 )
                 for datei in kandidaten:
                     try:
-                        gereicht = klient.ocr_start(_lesen(datei))
+                        gereicht = klient.ocr_start(
+                            _lesen(datei),
+                            tier=tier,
+                            ocr_mode=ocr_mode,
+                            image_analysis=image_analysis,
+                        )
                     except (UnsupportedTypeError, TooLargeError, OSError) as fehler:
                         grund = _grund(fehler)
                         uebersprungen.append(
@@ -389,6 +423,20 @@ def _ocr_ausgeben(
     )
 
 
+def _lesung_zeigen(angaben: dict[str, Any]) -> str:
+    """Version und bestellte Lese-Einstellungen, lesbar: fuer `show` und `status`."""
+    teile = [f"MinerU {angaben['mineru_version'] or 'unbekannt'}"]
+    if angaben["tier"]:
+        teile += [
+            angaben["tier"],
+            angaben["ocr_mode"],
+            f"Bildanalyse {'an' if angaben['image_analysis'] else 'aus'}",
+        ]
+    else:
+        teile.append("Einstellungen unbekannt")
+    return ", ".join(teile)
+
+
 def _grund(fehler: BaseException) -> str:
     """Der Grund einer uebersprungenen Datei, als Schluessel fuer Zaehler und JSON."""
     if isinstance(fehler, UnsupportedTypeError):
@@ -424,6 +472,12 @@ def status(
         "Dokumente:  "
         + "  ".join(
             f"{name}={anzahl}" for name, anzahl in uebersicht["documents"].items()
+        ),
+        # Womit gelesen wurde (Mineroo#14): je Version und bestellten
+        # Lese-Einstellungen die Zahl der Dokumente mit Ergebnis `done` oder `empty`.
+        *(
+            f"Gelesen:    {eintrag['documents']}  {_lesung_zeigen(eintrag)}"
+            for eintrag in uebersicht["readings"]
         ),
         "Jobs:       "
         + "  ".join(f"{name}={anzahl}" for name, anzahl in uebersicht["jobs"].items()),
@@ -495,6 +549,10 @@ def show(
         )
         if angaben["error"]:
             zeilen.append(f"  Fehler:    {angaben['error']}")
+        if angaben["mineru_version"] or angaben["tier"]:
+            # Womit gelesen wurde: die gemeldete Version und die bestellten
+            # Lese-Einstellungen (Mineroo#14).
+            zeilen.append(f"  Gelesen:   {_lesung_zeigen(angaben)}")
         if angaben["image_tag_at_submit"]:
             zeilen.append(f"  Image:     {angaben['image_tag_at_submit']}")
         for vermerk in angaben["notes"]:

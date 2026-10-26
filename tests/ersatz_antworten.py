@@ -279,6 +279,7 @@ def antwort(
     tier: str = "advanced",
     ocr_mode: str = "ocr",
     image_analysis: bool = True,
+    mineru_version: str = MINERU_VERSION,
 ) -> dict[str, Any]:
     """Eine volle `/status`-Antwort mit `COMPLETED` um einen Ergebnis-Eintrag.
 
@@ -296,7 +297,7 @@ def antwort(
         "output": {
             "ok": True,
             "elapsed_seconds": 4.2,
-            "mineru_version": MINERU_VERSION,
+            "mineru_version": mineru_version,
             "tier": tier,
             "ocr_mode": ocr_mode,
             "image_analysis": image_analysis,
@@ -326,12 +327,16 @@ def tarball_antwort(dateien: Mapping[str, bytes], **einstellungen: Any) -> dict[
     return antwort(tarball_eintrag(dateien), **einstellungen)
 
 
-def fertige_antwort(text: str = "Text", *, page_idx: Any = 0) -> dict[str, Any]:
+def fertige_antwort(
+    text: str = "Text", *, page_idx: Any = 0, **gemeldet: Any
+) -> dict[str, Any]:
     """Die gewoehnliche Erfolgsantwort fuer Tests, die nur einen Text brauchen:
     eine Seite, darauf ein Textblock mit `text` (ohne Text: eine Seite ohne
-    Block). `page_idx` ist fuer Tests, die eine kaputte Seitenangabe brauchen."""
+    Block). `page_idx` ist fuer Tests, die eine kaputte Seitenangabe brauchen;
+    `gemeldet` setzt, was der Worker meldet (`tier`, `ocr_mode`,
+    `image_analysis`, `mineru_version`, siehe `antwort`)."""
     eine = seite(page_idx, [text_block(0, text)] if text else [])
-    return tarball_antwort(dokument_dateien(middle_json([eine])))
+    return tarball_antwort(dokument_dateien(middle_json([eine])), **gemeldet)
 
 
 def fehlerantwort(fehler: str) -> dict[str, Any]:

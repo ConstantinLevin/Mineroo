@@ -35,13 +35,13 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any, TypeVar
+from typing import Any, Final, TypeVar
 
 from psycopg_pool import AsyncConnectionPool
 
 from . import assembly, chunking, db, images
 from .abbruch import abwarten_bis_zum_zweiten_abbruch
-from .config import Settings
+from .config import ReadSettings, Settings
 from .errors import (
     CorruptDocumentError,
     InputError,
@@ -169,7 +169,8 @@ async def process_document(
        laufen.
 
     1. Eingabe aus `inputs` lesen, ueber den Hash, auf einer eigenen
-       kurzlebigen Verbindung, und den Hash gegenpruefen. Fehlt die Eingabe oder
+       kurzlebigen Verbindung, samt den Lese-Einstellungen, die das Abschicken
+       fuer dieses Dokument dort ablegte, und den Hash gegenpruefen. Fehlt die Eingabe oder
        weicht der Hash ab, ist der Bestand beschaedigt: `input_error` samt
        Vermerk. Bezahlte Ergebnisse gehen dabei nicht verloren, weil es noch
        keine gibt. Typ und Groesse bestimmt der Job aus den Bytes (`mime`); sie
@@ -280,7 +281,9 @@ async def process_document(
     Args:
         sha256: Welches Dokument. Der Job traegt nichts weiter als diesen Hash;
             die Bytes stehen in `inputs`.
-        settings: Schwellen, Zeitschranken, Job-Contract-Werte.
+        settings: Schwellen, Zeitschranken, Transport. Die Lese-Einstellungen
+            kommen NICHT von hier, sondern aus der Eingabe des Dokuments
+            (Mineroo#14).
         runpod: Der geteilte Zugang. Gehoert dem Daemon, wird hier nur benutzt.
         pool: Verbindungen zur eigenen Datenbank.
 
@@ -347,6 +350,14 @@ async def process_document(
     groesse: int | None = None
     art: str | None = None
     seitenzahl: int | None = None
+    # Die bestellten Lese-Einstellungen, sobald die Eingabe gelesen ist; der
+    # Fehlerpfad vergleicht nur, wenn es sie gibt.
+    lesen: ReadSettings | None = None
+    # Version und Lese-Vermerke, sobald der Erfolgsweg sie bestimmt hat; scheitert
+    # danach das Endschreiben, nimmt der Fehlerzweig sie, statt die Vermerke ein
+    # zweites Mal anzuhaengen.
+    version: str | None = None
+    version_bestimmt = False
     begonnen = time.monotonic()
 
     try:
@@ -370,8 +381,8 @@ async def process_document(
         # Aus `inputs`, ueber den Hash, auf einer EIGENEN kurzlebigen Verbindung
         # (siehe `db.read_input_async`) — nicht aus dem Pool des Daemons und
         # nicht von einem Pfad.
-        rohbytes = await db.read_input_async(settings.db_dsn, sha256)
-        if rohbytes is None:
+        eingabe = await db.read_input_async(settings.db_dsn, sha256)
+        if eingabe is None:
             # Ein Dokument ohne Endergebnis hat immer eine Eingabe (Abschicken
             # legt sie mit dem Job an, und nur das Endergebnis loescht sie).
             # Fehlt sie, ist der Bestand beschaedigt, und ein Wiederlauf faende
@@ -382,6 +393,10 @@ async def process_document(
                 f"Dokument noch kein Endergebnis hat. Der Bestand ist "
                 f"beschaedigt. Es wurde nichts bezahlt."
             )
+        rohbytes = eingabe.content
+        # Die Lese-Einstellungen DIESES Dokuments, nicht die des Daemons
+        # (Mineroo#14): Das Abschicken hat sie an die Eingabe geschrieben.
+        lesen = eingabe.read_settings
         tatsaechlich = hashlib.sha256(rohbytes).hexdigest()
         if tatsaechlich != sha256:
             # Der Job liest genau die Bytes, aus denen der Hash gebildet wurde.
@@ -445,6 +460,7 @@ async def process_document(
                 await _stuecke_verarbeiten(
                     stuecke,
                     settings=settings,
+                    lesen=lesen,
                     runpod=runpod,
                     teile=teile,
                     unverwertbar=unverwertbar,
@@ -476,6 +492,7 @@ async def process_document(
             await _stuecke_verarbeiten(
                 [(chunking.Chunk(first_page=0, last_page=0), rohbytes)],
                 settings=settings,
+                lesen=lesen,
                 runpod=runpod,
                 teile=teile,
                 unverwertbar=unverwertbar,
@@ -494,6 +511,8 @@ async def process_document(
             if assembly.is_empty(ergebnis)
             else db.DocumentStatus.DONE
         )
+        version = _lesung_vermerken(teile, unverwertbar, lesen, vermerke)
+        version_bestimmt = True
         vermerke.append(
             {
                 "kind": "verarbeitet",
@@ -516,6 +535,7 @@ async def process_document(
                     image_tag_at_submit=image_tag,
                     notes=vermerke,
                     page_count=seitenzahl,
+                    mineru_version=version,
                 )
 
         # Abgeschirmt wie das Schreiben von `failed` unten (Mineroo#27): Das
@@ -586,6 +606,12 @@ async def process_document(
             # hier VOLLSTAENDIG, weil sie bezahlt sind und dreissig Minuten nach
             # ihrer Entstehung nirgends mehr abrufbar waeren.
             ergebnis["unverwertbare_antworten"] = unverwertbar
+        # Auch eine Fehlerantwort meldet die Version (eine unverwertbare Antwort
+        # steht in `unverwertbar`). Kann nicht werfen, siehe dort. Vor dem
+        # Vermerk `gescheitert`, damit der der letzte bleibt. Hat der Erfolgsweg
+        # beides schon bestimmt (das Endschreiben scheiterte), gilt das.
+        if not version_bestimmt:
+            version = _lesung_vermerken(teile, unverwertbar, lesen, vermerke)
         vermerke.append(_vermerk_gescheitert(len(teile), beschreibung))
         status = (
             db.DocumentStatus.INPUT_ERROR
@@ -607,6 +633,7 @@ async def process_document(
                     error=beschreibung,
                     notes=vermerke,
                     page_count=seitenzahl,
+                    mineru_version=version,
                 )
 
         async def ergebnis_schreiben() -> None:
@@ -696,6 +723,196 @@ async def write_failure_if_no_result(
             notes=vermerke,
         )
     return True
+
+
+_LESE_FELDER: Final = ("tier", "ocr_mode", "image_analysis")
+"""Die Lese-Einstellungen, die der Worker in jeder Antwort meldet."""
+
+
+def _lesung_vermerken(
+    teile: list[assembly.ChunkArtifacts],
+    unverwertbar: list[dict[str, Any]],
+    lesen: ReadSettings | None,
+    vermerke: list[dict[str, Any]],
+) -> str | None:
+    """Vergleicht, womit gelesen wurde, mit der Bestellung, und gibt die Version.
+
+    Zwei Vermerke, beide nur Auskunft; das Ergebnis gilt trotzdem (Mineroo#14):
+
+    * `lese_einstellungen_abweichend`: Eine Antwort meldet Einstellungen, die
+      nicht zur Bestellung `lesen` passen (`_passt`). Der Vermerk nennt die
+      Bestellung und je abweichender Antwort das Gemeldete: je ausgepacktem
+      Teilstueck Nummer (`teilstueck`) und Seiten, je bezahlter Antwort, die
+      sich nicht verwerten liess, ihre Nummer in `unverwertbare_antworten`
+      (`unverwertbar`) und Seiten. Eine unverwertbare Antwort zaehlt nur, wenn
+      sie wenigstens eine der drei Angaben traegt: Eine Fehlerantwort meldet
+      keine, und daran ist nichts zu vergleichen.
+    * `mineru_versionen_verschieden`: Die Antworten melden verschiedene
+      MinerU-Versionen (eine fehlende Meldung zaehlt als eigene Angabe). Der
+      Vermerk nennt alle, in der Reihenfolge der Antworten, und die gespeicherte.
+
+    Was der Worker meldet, geht in die Vermerke und die Spalte, wie er es
+    meldete, nur ein U+0000 als `\\u0000` sichtbar (`_speicherbar`): Postgres
+    nimmt es weder in Text noch in jsonb, und sonst liesse sich auch das
+    `failed` ohne Inhalt nicht schreiben.
+
+    Haengt die Vermerke an `vermerke` an. Wirft nicht, denn der Fehlerpfad ruft es.
+
+    Returns:
+        Die Version fuer die Zeile: die niedrigste gemeldete, None ohne jede.
+    """
+    versionen = _gemeldete_versionen(teile, unverwertbar)
+    version = _niedrigste_version(versionen)
+    if len(set(versionen)) > 1:
+        vermerke.append(
+            {
+                "kind": "mineru_versionen_verschieden",
+                "at": _jetzt(),
+                "versionen": versionen,
+                "gespeichert": version,
+            }
+        )
+    if lesen is None:
+        return version
+    antworten: list[tuple[str, int, list[Any], Any]] = [
+        (
+            "teilstueck",
+            nummer,
+            [teil.chunk.first_page, teil.chunk.last_page],
+            _ausgabe_meta(teil),
+        )
+        for nummer, teil in enumerate(teile)
+    ]
+    for nummer, eintrag in enumerate(unverwertbar):
+        ausgabe = _ausgabe_unverwertbar(eintrag)
+        if not isinstance(ausgabe, dict) or not any(
+            feld in ausgabe for feld in _LESE_FELDER
+        ):
+            continue
+        stueck = eintrag.get("chunk")
+        antworten.append(
+            (
+                "unverwertbar",
+                nummer,
+                [
+                    stueck.get("first_page") if isinstance(stueck, dict) else None,
+                    stueck.get("last_page") if isinstance(stueck, dict) else None,
+                ],
+                ausgabe,
+            )
+        )
+    abweichend: list[dict[str, Any]] = []
+    for art, nummer, seiten, ausgabe in antworten:
+        gemeldet = {
+            feld: ausgabe.get(feld) if isinstance(ausgabe, dict) else None
+            for feld in _LESE_FELDER
+        }
+        if not _passt(lesen, gemeldet):
+            abweichend.append(
+                {
+                    art: nummer,
+                    "seiten": seiten,
+                    "gemeldet": {
+                        feld: _speicherbar(wert) for feld, wert in gemeldet.items()
+                    },
+                }
+            )
+    if abweichend:
+        vermerke.append(
+            {
+                "kind": "lese_einstellungen_abweichend",
+                "at": _jetzt(),
+                "bestellt": {
+                    "tier": lesen.tier,
+                    "ocr_mode": lesen.ocr_mode,
+                    "image_analysis": lesen.image_analysis,
+                },
+                "abweichend": abweichend,
+            }
+        )
+    return version
+
+
+def _ausgabe_meta(teil: assembly.ChunkArtifacts) -> Any:
+    """Was der Worker zu einem ausgepackten Teilstueck meldete: `output_meta`
+    seines Umschlags, ungeprueft (die Aufrufer pruefen die Form)."""
+    return teil.envelope.get("output_meta") if isinstance(teil.envelope, dict) else None
+
+
+def _ausgabe_unverwertbar(eintrag: dict[str, Any]) -> Any:
+    """Was der Worker in einer bezahlten, unverwertbaren Antwort meldete: ihr
+    `output`, ungeprueft (die Aufrufer pruefen die Form)."""
+    antwort = eintrag.get("antwort")
+    return antwort.get("output") if isinstance(antwort, dict) else None
+
+
+def _speicherbar(wert: Any) -> Any:
+    """Eine Meldung des Workers, so dass Postgres sie in Text und jsonb nimmt.
+
+    Text mit U+0000 bekommt das Zeichen als `\\u0000` geschrieben, sichtbar und
+    vom Gemeldeten unterscheidbar; Wahrheitswerte, Zahlen und None bleiben.
+    Alles andere (eine Liste, ein Woerterbuch) steht als seine Python-Darstellung
+    da, die jedes Steuerzeichen darin schon maskiert: Verglichen wurde es ohnehin
+    nur, um festzustellen, dass es nicht passt. Das Rohergebnis (`raw`) bleibt
+    davon unberuehrt; es wird nie bereinigt (Mineroo#27)."""
+    if isinstance(wert, str):
+        return wert.replace("\x00", "\\u0000")
+    if wert is None or isinstance(wert, (bool, int, float)):
+        return wert
+    return repr(wert)
+
+
+def _passt(bestellt: ReadSettings, gemeldet: dict[str, Any]) -> bool:
+    """Ob die gemeldeten Lese-Einstellungen einer Antwort zur Bestellung passen.
+
+    Stufe und Bildanalyse muessen gleich sein. Beim OCR-Modus passt `auto` zu
+    `txt` wie zu `ocr`: MinerU vermerkt den Modus, den es fuer die Datei
+    gewaehlt hat, nicht den angefragten (Mineroo#1, Worker, Job-Vertrag). Eine
+    Meldung, die eine Angabe nicht traegt, passt nicht.
+    """
+    modus = gemeldet["ocr_mode"]
+    modus_passt = modus == bestellt.ocr_mode or (
+        bestellt.ocr_mode == "auto" and modus in ("txt", "ocr")
+    )
+    bildanalyse = gemeldet["image_analysis"]
+    return (
+        gemeldet["tier"] == bestellt.tier
+        and modus_passt
+        and type(bildanalyse) is bool
+        and bildanalyse is bestellt.image_analysis
+    )
+
+
+def _gemeldete_versionen(
+    teile: list[assembly.ChunkArtifacts], unverwertbar: list[dict[str, Any]]
+) -> list[str | None]:
+    """Die MinerU-Version, die der Worker meldete, je Antwort dieses Laufs.
+
+    Je ausgepacktem Teilstueck (aus `output_meta` seines Umschlags) und je
+    bezahlter Antwort, die sich nicht verwerten liess, etwa einer Fehlerantwort
+    (aus ihrem `output`): Auch sie traegt die Version, mit der der Worker lief.
+    None, wo eine Antwort keine als Text meldete; ein U+0000 darin steht als
+    `\\u0000` (`_speicherbar`).
+
+    Wirft nicht, denn der Fehlerpfad ruft es: Jede Stufe wird auf ihre Form
+    geprueft, statt sie vorauszusetzen.
+    """
+
+    def version_aus(ausgabe: Any) -> str | None:
+        wert = ausgabe.get("mineru_version") if isinstance(ausgabe, dict) else None
+        return _speicherbar(wert) if isinstance(wert, str) and wert else None
+
+    return [version_aus(_ausgabe_meta(teil)) for teil in teile] + [
+        version_aus(_ausgabe_unverwertbar(eintrag)) for eintrag in unverwertbar
+    ]
+
+
+def _niedrigste_version(versionen: list[str | None]) -> str | None:
+    """Die niedrigste gemeldete Version, None ohne jede: nach
+    `db.mineru_versionsrang`, also PEP 440 und eine unlesbare Angabe als die
+    niedrigste (Mineroo#14). Wirft nicht."""
+    gemeldet = [v for v in versionen if v is not None]
+    return min(gemeldet, key=db.mineru_versionsrang) if gemeldet else None
 
 
 _GUARD_ZUSTAENDE: frozenset[db.DocumentStatus] = frozenset(
@@ -929,11 +1146,18 @@ async def _stuecke_verarbeiten(
     stuecke: Any,
     *,
     settings: Settings,
+    lesen: ReadSettings,
     runpod: RunPodAccess,
     teile: list[assembly.ChunkArtifacts],
     unverwertbar: list[dict[str, Any]],
 ) -> None:
     """Schickt Teilstueck fuer Teilstueck hinaus und holt jedes SOFORT ab.
+
+    Jedes Teilstueck mit den Lese-Einstellungen `lesen` aus der Eingabe des
+    Dokuments (Mineroo#14). Erst an der Leitung zu RunPod zerfallen sie in drei
+    Felder: `runpod.submit` nimmt sie einzeln, weil die Nutzlast auch Werte
+    tragen koennen muss, die das Paket nie bilden wuerde (die erzwungene
+    Fehlerantwort der Aufnahmen schickt eine Stufe, die es nicht gibt).
 
     NACHEINANDER, und das ist eine Zusicherung und keine Absicht: Ein fertiges
     Ergebnis liegt auf der Gegenseite nur rund dreissig Minuten bereit. Wuerde
@@ -972,9 +1196,9 @@ async def _stuecke_verarbeiten(
         async def absenden(kodiert: str = kodiert) -> str:
             return await runpod.submit(
                 file_b64=kodiert,
-                tier=settings.tier,
-                ocr_mode=settings.ocr_mode,
-                image_analysis=settings.image_analysis,
+                tier=lesen.tier,
+                ocr_mode=lesen.ocr_mode,
+                image_analysis=lesen.image_analysis,
                 transport=settings.transport,
             )
 
