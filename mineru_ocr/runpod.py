@@ -44,7 +44,7 @@ from typing import Any, Final, Protocol
 
 import httpx
 
-from .config import Settings
+from .config import MASKE, Settings, ist_geheimnisname
 from .errors import (
     ConfigurationError,
     InsufficientBalanceError,
@@ -922,9 +922,10 @@ class RunPodClient:
         """Liest die Konfiguration des Endpoints.
 
         Returns:
-            Die rohen Angaben, darunter `workersMin`, `workersMax`,
+            Die Angaben, darunter `workersMin`, `workersMax`,
             `idleTimeout`, `executionTimeoutMs`, die Template-Kennung und die
-            Worker samt Umgebung. Der Preflight vergleicht das gegen die
+            Worker samt Umgebung (Geheimnisse als `***`, leere Werte bleiben
+            leer). Der Preflight vergleicht das gegen die
             Sollwerte der Konfiguration (`Settings`).
 
             Die Rechenzentren traegt diese Antwort am echten Endpoint NICHT;
@@ -937,12 +938,25 @@ class RunPodClient:
 
         Kosten: keine. Liest, veraendert nie.
         """
-        return await self._anfragen(
+        angaben = await self._anfragen(
             "GET",
             f"{REST_BASE}/endpoints/{self._settings.require_endpoint_id()}"
             f"?includeWorkers=true",
             "Endpoint-Konfiguration lesen",
         )
+        # Gemeinsame Eingangsgrenze fuer workers() und den Preflight.
+        arbeiter = angaben.get("workers")
+        if not isinstance(arbeiter, list):
+            return angaben
+        for worker in arbeiter:
+            if not isinstance(worker, dict):
+                continue
+            umgebung = worker.get("env")
+            if isinstance(umgebung, dict):
+                for name, wert in umgebung.items():
+                    if ist_geheimnisname(name) and wert:
+                        umgebung[name] = MASKE
+        return angaben
 
     async def serverless(self) -> dict[str, Any]:
         """Liest die Konfiguration des Endpoints aus der REST-API v2.

@@ -11,12 +11,17 @@ import asyncio
 import dataclasses
 import inspect
 import json
+from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
+from typer.testing import CliRunner
 
+from mineru_ocr import OCRClient
+from mineru_ocr.cli import app
 from mineru_ocr import runpod as runpod_modul
 from mineru_ocr.config import Settings
 from mineru_ocr.errors import (
@@ -934,6 +939,75 @@ async def test_abbruch_wird_durchgereicht(echte_settings: Settings) -> None:
 
 
 # --- Konto und Endpoint ---------------------------------------------------
+
+
+@pytest.mark.parametrize("zugang", ["endpoint", "workers", "ocr_workers"])
+async def test_worker_geheimnisse_verlassen_den_zugang_nur_maskiert(
+    echte_settings: Settings, monkeypatch: pytest.MonkeyPatch, zugang: str
+) -> None:
+    """Die HTTP-Antwort wird vor jeder oeffentlichen Rueckgabe bereinigt."""
+    umgebung = {
+        "RUNPOD_AI_API_KEY": "erfundener-api-wert",
+        "RUNPOD_ENDPOINT_SECRET": "erfundenes-endpoint-geheimnis",
+        "hf_token": "erfundener-token-wert",
+        "Db_Password": "erfundenes-passwort",
+        "EMPTY_TOKEN": "",
+        "NULL_SECRET": None,
+        "MINERU_MAX_CONCURRENCY": "1",
+    }
+    transport = Aufzeichnung(_antwort({"workers": [{"id": "w1", "env": umgebung}]}))
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        partial(httpx.AsyncClient, transport=httpx.MockTransport(transport)),
+    )
+    if zugang == "ocr_workers":
+        liste = OCRClient(api_key=SCHLUESSEL, preflight=False).workers()
+    else:
+        async with RunPodClient(echte_settings) as client:
+            liste = (
+                (await client.endpoint())["workers"]
+                if zugang == "endpoint" else await client.workers()
+            )
+    assert liste == [{"id": "w1", "env": {
+        "RUNPOD_AI_API_KEY": "***",
+        "RUNPOD_ENDPOINT_SECRET": "***",
+        "hf_token": "***",
+        "Db_Password": "***",
+        "EMPTY_TOKEN": "",
+        "NULL_SECRET": None,
+        "MINERU_MAX_CONCURRENCY": "1",
+    }}]
+
+
+@pytest.mark.db
+def test_preflight_und_cli_zeigen_geheimnisse_ohne_wertvergleich(
+    _test_datenbank: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ein maskierter Istwert erlaubt keine Aussage ueber Wertgleichheit."""
+    datei = tmp_path / "config.toml"
+    datei.write_text('[endpoint_env]\nserviceToken = "erfundener-sollwert"\n')
+    monkeypatch.setenv("MINERU_OCR_CONFIG", str(datei))
+    schluesseldatei = tmp_path / "runpod.toml"
+    schluesseldatei.write_text(f'apikey = "{SCHLUESSEL}"\n')
+    monkeypatch.setattr("mineru_ocr.config.RUNPOD_CONFIG_PATH", schluesseldatei)
+    antwort = {"workers": [
+        {"id": "gesetzt", "env": {"serviceToken": "erfundener-istwert"}},
+    ]}
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        partial(httpx.AsyncClient, transport=httpx.MockTransport(Aufzeichnung(_antwort(antwort)))),
+    )
+    with OCRClient(db_dsn=_test_datenbank, preflight=False, strict=False) as client:
+        befund = client.preflight()
+    ausgabe = CliRunner().invoke(app, ["preflight", "--no-strict", "--json"])
+    assert ausgabe.exit_code == 0
+    for bericht in (befund, json.loads(ausgabe.stdout)):
+        assert "erfundener-istwert" not in repr(bericht)
+        assert "erfundener-sollwert" not in repr(bericht)
+        punkt = next(b for b in bericht["checks"] if b["punkt"] == "env:serviceToken")
+        assert punkt["soll"] == "***"
+        assert punkt["ist"] == {"gesetzt": "***"}
+        assert punkt["bewertung"] == "nicht_pruefbar"
 
 
 async def test_worker_liste_ist_einzeln(echte_settings: Settings) -> None:

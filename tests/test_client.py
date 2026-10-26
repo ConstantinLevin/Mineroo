@@ -249,8 +249,7 @@ def test_preflight_mutiert_nichts(
 
 
 GEHEIMNIS = "geheim-nicht-ausgeben"
-"""Steht in der Umgebung jedes Test-Workers wie `RUNPOD_AI_API_KEY` in der echten:
-Der Befund darf es nie zeigen."""
+"""Erfundener Sollwert, der nie im Befund stehen darf."""
 
 
 def _worker(
@@ -266,7 +265,8 @@ def _worker(
     (`MINERU_MODEL_SOURCE`): RunPod meldet nur Endpoint- und Template-Variablen."""
     umgebung = {
         "MINERU_MAX_CONCURRENCY": "1",
-        "RUNPOD_AI_API_KEY": GEHEIMNIS,
+        # Das Doppel ersetzt RunPodClient, der Geheimnisse bereits maskiert.
+        "RUNPOD_AI_API_KEY": "***",
     }
     umgebung.update(env or {})
     eintrag: dict[str, Any] = {
@@ -2623,26 +2623,26 @@ def test_konfigurierte_geheimnisvariable_wird_nicht_im_klartext_gezeigt(
 
     befund = _pruefen(_test_datenbank)
     punkt = _befund(befund, "env:RUNPOD_AI_API_KEY")
-    assert punkt["bewertung"] == "abweichung"
+    assert punkt["bewertung"] == "nicht_pruefbar"
     assert GEHEIMNIS not in repr(befund)
     assert "soll-nicht-ausgeben" not in repr(befund)
 
+    runpod.endpoint = _guter_endpoint(workers=[_worker("w1", env={"RUNPOD_AI_API_KEY": ""})])
     with pytest.raises(ConfigDriftError) as fehler:
         _pruefen(_test_datenbank, strict=True)
     assert GEHEIMNIS not in str(fehler.value)
     assert "soll-nicht-ausgeben" not in str(fehler.value)
 
 
-def test_geheimnisvariable_mit_richtigem_wert_ist_in_ordnung_und_bleibt_verdeckt(
+def test_geheimnisvariable_ist_nur_auf_vorhandensein_pruefbar(
     _test_datenbank: str,
     db_conn: psycopg.Connection[Any],
     runpod: RunPodAntworten,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Verdeckt wird nur die Anzeige: Verglichen wird der Wert. Ein Worker ohne
-    die Variable bleibt als Fehlen sichtbar, einer ohne Umgebung als nicht
-    angegeben."""
+    """Maskierte Werte erlauben keinen Vergleich. Fehlende Variablen und eine
+    fehlende Umgebung bleiben unterscheidbar."""
     datei = tmp_path / "config.toml"
     datei.write_text(f'[endpoint_env]\nRUNPOD_AI_API_KEY = "{GEHEIMNIS}"\n')
     monkeypatch.setenv("MINERU_OCR_CONFIG", str(datei))
@@ -2650,7 +2650,7 @@ def test_geheimnisvariable_mit_richtigem_wert_ist_in_ordnung_und_bleibt_verdeckt
 
     runpod.endpoint = _guter_endpoint(workers=[_worker("w1")])
     punkt = _befund(_pruefen(_test_datenbank), "env:RUNPOD_AI_API_KEY")
-    assert punkt["bewertung"] == "in_ordnung"
+    assert punkt["bewertung"] == "nicht_pruefbar"
     assert punkt["soll"] == "***"
     assert punkt["ist"] == {"w1": "***"}
 

@@ -137,15 +137,12 @@ _GEHEIMNIS_TEILE: Final = frozenset(
 def ist_geheimnisname(name: str) -> bool:
     """Ob der Wert einer Umgebungsvariable dieses Namens nie angezeigt wird.
 
-    Der Name wird an allem zerlegt, was kein Buchstabe oder keine Ziffer ist
-    (`HF_TOKEN`, `hf-token`), und ein GANZER Teil muss in `_GEHEIMNIS_TEILE`
-    stehen: `HF_TOKEN`, `RUNPOD_AI_API_KEY`, `API_KEYS`, `DB_PASS` ja,
-    `MAX_TOKENS`, `MONKEY` und `AUTHOR` nein. Ein Teilwort zaehlt nicht, sonst
-    laese sich eine echte Abweichung nicht mehr; ein Teil wie `KEY` in
-    `SORT_KEY` zaehlt dagegen, weil Verdecken der sichere Fehler ist. Die Liste
-    bleibt unvollstaendig; sie gilt nur fuer Variablen, die der Betreiber selbst
-    in `[endpoint_env]` nennt.
+    KEY, SECRET, TOKEN und PASSWORD zaehlen auch als Teilwort, unabhaengig
+    von Grossschreibung (#40). Weitere Kennzeichen aus `_GEHEIMNIS_TEILE`
+    zaehlen als ganze Namensteile. Gilt fuer Konfiguration und Worker-Umgebung.
     """
+    if any(teil in name.upper() for teil in ("KEY", "SECRET", "TOKEN", "PASSWORD")):
+        return True
     teile = re.split(r"[^A-Z0-9]+", name.upper())
     return any(teil in _GEHEIMNIS_TEILE for teil in teile)
 
