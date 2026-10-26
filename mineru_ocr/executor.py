@@ -35,9 +35,8 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any, TypeVar
+from typing import Any, Final, TypeVar
 
-from packaging.version import InvalidVersion, Version
 from psycopg_pool import AsyncConnectionPool
 
 from . import assembly, chunking, db, images
@@ -354,6 +353,11 @@ async def process_document(
     # Die bestellten Lese-Einstellungen, sobald die Eingabe gelesen ist; der
     # Fehlerpfad vergleicht nur, wenn es sie gibt.
     lesen: ReadSettings | None = None
+    # Version und Lese-Vermerke, sobald der Erfolgsweg sie bestimmt hat; scheitert
+    # danach das Endschreiben, nimmt der Fehlerzweig sie, statt die Vermerke ein
+    # zweites Mal anzuhaengen.
+    version: str | None = None
+    version_bestimmt = False
     begonnen = time.monotonic()
 
     try:
@@ -508,6 +512,7 @@ async def process_document(
             else db.DocumentStatus.DONE
         )
         version = _lesung_vermerken(teile, unverwertbar, lesen, vermerke)
+        version_bestimmt = True
         vermerke.append(
             {
                 "kind": "verarbeitet",
@@ -603,8 +608,10 @@ async def process_document(
             ergebnis["unverwertbare_antworten"] = unverwertbar
         # Auch eine Fehlerantwort meldet die Version (eine unverwertbare Antwort
         # steht in `unverwertbar`). Kann nicht werfen, siehe dort. Vor dem
-        # Vermerk `gescheitert`, damit der der letzte bleibt.
-        version = _lesung_vermerken(teile, unverwertbar, lesen, vermerke)
+        # Vermerk `gescheitert`, damit der der letzte bleibt. Hat der Erfolgsweg
+        # beides schon bestimmt (das Endschreiben scheiterte), gilt das.
+        if not version_bestimmt:
+            version = _lesung_vermerken(teile, unverwertbar, lesen, vermerke)
         vermerke.append(_vermerk_gescheitert(len(teile), beschreibung))
         status = (
             db.DocumentStatus.INPUT_ERROR
@@ -718,6 +725,10 @@ async def write_failure_if_no_result(
     return True
 
 
+_LESE_FELDER: Final = ("tier", "ocr_mode", "image_analysis")
+"""Die Lese-Einstellungen, die der Worker in jeder Antwort meldet."""
+
+
 def _lesung_vermerken(
     teile: list[assembly.ChunkArtifacts],
     unverwertbar: list[dict[str, Any]],
@@ -728,12 +739,22 @@ def _lesung_vermerken(
 
     Zwei Vermerke, beide nur Auskunft; das Ergebnis gilt trotzdem (Mineroo#14):
 
-    * `lese_einstellungen_abweichend`: Ein Teilstueck meldet Einstellungen, die
+    * `lese_einstellungen_abweichend`: Eine Antwort meldet Einstellungen, die
       nicht zur Bestellung `lesen` passen (`_passt`). Der Vermerk nennt die
-      Bestellung und je abweichendem Teilstueck Nummer, Seiten und das Gemeldete.
+      Bestellung und je abweichender Antwort das Gemeldete: je ausgepacktem
+      Teilstueck Nummer (`teilstueck`) und Seiten, je bezahlter Antwort, die
+      sich nicht verwerten liess, ihre Nummer in `unverwertbare_antworten`
+      (`unverwertbar`) und Seiten. Eine unverwertbare Antwort zaehlt nur, wenn
+      sie wenigstens eine der drei Angaben traegt: Eine Fehlerantwort meldet
+      keine, und daran ist nichts zu vergleichen.
     * `mineru_versionen_verschieden`: Die Antworten melden verschiedene
       MinerU-Versionen (eine fehlende Meldung zaehlt als eigene Angabe). Der
       Vermerk nennt alle, in der Reihenfolge der Antworten, und die gespeicherte.
+
+    Was der Worker meldet, geht in die Vermerke und die Spalte, wie er es
+    meldete, nur ein U+0000 als `\\u0000` sichtbar (`_speicherbar`): Postgres
+    nimmt es weder in Text noch in jsonb, und sonst liesse sich auch das
+    `failed` ohne Inhalt nicht schreiben.
 
     Haengt die Vermerke an `vermerke` an. Wirft nicht, denn der Fehlerpfad ruft es.
 
@@ -753,24 +774,47 @@ def _lesung_vermerken(
         )
     if lesen is None:
         return version
+    antworten: list[tuple[str, int, list[Any], Any]] = [
+        (
+            "teilstueck",
+            nummer,
+            [teil.chunk.first_page, teil.chunk.last_page],
+            _ausgabe_meta(teil),
+        )
+        for nummer, teil in enumerate(teile)
+    ]
+    for nummer, eintrag in enumerate(unverwertbar):
+        ausgabe = _ausgabe_unverwertbar(eintrag)
+        if not isinstance(ausgabe, dict) or not any(
+            feld in ausgabe for feld in _LESE_FELDER
+        ):
+            continue
+        stueck = eintrag.get("chunk")
+        antworten.append(
+            (
+                "unverwertbar",
+                nummer,
+                [
+                    stueck.get("first_page") if isinstance(stueck, dict) else None,
+                    stueck.get("last_page") if isinstance(stueck, dict) else None,
+                ],
+                ausgabe,
+            )
+        )
     abweichend: list[dict[str, Any]] = []
-    for nummer, teil in enumerate(teile):
-        umschlag = getattr(teil, "envelope", None)
-        ausgabe = umschlag.get("output_meta") if isinstance(umschlag, dict) else None
+    for art, nummer, seiten, ausgabe in antworten:
         gemeldet = {
             feld: ausgabe.get(feld) if isinstance(ausgabe, dict) else None
-            for feld in ("tier", "ocr_mode", "image_analysis")
+            for feld in _LESE_FELDER
         }
         if not _passt(lesen, gemeldet):
-            stueck = getattr(teil, "chunk", None)
             abweichend.append(
                 {
-                    "teilstueck": nummer,
-                    "seiten": [
-                        getattr(stueck, "first_page", None),
-                        getattr(stueck, "last_page", None),
-                    ],
-                    "gemeldet": gemeldet,
+                    art: nummer,
+                    "seiten": seiten,
+                    "gemeldet": {
+                        feld: _speicherbar(wert) for feld, wert in gemeldet.items()
+                    },
                 }
             )
     if abweichend:
@@ -787,6 +831,35 @@ def _lesung_vermerken(
             }
         )
     return version
+
+
+def _ausgabe_meta(teil: assembly.ChunkArtifacts) -> Any:
+    """Was der Worker zu einem ausgepackten Teilstueck meldete: `output_meta`
+    seines Umschlags, ungeprueft (die Aufrufer pruefen die Form)."""
+    return teil.envelope.get("output_meta") if isinstance(teil.envelope, dict) else None
+
+
+def _ausgabe_unverwertbar(eintrag: dict[str, Any]) -> Any:
+    """Was der Worker in einer bezahlten, unverwertbaren Antwort meldete: ihr
+    `output`, ungeprueft (die Aufrufer pruefen die Form)."""
+    antwort = eintrag.get("antwort")
+    return antwort.get("output") if isinstance(antwort, dict) else None
+
+
+def _speicherbar(wert: Any) -> Any:
+    """Eine Meldung des Workers, so dass Postgres sie in Text und jsonb nimmt.
+
+    Text mit U+0000 bekommt das Zeichen als `\\u0000` geschrieben, sichtbar und
+    vom Gemeldeten unterscheidbar; Wahrheitswerte, Zahlen und None bleiben.
+    Alles andere (eine Liste, ein Woerterbuch) steht als seine Python-Darstellung
+    da, die jedes Steuerzeichen darin schon maskiert: Verglichen wurde es ohnehin
+    nur, um festzustellen, dass es nicht passt. Das Rohergebnis (`raw`) bleibt
+    davon unberuehrt; es wird nie bereinigt (Mineroo#27)."""
+    if isinstance(wert, str):
+        return wert.replace("\x00", "\\u0000")
+    if wert is None or isinstance(wert, (bool, int, float)):
+        return wert
+    return repr(wert)
 
 
 def _passt(bestellt: ReadSettings, gemeldet: dict[str, Any]) -> bool:
@@ -818,7 +891,8 @@ def _gemeldete_versionen(
     Je ausgepacktem Teilstueck (aus `output_meta` seines Umschlags) und je
     bezahlter Antwort, die sich nicht verwerten liess, etwa einer Fehlerantwort
     (aus ihrem `output`): Auch sie traegt die Version, mit der der Worker lief.
-    None, wo eine Antwort keine als Text meldete.
+    None, wo eine Antwort keine als Text meldete; ein U+0000 darin steht als
+    `\\u0000` (`_speicherbar`).
 
     Wirft nicht, denn der Fehlerpfad ruft es: Jede Stufe wird auf ihre Form
     geprueft, statt sie vorauszusetzen.
@@ -826,40 +900,19 @@ def _gemeldete_versionen(
 
     def version_aus(ausgabe: Any) -> str | None:
         wert = ausgabe.get("mineru_version") if isinstance(ausgabe, dict) else None
-        return wert if isinstance(wert, str) and wert else None
+        return _speicherbar(wert) if isinstance(wert, str) and wert else None
 
-    versionen: list[str | None] = []
-    for teil in teile:
-        umschlag = getattr(teil, "envelope", None)
-        versionen.append(
-            version_aus(umschlag.get("output_meta") if isinstance(umschlag, dict) else None)
-        )
-    for eintrag in unverwertbar:
-        antwort = eintrag.get("antwort")
-        versionen.append(
-            version_aus(antwort.get("output") if isinstance(antwort, dict) else None)
-        )
-    return versionen
+    return [version_aus(_ausgabe_meta(teil)) for teil in teile] + [
+        version_aus(_ausgabe_unverwertbar(eintrag)) for eintrag in unverwertbar
+    ]
 
 
 def _niedrigste_version(versionen: list[str | None]) -> str | None:
-    """Die niedrigste gemeldete Version, None ohne jede.
-
-    Verglichen nach PEP 440 (`packaging.version`), so wie MinerU seine Fassungen
-    zaehlt, also `4.0.9` vor `4.0.12`. Eine Angabe, die keine Versionsnummer ist,
-    gilt als niedriger als jede: Die Spalte dient der Entscheidung nach einem
-    Upgrade, was neu gelesen wird, und eine unbekannte Fassung zaehlt dabei als
-    alt (Mineroo#14). Wirft nicht.
-    """
-
-    def rang(version: str) -> tuple[int, Version, str]:
-        try:
-            return (1, Version(version), version)
-        except InvalidVersion:
-            return (0, Version("0"), version)
-
+    """Die niedrigste gemeldete Version, None ohne jede: nach
+    `db.mineru_versionsrang`, also PEP 440 und eine unlesbare Angabe als die
+    niedrigste (Mineroo#14). Wirft nicht."""
     gemeldet = [v for v in versionen if v is not None]
-    return min(gemeldet, key=rang) if gemeldet else None
+    return min(gemeldet, key=db.mineru_versionsrang) if gemeldet else None
 
 
 _GUARD_ZUSTAENDE: frozenset[db.DocumentStatus] = frozenset(

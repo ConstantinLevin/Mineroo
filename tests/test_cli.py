@@ -24,7 +24,7 @@ from mineru_ocr import client as client_modul
 from mineru_ocr import db
 from mineru_ocr.cli import app
 from mineru_ocr.config import Settings as _Settings
-from mineru_ocr.config import Settings
+from mineru_ocr.config import ReadSettings, Settings
 from mineru_ocr.db import DocumentStatus, write_terminal_async
 from mineru_ocr.errors import DatabaseError
 from mineru_ocr.wrapper import OCRWrapper
@@ -138,7 +138,7 @@ def _anlegen(
                 Settings.load(db_dsn=dsn, api_key=SCHLUESSEL).require_endpoint_id(),
             ),
         )
-        db.insert_input(db_conn, sha256=sha256, content=inhalt)
+        db.insert_input(db_conn, sha256=sha256, content=inhalt, read_settings=ReadSettings())
     zeile = db.get_document(db_conn, sha256, with_raw=False)
     assert zeile is not None
     return OCRWrapper.from_row(zeile, db_conn)
@@ -274,7 +274,7 @@ async def _endgueltig(
 def _offen(db_conn: psycopg.Connection[Any], tmp_path: Path, name: str) -> str:
     """Eine Datei, deren Eingabe steht und die kein Ergebnis hat: offen."""
     pfad, sha256 = _datei(tmp_path, name)
-    db.insert_input(db_conn, sha256=sha256, content=pfad.read_bytes())
+    db.insert_input(db_conn, sha256=sha256, content=pfad.read_bytes(), read_settings=ReadSettings())
     return sha256
 
 
@@ -809,6 +809,17 @@ async def test_show_zeigt_was_document_sagt_und_raw_die_vollstaendige_antwort(
     assert "Fehler:    Eingabe fehlt" in text.stdout
     (typ_zeile,) = [z for z in text.stdout.splitlines() if "Typ:" in z]
     assert "None" not in typ_zeile
+    # Ohne Eingabe gab es keine Bestellung und ohne Antwort keine Version: dann
+    # keine Zeile. Meldete der Worker eine Version, fehlt nur die Bestellung, und
+    # das sagt die Ausgabe in Worten (Mineroo#14).
+    assert "Gelesen:" not in text.stdout
+    gemeldet = "e" * 64
+    await write_terminal_async(
+        async_conn, sha256=gemeldet, status=DocumentStatus.INPUT_ERROR, raw={},
+        error="abgewiesen", endpoint_id="testendpoint", mineru_version="4.0.12",
+    )
+    text = cli.invoke(app, ["show", gemeldet])
+    assert "Gelesen:   MinerU 4.0.12, Einstellungen unbekannt" in text.stdout
 
     ergebnis = cli.invoke(app, ["show", huelle.sha256, "--raw"])
     assert ergebnis.exit_code == 0, ergebnis.output
@@ -957,16 +968,11 @@ def test_ocr_json_nennt_je_dokument_hash_zustand_und_ob_eingereiht(
     assert _jobs(db_conn) == 1
 
 
-def _lese_einstellungen(db_conn: psycopg.Connection[Any], sha: str) -> tuple[Any, ...]:
-    zeile = db_conn.execute(
-        "SELECT tier, ocr_mode, image_analysis FROM inputs WHERE sha256 = %s", (sha,)
-    ).fetchone()
-    assert zeile is not None
-    return tuple(zeile)
-
-
 def test_ocr_nimmt_die_lese_einstellungen_als_optionen(
-    cli: CliRunner, db_conn: psycopg.Connection[Any], tmp_path: Path
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+    lese_einstellungen_der_eingabe: Callable[[str], tuple[Any, ...]],
 ) -> None:
     """Je Lauf gewaehlt (Mineroo#14): `--tier`, `--ocr-mode` und
     `--image-analysis/--no-image-analysis` gelten fuer jede Datei des Laufs, auch
@@ -985,9 +991,22 @@ def test_ocr_nimmt_die_lese_einstellungen_als_optionen(
     )
 
     assert ergebnis.exit_code == 0, ergebnis.output
-    assert _lese_einstellungen(db_conn, sha_vorein) == ("advanced", "ocr", True)
+    assert lese_einstellungen_der_eingabe(sha_vorein) == ("advanced", "ocr", True)
     for sha in (sha_b, sha_c):
-        assert _lese_einstellungen(db_conn, sha) == ("standard", "txt", False)
+        assert lese_einstellungen_der_eingabe(sha) == ("standard", "txt", False)
+
+    # Die Bildanalyse ausdruecklich an: wirkt in `advanced`, ausserhalb davon ist
+    # sie als aus bestellt.
+    an, sha_an = _datei(tmp_path / "an", "d.png")
+    basic, sha_basic = _datei(tmp_path / "basic", "e.png")
+    assert cli.invoke(
+        app, ["ocr", str(an), "--ocr-mode", "auto", "--image-analysis"]
+    ).exit_code == 0
+    assert cli.invoke(
+        app, ["ocr", str(basic), "--tier", "basic", "--image-analysis"]
+    ).exit_code == 0
+    assert lese_einstellungen_der_eingabe(sha_an) == ("advanced", "auto", True)
+    assert lese_einstellungen_der_eingabe(sha_basic) == ("basic", "ocr", False)
 
 
 def test_ocr_weist_eine_unbekannte_lese_einstellung_ab_bevor_es_etwas_einreiht(

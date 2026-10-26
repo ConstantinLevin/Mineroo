@@ -211,6 +211,22 @@ def abgestuerzter_worker(db_conn: Any) -> Callable[[], None]:
 
 
 @pytest.fixture
+def lese_einstellungen_der_eingabe(db_conn: Any) -> Callable[[str], tuple[Any, ...]]:
+    """Liest Stufe, OCR-Modus und Bildanalyse, die an der Eingabe eines Dokuments
+    stehen (Mineroo#14): `(tier, ocr_mode, image_analysis)` je Hash."""
+
+    def lesen(sha256: str) -> tuple[Any, ...]:
+        zeile = db_conn.execute(
+            "SELECT tier, ocr_mode, image_analysis FROM inputs WHERE sha256 = %s",
+            (sha256,),
+        ).fetchone()
+        assert zeile is not None
+        return tuple(zeile)
+
+    return lesen
+
+
+@pytest.fixture
 async def async_conn(_test_datenbank: str) -> AsyncIterator[Any]:
     """Die asynchrone Verbindung — die Seite, auf der der Daemon schreibt.
 

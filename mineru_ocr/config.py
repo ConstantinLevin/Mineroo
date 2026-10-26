@@ -466,7 +466,9 @@ class ReadSettings:
             ("tier", self.tier, GUELTIGE_STUFEN),
             ("ocr_mode", self.ocr_mode, GUELTIGE_OCR_MODI),
         ):
-            if wert not in gueltig:
+            # Erst der Typ: Eine Liste oder ein Woerterbuch liesse `in` mit einem
+            # rohen `TypeError` scheitern statt mit der zugesicherten Meldung.
+            if not isinstance(wert, str) or wert not in gueltig:
                 raise ConfigurationError(
                     f"{name}={wert!r} kennt der Worker nicht. Gueltig sind: "
                     f"{sorted(gueltig)}. Die Liste stammt aus dem Job-Vertrag "

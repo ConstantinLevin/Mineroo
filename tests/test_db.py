@@ -253,7 +253,7 @@ def test_setup_ist_mehrfach_aufrufbar(
     einem Aufzaehlungstyp handelt, mit dem der Benutzer nie zu tun hatte.
     """
     _ergebnis_anlegen(db_conn)
-    insert_input(db_conn, sha256="b" * 64, content=b"offen")
+    insert_input(db_conn, sha256="b" * 64, content=b"offen", read_settings=ReadSettings())
     setup(_test_datenbank)
     setup(_test_datenbank)
     # Und es zerstoert nichts: Ergebnis und Eingabe von vorhin stehen noch da.
@@ -645,7 +645,7 @@ async def test_eingabe_wird_gespeichert_und_binaer_gelesen(
     base64) an einem Wert auffaellt.
     """
     inhalt = bytes(range(256)) * 40
-    assert insert_input(db_conn, sha256=HASH, content=inhalt) is True
+    assert insert_input(db_conn, sha256=HASH, content=inhalt, read_settings=ReadSettings()) is True
 
     gelesen = await read_input_async(_test_datenbank, HASH)
     assert gelesen is not None
@@ -658,11 +658,12 @@ async def test_die_eingabe_traegt_die_lese_einstellungen_ihres_dokuments(
     db_conn: psycopg.Connection[Any], _test_datenbank: str
 ) -> None:
     """Die Lese-Einstellungen stehen an der Eingabe, und der Job liest sie mit den
-    Bytes in EINER Anfrage (Mineroo#14). Ohne Angabe sind es die Voreinstellungen
-    des Job-Vertrags."""
+    Bytes in EINER Anfrage (Mineroo#14), die gewaehlten wie die voreingestellten."""
     gewaehlt = ReadSettings(tier="standard", ocr_mode="txt", image_analysis=False)
     insert_input(db_conn, sha256=HASH, content=b"gewaehlt", read_settings=gewaehlt)
-    insert_input(db_conn, sha256="b" * 64, content=b"voreingestellt")
+    insert_input(
+        db_conn, sha256="b" * 64, content=b"voreingestellt", read_settings=ReadSettings()
+    )
 
     gelesen = await read_input_async(_test_datenbank, HASH)
     assert gelesen is not None and gelesen.read_settings == gewaehlt
@@ -710,8 +711,9 @@ def test_zweite_eingabe_zum_selben_hash_ist_ein_nichts_tun(
 ) -> None:
     """Derselbe Hash ein zweites Mal ergibt False und aendert nichts. Die
     Eingabe-Tabelle ist so die Sperre gegen ein zweites Einreihen."""
-    assert insert_input(db_conn, sha256=HASH, content=b"erste") is True
-    assert insert_input(db_conn, sha256=HASH, content=b"zweite") is False
+    vorein = ReadSettings()
+    assert insert_input(db_conn, sha256=HASH, content=b"erste", read_settings=vorein) is True
+    assert insert_input(db_conn, sha256=HASH, content=b"zweite", read_settings=vorein) is False
     zeile = db_conn.execute(
         "SELECT content FROM inputs WHERE sha256 = %s", (HASH,)
     ).fetchone()
@@ -783,7 +785,7 @@ async def test_lesen_der_eingabe_ist_binaer_und_schliesst_die_eigene_verbindung(
     bis die Verbindung schliesst; ohne `binary=True` ginge der Wert als Hex ueber
     die Leitung, doppelt so gross.
     """
-    insert_input(db_conn, sha256=HASH, content=b"x" * 1_000_000)
+    insert_input(db_conn, sha256=HASH, content=b"x" * 1_000_000, read_settings=ReadSettings())
     beobachter = _beobachten(monkeypatch, fehler=False)
 
     await read_input_async(_test_datenbank, HASH)
@@ -823,7 +825,7 @@ async def test_eingabe_wird_mit_dem_endergebnis_geloescht_ausser_bei_failed(
     }
     for nr, (status, bleibt) in enumerate(erwartet.items()):
         sha = f"{nr:064d}"
-        insert_input(db_conn, sha256=sha, content=b"bytes")
+        insert_input(db_conn, sha256=sha, content=b"bytes", read_settings=ReadSettings())
         await _schreiben(async_conn, sha, status)
         assert _eingabe(db_conn, sha) is bleibt, status
 
@@ -840,7 +842,7 @@ async def test_eingabe_und_ergebnis_gehen_in_einer_transaktion(
     DELETE scheitern. Lagen beide Schritte in getrennten Transaktionen, stuende
     das Ergebnis danach trotzdem da.
     """
-    insert_input(db_conn, sha256=HASH, content=b"bytes")
+    insert_input(db_conn, sha256=HASH, content=b"bytes", read_settings=ReadSettings())
     db_conn.execute(
         "CREATE OR REPLACE FUNCTION _loeschen_verbieten() RETURNS trigger AS $$ "
         "BEGIN RAISE EXCEPTION 'Loeschen verboten'; END; $$ LANGUAGE plpgsql"
@@ -895,7 +897,7 @@ async def test_endschreiben_legt_die_zeile_in_einem_schreibvorgang_an(
 ) -> None:
     """Ohne Zeile legt das Endschreiben sie an, mit allem, in EINEM
     Schreibvorgang: Ergebnis, Angaben zur Eingabe, Herkunft und Vermerke."""
-    insert_input(db_conn, sha256=HASH, content=b"bytes")
+    insert_input(db_conn, sha256=HASH, content=b"bytes", read_settings=ReadSettings())
     _schreibvorgaenge_zaehlen(db_conn)
     try:
         await _schreiben(
@@ -948,7 +950,7 @@ async def test_nicht_speicherbares_ergebnis_wird_als_solches_gemeldet(
     Geschrieben wird nichts: Die Eingabe steht noch, es gibt keine Zeile, und
     die Verbindung ist danach weiter benutzbar.
     """
-    insert_input(db_conn, sha256=HASH, content=b"bytes")
+    insert_input(db_conn, sha256=HASH, content=b"bytes", read_settings=ReadSettings())
     with pytest.raises(UnstorableResultError) as gefangen:
         await _schreiben(async_conn, raw={"markdown": "vor\x00nach"})
     assert gefangen.value.sqlstate == "22P05"
@@ -977,7 +979,7 @@ async def test_ergebnis_ueber_der_nachrichtengrenze_wird_vor_dem_senden_abgewies
     darunter wird weiter geschrieben.
     """
     monkeypatch.setattr(db_modul, "MAX_RAW_JSON_BYTES", 100)
-    insert_input(db_conn, sha256=HASH, content=b"bytes")
+    insert_input(db_conn, sha256=HASH, content=b"bytes", read_settings=ReadSettings())
     with pytest.raises(UnstorableResultError) as gefangen:
         await _schreiben(async_conn, raw={"markdown": "x" * 200})
     assert gefangen.value.sqlstate is None
@@ -1090,6 +1092,27 @@ async def test_endschreiben_nimmt_die_bestellten_lese_einstellungen_aus_der_eing
 
 
 @pytest.mark.db
+async def test_ueberschreibt_ein_lauf_ohne_version_ein_failed_ist_die_version_leer(
+    db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """Die Version gehoert zu dem `raw`, mit dem sie geschrieben wird: Meldet der
+    Lauf, der ein `failed` ueberschreibt, keine (etwa ein `input_error` vor jedem
+    RunPod-Kontakt), bleibt nicht die des frueheren Laufs stehen (Mineroo#14)."""
+    insert_input(db_conn, sha256=HASH, content=b"x", read_settings=ReadSettings())
+    await write_terminal_async(
+        async_conn, sha256=HASH, status=DocumentStatus.FAILED, raw={"lauf": 1},
+        endpoint_id="e", mineru_version="4.0.11",
+    )
+    await write_terminal_async(
+        async_conn, sha256=HASH, status=DocumentStatus.INPUT_ERROR, raw={"lauf": 2},
+        endpoint_id="e",
+    )
+    zeile = get_document(db_conn, HASH)
+    assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.mineru_version is None
+
+
+@pytest.mark.db
 async def test_gescheitertes_dokument_darf_ueberschrieben_werden(
     db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
 ) -> None:
@@ -1097,7 +1120,7 @@ async def test_gescheitertes_dokument_darf_ueberschrieben_werden(
     (Plan 4.2) und der Grund, warum das Nachsehen im Executor `failed` nicht
     deckt. In einem Schreibvorgang, mit der Zeit der ersten Anlage, und die
     Eingabe, die bei `failed` stand, geht mit dem neuen Ergebnis."""
-    insert_input(db_conn, sha256=HASH, content=b"bytes")
+    insert_input(db_conn, sha256=HASH, content=b"bytes", read_settings=ReadSettings())
     await _schreiben(
         async_conn,
         status=DocumentStatus.FAILED,
@@ -1143,7 +1166,7 @@ async def test_gleicher_aufruf_zweimal_ist_unschaedlich(
     Absturz im Schreibfenster zum Fehler.
     """
     await _schreiben(async_conn, raw={"lauf": 1})
-    insert_input(db_conn, sha256=HASH, content=b"wieder")
+    insert_input(db_conn, sha256=HASH, content=b"wieder", read_settings=ReadSettings())
     await _schreiben(async_conn, raw={"lauf": 2}, notes=[{"kind": "zweiter"}])
     zeile = get_document(db_conn, HASH)
     assert zeile is not None
@@ -1160,7 +1183,7 @@ async def test_nachsehen_und_eingabe_loeschen_fuer_den_executor(
     Eingabe, die neben einem Ergebnis noch steht."""
     assert await get_status_async(async_conn, HASH) is None
     _ergebnis_anlegen(db_conn, status=DocumentStatus.EMPTY)
-    insert_input(db_conn, sha256=HASH, content=b"x")
+    insert_input(db_conn, sha256=HASH, content=b"x", read_settings=ReadSettings())
     assert await get_status_async(async_conn, HASH) is DocumentStatus.EMPTY
 
     await delete_input_async(async_conn, HASH)
@@ -1174,9 +1197,9 @@ def test_stand_kennt_fertig_offen_und_unbekannt(db_conn: psycopg.Connection[Any]
     heisst unbekannt — in der Reihenfolge der Frage, ohne `raw`."""
     fertig, offen, gescheitert, unbekannt = "1" * 64, "2" * 64, "3" * 64, "4" * 64
     _ergebnis_anlegen(db_conn, fertig)
-    insert_input(db_conn, sha256=offen, content=b"x")
+    insert_input(db_conn, sha256=offen, content=b"x", read_settings=ReadSettings())
     _ergebnis_anlegen(db_conn, gescheitert, DocumentStatus.FAILED)
-    insert_input(db_conn, sha256=gescheitert, content=b"x")
+    insert_input(db_conn, sha256=gescheitert, content=b"x", read_settings=ReadSettings())
 
     stand = read_states(db_conn, [unbekannt, offen, fertig, gescheitert])
     assert [s.sha256 for s in stand] == [unbekannt, offen, fertig, gescheitert]
@@ -1376,7 +1399,7 @@ async def test_warten_meldet_einen_unbekannten_hash_sofort(
     """Weder Ergebnis noch Eingabe: `DocumentNotFound` kommt sofort, nicht nach
     Ablauf der Frist, und nennt den unbekannten Hash."""
     offen, unbekannt = "3" * 64, "d" * 64
-    insert_input(db_conn, sha256=offen, content=b"x")
+    insert_input(db_conn, sha256=offen, content=b"x", read_settings=ReadSettings())
 
     begonnen = time.monotonic()
     geliefert, fehler = await _warten(
@@ -1404,7 +1427,7 @@ async def test_frist_nennt_die_offenen_und_fasst_keinen_job_an(
     fertig, offen1, offen2 = "1" * 64, "5" * 64, "4" * 64
     await _schreiben(async_conn, fertig)
     for sha in (offen1, offen2):
-        insert_input(db_conn, sha256=sha, content=b"x")
+        insert_input(db_conn, sha256=sha, content=b"x", read_settings=ReadSettings())
         _job_anlegen(db_conn, sha)
     vorher = _bestand(db_conn)
 
@@ -1431,7 +1454,7 @@ async def test_ohne_signal_findet_der_takt_das_ergebnis(
 ) -> None:
     """Auch ohne Signal — etwa bei einem Schreibvorgang von Hand an der
     Datenbank — endet das Warten: Im Takt werden alle offenen gelesen."""
-    insert_input(db_conn, sha256=HASH, content=b"x")
+    insert_input(db_conn, sha256=HASH, content=b"x", read_settings=ReadSettings())
     faden = _spaeter(0.5, lambda: _job_endet(_test_datenbank, [HASH], signal=False))
     try:
         geliefert, fehler = await _warten(
@@ -1455,7 +1478,7 @@ async def test_kein_signal_eines_pakets_geht_verloren(
     Pakets, und die uebrigen vier warteten bis zur Frist."""
     hashes = [str(n) * 64 for n in range(5, 10)]
     for sha in hashes:
-        insert_input(db_conn, sha256=sha, content=b"x")
+        insert_input(db_conn, sha256=sha, content=b"x", read_settings=ReadSettings())
     faden = _spaeter(0.5, lambda: _job_endet(_test_datenbank, hashes))
     begonnen = time.monotonic()
     try:
@@ -1479,7 +1502,7 @@ async def test_nach_einem_abbruch_der_verbindung_wird_neu_verbunden(
     und liest alles Offene. Der Takt steht auf einer Minute: Das Ergebnis kommt
     ueber das Lesen nach dem Neuverbinden oder ueber das Signal danach, nie ueber
     den Takt."""
-    insert_input(db_conn, sha256=HASH, content=b"x")
+    insert_input(db_conn, sha256=HASH, content=b"x", read_settings=ReadSettings())
     gekappt: list[bool] = []
 
     def kappen_dann_enden() -> None:
@@ -1516,7 +1539,7 @@ async def test_ein_zugangsfehler_beim_neu_verbinden_beendet_das_warten(
     Warten mit `ConfigurationError`, statt es bis zur Frist weiter zu versuchen.
     Der Fehler kommt als echter psycopg-Fehler aus dem Verbinden, damit er durch
     dieselbe Uebersetzung laeuft wie im Betrieb."""
-    insert_input(db_conn, sha256=HASH, content=b"x")
+    insert_input(db_conn, sha256=HASH, content=b"x", read_settings=ReadSettings())
     aufrufe = _warte_verbinden_ersetzen(
         monkeypatch,
         art,
@@ -1552,7 +1575,7 @@ async def test_scheitert_das_neu_verbinden_voruebergehend_wird_es_wieder_versuch
     """Startet Postgres gerade neu, scheitert auch das Neuverbinden — ohne
     SQLSTATE, wie eine abgelehnte Verbindung. Das ist wiederholbar: Die Schleife
     wartet kurz, versucht es wieder und liefert das Ergebnis."""
-    insert_input(db_conn, sha256=HASH, content=b"x")
+    insert_input(db_conn, sha256=HASH, content=b"x", read_settings=ReadSettings())
     aufrufe = _warte_verbinden_ersetzen(
         monkeypatch,
         art,
@@ -1593,7 +1616,7 @@ async def test_die_frist_nennt_kein_dokument_das_beim_langsamen_verbraucher_fert
     Ergebnis."""
     fertig, spaet = "1" * 64, "5" * 64
     await _schreiben(async_conn, fertig)
-    insert_input(db_conn, sha256=spaet, content=b"x")
+    insert_input(db_conn, sha256=spaet, content=b"x", read_settings=ReadSettings())
 
     geliefert: list[str] = []
     fehler: BaseException | None = None
@@ -1929,7 +1952,7 @@ async def test_warten_haelt_ein_dokument_nicht_fuer_unbekannt_und_laedt_weder_ra
     `raw` oder `content`."""
     from mineru_ocr import db
 
-    insert_input(db_conn, sha256=HASH, content=b"x")
+    insert_input(db_conn, sha256=HASH, content=b"x", read_settings=ReadSettings())
     verbindungen: list[_JobEndetNachDerErstenLesung] = []
     if art == "sync":
         echte_sync = db._warte_verbindung
@@ -1969,7 +1992,7 @@ def test_strg_c_beendet_nur_das_warten(
     """Strg-C kommt im sync-Warten nach Bruchteilen einer Sekunde an, auch wenn
     der Takt auf einer Minute steht. Die Warte-Verbindung ist danach zu; Job,
     Eingabe und Ergebnisse bleiben, wie sie sind."""
-    insert_input(db_conn, sha256=HASH, content=b"x")
+    insert_input(db_conn, sha256=HASH, content=b"x", read_settings=ReadSettings())
     _job_anlegen(db_conn, HASH)
     vorher = _bestand(db_conn)
 
@@ -2001,7 +2024,7 @@ async def test_abbrechen_beendet_nur_das_async_warten(
 ) -> None:
     """Das Gegenstueck zu Strg-C im async-Warten ist `cancel()`: Es kommt sofort
     an, die Warte-Verbindung ist danach zu, und nichts wird angefasst."""
-    insert_input(db_conn, sha256=HASH, content=b"x")
+    insert_input(db_conn, sha256=HASH, content=b"x", read_settings=ReadSettings())
     _job_anlegen(db_conn, HASH)
     vorher = _bestand(db_conn)
 
@@ -2057,7 +2080,7 @@ async def test_liste_filtert_nach_zustand(
     await _schreiben(async_conn, f"{0:064d}", DocumentStatus.DONE)
     await _schreiben(async_conn, f"{1:064d}", DocumentStatus.FAILED)
     await _schreiben(async_conn, f"{2:064d}", DocumentStatus.FAILED)
-    insert_input(db_conn, sha256=f"{3:064d}", content=b"offen")
+    insert_input(db_conn, sha256=f"{3:064d}", content=b"offen", read_settings=ReadSettings())
 
     assert len(list_documents(db_conn, status=DocumentStatus.DONE)) == 1
     assert len(list_documents(db_conn, status=DocumentStatus.FAILED)) == 2
@@ -2078,8 +2101,8 @@ async def test_zaehlung_kennt_jeden_zustand_und_die_offenen(
     assert all(anzahl == 0 for anzahl in zaehlung.values())
     assert count_open(db_conn) == 0
 
-    insert_input(db_conn, sha256="1" * 64, content=b"offen")
-    insert_input(db_conn, sha256="2" * 64, content=b"gescheitert")
+    insert_input(db_conn, sha256="1" * 64, content=b"offen", read_settings=ReadSettings())
+    insert_input(db_conn, sha256="2" * 64, content=b"gescheitert", read_settings=ReadSettings())
     await _schreiben(async_conn, "2" * 64, DocumentStatus.FAILED)
     assert count_open(db_conn) == 1
     assert counts_by_status(db_conn)[DocumentStatus.FAILED] == 1

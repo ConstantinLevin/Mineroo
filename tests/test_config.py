@@ -676,3 +676,15 @@ def test_ungueltige_lese_einstellungen_werden_vor_dem_einreihen_abgewiesen() -> 
         _einstellung().read_settings(ocr_mode="OCR")
     with pytest.raises(ConfigurationError, match="Wahrheitswert"):
         _einstellung().read_settings(image_analysis="false")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("falsch", [["advanced"], {"advanced": 1}, None, 3])
+def test_eine_stufe_oder_ein_modus_vom_falschen_typ_wird_ebenso_abgewiesen(
+    falsch: object,
+) -> None:
+    """Auch ein Wert, der kein Text ist (eine Liste, ein Woerterbuch), endet mit der
+    zugesicherten `ConfigurationError`, nicht mit einem rohen `TypeError`."""
+    with pytest.raises(ConfigurationError, match="kennt der Worker nicht"):
+        ReadSettings(falsch, "ocr", True)  # type: ignore[arg-type]
+    with pytest.raises(ConfigurationError, match="kennt der Worker nicht"):
+        ReadSettings("advanced", falsch, True)  # type: ignore[arg-type]

@@ -33,7 +33,7 @@ from psycopg_pool import NullConnectionPool
 import ersatz_antworten as ersatz
 from mineru_ocr import config, daemon, db, tasks
 from mineru_ocr.client import OCRClient
-from mineru_ocr.config import Settings
+from mineru_ocr.config import ReadSettings, Settings
 from mineru_ocr.core import RetryOutcome
 from mineru_ocr.db import DocumentStatus, Phase, derive_status, get_document
 from mineru_ocr.errors import ConfigurationError, DatabaseError, DocumentNotFound
@@ -165,7 +165,7 @@ def _anlegen(conn: psycopg.Connection[Any], tmp_path: Path, name: str) -> str:
     pfad = tmp_path / name
     pfad.write_bytes(inhalt)
     sha = hashlib.sha256(inhalt).hexdigest()
-    db.insert_input(conn, sha256=sha, content=inhalt)
+    db.insert_input(conn, sha256=sha, content=inhalt, read_settings=ReadSettings())
     return sha
 
 
@@ -1652,7 +1652,7 @@ async def test_daemon_auf_der_alten_tabelle_startet_nicht_und_laesst_die_jobs_li
         "VALUES (%s, 'e', 'image/png', 1)",
         (sha,),
     )
-    db.insert_input(db_conn, sha256=sha, content=b"alt")
+    db.insert_input(db_conn, sha256=sha, content=b"alt", read_settings=ReadSettings())
     assert erzeuger.einreihen(sha)
 
     def keine_betriebsmittel(_s: Settings) -> dict[str, Any]:

@@ -472,18 +472,25 @@ was er sagt, geht an RunPod und an die Zeile. Wo er auf dem Weg steht:
   Anweisung aus der Eingabe, also auch beim `failed` des Wächters, und ohne Eingabe
   bleiben sie leer) und `mineru_version` (die der Worker meldet, auch in einer
   Fehlerantwort; bei mehreren Teilstücken die niedrigste nach PEP 440, eine
-  unlesbare zählt als die niedrigste). Was MinerU tatsächlich nahm, steht im
+  unlesbare zählt als die niedrigste, `db.mineru_versionsrang`; beim Überschreiben
+  eines `failed` die des neuen Laufs, auch keine). Ein U+0000 in dem, was der
+  Worker meldet, steht in Spalte und Vermerken als `\u0000`, sonst ließe sich
+  auch das `failed` ohne Inhalt nicht schreiben. Was MinerU tatsächlich nahm, steht im
   Rohergebnis unter `envelopes[…]["output_meta"]`; bei `auto` der Modus, den es für
   die Datei wählte. `DocumentRow.read_settings`, die Hülle (`mineru_version`,
   `read_settings`), `document()` und `show` nennen sie.
 - **Abweichungen** sind Vermerke, kein Fehler, und das Ergebnis gilt trotzdem
   (`executor._lesung_vermerken`): `lese_einstellungen_abweichend`, wenn ein
   Teilstück andere Einstellungen meldet als bestellt (`auto` passt zu `txt` wie zu
-  `ocr`, eine fehlende Meldung passt nicht), und `mineru_versionen_verschieden`.
+  `ocr`, eine fehlende Meldung passt nicht), auch eine bezahlte, unverwertbare
+  Antwort, sofern sie Einstellungen meldet (eine Fehlerantwort tut es nicht), und
+  `mineru_versionen_verschieden`. Bestimmt werden beide einmal; scheitert das
+  Endschreiben, nimmt der Fehlerzweig sie.
   DOCX und HTML meldet der Worker heute als `flash`/`txt`, gleich was bestellt war;
   die Ausnahmen für Ganzdokument-Formate regelt Mineroo#17.
 - **Gezählt** in `status()["readings"]` (`db.counts_by_reading`): je Version und
-  bestellten Einstellungen die Zahl der Dokumente mit `done` oder `empty`. Bei
+  bestellten Einstellungen die Zahl der Dokumente mit `done` oder `empty`, nach
+  Version geordnet wie MinerU sie zählt (4.0.9 vor 4.0.12), ohne Version am Ende. Bei
   einer neuen MinerU-Version geschieht nichts; ein Neu-Lesen gibt es nicht.
 
 ### Drei Antworten auf einen Fehlschlag — an genau einer Stelle entschieden

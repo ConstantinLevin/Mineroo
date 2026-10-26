@@ -181,7 +181,8 @@ with OCRClient() as client:
 
     # Lese-Einstellungen je Lauf (ohne Angabe: advanced, OCR, Bildanalyse an)
     digital = client.ocr_start(Path("digital.pdf").read_bytes(), ocr_mode="txt")
-    print(fertig.mineru_version, fertig.read_settings)  # womit gelesen wurde
+    gelesen = client.wait(digital)
+    print(gelesen.mineru_version, gelesen.read_settings)  # womit gelesen wurde
 ```
 
 Stufe, OCR-Modus und Bildanalyse (`tier=`, `ocr_mode=`, `image_analysis=`, auf der

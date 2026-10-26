@@ -41,6 +41,7 @@ from typing import Any, Final
 import psycopg
 import psycopg.conninfo
 import psycopg.sql
+from packaging.version import InvalidVersion, Version
 from procrastinate.jobs import Job
 from psycopg.rows import class_row, dict_row
 from psycopg.types.json import Jsonb
@@ -989,7 +990,7 @@ def insert_input(
     *,
     sha256: str,
     content: bytes,
-    read_settings: ReadSettings = ReadSettings(),
+    read_settings: ReadSettings,
 ) -> bool:
     """Legt die Eingabe eines Dokuments ab, falls es zu diesem Hash noch keine gibt.
 
@@ -1014,8 +1015,8 @@ def insert_input(
         sha256: Roher Byte-Hash von `content`.
         content: Die vollstaendigen Bytes der Eingabe.
         read_settings: Die Lese-Einstellungen dieses Dokuments; der Job schickt
-            genau diese an RunPod. Die Clients geben sie immer an; ohne Angabe
-            gelten die Voreinstellungen des Job-Vertrags (`ReadSettings()`).
+            genau diese an RunPod. Ohne Voreinstellung: Ein Aufrufer, der sie
+            vergaesse, verloere sie sonst still.
 
     Returns:
         True, wenn die Eingabe neu abgelegt wurde; False, wenn es zu diesem Hash
@@ -1036,7 +1037,7 @@ async def insert_input_async(
     *,
     sha256: str,
     content: bytes,
-    read_settings: ReadSettings = ReadSettings(),
+    read_settings: ReadSettings,
 ) -> bool:
     """Dasselbe wie `insert_input`, asynchron: fuer den `AsyncOCRClient`."""
     cur = await conn.execute(_EINGABE_SQL, _eingabe_werte(sha256, content, read_settings))
@@ -1341,20 +1342,51 @@ def counts_by_reading(conn: psycopg.Connection[Any]) -> list[dict[str, Any]]:
 
     Returns:
         Je Kombination eine Abbildung mit `mineru_version`, `tier`, `ocr_mode`,
-        `image_analysis` und `documents` (der Zahl), geordnet nach Version und
-        Einstellungen. Fehlt eine Angabe (keine Version gemeldet, keine Eingabe),
-        steht dort None.
+        `image_analysis` und `documents` (der Zahl), geordnet nach Version wie
+        MinerU sie zaehlt (`mineru_versionsrang`: 4.0.9 vor 4.0.12, eine
+        unlesbare Angabe vorn), ohne Version am Ende, dann nach Einstellungen.
+        Fehlt eine Angabe (keine Version gemeldet, keine Eingabe), steht dort
+        None.
 
     Kosten: keine.
     """
     with conn.cursor(row_factory=dict_row) as cur:
-        return cur.execute(
+        zeilen = cur.execute(
             "SELECT mineru_version, tier, ocr_mode, image_analysis, "
             "count(*) AS documents FROM documents "
             "WHERE status IN ('done', 'empty') "
-            "GROUP BY mineru_version, tier, ocr_mode, image_analysis "
-            "ORDER BY mineru_version, tier, ocr_mode, image_analysis"
+            "GROUP BY mineru_version, tier, ocr_mode, image_analysis"
         ).fetchall()
+    # In Python geordnet und nicht mit ORDER BY: Postgres ordnet Text, und als
+    # Text stuende 4.0.12 vor 4.0.9.
+    return sorted(
+        zeilen,
+        key=lambda z: (
+            z["mineru_version"] is None,
+            mineru_versionsrang(z["mineru_version"] or ""),
+            z["tier"] or "",
+            z["ocr_mode"] or "",
+            z["image_analysis"] is None,
+            bool(z["image_analysis"]),
+        ),
+    )
+
+
+def mineru_versionsrang(version: str) -> tuple[int, Version, str]:
+    """Der Rang einer MinerU-Versionsangabe, zum Ordnen und fuer die niedrigste.
+
+    Verglichen nach PEP 440 (`packaging.version`), so wie MinerU seine Fassungen
+    zaehlt, also `4.0.9` vor `4.0.12`. Eine Angabe, die keine Versionsnummer ist,
+    gilt als niedriger als jede: Die Spalte dient der Entscheidung nach einem
+    Upgrade, was neu gelesen wird, und eine unbekannte Fassung zaehlt dabei als
+    alt (Mineroo#14). Dazu gehoert auch eine Ziffernfolge ueber Pythons Grenze
+    fuer die Umwandlung in eine Ganzzahl: `packaging` scheitert dann mit
+    `ValueError` statt mit `InvalidVersion`. Wirft nicht.
+    """
+    try:
+        return (1, Version(version), version)
+    except (InvalidVersion, ValueError):
+        return (0, Version("0"), version)
 
 
 def count_open(conn: psycopg.Connection[Any]) -> int:
@@ -1569,7 +1601,9 @@ async def write_terminal_async(
             bei PDF).
         mineru_version: Die MinerU-Version, die der Worker meldete (bei
             mehreren Teilstuecken die niedrigste); None, wenn keine Antwort eine
-            meldete.
+            meldete. Anders als Typ, Groesse und Image-Tag gilt sie auch beim
+            Ueberschreiben eines `failed` so, wie sie kommt: Sie gehoert zu dem
+            `raw`, das dieser Aufruf schreibt, nicht zu dem des frueheren Laufs.
 
     Die bestellten Lese-Einstellungen (`tier`, `ocr_mode`, `image_analysis`)
     werden NICHT uebergeben: Das Endschreiben nimmt sie in derselben Anweisung
@@ -1756,7 +1790,7 @@ async def _endergebnis_schreiben(
                            size_bytes = COALESCE(%s, size_bytes),
                            image_tag_at_submit = COALESCE(%s, image_tag_at_submit),
                            page_count = COALESCE(%s, page_count),
-                           mineru_version = COALESCE(%s, mineru_version),
+                           mineru_version = %s,
                            (tier, ocr_mode, image_analysis) = (
                                SELECT COALESCE(i.tier, documents.tier),
                                       COALESCE(i.ocr_mode, documents.ocr_mode),
