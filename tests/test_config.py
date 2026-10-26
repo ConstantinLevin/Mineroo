@@ -9,6 +9,7 @@ import pytest
 
 from mineru_ocr.config import (
     MASKE,
+    ReadSettings,
     Settings,
     ist_geheimnisname,
 )
@@ -625,3 +626,53 @@ def test_der_dsn_bleibt_wie_geschrieben() -> None:
     (`password=a\\ `) ist Teil davon und darf nicht abgeschnitten werden."""
     dsn = "host=h password=geheim\\ "
     assert _einstellung(environ={"MINERU_OCR_DB_DSN": dsn}, db_dsn=None).db_dsn == dsn
+
+
+# --- Die Lese-Einstellungen eines Dokuments --------------------------------
+
+
+def test_lese_einstellungen_reisen_als_ein_wert() -> None:
+    """Stufe, OCR-Modus und Bildanalyse reisen immer zu dritt (Mineroo#14,
+    Befund S6d aus dem Review von #11): `Settings.read_settings` gibt sie als
+    EINEN Wert, ohne Angabe die der Einstellung."""
+    assert _einstellung().read_settings() == ReadSettings(
+        tier="advanced", ocr_mode="ocr", image_analysis=True
+    )
+    eingestellt = dataclasses.replace(
+        _einstellung(), tier="standard", ocr_mode="auto", image_analysis=False
+    )
+    assert eingestellt.read_settings() == ReadSettings("standard", "auto", False)
+
+
+def test_einzelne_lese_einstellungen_lassen_sich_ersetzen() -> None:
+    """Je Lauf gewaehlt: Was angegeben ist, ersetzt die Einstellung; None heisst
+    „wie eingestellt"."""
+    einstellung = dataclasses.replace(_einstellung(), ocr_mode="auto")
+    assert einstellung.read_settings(ocr_mode="txt") == ReadSettings("advanced", "txt", True)
+    assert einstellung.read_settings(image_analysis=False) == ReadSettings(
+        "advanced", "auto", False
+    )
+    assert einstellung.read_settings(tier=None, ocr_mode=None) == ReadSettings(
+        "advanced", "auto", True
+    )
+
+
+def test_bildanalyse_ist_ausserhalb_von_advanced_als_aus_bestellt() -> None:
+    """Die Bildanalyse wirkt nur in `advanced` (Job-Vertrag); ausserhalb davon
+    ist sie als aus bestellt, gleich was angegeben ist. So sagt der Wert, was an
+    RunPod geht und was an der Zeile steht."""
+    for stufe in ("flash", "basic", "standard"):
+        assert ReadSettings(stufe, "ocr", True).image_analysis is False
+        assert _einstellung().read_settings(tier=stufe).image_analysis is False
+    assert ReadSettings("advanced", "ocr", True).image_analysis is True
+
+
+def test_ungueltige_lese_einstellungen_werden_vor_dem_einreihen_abgewiesen() -> None:
+    """Ein Tippfehler kostete sonst einen Kaltstart je Dokument; ein Text statt
+    eines Wahrheitswerts (`"false"` ist wahr) stuende sonst falsch in der Eingabe."""
+    with pytest.raises(ConfigurationError, match="kennt der Worker nicht"):
+        ReadSettings("advance", "ocr", True)
+    with pytest.raises(ConfigurationError, match="kennt der Worker nicht"):
+        _einstellung().read_settings(ocr_mode="OCR")
+    with pytest.raises(ConfigurationError, match="Wahrheitswert"):
+        _einstellung().read_settings(image_analysis="false")  # type: ignore[arg-type]

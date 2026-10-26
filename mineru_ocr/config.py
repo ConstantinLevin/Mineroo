@@ -416,6 +416,82 @@ sha256 des Dokuments. EIGENBAU: Procrastinate hat kein eingebautes
 
 
 # --------------------------------------------------------------------------
+# Die Lese-Einstellungen eines Dokuments
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReadSettings:
+    """Wie MinerU 4 ein Dokument liest: Stufe, OCR-Modus und Bildanalyse.
+
+    Die drei reisen immer zusammen (Befund S6d aus dem Review von Mineroo#11):
+    Gewaehlt werden sie je Lauf beim Abschicken, abgelegt an der Eingabe, vom Job
+    an RunPod geschickt und mit dem Ergebnis an der Zeile vermerkt (Mineroo#14).
+    Ein Wert statt dreier Parameter, damit keine Stelle einen davon verliert.
+
+    Die Voreinstellungen sind die des Job-Vertrags und dieses Pakets (Mineroo#1,
+    Story 6 und 7): `advanced`, erzwungenes OCR, Bildanalyse an. `Settings`
+    nimmt sie von hier; je Dokument kommen sie ueber `Settings.read_settings`.
+
+    Geprueft wird beim Bilden, also vor dem Einreihen: Ein Tippfehler waere sonst
+    nur gegen einen bezahlten Kaltstart je Dokument zu erfahren (siehe
+    `GUELTIGE_STUFEN`).
+
+    Die Bildanalyse wirkt laut Job-Vertrag nur in der Stufe `advanced`;
+    ausserhalb davon ist sie hier als aus bestellt, gleich was angegeben ist. So
+    sagt der Wert, was tatsaechlich an RunPod geht und was an der Zeile steht,
+    und der Vergleich mit den Einstellungen, die der Worker meldet, geht auf.
+
+    Raises:
+        ConfigurationError: Stufe oder OCR-Modus steht nicht in seiner Liste, oder
+            die Bildanalyse ist kein Wahrheitswert.
+    """
+
+    tier: str = "advanced"
+    """Wie tief MinerU 4 liest (`GUELTIGE_STUFEN`)."""
+
+    ocr_mode: str = "ocr"
+    """Woher der Text kommt (`GUELTIGE_OCR_MODI`). `ocr` ist die Voreinstellung,
+    weil die Textebene einer beschaedigten PDF der Schaden selbst ist: Im
+    Textmodus liest das Modell Fliesstext, Titel, Kopf- und Fusszeilen,
+    Seitenzahlen und Seitenfussnoten nicht selbst (Job-Vertrag, `ocr_mode`;
+    Mineroo#1, Worker)."""
+
+    image_analysis: bool = True
+    """Ob das Modell Bilder und Diagramme beschreibt. Ausserhalb von `advanced`
+    immer False (siehe oben)."""
+
+    def __post_init__(self) -> None:
+        for name, wert, gueltig in (
+            ("tier", self.tier, GUELTIGE_STUFEN),
+            ("ocr_mode", self.ocr_mode, GUELTIGE_OCR_MODI),
+        ):
+            if wert not in gueltig:
+                raise ConfigurationError(
+                    f"{name}={wert!r} kennt der Worker nicht. Gueltig sind: "
+                    f"{sorted(gueltig)}. Die Liste stammt aus dem Job-Vertrag "
+                    f"des Forks (api.mdx, „Validation behaviour“) — sie kann "
+                    f"veralten, wenn der Worker neue Werte bekommt; dann gehoert "
+                    f"sie in config nachgetragen."
+                )
+        if type(self.image_analysis) is not bool:
+            # Ein Text wie "false" waere wahr und stuende so in der Eingabe.
+            raise ConfigurationError(
+                f"image_analysis={self.image_analysis!r} ist kein Wahrheitswert "
+                f"(True oder False)."
+            )
+        if self.tier != "advanced" and self.image_analysis:
+            # `object.__setattr__`, weil die Klasse eingefroren ist; das ist der
+            # vorgesehene Weg in `__post_init__`, das noch zur Erzeugung gehoert.
+            object.__setattr__(self, "image_analysis", False)
+
+
+_LESEN_VOREINGESTELLT: Final = ReadSettings()
+"""Die Voreinstellungen der Lese-Einstellungen, an EINER Stelle (`ReadSettings`);
+`Settings` nimmt seine Feld-Voreinstellungen von hier."""
+
+
+# --------------------------------------------------------------------------
 # Die Einstellungen
 # --------------------------------------------------------------------------
 
@@ -458,26 +534,24 @@ class Settings:
 
     # -- Job-Contract ------------------------------------------------------
 
-    tier: str = "advanced"
-    """Die Stufe, mit der MinerU 4 liest. `advanced` ist die Voreinstellung des
-    Job-Vertrags und dieses Pakets (Mineroo#1, Story 6: jedes PDF und Bild ohne
-    weitere Angabe in `advanced`). Geprueft gegen `GUELTIGE_STUFEN`.
+    tier: str = _LESEN_VOREINGESTELLT.tier
+    """Die Stufe, mit der MinerU 4 liest, wenn das Abschicken keine nennt.
+    `advanced` ist die Voreinstellung des Job-Vertrags und dieses Pakets
+    (Mineroo#1, Story 6). Geprueft gegen `GUELTIGE_STUFEN`.
 
-    Die Lese-Einstellungen gelten bis zum Ticket „Lese-Einstellungen und
-    MinerU-Version je Dokument" (Mineroo#14) fuer jedes Dokument gleich; sie
-    kommen aus den Einstellungen des Daemons, der die Jobs ausfuehrt."""
+    Die drei Lese-Einstellungen sind die VOREINSTELLUNG des Abschickens, nicht die
+    des Daemons: Das Abschicken legt die eines Dokuments an seiner Eingabe ab
+    (`read_settings`), und der Job schickt genau diese an RunPod (Mineroo#14). Was
+    in der Einstellung des Daemons steht, wirkt auf keinen Job."""
 
-    ocr_mode: str = "ocr"
-    """Woher der Text kommt. `ocr` ist die Voreinstellung, weil die Textebene einer
-    beschaedigten PDF der Schaden selbst ist: Im Textmodus liest das Modell
-    Fliesstext, Titel, Kopf- und Fusszeilen, Seitenzahlen und Seitenfussnoten
-    nicht selbst (Job-Vertrag, `ocr_mode`; Mineroo#1, Worker). Geprueft gegen
-    `GUELTIGE_OCR_MODI`."""
+    ocr_mode: str = _LESEN_VOREINGESTELLT.ocr_mode
+    """Woher der Text kommt, wenn das Abschicken keinen Modus nennt
+    (`ReadSettings.ocr_mode`). Geprueft gegen `GUELTIGE_OCR_MODI`."""
 
-    image_analysis: bool = True
-    """Ob das Modell Bilder und Diagramme beschreibt. Wirkt nur in der Stufe
-    `advanced`; ausserhalb davon bestellt `runpod.RunPodClient.submit` sie als
-    aus, so dass die Nutzlast sagt, was tatsaechlich wirkt."""
+    image_analysis: bool = _LESEN_VOREINGESTELLT.image_analysis
+    """Ob das Modell Bilder und Diagramme beschreibt, wenn das Abschicken nichts
+    sagt. Wirkt nur in der Stufe `advanced`; ausserhalb davon ist sie als aus
+    bestellt (`ReadSettings`)."""
 
     transport: str = "tarball_b64"
     """Fest. Bei diesem Transport ist ein `formats`-Feld wirkungslos: es kommt
@@ -775,21 +849,34 @@ class Settings:
         waere sonst nur zu erfahren, indem man dafuer bezahlt — ein Kaltstart bis
         zur Fehlermeldung, und das je Dokument.
 
+        Geprueft wird ueber `ReadSettings`, die eine Stelle dafuer.
+
         Raises:
             ConfigurationError: Stufe oder OCR-Modus steht nicht in seiner Liste.
         """
-        for name, wert, gueltig in (
-            ("tier", self.tier, GUELTIGE_STUFEN),
-            ("ocr_mode", self.ocr_mode, GUELTIGE_OCR_MODI),
-        ):
-            if wert not in gueltig:
-                raise ConfigurationError(
-                    f"{name}={wert!r} kennt der Worker nicht. Gueltig sind: "
-                    f"{sorted(gueltig)}. Die Liste stammt aus dem Job-Vertrag "
-                    f"des Forks (api.mdx, „Validation behaviour“) — sie kann "
-                    f"veralten, wenn der Worker neue Werte bekommt; dann gehoert "
-                    f"sie in config nachgetragen."
-                )
+        self.read_settings()
+
+    def read_settings(
+        self,
+        *,
+        tier: str | None = None,
+        ocr_mode: str | None = None,
+        image_analysis: bool | None = None,
+    ) -> ReadSettings:
+        """Die Lese-Einstellungen fuer ein Dokument: die angegebenen, sonst diese.
+
+        Der Weg, auf dem ein Lauf seine eigenen waehlt (Mineroo#14): `ocr_start`,
+        `ocr` und das Kommando `ocr` reichen ihre Angaben hierher, und was fehlt
+        (None), kommt aus dieser Einstellung.
+
+        Raises:
+            ConfigurationError: Ein Wert ist ungueltig (`ReadSettings`).
+        """
+        return ReadSettings(
+            tier=self.tier if tier is None else tier,
+            ocr_mode=self.ocr_mode if ocr_mode is None else ocr_mode,
+            image_analysis=self.image_analysis if image_analysis is None else image_analysis,
+        )
 
     def __repr__(self) -> str:
         """Wie die Voreinstellung, aber mit maskiertem API-Schluessel.

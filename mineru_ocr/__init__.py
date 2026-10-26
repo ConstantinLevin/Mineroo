@@ -64,7 +64,7 @@ jede Procrastinate-Stuetze ist einzeln belegt in
 from __future__ import annotations
 
 from .client import AsyncOCRClient, OCRClient
-from .config import Settings
+from .config import ReadSettings, Settings
 from .core import RetryOutcome, Submitted
 from .db import DerivedStatus, DocumentRow, DocumentStatus, Phase
 from .errors import (
@@ -100,6 +100,7 @@ __all__ = [
     "RetryOutcome",
     # Einstellung und Zustaende
     "Settings",
+    "ReadSettings",
     "DocumentStatus",
     "DocumentRow",
     "DerivedStatus",
