@@ -137,6 +137,11 @@ Worker liest er aus der REST-API v1 (`RunPodClient.endpoint`), die Rechenzentren
 aus v2 (`RunPodClient.serverless`), denn nur v2 trägt am echten Endpoint
 `dataCenterIds` (#31). Die gemeldete Worker-Umgebung zeigt keine Variablen des
 Images; deshalb ist `MINERU_MODEL_SOURCE`, das das Image setzt, kein Sollwert.
+`RunPodClient.endpoint` maskiert Geheimnisse der Worker-Umgebung bereits beim
+Empfang (#40). Namen mit KEY, SECRET, TOKEN oder PASSWORD zählen unabhängig von
+Großschreibung auch als Teilwort. Der Preflight kann deren Wert nicht vergleichen
+(`nicht_pruefbar`), meldet aber fehlende oder leere erwartete Geheimnisse als
+Abweichung. Leere Werte bleiben in der Worker-Auskunft leer.
 Die Exit-Codes sind belegt (0/1/2/3/4, dazu 130 bei Strg-C) und werden von
 `cli.py` bewusst gesetzt.
 

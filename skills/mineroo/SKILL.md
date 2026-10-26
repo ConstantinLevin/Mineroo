@@ -44,6 +44,11 @@ ersten Abschicken, auf jedem Weg:
 Der Preflight verändert nichts, fragt aber RunPod und braucht deshalb den
 RunPod-Schlüssel; dasselbe gilt für `mineru-ocr status`.
 
+Geheimnisse der Worker-Umgebung zeigt das Paket nur als `***` (Namen mit
+KEY, SECRET, TOKEN oder PASSWORD, unabhängig von Großschreibung). Ihr Wert
+ist im Preflight `nicht_pruefbar`; fehlende oder leere erwartete Geheimnisse
+sind eine Abweichung. `workers()` gibt dieselbe maskierte Umgebung zurück.
+
 ## Ablauf über die CLI
 
 Für Dateien und Ordner auf der Platte:

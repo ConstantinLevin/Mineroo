@@ -503,7 +503,9 @@ class OCRClient:
               Worker fuehrt — auch fuer beendete — und an jedem davon. Gibt es
               keinen Worker, lautet das Ergebnis „nicht pruefbar" und
               ausdruecklich NICHT „in Ordnung". Der Unterschied ist der ganze
-              Wert dieser Pruefung.
+              Wert dieser Pruefung. Geheimnisse sind bereits beim Empfang
+              maskiert: Ihr Wert ist nicht pruefbar; fehlt ein erwartetes
+              Geheimnis oder ist es leer, ist das eine Abweichung.
             * Das Template-Image und das Image jedes Workers gegen den erwarteten
               Tag. Ein anderer Tag ist eine WARNUNG, kein Abbruch — auch mit
               einem anderen Image kann man arbeiten, man sollte es nur wissen.
@@ -632,14 +634,10 @@ class OCRClient:
             # Was TATSAECHLICH laeuft, steht an den Workern der Antwort.
             arbeiter = _worker_kennungen(konfiguration.get("workers") or [])
 
-            # Die Endpoint-Variablen, auf die es ankommt, nach WERT. Gezeigt wird
-            # nur der Wert der geprueften Variablen: Die Umgebung eines echten
-            # Workers traegt `RUNPOD_AI_API_KEY` und `RUNPOD_ENDPOINT_SECRET` im
-            # Klartext (am 08.08.2026 standen beide in der Konsolenausgabe eines
-            # gewoehnlichen Preflights). Erlaubt wird, was bekannt harmlos ist —
-            # die konfigurierten Variablen —, statt zu verbieten, was bekannt
-            # gefaehrlich ist: Eine solche Liste ist immer unvollstaendig.
+            # Geheimnisse kommen bereits maskiert aus RunPodClient.endpoint().
+            # Ihr Vorhandensein bleibt pruefbar, ihr Wert nicht.
             for variable, env_soll in einstellung.endpoint_env.items():
+                geheimnis = ist_geheimnisname(variable)
                 ist_je_worker: dict[str, Any] = {}
                 zustaende: list[str] = []
                 for kennung, eintrag in arbeiter:
@@ -650,21 +648,19 @@ class OCRClient:
                         continue
                     wert = umgebung.get(variable)
                     ist_je_worker[kennung] = wert
-                    zustaende.append("ok" if env_soll is not None and wert == env_soll else "falsch")
+                    if geheimnis:
+                        zustaende.append("unbekannt" if wert else "falsch")
+                    else:
+                        zustaende.append("ok" if env_soll is not None and wert == env_soll else "falsch")
                 if env_soll is None:
                     # Noch kein Sollwert (z. B. der GPU-Speicheranteil vor der
                     # Messung): berichten, nicht bewerten.
                     bewertung = "nicht_pruefbar"
                 else:
                     bewertung = _gesamtbewertung(zustaende, "abweichung")
-                if ist_geheimnisname(variable):
-                    # Verglichen wurde der Wert; gezeigt wird er nicht. Wer ein
-                    # Geheimnis in `[endpoint_env]` nennt, will es geprueft haben.
+                if geheimnis:
+                    # Auch der lokal konfigurierte Sollwert bleibt verdeckt.
                     env_soll = MASKE if env_soll is not None else None
-                    ist_je_worker = {
-                        k: v if v is None or v == OHNE_ANGABE else MASKE
-                        for k, v in ist_je_worker.items()
-                    }
                 merken(f"env:{variable}", env_soll, ist_je_worker, bewertung)
 
             # Das Image jedes Workers gegen den erwarteten Tag. Das Template kann
@@ -1533,7 +1529,8 @@ class OCRClient:
         """Die Worker EINZELN aufgelistet — die zusammengefassten Zaehler luegen
         (Plan 8, Regel 11). Leere Liste heisst „gerade laeuft keiner" und ist bei
         einem auf null herunterskalierenden Endpoint der Normalfall. Verlangt
-        Endpoint und RunPod-Schluessel."""
+        Endpoint und RunPod-Schluessel. Geheimnisse der Umgebung erscheinen
+        als `***`; leere Werte bleiben leer."""
         self._settings.require_endpoint_id()
         self._settings.require_api_key()
         return _runpod_fragen(self._settings, lambda z: z.workers())

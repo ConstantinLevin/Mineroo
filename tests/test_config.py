@@ -678,7 +678,9 @@ def test_typfehler_bei_einem_text_nennt_den_wert_nicht(tmp_path: Path) -> None:
     ["RUNPOD_AI_API_KEY", "HF_TOKEN", "DB_PASSWORD", "ADMIN_PASSWD", "SSH_PASSPHRASE",
      "DB_PWD", "CLIENT_SECRET", "AWS_CREDENTIALS", "AUTH", "BEARER", "PRIVATE_KEY",
      "APIKEY", "hf_token", "hf-token", "SECRETS", "API_KEYS", "DB_PASS",
-     "HTTP_AUTHORIZATION", "PASSWORDS", "ACCESSKEY", "PRIVATEKEY", "SSHKEY"],
+     "HTTP_AUTHORIZATION", "PASSWORDS", "ACCESSKEY", "PRIVATEKEY", "SSHKEY",
+     "serviceToken", "clientSecret", "dbPassword", "apiKeyValue",
+     "MAX_TOKENS", "MAX_NEW_TOKENS", "KEYWORD", "MONKEY", "TURKEY"],
 )
 def test_geheimnisnamen_werden_erkannt(name: str) -> None:
     assert ist_geheimnisname(name)
@@ -687,12 +689,10 @@ def test_geheimnisnamen_werden_erkannt(name: str) -> None:
 @pytest.mark.parametrize(
     "name",
     ["MINERU_MODEL_SOURCE", "MINERU_MAX_CONCURRENCY", "MINERU_VIRTUAL_VRAM_SIZE",
-     "MAX_TOKENS", "MAX_NEW_TOKENS", "AUTHOR", "KEYWORD", "MONKEY", "TURKEY",
-     "PASSENGER", "COMPASS"],
+     "AUTHOR", "PASSENGER", "COMPASS"],
 )
 def test_andere_namen_bleiben_sichtbar(name: str) -> None:
-    """Ein Name, der nur ein Teilwort enthaelt, ist kein Geheimnis: Verdeckt
-    waere eine echte Abweichung nicht mehr zu lesen."""
+    """Namen ohne Geheimniskennzeichen bleiben lesbar."""
     assert not ist_geheimnisname(name)
 
 
