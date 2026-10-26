@@ -77,37 +77,32 @@ def _konfiguration_isolieren(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
 FEHLERANTWORT_FIXTURE = (
     Path(__file__).resolve().parent.parent
     / "artifacts"
-    / "2026-08-08-erster-tarball-lauf"
+    / "2026-10-26-mineru-4.0.12-endpoint"
+    / "antworten"
     / "fehlerantwort.response.json"
 )
-"""Eine echte `FAILED`-Antwort des Workers — erzwungen am 09.08.2026.
+"""Eine echte `FAILED`-Antwort des MinerU-4-Workers, erzwungen am 26.10.2026
+(Herkunft im `README.md` des Ordners).
 
-Erzeugt, indem ein GUELTIGES PDF mit einem ungueltigen Backend-Namen geschickt
-wurde: Die lokalen Pruefungen haetten daran nichts zu beanstanden, der Fehler
-entsteht ausschliesslich auf der Gegenseite. Genau die Lage, die
-`executor._endzustand_uebersetzen` bewerten muss und fuer die es kein Material
-gab.
+Erzeugt, indem ein GUELTIGES PDF mit der Stufe `gibt-es-nicht` geschickt wurde:
+Die lokalen Pruefungen haetten daran nichts zu beanstanden, der Fehler entsteht
+ausschliesslich auf der Gegenseite (`ValueError: input validation failed: tier
+must be one of …`). Genau die Lage, die `executor._endzustand_uebersetzen`
+bewerten muss.
 
-WAS SIE ZEIGT — und was mehr ist, als der Code bis dahin annahm:
-
-    `status: "FAILED"` und, auf OBERSTER Ebene, ein `error` mit der Meldung
-    im Klartext.
-
-    Ein vollstaendiges `output` — eine Fehlerantwort ist also NICHT leer. Darin
-    `ok: false`, der `debug`-Block mit GPU, Modellverzeichnis und Phasenzeiten,
-    und ein kompletter `traceback` aus dem Worker.
-
-Der Traceback ist die brauchbarste Diagnose, die es zu einem gescheiterten
-Dokument gibt. Er war vorher nur als Python-Textdarstellung in
-`raw["failure"]["message"]` vorhanden, weil `_endzustand_uebersetzen` vor dem
-Schutzblock stand; jetzt steht die ganze Antwort als abfragbares JSON unter
+WAS SIE ZEIGT: `status: "FAILED"` und, auf OBERSTER Ebene, ein `error` mit der
+Meldung im Klartext; dazu ein vollstaendiges `output` — eine Fehlerantwort ist
+also NICHT leer — mit `ok: false`, dem `debug`-Block mit GPU, Modellverzeichnis
+und Phasenzeiten und einem kompletten `traceback` aus dem Worker. Der Traceback
+ist die brauchbarste Diagnose, die es zu einem gescheiterten Dokument gibt; die
+ganze Antwort steht deshalb als abfragbares JSON unter
 `raw["unverwertbare_antworten"]`.
 
-Und die Antwort hat noch etwas geliefert, das nirgends dokumentiert war: die
-Liste der gueltigen Backend-Namen. Der Worker nannte sie selbst, wenn man ihn
-falsch fragte; sie wurde lokal geprueft, statt 177 Sekunden Kaltstart je Dokument
-zu kosten. Unter MinerU 4 sind an ihre Stelle die Stufen getreten
-(`config.GUELTIGE_STUFEN`, aus dem Job-Vertrag des Forks)."""
+Dieselbe Form hatte schon die erste erzwungene Fehlerantwort unter MinerU 3.4
+(09.08.2026, `artifacts/2026-08-08-erster-tarball-lauf/`). Sie zeigte auch,
+dass der Worker die gueltigen Werte selbst nennt, wenn man ihn falsch fragt;
+das Paket prueft sie deshalb lokal, statt einen Kaltstart je Dokument dafuer zu
+bezahlen, unter MinerU 4 die Stufen (`config.GUELTIGE_STUFEN`)."""
 
 
 @pytest.fixture

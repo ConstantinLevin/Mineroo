@@ -284,8 +284,8 @@ def antwort(
     WORKER `_handle_parse`: `ok`, `elapsed_seconds`, `mineru_version`, die drei
     gemeldeten Lese-Einstellungen, `results` mit genau einem Eintrag, `debug`.
     Aussen der Umschlag, den RunPod um die Ausgabe legt (`id`, `status`,
-    `delayTime`, `executionTime`, `workerId`), wie in der echten 3.4-Fehlerantwort
-    `artifacts/2026-08-08-erster-tarball-lauf/fehlerantwort.response.json`."""
+    `delayTime`, `executionTime`, `workerId`), wie in den echten Antworten unter
+    `ECHT_ENDPOINT`."""
     return {
         "delayTime": 812,
         "executionTime": 4211,
@@ -339,7 +339,8 @@ def fehlerantwort(fehler: str) -> dict[str, Any]:
     WORKER `handler`: Die Fehlerantwort traegt `error` (Typname und Meldung),
     `ok: false`, `elapsed_seconds`, `mineru_version`, `traceback` und `debug`.
     RunPod hebt `error` auf die oberste Ebene der `/status`-Antwort und legt den
-    Rest unter `output`, wie es die echte 3.4-Fehlerantwort zeigt."""
+    Rest unter `output`, wie es die echte Fehlerantwort unter `ECHT_ENDPOINT`
+    zeigt."""
     return {
         "delayTime": 176874,
         "error": fehler,

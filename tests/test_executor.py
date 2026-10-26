@@ -1647,30 +1647,6 @@ async def test_bezahlte_antwort_mit_formfehler_wird_aufgehoben(
     assert "TerminalRunPodError" in aufgehoben[0]["fehler"]
 
 
-async def test_echte_mineru4_fehlerantwort_endet_failed(
-    db_conn: psycopg.Connection[Any],
-    pool: AsyncConnectionPool,
-    exec_settings: Settings,
-    tmp_path: Path,
-) -> None:
-    """Die ECHTE Fehlerantwort des MinerU-4-Endpoints auf eine unbekannte Stufe
-    (`input validation failed: tier must be one of …`) ist eine Pruefung der
-    Anfrage, keine Abweisung der Datei: `failed`, und die Antwort steht ganz in
-    `raw`."""
-    sha, _ = _anlegen(db_conn, tmp_path, b"bild", name="a.png", typ=DocumentType.PNG)
-    antwort = ersatz.echte_antwort("fehlerantwort")
-    runpod = FalscherRunPod([antwort])
-
-    with pytest.raises(TerminalRunPodError):
-        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
-
-    zeile = get_document(db_conn, sha)
-    assert zeile is not None
-    assert zeile.status is DocumentStatus.FAILED
-    assert zeile.raw is not None
-    assert zeile.raw["unverwertbare_antworten"][0]["antwort"] == antwort
-
-
 async def test_echte_fehlerantwort_landet_vollstaendig_in_raw(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
@@ -1678,16 +1654,17 @@ async def test_echte_fehlerantwort_landet_vollstaendig_in_raw(
     tmp_path: Path,
     echte_fehlerantwort: dict[str, Any],
 ) -> None:
-    """Eine ECHTE `FAILED`-Antwort steht danach als abfragbares JSON in `raw`.
+    """Die ECHTE Fehlerantwort des MinerU-4-Endpoints auf eine unbekannte Stufe
+    (`input validation failed: tier must be one of …`) ist eine Pruefung der
+    Anfrage, keine Abweisung der Datei: `failed`, und die Antwort steht danach
+    als abfragbares JSON in `raw`.
 
-    Erzwungen am 09.08.2026 gegen den echten Endpoint (gueltiges PDF,
-    ungueltiger Backend-Name) und als Fixture konserviert. Sie zeigt, dass eine
-    Fehlerantwort weit mehr traegt als „es ging schief": `error` auf oberster
-    Ebene, ein volles `output` mit `ok: false`, den `debug`-Block mit GPU,
+    Sie traegt weit mehr als „es ging schief": `error` auf oberster Ebene, ein
+    volles `output` mit `ok: false`, den `debug`-Block mit GPU,
     Modellverzeichnis und Phasenzeiten — und einen kompletten `traceback` aus
-    dem Worker.
+    dem Worker (Herkunft bei `conftest.FEHLERANTWORT_FIXTURE`).
 
-    Vorher stand `_endzustand_uebersetzen` VOR dem Schutzblock, der bezahlte
+    Frueher stand `_endzustand_uebersetzen` VOR dem Schutzblock, der bezahlte
     Antworten aufhebt. Der Traceback ueberlebte damit nur als Python-
     Textdarstellung, eingebettet in die Fehlermeldung — vorhanden, aber weder
     abfragbar noch zuverlaessig lesbar. Fuer die beste Diagnose, die es zu einem

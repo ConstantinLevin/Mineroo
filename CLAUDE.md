@@ -699,8 +699,8 @@ normale PDF-Seite mit allen fünf Randklassen, leere Seite als Bild und als PDF,
 zwölfseitiges Dokument in drei Teilstücken mit dem Schnitt des Pakets, DOCX,
 HTML und eine erzwungene Fehlerantwort. Die Tests spielen sie über
 `ersatz_antworten.echte_antwort`, `echte_teilstuecke` und `ECHT_ENDPOINT` ab,
-auch am Exekutor (`test_echte_mineru4_antworten_ergeben_ein_dokument`,
-`test_echte_mineru4_fehlerantwort_endet_failed`). Sie haben gezeigt: Die
+auch am Exekutor (`test_echte_mineru4_antworten_ergeben_ein_dokument`; die
+Fehlerantwort über die Vorrichtung `echte_fehlerantwort`). Sie haben gezeigt: Die
 Bildnamen der Teilstücke kollidieren wirklich, eine leere Seite trägt keinen
 `blocks`-Schlüssel, und DOCX und HTML liest der Worker unabhängig von der
 Bestellung als `flash` mit `txt`. Neu erzeugen lassen sie sich mit den Skripten
@@ -718,18 +718,17 @@ Bildnamen und ihre Verweise). Sie decken ab, was die Aufnahmen nicht zeigen
 (Grenzfälle, Inline-Bilder, fehlende Dateien). Wo sie von den Aufnahmen
 abweichen, gilt die Aufnahme.
 
-**Die 3.4-Aufnahmen unter `artifacts/` werden nicht mehr abgespielt** — bis auf
-eine. `2026-08-05-doku-verifikationstest/` (sechs Inline-Antworten) und
+**Die 3.4-Aufnahmen unter `artifacts/` werden nicht mehr abgespielt.**
+`2026-08-05-doku-verifikationstest/` (sechs Inline-Antworten) und
 `2026-08-08-erster-tarball-lauf/leere_seite.tarball.response.json` tragen
 MinerU-3.4-Dateien (`content_list`, `doc.md`, `doc_middle.json`), die es unter
 MinerU 4 nicht gibt; sie sind Geschichte, ersetzt durch die Aufnahmen des
 Endpoints. Die zwei personenbezogenen Aufnahmen (`gute_nacht`,
 `mehrteilig_*`) sind vor dem ersten Push entfernt worden (Mineroo#2), und die
-Tests, die sie lasen, gibt es mit dem Umbau auf MinerU 4 nicht mehr.
-Abgespielt wird nur noch `fehlerantwort.response.json` (Vorrichtung
-`echte_fehlerantwort`): eine echte `FAILED`-Antwort, an der sich zeigt, wie
-RunPod sie umschlägt (`error` auf oberster Ebene, der Rest unter `output`) — das
-hängt nicht an der MinerU-Version.
+Tests, die sie lasen, gibt es mit dem Umbau auf MinerU 4 nicht mehr. Die
+erzwungene 3.4-Fehlerantwort daneben (`fehlerantwort.response.json`) ist durch
+die des Endpoints abgelöst; sie zeigte zuerst, wie RunPod eine `FAILED`-Antwort
+umschlägt (`error` auf oberster Ebene, der Rest unter `output`).
 
 ---
 
