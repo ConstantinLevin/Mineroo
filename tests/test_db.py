@@ -25,7 +25,7 @@ import pytest
 from procrastinate.jobs import Job
 
 from mineru_ocr import db as db_modul
-from mineru_ocr.config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS
+from mineru_ocr.config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS, ReadSettings
 from mineru_ocr.db import (
     WAIT_APPLICATION_NAME,
     DocumentRow,
@@ -513,15 +513,23 @@ def test_documents_kennt_keine_pfade(db_conn: psycopg.Connection[Any]) -> None:
 @pytest.mark.db
 def test_setup_legt_inputs_an(db_conn: psycopg.Connection[Any]) -> None:
     """Die Eingabe hat eine eigene Tabelle: `sha256` als Schluessel, `content` als
-    `bytea` — nicht base64 in einer Textspalte —, und `job_id`, die Kennung des
-    Jobs, ueber die `document()` und `retry` ihn finden."""
+    `bytea` — nicht base64 in einer Textspalte —, die Lese-Einstellungen des
+    Dokuments (Mineroo#14) und `job_id`, die Kennung des Jobs, ueber die
+    `document()` und `retry` ihn finden."""
     spalten = dict(
         db_conn.execute(
             "SELECT column_name, data_type FROM information_schema.columns "
             "WHERE table_name = 'inputs'"
         ).fetchall()
     )
-    assert spalten == {"sha256": "text", "content": "bytea", "job_id": "bigint"}
+    assert spalten == {
+        "sha256": "text",
+        "content": "bytea",
+        "tier": "text",
+        "ocr_mode": "text",
+        "image_analysis": "boolean",
+        "job_id": "bigint",
+    }
     schluessel = db_conn.execute(
         "SELECT a.attname FROM pg_index i "
         "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
@@ -640,8 +648,60 @@ async def test_eingabe_wird_gespeichert_und_binaer_gelesen(
     assert insert_input(db_conn, sha256=HASH, content=inhalt) is True
 
     gelesen = await read_input_async(_test_datenbank, HASH)
-    assert type(gelesen) is bytes
-    assert gelesen == inhalt
+    assert gelesen is not None
+    assert type(gelesen.content) is bytes
+    assert gelesen.content == inhalt
+
+
+@pytest.mark.db
+async def test_die_eingabe_traegt_die_lese_einstellungen_ihres_dokuments(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Die Lese-Einstellungen stehen an der Eingabe, und der Job liest sie mit den
+    Bytes in EINER Anfrage (Mineroo#14). Ohne Angabe sind es die Voreinstellungen
+    des Job-Vertrags."""
+    gewaehlt = ReadSettings(tier="standard", ocr_mode="txt", image_analysis=False)
+    insert_input(db_conn, sha256=HASH, content=b"gewaehlt", read_settings=gewaehlt)
+    insert_input(db_conn, sha256="b" * 64, content=b"voreingestellt")
+
+    gelesen = await read_input_async(_test_datenbank, HASH)
+    assert gelesen is not None and gelesen.read_settings == gewaehlt
+    vorein = await read_input_async(_test_datenbank, "b" * 64)
+    assert vorein is not None and vorein.read_settings == ReadSettings()
+
+
+@pytest.mark.db
+def test_setup_meldet_eine_inputs_tabelle_ohne_lese_einstellungen(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Eine Tabelle aus der Zeit vor Mineroo#14 hat keine Spalten fuer die
+    Lese-Einstellungen; `setup` nennt sie samt Abhilfe und aendert nichts."""
+    db_conn.execute("ALTER TABLE inputs DROP COLUMN ocr_mode")
+    try:
+        with pytest.raises(DatabaseError) as fehler:
+            setup(_test_datenbank)
+        text = str(fehler.value)
+        assert "inputs" in text and "ocr_mode" in text
+        assert "setup" in text
+    finally:
+        db_conn.execute(
+            "ALTER TABLE inputs ADD COLUMN ocr_mode text NOT NULL DEFAULT 'ocr'"
+        )
+        db_conn.execute("ALTER TABLE inputs ALTER COLUMN ocr_mode DROP DEFAULT")
+
+
+@pytest.mark.db
+def test_setup_meldet_nullbare_lese_einstellungen_an_der_eingabe(
+    db_conn: psycopg.Connection[Any], _test_datenbank: str
+) -> None:
+    """Die Einstellungen der Eingabe sind Pflicht: Ohne sie wuesste der Job nicht,
+    was er an RunPod schickt."""
+    db_conn.execute("ALTER TABLE inputs ALTER COLUMN image_analysis DROP NOT NULL")
+    try:
+        with pytest.raises(DatabaseError, match="image_analysis"):
+            setup(_test_datenbank)
+    finally:
+        db_conn.execute("ALTER TABLE inputs ALTER COLUMN image_analysis SET NOT NULL")
 
 
 @pytest.mark.db

@@ -17,7 +17,7 @@ from psycopg_pool import AsyncNullConnectionPool, NullConnectionPool
 from mineru_ocr import client as client_modul
 from mineru_ocr import config, core, db, tasks
 from mineru_ocr.client import AsyncOCRClient, OCRClient
-from mineru_ocr.config import Settings
+from mineru_ocr.config import ReadSettings, Settings
 from mineru_ocr.db import WAIT_APPLICATION_NAME, DocumentStatus, Phase, write_terminal_async
 from mineru_ocr.errors import (
     ConfigDriftError,
@@ -1353,6 +1353,80 @@ def test_ocr_start_reiht_ein_unterwegs_liegendes_dokument_nicht_nochmal_ein(
     assert _zaehlen(db_conn, "procrastinate_jobs") == 1
 
 
+def _lese_einstellungen(conn: psycopg.Connection[Any], sha256: str) -> tuple[Any, ...]:
+    """Die Lese-Einstellungen an der Eingabe eines Dokuments."""
+    zeile = conn.execute(
+        "SELECT tier, ocr_mode, image_analysis FROM inputs WHERE sha256 = %s",
+        (sha256,),
+    ).fetchone()
+    assert zeile is not None
+    return tuple(zeile)
+
+
+def test_ocr_start_legt_die_lese_einstellungen_an_der_eingabe_ab(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Je Dokument gewaehlt (Mineroo#14): Ohne Angabe gelten die Voreinstellungen,
+    angegebene ersetzen sie, und sie stehen an der Eingabe, von der der Job sie
+    nimmt. Ausserhalb von `advanced` ist die Bildanalyse als aus bestellt."""
+    _worker_am_leben(db_conn)
+    vorein = offener_client.ocr_start(_png("voreingestellt"))
+    gewaehlt = offener_client.ocr_start(
+        [_png("a"), _png("b")], tier="standard", ocr_mode="txt", image_analysis=False
+    )
+    nur_stufe = offener_client.ocr_start(_png("c"), tier="basic")
+
+    assert _lese_einstellungen(db_conn, vorein) == ("advanced", "ocr", True)
+    for h in gewaehlt:
+        assert _lese_einstellungen(db_conn, h) == ("standard", "txt", False)
+    assert _lese_einstellungen(db_conn, nur_stufe) == ("basic", "ocr", False)
+
+
+def test_ocr_start_weist_ungueltige_lese_einstellungen_ab_ohne_etwas_einzureihen(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Ein Tippfehler kostete sonst einen Kaltstart je Dokument."""
+    with pytest.raises(ConfigurationError, match="kennt der Worker nicht"):
+        offener_client.ocr_start([_png("gut")], tier="advance")
+    for tabelle in ("inputs", "procrastinate_jobs"):
+        assert _zaehlen(db_conn, tabelle) == 0, tabelle
+
+
+async def test_treffer_und_unterwegs_gelten_unabhaengig_von_den_lese_einstellungen(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+) -> None:
+    """Ein Ergebnis ist ein Treffer, gleich mit welchen Einstellungen verlangt
+    wird; ein unterwegs liegendes Dokument behaelt die Einstellungen, mit denen
+    es eingereiht wurde. Mit welchen ein Ergebnis entstand, steht an der Huelle."""
+    _worker_am_leben(db_conn)
+    unterwegs = _png("unterwegs")
+    h = offener_client.ocr_start(unterwegs, ocr_mode="txt")
+    wieder = offener_client.ocr_start(unterwegs, ocr_mode="ocr", tier="basic")
+    assert wieder.queued is False and wieder.status is None
+    assert _lese_einstellungen(db_conn, h) == ("advanced", "txt", True)
+
+    fertig = _png("fertig")
+    h_fertig = offener_client.ocr_start(fertig)
+    await write_terminal_async(
+        async_conn, sha256=h_fertig, status=DocumentStatus.DONE, raw={}, endpoint_id="e"
+    )
+    treffer = offener_client.ocr_start(fertig, tier="flash")
+    assert (treffer.queued, treffer.status) == (False, DocumentStatus.DONE)
+    assert _jobs_zaehlen(db_conn, h_fertig) == 1
+
+
+def test_ocr_reicht_die_lese_einstellungen_an_das_abschicken(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """`ocr` ist Abschicken plus Warten, mit denselben Optionen."""
+    _worker_am_leben(db_conn)
+    with pytest.raises(WaitTimeoutError):
+        offener_client.ocr(_png("ocr"), timeout=0.1, ocr_mode="auto")
+    assert _lese_einstellungen(db_conn, _hash(_png("ocr"))) == ("advanced", "auto", True)
+
+
 def test_ocr_start_mit_demselben_dokument_mehrfach_reiht_es_einmal_ein(
     offener_client: OCRClient, db_conn: psycopg.Connection[Any]
 ) -> None:
@@ -2503,6 +2577,33 @@ async def test_async_ocr_start_liefert_einen_treffer_ohne_job(
     assert _zaehlen(db_conn, "inputs") == eingaben_danach
 
 
+async def test_async_ocr_start_und_ocr_legen_die_lese_einstellungen_an_der_eingabe_ab(
+    offener_async_client: AsyncOCRClient, db_conn: psycopg.Connection[Any]
+) -> None:
+    """Dieselben Optionen wie im Sync-Client (Mineroo#14), auch bei `ocr`; ein
+    ungueltiger Wert reiht nichts ein."""
+    _worker_am_leben(db_conn)
+    vorein = await offener_async_client.ocr_start(_png("async vorein"))
+    gewaehlt = await offener_async_client.ocr_start(
+        [_png("async a")], tier="standard", ocr_mode="txt"
+    )
+    with pytest.raises(WaitTimeoutError):
+        await offener_async_client.ocr(
+            _png("async ocr"), timeout=0.1, image_analysis=False
+        )
+    with pytest.raises(ConfigurationError):
+        await offener_async_client.ocr_start(_png("async falsch"), ocr_mode="ocr ")
+
+    assert _lese_einstellungen(db_conn, vorein) == ("advanced", "ocr", True)
+    assert _lese_einstellungen(db_conn, gewaehlt[0]) == ("standard", "txt", False)
+    assert _lese_einstellungen(db_conn, _hash(_png("async ocr"))) == (
+        "advanced",
+        "ocr",
+        False,
+    )
+    assert _zaehlen(db_conn, "inputs") == 3
+
+
 async def test_async_ocr_start_viele_gibt_je_dokument_den_hash_in_eingabereihenfolge(
     offener_async_client: AsyncOCRClient, db_conn: psycopg.Connection[Any]
 ) -> None:
@@ -3074,7 +3175,9 @@ async def test_async_ocr_start_nennt_das_ergebnis_wenn_ein_anderer_schneller_war
     der inzwischen dasteht."""
     inhalt = _png("rennen")
 
-    async def anderer_war_schneller(_conn: Any, *, sha256: str, content: bytes) -> bool:
+    async def anderer_war_schneller(
+        _conn: Any, *, sha256: str, content: bytes, **_: Any
+    ) -> bool:
         db.insert_input(db_conn, sha256=sha256, content=content)
         db_conn.execute(
             "INSERT INTO documents (sha256, endpoint_id, status, raw) "

@@ -25,7 +25,7 @@ from psycopg_pool import AsyncConnectionPool
 
 import ersatz_antworten as ersatz
 from mineru_ocr import db as db_modul
-from mineru_ocr.config import Settings
+from mineru_ocr.config import ReadSettings, Settings
 from mineru_ocr.db import DocumentStatus, get_document, insert_input, write_terminal_async
 from mineru_ocr.errors import (
     ConfigurationError,
@@ -164,6 +164,7 @@ def _anlegen(
     *,
     name: str = "x.pdf",
     typ: DocumentType = DocumentType.PDF,
+    lesen: ReadSettings = ReadSettings(),
 ) -> tuple[str, Path]:
     """Legt die Eingabe an, wie das Abschicken es tut (keine Ergebniszeile), und
     gibt Hash und einen Pfad zurueck, den es NICHT gibt.
@@ -176,7 +177,7 @@ def _anlegen(
     pfad = tmp_path / name
     daten = _als(typ, inhalt)
     sha = hashlib.sha256(daten).hexdigest()
-    insert_input(conn, sha256=sha, content=daten)
+    insert_input(conn, sha256=sha, content=daten, read_settings=lesen)
     return sha, pfad
 
 
@@ -289,23 +290,36 @@ async def test_guard_laesst_failed_durch(
     assert zeile.raw["markdown"] == "Jetzt geklappt"
 
 
-async def test_lese_einstellungen_der_einstellung_gehen_an_runpod(
+async def test_der_job_schickt_die_lese_einstellungen_seiner_eingabe(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    """Der Job schickt die Stufe, den OCR-Modus und die Bildanalyse aus den
-    Einstellungen, nicht feste Werte (Mineroo#11; je Dokument erst Mineroo#14)."""
-    sha, _ = _anlegen(db_conn, tmp_path, b"ein bild", name="a.png", typ=DocumentType.PNG)
-    eingestellt = dataclasses.replace(
-        exec_settings, tier="basic", ocr_mode="txt", image_analysis=False
+    """Je Dokument, nicht je Daemon (Mineroo#14): Stufe, OCR-Modus und Bildanalyse
+    kommen aus der Eingabe-Zeile, fuer jedes Teilstueck; was in der Einstellung
+    des Daemons steht, wirkt auf keinen Job."""
+    daemon = dataclasses.replace(
+        exec_settings, tier="advanced", ocr_mode="ocr", image_analysis=True,
+        max_pages_per_chunk=2,
+    )
+    bild, _ = _anlegen(
+        db_conn, tmp_path, b"ein bild", name="a.png", typ=DocumentType.PNG,
+        lesen=ReadSettings("basic", "txt", False),
+    )
+    pdf, _ = _anlegen(
+        db_conn, tmp_path, _pdf(3), lesen=ReadSettings("advanced", "auto", False)
     )
 
     runpod = FalscherRunPod([ersatz.fertige_antwort("Text")])
-    await process_document(sha, settings=eingestellt, runpod=runpod, pool=pool)
+    await process_document(bild, settings=daemon, runpod=runpod, pool=pool)
+    await process_document(pdf, settings=daemon, runpod=runpod, pool=pool)
 
-    assert runpod.lese_einstellungen == [("basic", "txt", False)]
+    assert runpod.lese_einstellungen == [
+        ("basic", "txt", False),
+        ("advanced", "auto", False),
+        ("advanced", "auto", False),
+    ]
 
 
 # --- Eingang --------------------------------------------------------------

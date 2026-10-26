@@ -45,7 +45,13 @@ from procrastinate.jobs import Job
 from psycopg_pool import AsyncNullConnectionPool, NullConnectionPool
 
 from . import core, db, tasks
-from .config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS, MASKE, Settings, ist_geheimnisname
+from .config import (
+    DAEMON_HEARTBEAT_MAX_AGE_SECONDS,
+    MASKE,
+    ReadSettings,
+    Settings,
+    ist_geheimnisname,
+)
 from .core import RetryOutcome, Submitted
 from .db import DerivedStatus, DocumentStatus
 from .errors import (
@@ -739,12 +745,33 @@ class OCRClient:
     # ----------------------------------------------------------------------
 
     @overload
-    def ocr_start(self, data: bytes) -> Submitted: ...
+    def ocr_start(
+        self,
+        data: bytes,
+        *,
+        tier: str | None = None,
+        ocr_mode: str | None = None,
+        image_analysis: bool | None = None,
+    ) -> Submitted: ...
 
     @overload
-    def ocr_start(self, data: Sequence[bytes]) -> list[Submitted]: ...
+    def ocr_start(
+        self,
+        data: Sequence[bytes],
+        *,
+        tier: str | None = None,
+        ocr_mode: str | None = None,
+        image_analysis: bool | None = None,
+    ) -> list[Submitted]: ...
 
-    def ocr_start(self, data: bytes | Sequence[bytes]) -> Submitted | list[Submitted]:
+    def ocr_start(
+        self,
+        data: bytes | Sequence[bytes],
+        *,
+        tier: str | None = None,
+        ocr_mode: str | None = None,
+        image_analysis: bool | None = None,
+    ) -> Submitted | list[Submitted]:
         """Schickt Dokumente ab: Bytes, eines oder viele. Blockiert nicht.
 
         Je Dokument kommt dessen Hash zurueck, der Griff, mit dem es in jedem
@@ -764,13 +791,16 @@ class OCRClient:
            Grenze findet erst das Schneiden im Job.
         2. Gibt es ein Ergebnis, ist das ein Treffer, AUCH BEI `failed`, und es
            geschieht nichts: Ein gescheitertes Dokument liest nur `retry` neu. Ein
-           Treffer gilt unabhaengig von verlangten Lese-Einstellungen.
+           Treffer gilt unabhaengig von verlangten Lese-Einstellungen; mit welchen
+           das Ergebnis entstand, steht an der Huelle und in `document()`.
         3. Sonst wird die Eingabe abgelegt (`INSERT INTO inputs … ON CONFLICT DO
            NOTHING`). Steht sie schon, ist das Dokument unterwegs, und es geschieht
-           nichts weiter; schicken zwei Aufrufer gleichzeitig dieselben Bytes,
-           laesst Postgres den zweiten auf den ersten warten, und danach tut der
-           zweite nichts. Kam sie neu hinein, wird in derselben Transaktion der Job
-           eingereiht. Eine Ergebniszeile legt erst der Job an, wenn er endet.
+           nichts weiter, auch an seinen Lese-Einstellungen nicht; schicken zwei
+           Aufrufer gleichzeitig dieselben Bytes, laesst Postgres den zweiten auf
+           den ersten warten, und danach tut der zweite nichts. Kam sie neu
+           hinein, samt den Lese-Einstellungen dieses Aufrufs, wird in derselben
+           Transaktion der Job eingereiht. Der Job traegt nur den Hash und nimmt
+           die Einstellungen von der Eingabe (Mineroo#14). Eine Ergebniszeile legt erst der Job an, wenn er endet.
            Jedes Dokument in seiner eigenen Transaktion und nie mehrere in einer:
            Zwei Aufrufer mit ueberlappenden Mengen in verschiedener Reihenfolge
            wuerden sich sonst gegenseitig blockieren. Das Signal, das die Worker
@@ -795,6 +825,13 @@ class OCRClient:
             data: Die vollstaendigen Bytes EINES Dokuments, oder eine Folge davon.
                 Keine Pfade und kein Text; das Lesen von Dateien ist Sache der
                 Kommandozeile.
+            tier: Die Stufe, mit der MinerU 4 liest (`config.GUELTIGE_STUFEN`).
+            ocr_mode: Woher der Text kommt (`config.GUELTIGE_OCR_MODI`).
+            image_analysis: Ob das Modell Bilder und Diagramme beschreibt; wirkt
+                nur in `advanced` und ist sonst als aus bestellt.
+                Alle drei gelten fuer jedes Dokument dieses Aufrufs; ohne Angabe
+                gelten die Voreinstellungen der Einstellung
+                (`Settings.read_settings`).
 
         Returns:
             Bei Bytes ein `Submitted`, bei einer Folge eine Liste in der
@@ -803,8 +840,10 @@ class OCRClient:
 
         Raises:
             TypeError: Ein Element ist keine Bytes — meist ein Pfad oder Text.
+            ConfigurationError: Eine Lese-Einstellung kennt der Worker nicht. Es
+                ist dann NICHTS eingereiht worden.
             UnsupportedTypeError: Ein Dokument hat einen Typ, den das Paket nicht
-                liest. Es ist dann NICHTS eingereiht worden.
+                liest. Dito.
             TooLargeError: Ein Dokument ist zu gross. Dito.
 
         Weder Endpoint noch RunPod-Schluessel braucht das Abschicken: Es spricht
@@ -815,11 +854,14 @@ class OCRClient:
         """
         einzeln = isinstance(data, bytes)
         dokumente = _dokumente(data)
-        # ERST ALLES PRUEFEN, DANN EINREIHEN.
+        # ERST ALLES PRUEFEN, DANN EINREIHEN — die Lese-Einstellungen eingeschlossen.
+        lesen = self._settings.read_settings(
+            tier=tier, ocr_mode=ocr_mode, image_analysis=image_analysis
+        )
         vorbereitet = [core.prepare(dokument, self._settings) for dokument in dokumente]
 
         ergebnisse = [
-            self._abschicken(dokument, bereit)
+            self._abschicken(dokument, bereit, lesen)
             for dokument, bereit in zip(dokumente, vorbereitet, strict=True)
         ]
         if any(e.status is None for e in ergebnisse):
@@ -871,7 +913,9 @@ class OCRClient:
             fehler = gefangen
         self._daemon_warnung = _daemon_warnung_geben(self._daemon_warnung, fehler)
 
-    def _abschicken(self, data: bytes, bereit: core.Prepared) -> Submitted:
+    def _abschicken(
+        self, data: bytes, bereit: core.Prepared, lesen: ReadSettings
+    ) -> Submitted:
         """Schickt EIN geprueftes Dokument ab, in seiner eigenen Transaktion.
 
         Ein Treffer (Ergebnis da) wird ohne `raw` gelesen und nicht angefasst.
@@ -884,7 +928,9 @@ class OCRClient:
             return Submitted(sha256, queued=False, status=vorhanden.status)
         try:
             with self.conn.transaction():
-                if not db.insert_input(self.conn, sha256=sha256, content=data):
+                if not db.insert_input(
+                    self.conn, sha256=sha256, content=data, read_settings=lesen
+                ):
                     # Die Eingabe steht schon: Das Dokument ist unterwegs (oder ein
                     # anderer Aufrufer war schneller, und Postgres hat uns auf ihn
                     # warten lassen). Es bleibt bei seiner Eingabe und seinem Job.
@@ -1036,7 +1082,15 @@ class OCRClient:
             for zeile in zeilen:
                 yield OCRWrapper.from_row(zeile, self.conn)
 
-    def ocr(self, data: bytes, timeout: float | None = None) -> OCRWrapper:
+    def ocr(
+        self,
+        data: bytes,
+        timeout: float | None = None,
+        *,
+        tier: str | None = None,
+        ocr_mode: str | None = None,
+        image_analysis: bool | None = None,
+    ) -> OCRWrapper:
         """Ein Dokument: abschicken und auf dieses eine warten.
 
         Gibt es schon ein Ergebnis, ist das Abschicken ein Nichts-Tun und das
@@ -1046,6 +1100,8 @@ class OCRClient:
         Args:
             data: Die vollstaendigen Bytes.
             timeout: Sekunden fuer das Warten, None fuer unbegrenzt.
+            tier, ocr_mode, image_analysis: Die Lese-Einstellungen, wie bei
+                `ocr_start`.
 
         Returns:
             Die Huelle zum Endzustand, auch bei `failed`.
@@ -1064,7 +1120,10 @@ class OCRClient:
         """
         _ein_dokument_pruefen(data)
         db.check_wait_timeout(timeout)
-        return self.wait(self.ocr_start(data), timeout=timeout)
+        gereicht = self.ocr_start(
+            data, tier=tier, ocr_mode=ocr_mode, image_analysis=image_analysis
+        )
+        return self.wait(gereicht, timeout=timeout)
 
     def retry(self, sha256: str) -> RetryOutcome:
         """Bringt EIN Dokument ohne gueltiges Ergebnis wieder in Gang, auf
@@ -1570,21 +1629,42 @@ class AsyncOCRClient:
         return self._app
 
     @overload
-    async def ocr_start(self, data: bytes) -> Submitted: ...
+    async def ocr_start(
+        self,
+        data: bytes,
+        *,
+        tier: str | None = None,
+        ocr_mode: str | None = None,
+        image_analysis: bool | None = None,
+    ) -> Submitted: ...
 
     @overload
-    async def ocr_start(self, data: Sequence[bytes]) -> list[Submitted]: ...
+    async def ocr_start(
+        self,
+        data: Sequence[bytes],
+        *,
+        tier: str | None = None,
+        ocr_mode: str | None = None,
+        image_analysis: bool | None = None,
+    ) -> list[Submitted]: ...
 
     async def ocr_start(
-        self, data: bytes | Sequence[bytes]
+        self,
+        data: bytes | Sequence[bytes],
+        *,
+        tier: str | None = None,
+        ocr_mode: str | None = None,
+        image_analysis: bool | None = None,
     ) -> Submitted | list[Submitted]:
         """Schickt Dokumente ab: Bytes, eines oder viele. Wartet nicht.
 
         Dieselbe Bedeutung wie `OCRClient.ocr_start`, dort ausfuehrlich: erst ALLE
         pruefen, dann einreihen; ein Ergebnis ist ein Treffer (auch `failed`), und
         es geschieht nichts; eine stehende Eingabe heisst unterwegs; sonst Eingabe
-        und Job in einer eigenen Transaktion je Dokument, die Kennung des Jobs in
-        `inputs.job_id`. Laeuft kein Daemon, wird trotzdem eingereiht und gewarnt.
+        (samt den Lese-Einstellungen `tier`, `ocr_mode`, `image_analysis`, ohne
+        Angabe die Voreinstellungen) und Job in einer eigenen Transaktion je
+        Dokument, die Kennung des Jobs in `inputs.job_id`. Laeuft kein Daemon,
+        wird trotzdem eingereiht und gewarnt.
 
         Returns:
             Bei Bytes ein `Submitted`, bei einer Folge eine Liste in der
@@ -1592,18 +1672,22 @@ class AsyncOCRClient:
 
         Raises:
             TypeError: Ein Element ist keine Bytes — meist ein Pfad oder Text.
-            UnsupportedTypeError: Ein Typ, den das Paket nicht liest. Es ist dann
-                NICHTS eingereiht worden.
+            ConfigurationError: Eine Lese-Einstellung kennt der Worker nicht. Es
+                ist dann NICHTS eingereiht worden.
+            UnsupportedTypeError: Ein Typ, den das Paket nicht liest. Dito.
             TooLargeError: Ein Dokument ist zu gross. Dito.
 
         Kosten: keine unmittelbar. Mittelbar: alles, was der Daemon danach tut.
         """
         einzeln = isinstance(data, bytes)
         dokumente = _dokumente(data)
-        # ERST ALLES PRUEFEN, DANN EINREIHEN.
+        # ERST ALLES PRUEFEN, DANN EINREIHEN — die Lese-Einstellungen eingeschlossen.
+        lesen = self._settings.read_settings(
+            tier=tier, ocr_mode=ocr_mode, image_analysis=image_analysis
+        )
         vorbereitet = [core.prepare(dokument, self._settings) for dokument in dokumente]
         ergebnisse = [
-            await self._abschicken(dokument, bereit)
+            await self._abschicken(dokument, bereit, lesen)
             for dokument, bereit in zip(dokumente, vorbereitet, strict=True)
         ]
         if any(e.status is None for e in ergebnisse):
@@ -1745,9 +1829,18 @@ class AsyncOCRClient:
             raise _noch_offen(sha256)
         return OCRWrapper.from_row(zeile, None)
 
-    async def ocr(self, data: bytes, timeout: float | None = None) -> OCRWrapper:
+    async def ocr(
+        self,
+        data: bytes,
+        timeout: float | None = None,
+        *,
+        tier: str | None = None,
+        ocr_mode: str | None = None,
+        image_analysis: bool | None = None,
+    ) -> OCRWrapper:
         """Ein Dokument: abschicken und auf dieses eine warten, wie
-        `OCRClient.ocr`. Ein Treffer kommt sofort.
+        `OCRClient.ocr`, mit denselben Lese-Einstellungen. Ein Treffer kommt
+        sofort.
 
         Raises:
             TypeError: `data` sind keine Bytes, etwa eine Liste. Gemeldet, BEVOR
@@ -1762,7 +1855,10 @@ class AsyncOCRClient:
         """
         _ein_dokument_pruefen(data)
         db.check_wait_timeout(timeout)
-        return await self.wait(await self.ocr_start(data), timeout=timeout)
+        gereicht = await self.ocr_start(
+            data, tier=tier, ocr_mode=ocr_mode, image_analysis=image_analysis
+        )
+        return await self.wait(gereicht, timeout=timeout)
 
     async def get(self, sha256: str) -> OCRWrapper:
         """Holt die Huelle zu einem Dokument mit Ergebnis, ohne zu warten, wie
@@ -1793,7 +1889,9 @@ class AsyncOCRClient:
             fehler = gefangen
         self._daemon_warnung = _daemon_warnung_geben(self._daemon_warnung, fehler)
 
-    async def _abschicken(self, data: bytes, bereit: core.Prepared) -> Submitted:
+    async def _abschicken(
+        self, data: bytes, bereit: core.Prepared, lesen: ReadSettings
+    ) -> Submitted:
         """Wie `OCRClient._abschicken`: Treffer ohne `raw` lesen und nicht
         anfassen, sonst Eingabe und Job in EINER Transaktion oder gar nicht."""
         sha256 = bereit.sha256
@@ -1803,7 +1901,9 @@ class AsyncOCRClient:
             return Submitted(sha256, queued=False, status=vorhanden.status)
         try:
             async with conn.transaction():
-                if not await db.insert_input_async(conn, sha256=sha256, content=data):
+                if not await db.insert_input_async(
+                    conn, sha256=sha256, content=data, read_settings=lesen
+                ):
                     raise _SchonUnterwegs
                 kennung = await tasks.enqueue_document_async(
                     self._procrastinate, conn, sha256

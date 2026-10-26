@@ -45,7 +45,11 @@ from procrastinate.jobs import Job
 from psycopg.rows import class_row, dict_row
 from psycopg.types.json import Jsonb
 
-from .config import DAEMON_HEARTBEAT_MAX_AGE_SECONDS, DEFAULT_WAIT_POLL_SECONDS
+from .config import (
+    DAEMON_HEARTBEAT_MAX_AGE_SECONDS,
+    DEFAULT_WAIT_POLL_SECONDS,
+    ReadSettings,
+)
 
 from .errors import (
     ConfigurationError,
@@ -103,6 +107,9 @@ CREATE INDEX IF NOT EXISTS documents_status_idx ON documents (status);
 CREATE TABLE IF NOT EXISTS inputs (
     sha256        text PRIMARY KEY,
     content       bytea NOT NULL,
+    tier          text NOT NULL,
+    ocr_mode      text NOT NULL,
+    image_analysis boolean NOT NULL,
     job_id        bigint
 );
 """
@@ -144,6 +151,13 @@ Endergebnis loescht der Job die Eingabe in derselben Transaktion, bei `done`,
 hat. Pfade gibt es in der Datenbank nicht. Die Tabelle ist zugleich das
 Verzeichnis der offenen Dokumente: Abschicken legt nur die Eingabe an, und ihr
 Primaerschluessel ist die Sperre gegen ein zweites Einreihen.
+
+`tier`, `ocr_mode` und `image_analysis` an der Eingabe sind die Lese-Einstellungen,
+die das Abschicken fuer dieses Dokument verlangt hat (`config.ReadSettings`,
+Mineroo#14). Der Job nimmt sie von hier und schickt genau diese an RunPod, auch in
+einem grossen Lauf; der Job selbst traegt weiter nur den Hash. Ein zweites
+Abschicken desselben Dokuments, solange es unterwegs ist, aendert sie nicht, und
+`retry` nimmt keine: Ein neuer Job liest dieselbe Eingabe.
 
 `status` kennt nur Endzustaende, kein `new` und kein `processing`: Die Zeile
 legt der Job an, wenn er endet (siehe Modul-Vorspann). Deshalb hat die Spalte
@@ -579,7 +593,9 @@ def _datenbank_anlegen_falls_noetig(dsn: str) -> str:
     return zielname
 
 
-INPUT_SPALTEN: Final = frozenset({"sha256", "content", "job_id"})
+INPUT_SPALTEN: Final = frozenset(
+    {"sha256", "content", "tier", "ocr_mode", "image_analysis", "job_id"}
+)
 """Die Spalten von `inputs`. Die Tabelle hat keine Zeilenklasse (der Executor
 liest nur `content`), also steht die Erwartung hier, und `_schema_bewerten`
 vergleicht gegen sie. Die Form der Spalten (Typ, NOT NULL) und den
@@ -749,6 +765,11 @@ def _schema_bewerten(katalog: dict[str, Any] | None) -> None:
             if (
                 form["sha256"][0] != "text"
                 or form["content"] != ("bytea", True)
+                # Pflicht: Ohne sie wuesste der Job nicht, was er an RunPod
+                # schickt (Mineroo#14).
+                or form["tier"] != ("text", True)
+                or form["ocr_mode"] != ("text", True)
+                or form["image_analysis"] != ("boolean", True)
                 # Leer erlaubt: Das Abschicken legt die Eingabe ohne Kennung an
                 # und schreibt sie erst, wenn `defer` sie zurueckgab.
                 or form["job_id"] != ("bigint", False)
@@ -757,8 +778,9 @@ def _schema_bewerten(katalog: dict[str, Any] | None) -> None:
                 abweichungen.append(
                     "Die Tabelle `inputs` hat die erwarteten Spalten, aber nicht "
                     "ihre Form: erwartet `sha256 text PRIMARY KEY`, "
-                    "`content bytea NOT NULL` und `job_id bigint` (ohne NOT "
-                    "NULL), gefunden "
+                    "`content bytea NOT NULL`, `tier text NOT NULL`, `ocr_mode "
+                    "text NOT NULL`, `image_analysis boolean NOT NULL` und "
+                    "`job_id bigint` (ohne NOT NULL), gefunden "
                     f"{form} mit Primaerschluessel {sorted(schluessel)}."
                 )
     if not abweichungen:
@@ -896,7 +918,8 @@ waeren."""
 
 
 _EINGABE_SQL: Final = (
-    "INSERT INTO inputs (sha256, content) VALUES (%s, %b) "
+    "INSERT INTO inputs (sha256, content, tier, ocr_mode, image_analysis) "
+    "VALUES (%s, %b, %s, %s, %s) "
     "ON CONFLICT (sha256) DO NOTHING RETURNING sha256"
 )
 """Die Anweisung von `insert_input` und `insert_input_async`."""
@@ -905,8 +928,25 @@ _KENNUNG_SQL: Final = "UPDATE inputs SET job_id = %s WHERE sha256 = %s"
 """Die Anweisung von `set_input_job` und `set_input_job_async`."""
 
 
+def _eingabe_werte(
+    sha256: str, content: bytes, read_settings: ReadSettings
+) -> tuple[Any, ...]:
+    """Die Werte zu `_EINGABE_SQL`, in seiner Reihenfolge."""
+    return (
+        sha256,
+        content,
+        read_settings.tier,
+        read_settings.ocr_mode,
+        read_settings.image_analysis,
+    )
+
+
 def insert_input(
-    conn: psycopg.Connection[Any], *, sha256: str, content: bytes
+    conn: psycopg.Connection[Any],
+    *,
+    sha256: str,
+    content: bytes,
+    read_settings: ReadSettings = ReadSettings(),
 ) -> bool:
     """Legt die Eingabe eines Dokuments ab, falls es zu diesem Hash noch keine gibt.
 
@@ -930,23 +970,33 @@ def insert_input(
         conn: Offene Verbindung, gehoert dem Aufrufer.
         sha256: Roher Byte-Hash von `content`.
         content: Die vollstaendigen Bytes der Eingabe.
+        read_settings: Die Lese-Einstellungen dieses Dokuments; der Job schickt
+            genau diese an RunPod. Die Clients geben sie immer an; ohne Angabe
+            gelten die Voreinstellungen des Job-Vertrags (`ReadSettings()`).
 
     Returns:
         True, wenn die Eingabe neu abgelegt wurde; False, wenn es zu diesem Hash
         schon eine gibt: Das Dokument ist dann unterwegs (oder gescheitert, und
-        seine Eingabe steht fuer `retry`), und die vorhandene bleibt unberuehrt.
+        seine Eingabe steht fuer `retry`), und die vorhandene bleibt unberuehrt,
+        samt ihren Lese-Einstellungen.
 
     Kosten: keine.
     """
-    ergebnis = conn.execute(_EINGABE_SQL, (sha256, content)).fetchone()
+    ergebnis = conn.execute(
+        _EINGABE_SQL, _eingabe_werte(sha256, content, read_settings)
+    ).fetchone()
     return ergebnis is not None
 
 
 async def insert_input_async(
-    conn: psycopg.AsyncConnection[Any], *, sha256: str, content: bytes
+    conn: psycopg.AsyncConnection[Any],
+    *,
+    sha256: str,
+    content: bytes,
+    read_settings: ReadSettings = ReadSettings(),
 ) -> bool:
     """Dasselbe wie `insert_input`, asynchron: fuer den `AsyncOCRClient`."""
-    cur = await conn.execute(_EINGABE_SQL, (sha256, content))
+    cur = await conn.execute(_EINGABE_SQL, _eingabe_werte(sha256, content, read_settings))
     return await cur.fetchone() is not None
 
 
@@ -1054,7 +1104,19 @@ def delete_failed_result(conn: psycopg.Connection[Any], sha256: str) -> None:
     )
 
 
-async def read_input_async(dsn: str, sha256: str) -> bytes | None:
+@dataclass(frozen=True)
+class StoredInput:
+    """Die Eingabe eines Dokuments, wie der Job sie liest: Bytes und Lese-Einstellungen."""
+
+    content: bytes
+    """Die Bytes — immer `bytes`, nie ein `memoryview`, denn pypdfium2 nimmt ein
+    `memoryview` nicht an."""
+
+    read_settings: ReadSettings
+    """Wie MinerU das Dokument lesen soll; genau das schickt der Job an RunPod."""
+
+
+async def read_input_async(dsn: str, sha256: str) -> StoredInput | None:
     """Liest die Eingabe eines Dokuments auf einer EIGENEN, kurzlebigen Verbindung.
 
     Warum nicht auf einer Verbindung aus dem Pool: libpq behaelt seine Puffer in
@@ -1064,12 +1126,12 @@ async def read_input_async(dsn: str, sha256: str) -> bytes | None:
     und wird nach dem Lesen geschlossen.
 
     Gelesen wird mit `binary=True`. Ohne geht der Wert als Hex ueber die Leitung,
-    doppelt so gross, und ab rund 536 MB scheitert der Server.
+    doppelt so gross, und ab rund 536 MB scheitert der Server. Die
+    Lese-Einstellungen kommen in derselben Anweisung mit.
 
     Returns:
-        Die Bytes — immer `bytes`, nie ein `memoryview`, denn pypdfium2 nimmt
-        ein `memoryview` nicht an. `None`, wenn es zu diesem Hash keine Eingabe
-        gibt; was das heisst, entscheidet der Aufrufer.
+        Bytes und Lese-Einstellungen; `None`, wenn es zu diesem Hash keine
+        Eingabe gibt. Was das heisst, entscheidet der Aufrufer.
 
     Raises:
         DatabaseError: Die Instanz antwortet nicht, oder das Verbinden scheiterte
@@ -1082,7 +1144,8 @@ async def read_input_async(dsn: str, sha256: str) -> bytes | None:
     try:
         try:
             cur = await conn.execute(
-                "SELECT content FROM inputs WHERE sha256 = %s",
+                "SELECT content, tier, ocr_mode, image_analysis FROM inputs "
+                "WHERE sha256 = %s",
                 (sha256,),
                 binary=True,
             )
@@ -1093,8 +1156,11 @@ async def read_input_async(dsn: str, sha256: str) -> bytes | None:
         await conn.close()
     if zeile is None:
         return None
-    inhalt = zeile[0]
-    return inhalt if type(inhalt) is bytes else bytes(inhalt)
+    inhalt, stufe, modus, bildanalyse = zeile
+    return StoredInput(
+        content=inhalt if type(inhalt) is bytes else bytes(inhalt),
+        read_settings=ReadSettings(tier=stufe, ocr_mode=modus, image_analysis=bildanalyse),
+    )
 
 
 def get_document(

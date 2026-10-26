@@ -41,7 +41,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from . import assembly, chunking, db, images
 from .abbruch import abwarten_bis_zum_zweiten_abbruch
-from .config import Settings
+from .config import ReadSettings, Settings
 from .errors import (
     CorruptDocumentError,
     InputError,
@@ -169,7 +169,8 @@ async def process_document(
        laufen.
 
     1. Eingabe aus `inputs` lesen, ueber den Hash, auf einer eigenen
-       kurzlebigen Verbindung, und den Hash gegenpruefen. Fehlt die Eingabe oder
+       kurzlebigen Verbindung, samt den Lese-Einstellungen, die das Abschicken
+       fuer dieses Dokument dort ablegte, und den Hash gegenpruefen. Fehlt die Eingabe oder
        weicht der Hash ab, ist der Bestand beschaedigt: `input_error` samt
        Vermerk. Bezahlte Ergebnisse gehen dabei nicht verloren, weil es noch
        keine gibt. Typ und Groesse bestimmt der Job aus den Bytes (`mime`); sie
@@ -280,7 +281,9 @@ async def process_document(
     Args:
         sha256: Welches Dokument. Der Job traegt nichts weiter als diesen Hash;
             die Bytes stehen in `inputs`.
-        settings: Schwellen, Zeitschranken, Job-Contract-Werte.
+        settings: Schwellen, Zeitschranken, Transport. Die Lese-Einstellungen
+            kommen NICHT von hier, sondern aus der Eingabe des Dokuments
+            (Mineroo#14).
         runpod: Der geteilte Zugang. Gehoert dem Daemon, wird hier nur benutzt.
         pool: Verbindungen zur eigenen Datenbank.
 
@@ -370,8 +373,8 @@ async def process_document(
         # Aus `inputs`, ueber den Hash, auf einer EIGENEN kurzlebigen Verbindung
         # (siehe `db.read_input_async`) — nicht aus dem Pool des Daemons und
         # nicht von einem Pfad.
-        rohbytes = await db.read_input_async(settings.db_dsn, sha256)
-        if rohbytes is None:
+        eingabe = await db.read_input_async(settings.db_dsn, sha256)
+        if eingabe is None:
             # Ein Dokument ohne Endergebnis hat immer eine Eingabe (Abschicken
             # legt sie mit dem Job an, und nur das Endergebnis loescht sie).
             # Fehlt sie, ist der Bestand beschaedigt, und ein Wiederlauf faende
@@ -382,6 +385,10 @@ async def process_document(
                 f"Dokument noch kein Endergebnis hat. Der Bestand ist "
                 f"beschaedigt. Es wurde nichts bezahlt."
             )
+        rohbytes = eingabe.content
+        # Die Lese-Einstellungen DIESES Dokuments, nicht die des Daemons
+        # (Mineroo#14): Das Abschicken hat sie an die Eingabe geschrieben.
+        lesen = eingabe.read_settings
         tatsaechlich = hashlib.sha256(rohbytes).hexdigest()
         if tatsaechlich != sha256:
             # Der Job liest genau die Bytes, aus denen der Hash gebildet wurde.
@@ -445,6 +452,7 @@ async def process_document(
                 await _stuecke_verarbeiten(
                     stuecke,
                     settings=settings,
+                    lesen=lesen,
                     runpod=runpod,
                     teile=teile,
                     unverwertbar=unverwertbar,
@@ -476,6 +484,7 @@ async def process_document(
             await _stuecke_verarbeiten(
                 [(chunking.Chunk(first_page=0, last_page=0), rohbytes)],
                 settings=settings,
+                lesen=lesen,
                 runpod=runpod,
                 teile=teile,
                 unverwertbar=unverwertbar,
@@ -929,11 +938,18 @@ async def _stuecke_verarbeiten(
     stuecke: Any,
     *,
     settings: Settings,
+    lesen: ReadSettings,
     runpod: RunPodAccess,
     teile: list[assembly.ChunkArtifacts],
     unverwertbar: list[dict[str, Any]],
 ) -> None:
     """Schickt Teilstueck fuer Teilstueck hinaus und holt jedes SOFORT ab.
+
+    Jedes Teilstueck mit den Lese-Einstellungen `lesen` aus der Eingabe des
+    Dokuments (Mineroo#14). Erst an der Leitung zu RunPod zerfallen sie in drei
+    Felder: `runpod.submit` nimmt sie einzeln, weil die Nutzlast auch Werte
+    tragen koennen muss, die das Paket nie bilden wuerde (die erzwungene
+    Fehlerantwort der Aufnahmen schickt eine Stufe, die es nicht gibt).
 
     NACHEINANDER, und das ist eine Zusicherung und keine Absicht: Ein fertiges
     Ergebnis liegt auf der Gegenseite nur rund dreissig Minuten bereit. Wuerde
@@ -972,9 +988,9 @@ async def _stuecke_verarbeiten(
         async def absenden(kodiert: str = kodiert) -> str:
             return await runpod.submit(
                 file_b64=kodiert,
-                tier=settings.tier,
-                ocr_mode=settings.ocr_mode,
-                image_analysis=settings.image_analysis,
+                tier=lesen.tier,
+                ocr_mode=lesen.ocr_mode,
+                image_analysis=lesen.image_analysis,
                 transport=settings.transport,
             )
 
