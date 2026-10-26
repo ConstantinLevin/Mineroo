@@ -233,12 +233,15 @@ def test_seitenversatz_kommt_aus_den_seitenindizes() -> None:
     assert [seiten(s) for s in ergebnis["structured_content"]] == [[0, 1], [2]]
 
 
-def test_nicht_ganzzahliges_page_idx_wirft() -> None:
+@pytest.mark.parametrize("page_idx", [0.5, True])
+def test_nicht_ganzzahliges_page_idx_wirft(page_idx: Any) -> None:
     """Ein Versatz auf einer Seitenangabe, die keine ganze Zahl ist, waere eine
-    falsche Seitenzahl, die niemand mehr als falsch erkennt."""
+    falsche Seitenzahl, die niemand mehr als falsch erkennt. `True` ist in Python
+    eine ganze Zahl, aber keine Seitenangabe: Der Versatz ergaebe Seite 1 statt
+    eines Fehlers."""
     teil = _teil_aus(Chunk(3, 3), [ersatz.seite(0, [])])
     assert teil.middle_json is not None
-    teil.middle_json["pages"][0]["page_idx"] = 0.5
+    teil.middle_json["pages"][0]["page_idx"] = page_idx
     with pytest.raises(TerminalRunPodError, match="page_idx"):
         assemble([teil])
 
@@ -687,16 +690,6 @@ def test_ein_unlesbarer_text_im_archiv_geht_nach_extras() -> None:
     )
     assert teil.markdown_full is None
     assert base64.b64decode(teil.extras["markdown_full.md"]) == kaputt
-
-
-def test_ein_page_idx_vom_typ_bool_wirft() -> None:
-    """`True` ist in Python eine ganze Zahl, aber keine Seitenangabe: Der Versatz
-    ergaebe Seite 1 statt eines Fehlers."""
-    teil = _teil_aus(Chunk(3, 3), [ersatz.seite(0, [])])
-    assert teil.middle_json is not None
-    teil.middle_json["pages"][0]["page_idx"] = True
-    with pytest.raises(TerminalRunPodError, match="page_idx"):
-        assemble([teil])
 
 
 def test_ein_fremder_verweis_mit_demselben_pfadende_bleibt_stehen() -> None:
