@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import io
+import struct
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -156,6 +159,28 @@ def test_zip_ohne_den_aufbau_eines_formats_wird_zurueckgehalten(
         sniff_bytes(zip_aus(eintraege))
 
 
+def _verdorbener_eintrag(
+    eintraege: dict[str, str], verdorben: str, verfahren: int = zipfile.ZIP_DEFLATED
+) -> bytes:
+    """Ein ZIP, in dem die gepackten Daten des Eintrags `verdorben` (mit
+    `verfahren` gepackt) mit 0xFF ueberschrieben sind; Verzeichnis und Groessen
+    bleiben, wie sie waren."""
+    puffer = io.BytesIO()
+    with zipfile.ZipFile(puffer, "w", zipfile.ZIP_DEFLATED) as archiv:
+        for name, inhalt in eintraege.items():
+            archiv.writestr(
+                name, inhalt, compress_type=verfahren if name == verdorben else None
+            )
+    daten = bytearray(puffer.getvalue())
+    with zipfile.ZipFile(io.BytesIO(bytes(daten))) as archiv:
+        info = archiv.getinfo(verdorben)
+    kopf = info.header_offset
+    namenslaenge, extralaenge = struct.unpack("<HH", daten[kopf + 26 : kopf + 30])
+    anfang = kopf + 30 + namenslaenge + extralaenge
+    daten[anfang : anfang + info.compress_size] = b"\xff" * info.compress_size
+    return bytes(daten)
+
+
 def _zentralverzeichnis_aendern(daten: bytes, versatz: int, wert: bytes) -> bytes:
     """Ueberschreibt im ersten Eintrag des Zentralverzeichnisses (`PK\\x01\\x02`) die
     Bytes ab `versatz` (APPNOTE 4.3.12)."""
@@ -178,8 +203,28 @@ def _zentralverzeichnis_aendern(daten: bytes, versatz: int, wert: bytes) -> byte
         _zentralverzeichnis_aendern(
             zip_aus({"a.xml": "<x/>"}).replace(b"a.xml", b"\xff.xml"), 8, b"\x00\x08"
         ),
+        # Code-Review zu Mineroo#17: ein Kopf mit tausend verschachtelten
+        # Kommentaren (`RecursionError` im Header-Parser), ein `mimetype`, dessen
+        # LZMA- oder bzip2-Daten kaputt sind, und ein Manifest mit einer
+        # Kodierung, die es nicht gibt (`LookupError`).
+        b"MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=x "
+        + b"(" * 1100
+        + b"\r\n\r\n<html></html>",
+        _verdorbener_eintrag(
+            {"mimetype": "application/epub+zip"}, "mimetype", zipfile.ZIP_LZMA
+        ),
+        _verdorbener_eintrag(
+            {"mimetype": "application/epub+zip"}, "mimetype", zipfile.ZIP_BZIP2
+        ),
+        zip_aus(
+            {"META-INF/manifest.xml": '<?xml version="1.0" encoding="gibt-es-nicht"?><m/>'}
+        ),
     ],
-    ids=["mhtml-parameter-kurz", "mhtml-parameter", "zip-version", "zip-name-kein-utf8"],
+    ids=[
+        "mhtml-parameter-kurz", "mhtml-parameter", "zip-version", "zip-name-kein-utf8",
+        "mhtml-verschachtelt", "mimetype-lzma-kaputt", "mimetype-bzip2-kaputt",
+        "manifest-kodierung-unbekannt",
+    ],
 )
 def test_kaputter_kopf_ist_ein_unbekannter_typ_kein_absturz(
     daten: bytes, tmp_path: Path
@@ -193,6 +238,17 @@ def test_kaputter_kopf_ist_ein_unbekannter_typ_kein_absturz(
     datei.write_bytes(daten)
     with pytest.raises(UnsupportedTypeError):
         sniff_path(datei)
+
+
+def test_ein_unlesbares_merkmal_verdeckt_kein_anderes() -> None:
+    """Laesst sich ein Eintrag nicht lesen (hier ein `mimetype` mit kaputten
+    deflate-Daten), fehlt nur dieses Merkmal: Ein OOXML-Archiv mit `word/` bleibt
+    ein DOCX."""
+    daten = _verdorbener_eintrag(
+        {"mimetype": "application/epub+zip", "word/document.xml": "<document/>"},
+        "mimetype",
+    )
+    assert sniff_bytes(daten) is DocumentType.DOCX
 
 
 def test_ganzdokument_formate_werden_nicht_am_namen_erkannt(tmp_path: Path) -> None:

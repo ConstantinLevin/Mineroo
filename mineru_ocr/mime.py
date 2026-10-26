@@ -128,23 +128,19 @@ _ZIP_LESEFEHLER: Final = (
     NotImplementedError,
     RuntimeError,
     ValueError,
+    LookupError,
     ElementTree.ParseError,
 )
 """Was `zipfile` beim Oeffnen eines Archivs und beim Lesen eines Eintrags werfen
 kann, wenn der INHALT nicht stimmt: ein beschaedigtes oder verschluesseltes
 Archiv, eine Version oder ein Kompressionsverfahren, das `zipfile` nicht kennt
 (`NotImplementedError`), ein als UTF-8 markierter Name, der keines ist
-(`UnicodeDecodeError`, ein `ValueError`), unlesbares XML. Fuer die Vorerkennung
+(`UnicodeDecodeError`, ein `ValueError`), unlesbares XML, auch eines mit einer
+Kodierung, die es nicht gibt (`LookupError`). Fuer die Vorerkennung
 heisst jedes davon nur: Dieses Merkmal traegt das Archiv nicht, oder es ist kein
 lesbares ZIP. `OSError` steht bewusst nicht hier: Beim Lesen von der Platte ist
 er ein Problem der Datei, kein Typproblem (`sniff_file`)."""
 
-_KOPF_LESEFEHLER: Final = (ValueError, LookupError, TypeError, AttributeError)
-"""Was der Header-Parser der Standardbibliothek bei einem kaputten Kopf werfen
-kann. Er wirft nicht nur seinen `HeaderParseError` (ein `ValueError`): CPython
-3.12 laeuft bei einem RFC-2231-Parameter, der mit `*` endet, in einen
-`IndexError` (QA zu Mineroo#17, `_header_value_parser.get_parameter`). Fuer die
-Vorerkennung heisst jedes davon nur: kein MHTML."""
 
 
 class DocumentType(enum.Enum):
@@ -305,15 +301,26 @@ OLE2-Container ist, und nennt ihn so (`application/x-ole-storage`, `.cfb` fuer
 Compound File Binary), statt DOC, XLS oder PPT zu raten."""
 
 
+_KLEINE_VERFAHREN: Final = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
+"""Die Kompressionsverfahren, deren Eintraege die Erkennung liest. Ein OpenDocument-
+und ein EPUB-Paket legen `mimetype` ungepackt ab (ODF 1.2, Teil 3, 3.3; EPUB OCF
+3.3, 4.2.5), DocVortex liest `OFD.xml` nur ungepackt oder mit deflate
+(`detect_ofd_path`). bzip2 und LZMA laeuft die Erkennung deshalb nicht an: Ihre
+Dekoder werfen bei kaputten Daten `OSError` und `LZMAError`, und ein `OSError`
+hiesse in `sniff_file` sonst, die Datei sei nicht lesbar (Code-Review zu
+Mineroo#17)."""
+
+
 def _klein_lesen(archiv: zipfile.ZipFile, name: str, grenze: int) -> bytes | None:
-    """Ein Eintrag des Archivs, wenn es ihn gibt und er hoechstens `grenze` Bytes
-    hat; sonst None. Gelesen wird hoechstens `grenze + 1` Bytes, auch wenn das
-    Verzeichnis eine falsche Groesse angibt."""
+    """Ein Eintrag des Archivs, wenn es ihn gibt, er hoechstens `grenze` Bytes hat
+    und ungepackt oder mit deflate gepackt ist (`_KLEINE_VERFAHREN`); sonst None.
+    Gelesen wird hoechstens `grenze + 1` Bytes, auch wenn das Verzeichnis eine
+    falsche Groesse angibt."""
     try:
         eintrag = archiv.getinfo(name)
     except KeyError:
         return None
-    if eintrag.file_size > grenze:
+    if eintrag.file_size > grenze or eintrag.compress_type not in _KLEINE_VERFAHREN:
         return None
     with archiv.open(eintrag) as strom:
         daten = strom.read(grenze + 1)
@@ -403,7 +410,13 @@ def _ist_mhtml(kopf: bytes) -> bool:
             nachricht.get_content_type() == "multipart/related"
             and bool(nachricht.get_boundary())
         )
-    except _KOPF_LESEFEHLER:
+    except Exception:  # noqa: BLE001 — jeder Fehler des Parsers heisst: kein MHTML
+        # Der Header-Parser der Standardbibliothek wirft bei kaputten Koepfen
+        # nicht nur seinen `HeaderParseError`: CPython 3.12 laeuft bei einem
+        # RFC-2231-Parameter, der mit `*` endet, in einen `IndexError`, bei
+        # tausend verschachtelten Kommentaren in einen `RecursionError` (QA und
+        # Code-Review zu Mineroo#17). Der Aufruf liest nur `kopf` im Speicher, es
+        # gibt keine Ein- und Ausgabe, deren Fehler hier verschluckt wuerde.
         return False
 
 
