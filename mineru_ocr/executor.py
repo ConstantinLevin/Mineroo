@@ -351,6 +351,9 @@ async def process_document(
     groesse: int | None = None
     art: str | None = None
     seitenzahl: int | None = None
+    # Die bestellten Lese-Einstellungen, sobald die Eingabe gelesen ist; der
+    # Fehlerpfad vergleicht nur, wenn es sie gibt.
+    lesen: ReadSettings | None = None
     begonnen = time.monotonic()
 
     try:
@@ -504,7 +507,7 @@ async def process_document(
             if assembly.is_empty(ergebnis)
             else db.DocumentStatus.DONE
         )
-        version = _niedrigste_version(_gemeldete_versionen(teile, unverwertbar))
+        version = _lesung_vermerken(teile, unverwertbar, lesen, vermerke)
         vermerke.append(
             {
                 "kind": "verarbeitet",
@@ -598,15 +601,16 @@ async def process_document(
             # hier VOLLSTAENDIG, weil sie bezahlt sind und dreissig Minuten nach
             # ihrer Entstehung nirgends mehr abrufbar waeren.
             ergebnis["unverwertbare_antworten"] = unverwertbar
+        # Auch eine Fehlerantwort meldet die Version (eine unverwertbare Antwort
+        # steht in `unverwertbar`). Kann nicht werfen, siehe dort. Vor dem
+        # Vermerk `gescheitert`, damit der der letzte bleibt.
+        version = _lesung_vermerken(teile, unverwertbar, lesen, vermerke)
         vermerke.append(_vermerk_gescheitert(len(teile), beschreibung))
         status = (
             db.DocumentStatus.INPUT_ERROR
             if isinstance(fehler, InputError)
             else db.DocumentStatus.FAILED
         )
-        # Auch eine Fehlerantwort meldet die Version (eine unverwertbare Antwort
-        # steht in `unverwertbar`). Kann nicht werfen, siehe dort.
-        version = _niedrigste_version(_gemeldete_versionen(teile, unverwertbar))
 
         async def schreiben(roh: dict[str, Any]) -> None:
             async with pool.connection() as conn:
@@ -712,6 +716,98 @@ async def write_failure_if_no_result(
             notes=vermerke,
         )
     return True
+
+
+def _lesung_vermerken(
+    teile: list[assembly.ChunkArtifacts],
+    unverwertbar: list[dict[str, Any]],
+    lesen: ReadSettings | None,
+    vermerke: list[dict[str, Any]],
+) -> str | None:
+    """Vergleicht, womit gelesen wurde, mit der Bestellung, und gibt die Version.
+
+    Zwei Vermerke, beide nur Auskunft; das Ergebnis gilt trotzdem (Mineroo#14):
+
+    * `lese_einstellungen_abweichend`: Ein Teilstueck meldet Einstellungen, die
+      nicht zur Bestellung `lesen` passen (`_passt`). Der Vermerk nennt die
+      Bestellung und je abweichendem Teilstueck Nummer, Seiten und das Gemeldete.
+    * `mineru_versionen_verschieden`: Die Antworten melden verschiedene
+      MinerU-Versionen (eine fehlende Meldung zaehlt als eigene Angabe). Der
+      Vermerk nennt alle, in der Reihenfolge der Antworten, und die gespeicherte.
+
+    Haengt die Vermerke an `vermerke` an. Wirft nicht, denn der Fehlerpfad ruft es.
+
+    Returns:
+        Die Version fuer die Zeile: die niedrigste gemeldete, None ohne jede.
+    """
+    versionen = _gemeldete_versionen(teile, unverwertbar)
+    version = _niedrigste_version(versionen)
+    if len(set(versionen)) > 1:
+        vermerke.append(
+            {
+                "kind": "mineru_versionen_verschieden",
+                "at": _jetzt(),
+                "versionen": versionen,
+                "gespeichert": version,
+            }
+        )
+    if lesen is None:
+        return version
+    abweichend: list[dict[str, Any]] = []
+    for nummer, teil in enumerate(teile):
+        umschlag = getattr(teil, "envelope", None)
+        ausgabe = umschlag.get("output_meta") if isinstance(umschlag, dict) else None
+        gemeldet = {
+            feld: ausgabe.get(feld) if isinstance(ausgabe, dict) else None
+            for feld in ("tier", "ocr_mode", "image_analysis")
+        }
+        if not _passt(lesen, gemeldet):
+            stueck = getattr(teil, "chunk", None)
+            abweichend.append(
+                {
+                    "teilstueck": nummer,
+                    "seiten": [
+                        getattr(stueck, "first_page", None),
+                        getattr(stueck, "last_page", None),
+                    ],
+                    "gemeldet": gemeldet,
+                }
+            )
+    if abweichend:
+        vermerke.append(
+            {
+                "kind": "lese_einstellungen_abweichend",
+                "at": _jetzt(),
+                "bestellt": {
+                    "tier": lesen.tier,
+                    "ocr_mode": lesen.ocr_mode,
+                    "image_analysis": lesen.image_analysis,
+                },
+                "abweichend": abweichend,
+            }
+        )
+    return version
+
+
+def _passt(bestellt: ReadSettings, gemeldet: dict[str, Any]) -> bool:
+    """Ob die gemeldeten Lese-Einstellungen einer Antwort zur Bestellung passen.
+
+    Stufe und Bildanalyse muessen gleich sein. Beim OCR-Modus passt `auto` zu
+    `txt` wie zu `ocr`: MinerU vermerkt den Modus, den es fuer die Datei
+    gewaehlt hat, nicht den angefragten (Mineroo#1, Worker, Job-Vertrag). Eine
+    Meldung, die eine Angabe nicht traegt, passt nicht.
+    """
+    modus = gemeldet["ocr_mode"]
+    modus_passt = modus == bestellt.ocr_mode or (
+        bestellt.ocr_mode == "auto" and modus in ("txt", "ocr")
+    )
+    bildanalyse = gemeldet["image_analysis"]
+    return (
+        gemeldet["tier"] == bestellt.tier
+        and modus_passt
+        and type(bildanalyse) is bool
+        and bildanalyse is bestellt.image_analysis
+    )
 
 
 def _gemeldete_versionen(
