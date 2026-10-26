@@ -409,6 +409,18 @@ Ohne eigenen Namensraum ueberschriebe das Bild des einen Teilstuecks das des
 anderen, und ein Verweis zeigte auf ein fremdes Bild (Mineroo#11, Story 24)."""
 
 
+SEITENTRENNER_VOLLFASSUNG: Final = "\n\n---\n\n"
+"""Was die Vollfassung zwischen zwei Seiten setzt, und womit `assemble` deshalb die
+Vollfassungen der Teilstuecke verbindet.
+
+MinerU 4.0.12 (`docs/next/middle-json/rendering.md`, `RenderMode.FULL`) setzt
+zwischen je zwei benachbarte Seiten eine Trennlinie und verbindet nichts ueber
+eine Seitengrenze; die echten Teilstuecke tragen sie als `\\n\\n---\\n\\n`. Mit
+der Leerzeile verbunden fehlte sie genau an der Schnittkante, und der Text
+verriete, wo das Paket geschnitten hat. `markdown.md` (`RenderMode.DEFAULT`)
+setzt keine Trennlinie und bleibt bei der Leerzeile."""
+
+
 def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
     """Macht aus den Teilstuecken EIN Dokument. Das Ergebnis ist, was gespeichert wird.
 
@@ -425,7 +437,9 @@ def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
         Auswertungs-Entscheidung, die im Ergebnis nicht mehr von einem Fehler
         der Engine zu unterscheiden ist.
 
-        `markdown_full`: ebenso aus `markdown_full.md`. Fehlt die Datei in
+        `markdown_full`: ebenso aus `markdown_full.md`, aber verbunden mit
+        `SEITENTRENNER_VOLLFASSUNG` statt der Leerzeile, damit die Schnittkante
+        aussieht wie jede andere Seitengrenze. Fehlt die Datei in
         EINEM Teilstueck, ist der Wert None: Ein Text, dem ein Teilstueck fehlt,
         saehe vollstaendig aus und waere es nicht. Die Vollfassungen der
         anderen Teilstuecke sind dann trotzdem bezahlt und gehen nicht verloren
@@ -511,7 +525,7 @@ def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
 
     voll: str | None = None
     if all(text is not None for text in volle):
-        voll = "\n\n".join(text for text in volle if text is not None)
+        voll = SEITENTRENNER_VOLLFASSUNG.join(text for text in volle if text is not None)
     ergebnis: dict[str, Any] = {
         "markdown": "\n\n".join(markdowns),
         "markdown_full": voll,

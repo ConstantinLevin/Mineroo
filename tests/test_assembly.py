@@ -776,6 +776,23 @@ def test_echte_teilstuecke_ergeben_den_ganzen_text_mit_jeder_seitenzahl_einmal()
     assert stellen == sorted(stellen)
 
 
+def test_echte_teilstuecke_trennen_jede_seite_wie_ein_ungeschnittenes_dokument() -> None:
+    """Die Vollfassung setzt zwischen je zwei benachbarte Seiten eine Trennlinie
+    (MinerU 4.0.12, `docs/next/middle-json/rendering.md`, `RenderMode.FULL`), und
+    das zeigen die echten Teilstuecke: fuenf Seiten, vier Trennlinien. Der Text
+    fuer Abnehmer verraet nicht, wo das Paket geschnitten hat: Zwoelf Seiten
+    tragen elf Trennlinien, auch hinter der fuenften und der zehnten Seite."""
+    teile = _echte_teilstuecke()
+    trennlinie = "\n\n---\n\n"
+    assert [teil.markdown_full.count(trennlinie) for teil in teile if teil.markdown_full] == [4, 4, 1]
+
+    dargestellt = rendered_markdown(assemble(teile))
+
+    assert dargestellt.count(trennlinie) == 11
+    for seitenzahl in ("Seite 5 von 12", "Seite 10 von 12"):
+        assert dargestellt.split(seitenzahl, 1)[1].startswith(trennlinie), seitenzahl
+
+
 def test_echte_bild_deutungen_stehen_hinter_ihrem_bild_im_text() -> None:
     """Mit eingeschalteter Bildanalyse schreibt MinerU die Deutung jedes Bildes
     hinter das Bild, als eingeklappten Block (`<details>`), auch fuer Bilder,
