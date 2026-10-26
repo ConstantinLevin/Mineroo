@@ -217,6 +217,26 @@ def test_terminaler_engine_fehler_ist_endgueltig() -> None:
     assert classify_failure(TerminalRunPodError("FAILED")) is FailureKind.TERMINAL
 
 
+def test_unvollstaendige_antwort_ist_endgueltig() -> None:
+    """Fehlende Seiten und eine fehlende Datei, die das Paket braucht, enden
+    terminal und laufen durch DIESELBE Entscheidung wie jeder andere Fehler
+    (Mineroo#12). Endgueltig, weil ein weiterer Versuch dieselbe Antwort
+    kaufte; wer es trotzdem noch einmal will, ruft `retry`. Als `failed` und
+    nicht als `input_error`: Gefehlt hat etwas in der Antwort der Engine."""
+    from mineru_ocr.errors import (
+        IncompleteResponseError,
+        MissingArtifactError,
+        MissingPagesError,
+        should_run_again,
+    )
+
+    for klasse in (IncompleteResponseError, MissingPagesError, MissingArtifactError):
+        assert issubclass(klasse, TerminalRunPodError), klasse
+        assert not issubclass(klasse, InputError), klasse
+        assert classify_failure(klasse("Probe")) is FailureKind.TERMINAL, klasse
+        assert not should_run_again(klasse("Probe")), klasse
+
+
 def test_klassifikation_ist_total() -> None:
     """Fuer JEDE Ausnahme des Pakets kommt genau eine der drei Antworten heraus.
 
