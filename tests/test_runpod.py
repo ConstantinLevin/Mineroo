@@ -835,6 +835,31 @@ async def test_ein_ausfall_laenger_als_das_wartebudget_gibt_den_job_nicht_auf(
     assert not any("/cancel/" in str(a.url) for a in transport.anfragen)
 
 
+async def test_ausfall_beim_letzten_abruf_verliert_keine_bezahlte_antwort(
+    echte_settings: Settings, uhr: _Uhr
+) -> None:
+    """Auch der letzte Abruf nach Laufzeitablauf darf transient ausfallen:
+    Die bezahlte Antwort wird danach innerhalb der Ausfallfrist abgeholt."""
+    einstellung = dataclasses.replace(
+        echte_settings,
+        job_timeout_seconds=300.0,
+        poll_failure_timeout_seconds=1500.0,
+        poll_interval_seconds=10.0,
+    )
+    bezahlt = {"status": "COMPLETED", "output": {"markdown": "Bezahlter Text"}}
+    client, transport = _client(
+        einstellung,
+        Aufzeichnung(
+            [_antwort({"status": "IN_PROGRESS"})] * 30
+            + [_antwort({"error": "voruebergehend"}, code=503)]
+            + [_antwort(bezahlt)]
+        ),
+    )
+
+    assert await client.await_result("j") == bezahlt
+    assert not any("/cancel/" in str(a.url) for a in transport.anfragen)
+
+
 async def test_ein_gelungenes_abfragen_setzt_die_fehlerfrist_zurueck(
     echte_settings: Settings, uhr: _Uhr
 ) -> None:

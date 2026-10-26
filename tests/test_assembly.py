@@ -556,6 +556,28 @@ def test_ein_bildpfad_im_text_des_dokuments_bleibt_stehen() -> None:
     assert bild["content"][0]["image_path"] == neu
 
 
+def test_ein_textfeld_mit_genau_einem_bildpfad_bleibt_unveraendert() -> None:
+    """Nur Bildreferenz-Felder werden umbenannt, auch wenn ein Textfeld ganz
+    genauso lautet. Das gilt fuer Middle-JSON und strukturierten Inhalt."""
+    pfad = ersatz.bild_pfad(0, 1)
+    teil = _teil_aus(
+        Chunk(0, 0),
+        [ersatz.seite(0, [ersatz.text_block(0, pfad), ersatz.bild_block(1, 0)])],
+        {pfad: b"bild"},
+    )
+
+    ergebnis = assemble([teil])
+
+    neu = f"images/teilstueck_0/{pfad.removeprefix('images/')}"
+    bloecke = ergebnis["middle_json"][0]["pages"][0]["blocks"]
+    assert bloecke[0]["content"][0]["content"] == pfad
+    assert bloecke[1]["content"][0]["image_path"] == neu
+    strukturiert = ergebnis["structured_content"][0]["pages"][0]["blocks"]
+    assert strukturiert[0]["content"] == pfad
+    assert strukturiert[1]["image_source"] == neu
+    assert ergebnis["markdown_full"] == f"{pfad}\n\n![]({neu})"
+
+
 def test_markdown_in_dokumentreihenfolge_und_vollfassung_nur_ganz() -> None:
     """Die Texte stehen in der Reihenfolge der Teilstuecke. Fehlt die
     Vollmodus-Fassung in einem Teilstueck, steht keine da: Ein Text, dem ein

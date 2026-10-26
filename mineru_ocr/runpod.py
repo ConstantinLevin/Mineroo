@@ -752,6 +752,22 @@ class RunPodClient:
                 # abzusenden zahlte ihn ein zweites Mal.
                 try:
                     letzte = await self.status(job_id)
+                except ResultLostError:
+                    # Eine bereits verlorene Antwort wird durch Warten nicht
+                    # wieder abholbar, wie im regulaeren Abruf unten.
+                    letzte = None
+                except TransientRunPodError as fehler:
+                    letzter_fehler = fehler
+                    if fehler_seit is None:
+                        # Auch beim letzten Abruf nach Laufzeitablauf kann die
+                        # bezahlte Antwort nur voruebergehend unerreichbar sein.
+                        # Die Ausfallfrist beginnt hier; eine bereits abgelaufene
+                        # Ausfallfrist wird dagegen nicht verlaengert.
+                        fehler_seit = jetzt
+                        abstand = min(abstand * 2, 60.0)
+                        await asyncio.sleep(abstand)
+                        continue
+                    letzte = None
                 except Exception:  # noqa: BLE001 — der Grund zum Aufgeben steht
                     letzte = None
                 if letzte is not None and letzte.get("status") in TERMINAL_STATUSES:
