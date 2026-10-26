@@ -1330,6 +1330,33 @@ def counts_by_status(conn: psycopg.Connection[Any]) -> dict[DocumentStatus, int]
     return zaehlung
 
 
+def counts_by_reading(conn: psycopg.Connection[Any]) -> list[dict[str, Any]]:
+    """Wie viele Dokumente mit welcher MinerU-Version und welchen bestellten
+    Lese-Einstellungen gelesen sind (Mineroo#14). Grundlage von `status()`.
+
+    Gelesen heisst: Ergebnis `done` oder `empty`. Ein gescheitertes Dokument hat
+    kein Leseergebnis, nach dem sich nach einem Upgrade entscheiden liesse, und
+    `retry` liest es ohnehin neu. Ein `GROUP BY`, unabhaengig von der
+    Bestandsgroesse.
+
+    Returns:
+        Je Kombination eine Abbildung mit `mineru_version`, `tier`, `ocr_mode`,
+        `image_analysis` und `documents` (der Zahl), geordnet nach Version und
+        Einstellungen. Fehlt eine Angabe (keine Version gemeldet, keine Eingabe),
+        steht dort None.
+
+    Kosten: keine.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        return cur.execute(
+            "SELECT mineru_version, tier, ocr_mode, image_analysis, "
+            "count(*) AS documents FROM documents "
+            "WHERE status IN ('done', 'empty') "
+            "GROUP BY mineru_version, tier, ocr_mode, image_analysis "
+            "ORDER BY mineru_version, tier, ocr_mode, image_analysis"
+        ).fetchall()
+
+
 def count_open(conn: psycopg.Connection[Any]) -> int:
     """Zaehlt die offenen Dokumente: Eingabe da, kein Ergebnis.
 

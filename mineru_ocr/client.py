@@ -1337,11 +1337,13 @@ class OCRClient:
         Dokument fuer Dokument liest.
 
         Gezaehlt wird deshalb so: Endzustaende mit einem `GROUP BY status`
-        ueber `documents` (`db.counts_by_status`), die offenen mit einer Zaehlung
-        ueber `inputs` ohne Ergebnis (`db.count_open`), Job-Zustaende mit
-        `list_tasks`, das fertige Zaehler je Zustand liefert (`todo`, `doing`,
-        `succeeded`, `failed`, `cancelled`, `aborted`). Drei Abfragen,
-        unabhaengig von der Bestandsgroesse.
+        ueber `documents` (`db.counts_by_status`), die gelesenen nach
+        MinerU-Version und bestellten Lese-Einstellungen mit einem weiteren
+        (`db.counts_by_reading`), die offenen mit einer Zaehlung ueber `inputs`
+        ohne Ergebnis (`db.count_open`), Job-Zustaende mit `list_tasks`, das
+        fertige Zaehler je Zustand liefert (`todo`, `doing`, `succeeded`,
+        `failed`, `cancelled`, `aborted`). Vier Abfragen, unabhaengig von der
+        Bestandsgroesse.
 
         Die Aufloesung je Dokument gibt es nur fuer ein BENANNTES Dokument —
         `document()` und `get()`. Das ist die richtige Stelle dafuer: Wer ein
@@ -1349,7 +1351,9 @@ class OCRClient:
 
         Returns:
             Zaehler je Endzustand und `open` fuer die offenen Dokumente (unter
-            `documents`), Zaehler je Job-Zustand, die Zahl offener
+            `documents`), unter `readings` je MinerU-Version und bestellten
+            Lese-Einstellungen die Zahl der gelesenen Dokumente (`done` und
+            `empty`, Mineroo#14), Zaehler je Job-Zustand, die Zahl offener
             Aufruest-Faelle, der Kontostand und ob ein Daemon lebt. Beide
             letzten sind nur Auskunft: Sind sie nicht lesbar (RunPod antwortet
             nicht, Procrastinates Worker-Tabelle fehlt), stehen sie als `None`
@@ -1364,6 +1368,7 @@ class OCRClient:
         """
         self._settings.require_api_key()
         zeilen = db.counts_by_status(self.conn)
+        gelesen = db.counts_by_reading(self.conn)
         offen = db.count_open(self.conn)
 
         aufgaben = self._procrastinate.job_manager.list_tasks()
@@ -1411,6 +1416,7 @@ class OCRClient:
                 **{zustand.value: anzahl for zustand, anzahl in zeilen.items()},
                 "open": offen,
             },
+            "readings": gelesen,
             "jobs": jobs,
             "upgrade_cases": offene_aufruest_faelle[0] if offene_aufruest_faelle else 0,
             "balance": stand,

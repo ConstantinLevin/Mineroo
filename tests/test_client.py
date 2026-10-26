@@ -2114,6 +2114,40 @@ async def test_status_zaehlt_in_summen(
     } | {"open"}
 
 
+async def test_status_zeigt_die_verteilung_nach_version_und_lese_einstellungen(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+) -> None:
+    """Wie viele Dokumente mit welcher MinerU-Version und welchen bestellten
+    Lese-Einstellungen gelesen sind (Mineroo#14): `done` und `empty`, in Summen
+    mit einem `GROUP BY`. Gescheiterte zaehlen nicht als gelesen."""
+    _worker_am_leben(db_conn)
+    faelle = [
+        ("a", "ocr", "4.0.12", DocumentStatus.DONE),
+        ("b", "ocr", "4.0.12", DocumentStatus.EMPTY),
+        ("c", "txt", "4.0.12", DocumentStatus.DONE),
+        ("d", "ocr", "4.0.9", DocumentStatus.DONE),
+        ("e", "ocr", "4.0.12", DocumentStatus.FAILED),
+    ]
+    for name, modus, version, zustand in faelle:
+        h = offener_client.ocr_start(_png(name), ocr_mode=modus)
+        await write_terminal_async(
+            async_conn, sha256=h, status=zustand, raw={}, endpoint_id="e",
+            mineru_version=version,
+        )
+
+    verteilung = offener_client.status()["readings"]
+    assert verteilung == [
+        {"mineru_version": "4.0.12", "tier": "advanced", "ocr_mode": "ocr",
+         "image_analysis": True, "documents": 2},
+        {"mineru_version": "4.0.12", "tier": "advanced", "ocr_mode": "txt",
+         "image_analysis": True, "documents": 1},
+        {"mineru_version": "4.0.9", "tier": "advanced", "ocr_mode": "ocr",
+         "image_analysis": True, "documents": 1},
+    ]
+
+
 def test_credit_wird_live_geholt(
     offener_client: OCRClient, runpod: RunPodAntworten
 ) -> None:

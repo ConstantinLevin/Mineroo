@@ -423,6 +423,20 @@ def _ocr_ausgeben(
     )
 
 
+def _lesung_zeigen(angaben: dict[str, Any]) -> str:
+    """Version und bestellte Lese-Einstellungen, lesbar: fuer `show` und `status`."""
+    teile = [f"MinerU {angaben['mineru_version'] or 'unbekannt'}"]
+    if angaben["tier"]:
+        teile += [
+            angaben["tier"],
+            angaben["ocr_mode"],
+            f"Bildanalyse {'an' if angaben['image_analysis'] else 'aus'}",
+        ]
+    else:
+        teile.append("Einstellungen unbekannt")
+    return ", ".join(teile)
+
+
 def _grund(fehler: BaseException) -> str:
     """Der Grund einer uebersprungenen Datei, als Schluessel fuer Zaehler und JSON."""
     if isinstance(fehler, UnsupportedTypeError):
@@ -458,6 +472,12 @@ def status(
         "Dokumente:  "
         + "  ".join(
             f"{name}={anzahl}" for name, anzahl in uebersicht["documents"].items()
+        ),
+        # Womit gelesen wurde (Mineroo#14): je Version und bestellten
+        # Lese-Einstellungen die Zahl der Dokumente mit Ergebnis `done` oder `empty`.
+        *(
+            f"Gelesen:    {eintrag['documents']}  {_lesung_zeigen(eintrag)}"
+            for eintrag in uebersicht["readings"]
         ),
         "Jobs:       "
         + "  ".join(f"{name}={anzahl}" for name, anzahl in uebersicht["jobs"].items()),
@@ -532,14 +552,7 @@ def show(
         if angaben["mineru_version"] or angaben["tier"]:
             # Womit gelesen wurde: die gemeldete Version und die bestellten
             # Lese-Einstellungen (Mineroo#14).
-            teile = [f"MinerU {angaben['mineru_version'] or 'unbekannt'}"]
-            if angaben["tier"]:
-                teile += [
-                    angaben["tier"],
-                    angaben["ocr_mode"],
-                    f"Bildanalyse {'an' if angaben['image_analysis'] else 'aus'}",
-                ]
-            zeilen.append(f"  Gelesen:   {', '.join(teile)}")
+            zeilen.append(f"  Gelesen:   {_lesung_zeigen(angaben)}")
         if angaben["image_tag_at_submit"]:
             zeilen.append(f"  Image:     {angaben['image_tag_at_submit']}")
         for vermerk in angaben["notes"]:

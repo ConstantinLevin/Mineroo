@@ -829,6 +829,31 @@ def test_status_sagt_wenn_kein_daemon_laeuft(
     assert "mineru-ocr daemon" in ergebnis.output
 
 
+async def test_status_nennt_die_verteilung_nach_version_und_lese_einstellungen(
+    cli: CliRunner,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+    _test_datenbank: str,
+    tmp_path: Path,
+) -> None:
+    """Je Version und bestellten Lese-Einstellungen eine Zeile mit der Zahl der
+    gelesenen Dokumente; mit `--json` unter `readings` (Mineroo#14)."""
+    huelle = _anlegen(db_conn, tmp_path, "gelesen.png", _test_datenbank)
+    await write_terminal_async(
+        async_conn, sha256=huelle.sha256, status=DocumentStatus.DONE, raw={},
+        endpoint_id="e", mineru_version="4.0.12",
+    )
+
+    text = cli.invoke(app, ["status"])
+    assert text.exit_code == 0, text.output
+    assert "Gelesen:    1  MinerU 4.0.12, advanced, ocr, Bildanalyse an" in text.stdout
+    als_json = json.loads(cli.invoke(app, ["status", "--json"]).stdout)
+    assert als_json["readings"] == [
+        {"mineru_version": "4.0.12", "tier": "advanced", "ocr_mode": "ocr",
+         "image_analysis": True, "documents": 1}
+    ]
+
+
 def test_status_zaehlt_einen_alten_herzschlag_nicht_als_daemon(
     cli: CliRunner,
     db_conn: psycopg.Connection[Any],
