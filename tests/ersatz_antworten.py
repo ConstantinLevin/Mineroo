@@ -81,6 +81,53 @@ def echte_antwort(name: str) -> dict[str, Any]:
     return geladen
 
 
+def abgeleitete_antwort(
+    name: str,
+    *,
+    ohne: tuple[str, ...] = (),
+    degraded: Any = None,
+    middle_json_aendern: Any = None,
+) -> dict[str, Any]:
+    """Eine ECHTE Antwort, abgeleitet fuer eine Lage, die der Endpoint nicht gezielt liefert.
+
+    Ausgangspunkt ist die Aufnahme `name` unter `ECHT_ENDPOINT`. Geaendert wird
+    nur, was die Argumente nennen, alles andere bleibt Byte fuer Byte die echte
+    Antwort:
+
+        `ohne`: diese Mitglieder fehlen im Archiv. So liefert der Worker eine
+        Datei, die er nicht lesen konnte, beim Transport `tarball_b64` (VERTRAG,
+        „Incomplete responses": „the archive ships without that member").
+
+        `degraded`: wird als Feld `degraded` in den Ergebnis-Eintrag gesetzt,
+        neben `basename`, `source`, `pages_requested` und `tarball_b64`, in der
+        Form des VERTRAGS (`count`, `items` mit `artifact`, `file`, `reason`,
+        `error_type`). Die echten Antworten tragen keins (`README.md` dort).
+
+        `middle_json_aendern`: eine Funktion, die das Middle-JSON des Archivs
+        bekommt und veraendert zurueckgibt (etwa eine Seite entfernt, wie wenn
+        MinerU sie verworfen haette).
+    """
+    roh = echte_antwort(name)
+    eintrag = roh["output"]["results"][0]
+    with tarfile.open(
+        fileobj=io.BytesIO(base64.b64decode(eintrag["tarball_b64"])), mode="r:*"
+    ) as archiv:
+        dateien: dict[str, bytes] = {}
+        for mitglied in archiv:
+            quelle = archiv.extractfile(mitglied) if mitglied.isfile() else None
+            if quelle is not None:
+                dateien[mitglied.name] = quelle.read()
+    for weg in ohne:
+        del dateien[weg]
+    if middle_json_aendern is not None:
+        middle = json.loads(dateien["middle_json.json"])
+        dateien["middle_json.json"] = json.dumps(middle_json_aendern(middle)).encode()
+    eintrag["tarball_b64"] = tarball_b64(dateien)
+    if degraded is not None:
+        eintrag["degraded"] = degraded
+    return roh
+
+
 def echte_teilstuecke() -> list[tuple[str, tuple[int, int]]]:
     """Name und Seitenbereich der Teilstueck-Aufnahmen, in Dokumentreihenfolge."""
     plan = json.loads((ECHT_ENDPOINT / "plan.json").read_text())
