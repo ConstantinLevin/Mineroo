@@ -1698,6 +1698,89 @@ async def test_ganzdokument_format_ohne_middle_json_endet_failed(
     assert zeile.status is DocumentStatus.FAILED
 
 
+async def test_unlesbarer_degraded_eintrag_verdeckt_keine_benoetigte_datei(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ein Eintrag von `degraded.items`, der kein Objekt ist, darf den gueltigen
+    daneben nicht verdecken (Code-Review zu Mineroo#12). Abgeleitet aus der
+    echten Antwort `normale_seite`: `middle_json.json` bleibt im Archiv (wie der
+    leere Ersatzwert beim Inline-Transport), und `degraded` nennt es neben einem
+    kaputten Eintrag verloren. Das Dokument endet `failed`, nicht `done`."""
+    from mineru_ocr.errors import MissingArtifactError
+
+    gemischt = {"count": 2, "items": ["kaputt", *_DEGRADED_MIDDLE_JSON["items"]]}
+    sha, _ = _anlegen(db_conn, tmp_path, _echtes_material("normale_seite.pdf"))
+    with pytest.raises(MissingArtifactError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod(
+                [ersatz.abgeleitete_antwort("normale_seite", degraded=gemischt)]
+            ),
+            pool=pool,
+        )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+
+
+def _ohne_seitenliste(middle: dict[str, Any]) -> dict[str, Any]:
+    del middle["pages"]
+    return middle
+
+
+def _seite_ohne_blockliste(middle: dict[str, Any]) -> dict[str, Any]:
+    middle["pages"][0]["blocks"] = None
+    return middle
+
+
+@pytest.mark.parametrize(
+    ("material", "antwort", "typ", "aendern"),
+    [
+        ("dokument.docx", "dokument_docx", DocumentType.DOCX, _ohne_seitenliste),
+        ("normale_seite.pdf", "normale_seite", DocumentType.PDF, _seite_ohne_blockliste),
+    ],
+    ids=["docx-ohne-seitenliste", "pdf-seite-ohne-blockliste"],
+)
+async def test_nicht_darstellbares_middle_json_endet_failed(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    material: str,
+    antwort: str,
+    typ: DocumentType,
+    aendern: Any,
+) -> None:
+    """Da ist nicht genug: Das Middle-JSON muss die Form haben, die die
+    Darstellung liest (Code-Review zu Mineroo#12). Ein DOCX ohne Seitenliste und
+    eine PDF-Seite mit `blocks: null` (abgeleitet aus den echten Antworten)
+    endeten sonst `done`, und `rendered_markdown` scheiterte danach dauerhaft."""
+    from mineru_ocr.errors import MissingArtifactError
+
+    sha, _ = _anlegen(
+        db_conn, tmp_path, _echtes_material(material), name=f"d.{typ.name.lower()}",
+        typ=typ,
+    )
+    with pytest.raises(MissingArtifactError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod(
+                [ersatz.abgeleitete_antwort(antwort, middle_json_aendern=aendern)]
+            ),
+            pool=pool,
+        )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.raw is not None
+    assert zeile.raw["failure"]["type"] == "MissingArtifactError"
+
+
 async def test_leeres_ergebnis_wird_empty(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,

@@ -31,8 +31,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Final
 
-from .assembly import DATEI_MARKDOWN, DATEI_MIDDLE_JSON, ChunkArtifacts
-from .errors import MissingArtifactError, MissingPagesError
+from .assembly import DATEI_MARKDOWN, DATEI_MIDDLE_JSON, ChunkArtifacts, middle_json_lesbar
+from .errors import IncompleteResultError, MissingArtifactError, MissingPagesError
 
 BENOETIGTE_DATEIEN: Final[Mapping[str, str]] = {
     DATEI_MARKDOWN: "markdown",
@@ -86,6 +86,14 @@ def teilstueck_pruefen(
        Teilstueck nicht als vollstaendig: Ein faelschlich `done` verbuchtes
        Dokument mit fehlender Seite faellt nie auf.
 
+    4. Fuer jeden Typ, auch ohne Seitenzahl: Das Middle-JSON hat die Form, die
+       die Darstellung liest (`assembly.middle_json_lesbar`, dieselben Leser
+       wie `rendered_markdown`). Sonst endete das Dokument `done`, und jede
+       Darstellung scheiterte danach dauerhaft (Code-Review zu Mineroo#12).
+
+    Ein `degraded`-Eintrag, der kein Objekt ist, faellt allein heraus; die
+    gueltigen daneben werden in Schritt 1 trotzdem geprueft.
+
     Args:
         teil: Das ausgepackte Teilstueck (`assembly.unpack_response`).
         seiten_geschickt: Wie viele Seiten das Paket in diesem Teilstueck
@@ -97,18 +105,18 @@ def teilstueck_pruefen(
     Returns:
         Was zu vermerken ist: das `degraded` der Antwort, wenn sie eins traegt
         und keine benoetigte Datei betrifft (unveraendert, samt `count`; ein
-        `degraded`, das nicht die Form des Vertrags hat, als
+        `degraded`, das nicht ganz die Form des Vertrags hat, als
         `{"unlesbar": …}`). Sonst None.
 
     Raises:
-        MissingArtifactError: Schritt 1 oder 2.
+        MissingArtifactError: Schritt 1, 2 oder 4.
         MissingPagesError: Schritt 3.
 
     Kosten: keine.
     """
     degraded = teil.extras.get("degraded")
-    eintraege = _degraded_eintraege(degraded)
-    for eintrag in eintraege or []:
+    eintraege, lesbar = _degraded_eintraege(degraded)
+    for eintrag in eintraege:
         datei = _benoetigte_datei(eintrag)
         if datei is not None:
             raise MissingArtifactError(
@@ -126,28 +134,39 @@ def teilstueck_pruefen(
             )
     if seiten_geschickt is not None:
         _seiten_vergleichen(teil, seiten_geschickt)
+    try:
+        middle_json_lesbar(teil.middle_json)
+    except IncompleteResultError as fehler:
+        raise MissingArtifactError(
+            f"Die Datei {DATEI_MIDDLE_JSON!r} ist da, hat aber nicht die Form, die "
+            f"die Darstellung liest {_bereich(teil)}: {fehler} Das Dokument wird "
+            f"nicht `done`; die bezahlte Antwort steht in `raw`."
+        ) from fehler
     if degraded is None:
         return None
-    if eintraege is None:
+    if not lesbar:
         return {"unlesbar": degraded}
     vermerk: dict[str, Any] = degraded
     return vermerk
 
 
-def _degraded_eintraege(degraded: Any) -> list[Mapping[str, Any]] | None:
-    """Die Eintraege eines `degraded` in der Form des Vertrags, oder None.
+def _degraded_eintraege(degraded: Any) -> tuple[list[Mapping[str, Any]], bool]:
+    """Die Eintraege eines `degraded` in der Form des Vertrags, und ob es ganz diese Form hat.
 
-    None heisst: Es gibt keins, oder es hat nicht die Form `{"items": [ {…}, … ]}`
-    (Job-Vertrag, „Incomplete responses").
+    Die Form ist `{"items": [ {…}, … ]}` (Job-Vertrag, „Incomplete responses").
+    Ein Eintrag, der kein Objekt ist, faellt allein heraus: Er darf einen
+    gueltigen daneben, der eine benoetigte Datei nennt, nicht verdecken.
+    Ohne `degraded` gilt es als lesbar.
     """
+    if degraded is None:
+        return [], True
     if not isinstance(degraded, Mapping):
-        return None
+        return [], False
     eintraege = degraded.get("items")
-    if not isinstance(eintraege, list) or not all(
-        isinstance(eintrag, Mapping) for eintrag in eintraege
-    ):
-        return None
-    return eintraege
+    if not isinstance(eintraege, list):
+        return [], False
+    gueltig = [eintrag for eintrag in eintraege if isinstance(eintrag, Mapping)]
+    return gueltig, len(gueltig) == len(eintraege)
 
 
 def _benoetigte_datei(eintrag: Mapping[str, Any]) -> str | None:
