@@ -1736,6 +1736,10 @@ async def test_echte_fehlerantwort_landet_vollstaendig_in_raw(
         # Job-Vertrag (`api.mdx`, „Validation behaviour", Punkt 10): MinerUs
         # eigene Abweisung einer PDF ohne Seite, mit MinerUs Fehlertyp.
         "InvalidRequestError: Invalid page range '': document has no available pages",
+        # Am Endpoint beobachtet (QA zu Mineroo#11): PNG- und GIF-Signatur vor
+        # Muell. MinerU erkennt den Typ und scheitert am Dekodieren.
+        "OSError: Truncated File Read",
+        "UnidentifiedImageError: cannot identify image file <_io.BytesIO object at 0x741910c9c900>",
     ],
 )
 async def test_vom_worker_abgewiesene_datei_endet_input_error_mit_seinem_grund(

@@ -651,8 +651,11 @@ def test_echte_normale_seite_traegt_alle_fuenf_randklassen() -> None:
         assert text not in ergebnis["markdown"]
         assert text in ergebnis["markdown_full"]
         assert text in dargestellt
-    # Die Seitenfussnote traegt schon `markdown.md`.
+    # Die Seitenfussnote traegt schon `markdown.md`, mit ihrer Inline-Formel
+    # `$^{1}$`; die Darstellung haengt sie deshalb kein zweites Mal an (QA zu
+    # Mineroo#11 fand sie doppelt).
     assert "Rahmenvertraegen" in ergebnis["markdown"]
+    assert dargestellt.count("Rahmenvertraegen") == 1
     assert not is_empty(ergebnis)
 
 

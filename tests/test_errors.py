@@ -92,6 +92,13 @@ def test_eingabefehler_ist_endgueltig() -> None:
     [
         ("ValueError: input is not a file type MinerU 4.0.12 reads (detected 'txt').", True),
         ("InvalidRequestError: Invalid page range '': document has no available pages", True),
+        # Am Endpoint beobachtet (QA zu Mineroo#11): ein Bild, das MinerU am Typ
+        # erkennt, aber nicht dekodieren kann; Pillows Meldungen, MinerUs Fehlertyp.
+        ("UnidentifiedImageError: cannot identify image file <_io.BytesIO object at 0x7419>", True),
+        ("OSError: Truncated File Read", True),
+        ("OSError: image file is truncated (4 bytes not processed)", True),
+        # Ein OSError, der nichts ueber die Datei sagt, bleibt ein Fehler des Laufs.
+        ("OSError: [Errno 28] No space left on device", False),
         # Die Pruefung der ANFRAGE durch den Worker ist keine Abweisung der Datei.
         ("ValueError: input validation failed: tier must be one of [...]", False),
         ("RuntimeError: CUDA error: out of memory", False),

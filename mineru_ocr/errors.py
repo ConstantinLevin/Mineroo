@@ -138,6 +138,9 @@ class WorkerRejectedError(InputError):
 DATEIABWEISUNG_KENNUNGEN: Final = (
     "ValueError: input is not a file type MinerU",
     "InvalidRequestError:",
+    "UnidentifiedImageError: cannot identify image file",
+    "OSError: Truncated File Read",
+    "OSError: image file is truncated",
 )
 """Die Anfaenge des `error` einer `FAILED`-Antwort, an denen der Worker eine Datei
 als nicht lesbar abweist.
@@ -155,9 +158,20 @@ von MinerU 4.0.12, nicht geraten:
     etwa bei einer PDF ohne Seite („document has no available pages"); einen
     Seitenbereich schickt das Paket nicht.
 
+    `UnidentifiedImageError: cannot identify image file …`,
+    `OSError: Truncated File Read` und `OSError: image file is truncated …` sind
+    die Meldungen von Pillow fuer Bilddaten, die sich nicht dekodieren lassen
+    (Pillow `Image.open` und `ImageFile`); MinerU 4.0.12 laesst sie aus
+    `_prepare_input` durch, und der Worker behaelt den Fehlertyp. Am Endpoint
+    beobachtet fuer eine PNG-, GIF- und JPEG-Signatur vor Muell: Der Typ wird
+    erkannt, gelesen werden kann die Datei nicht, und jeder weitere Lauf kaufte
+    dieselbe Meldung. Gelistet sind nur diese Meldungen, nicht `OSError`
+    allgemein: Ein voller Datentraeger ist auch ein `OSError` und sagt nichts
+    ueber die Datei.
+
 Was NICHT darunter faellt und `failed` bleibt: die Pruefungen der Anfrage durch
 den Worker (`ValueError: input validation failed: …` und die uebrigen
-`ValueError` seiner Schema-Pruefung) und jeder Fehler der Engine. Weitere
+`ValueError` seiner Schema-Pruefung) und jeder andere Fehler der Engine. Weitere
 Abweisungen, die die Ganzdokument-Formate mitbringen (Office, HTML), gehoeren mit
 deren Ticket (Mineroo#17) und den Aufnahmen (Mineroo#10) hierher."""
 

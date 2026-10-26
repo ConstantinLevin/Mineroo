@@ -656,8 +656,15 @@ def _blocktext(block: Mapping[str, Any]) -> str:
     Spans werden aneinandergefuegt, Unterbloecke durch einen Zeilenumbruch
     getrennt. Gesammelt wird, nicht ausgewaehlt: Ein Bild traegt seine Deutung
     UND seine Unterschrift. Ein Block ohne Text liefert die leere Zeichenkette.
+
+    Eine Inline-Formel (`equation_inline`) steht in `$` wie im Markdown der
+    Engine (`$^{1}$`). Ohne sie fand `rendered_markdown` eine Seitenfussnote mit
+    Fussnotenzeichen nicht im Markdown wieder und haengte sie ein zweites Mal
+    an, gemessen an der echten normalen Seite des Endpoints.
     """
     inhalt = block.get("content")
+    if block.get("type") == "equation_inline" and isinstance(inhalt, str):
+        return f"${inhalt}$"
     if isinstance(inhalt, str):
         return inhalt
     if not isinstance(inhalt, list):
