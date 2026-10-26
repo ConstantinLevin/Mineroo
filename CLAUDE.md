@@ -506,8 +506,10 @@ was er sagt, geht an RunPod und an die Zeile. Wo er auf dem Weg steht:
   Fehlerantwort; bei mehreren Teilstücken die niedrigste nach PEP 440, eine
   unlesbare zählt als die niedrigste, `db.mineru_versionsrang`; beim Überschreiben
   eines `failed` die des neuen Laufs, auch keine). Ein U+0000 in dem, was der
-  Worker meldet, steht in Spalte und Vermerken als `\u0000`, sonst ließe sich
-  auch das `failed` ohne Inhalt nicht schreiben. Was MinerU tatsächlich nahm, steht im
+  Worker meldet, steht in Spalte, `error`, Vermerken und dem Fehler-Umschlag des
+  `failed` ohne Inhalt als `\u0000`, ein einzelnes Surrogat als `\ud800`
+  (`executor._tief_speicherbar`), sonst ließe sich auch das `failed` ohne Inhalt
+  nicht schreiben; `raw` bleibt unbereinigt. Was MinerU tatsächlich nahm, steht im
   Rohergebnis unter `envelopes[…]["output_meta"]`; bei `auto` der Modus, den es für
   die Datei wählte. `DocumentRow.read_settings`, die Hülle (`mineru_version`,
   `read_settings`), `document()` und `show` nennen sie.
@@ -697,12 +699,19 @@ des Originals (`assembly._seiten_verschoben`). **Bilder bekommen je Teilstück
 einen eigenen Namensraum**, `images/teilstueck_{n}/…`
 (`assembly.BILD_NAMENSRAUM`): MinerU 4 zählt die Bildnamen in jedem Teilstück
 ab Seite 0, ohne Namensraum überschrieben sie einander. Jeder Verweis in jeder
-Datei des Teilstücks (Markdown, `image_path`, `<img src>`, `image_source`) wird
-mit umbenannt, und `raw["images"]` trägt jedes Bild unter genau diesem Verweis.
+Datei des Teilstücks (das Ziel eines Markdown-Bildes, das ganze Feld `image_path`
+oder `image_source`, die ganze Quelle eines `<img src>`) wird mit umbenannt, und
+`raw["images"]` trägt jedes Bild unter genau diesem Verweis. Text des Dokuments,
+der einen solchen Pfad nennt, bleibt stehen.
 Leer (`assembly.is_empty`) ist ein Dokument ohne Text in beiden Markdowns, ohne
 Block im Middle-JSON und ohne Bild. Eine Seite ohne Bloecke traegt **keinen**
 `blocks`-Schluessel (`{"page_idx": 0}`, MinerU schreibt Voreinstellungen nicht),
 gemessen am Endpoint in der Stufe `advanced` mit OCR, als Bild wie als PDF.
+
+Eine PDF, die ungeteilt hinausgeht, lädt der Job vorher Seite für Seite
+(`PdfReader.check_pages`): Eine Seite, die sich nicht laden lässt, endet
+`input_error` ohne RunPod-Kontakt, wie geschnitten in `PdfReader.extract`;
+sonst schiede sie erst im Worker aus, bezahlt, als `failed`.
 
 **Der Text für Abnehmer ist `markdown_full`, unverändert** (Mineroo#13):
 `assembly.rendered_markdown`, dahinter `OCRWrapper.rendered_markdown` und

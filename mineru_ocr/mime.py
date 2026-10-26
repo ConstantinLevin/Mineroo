@@ -403,7 +403,12 @@ def _ist_mhtml(kopf: bytes) -> bool:
     if b"multipart/related" not in kopf.lower():
         return False
     try:
-        nachricht = email.parser.BytesHeaderParser(policy=email.policy.default).parsebytes(
+        # `compat32` und nicht `email.policy.default`: Dessen Kopf-Parser braucht
+        # fuer einen `Content-Type`, der die 64 KiB mit Semikola, Kommentaren
+        # oder Parametern fuellt, quadratische Zeit (gemessen fast dreissig
+        # Sekunden), und die Vorerkennung laeuft im Daemon synchron (Code-Review
+        # zur Spec #1). `compat32` liest Typ und Grenze in linearer Zeit.
+        nachricht = email.parser.BytesHeaderParser(policy=email.policy.compat32).parsebytes(
             kopf
         )
         return (
@@ -412,11 +417,13 @@ def _ist_mhtml(kopf: bytes) -> bool:
         )
     except Exception:  # noqa: BLE001 — jeder Fehler des Parsers heisst: kein MHTML
         # Der Header-Parser der Standardbibliothek wirft bei kaputten Koepfen
-        # nicht nur seinen `HeaderParseError`: CPython 3.12 laeuft bei einem
-        # RFC-2231-Parameter, der mit `*` endet, in einen `IndexError`, bei
-        # tausend verschachtelten Kommentaren in einen `RecursionError` (QA und
-        # Code-Review zu Mineroo#17). Der Aufruf liest nur `kopf` im Speicher, es
-        # gibt keine Ein- und Ausgabe, deren Fehler hier verschluckt wuerde.
+        # nicht nur seinen `HeaderParseError`: Mit `email.policy.default` lief
+        # CPython 3.12 bei einem RFC-2231-Parameter, der mit `*` endet, in einen
+        # `IndexError`, bei tausend verschachtelten Kommentaren in einen
+        # `RecursionError` (QA und Code-Review zu Mineroo#17); `compat32` liest
+        # beides, aber kein Parser verspricht, nie anders zu werfen. Der Aufruf
+        # liest nur `kopf` im Speicher, es gibt keine Ein- und Ausgabe, deren
+        # Fehler hier verschluckt wuerde.
         return False
 
 

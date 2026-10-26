@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import io
 import struct
+import time
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from mineru_ocr.errors import UnsupportedTypeError
-from mineru_ocr.mime import DocumentType, sniff_bytes, sniff_file
+from mineru_ocr.mime import KOPF_BYTES, DocumentType, sniff_bytes, sniff_file
 
 from ganzdokumente import (
     GANZDOKUMENTE,
@@ -203,13 +204,9 @@ def _zentralverzeichnis_aendern(daten: bytes, versatz: int, wert: bytes) -> byte
         _zentralverzeichnis_aendern(
             zip_aus({"a.xml": "<x/>"}).replace(b"a.xml", b"\xff.xml"), 8, b"\x00\x08"
         ),
-        # Code-Review zu Mineroo#17: ein Kopf mit tausend verschachtelten
-        # Kommentaren (`RecursionError` im Header-Parser), ein `mimetype`, dessen
-        # LZMA- oder bzip2-Daten kaputt sind, und ein Manifest mit einer
-        # Kodierung, die es nicht gibt (`LookupError`).
-        b"MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=x "
-        + b"(" * 1100
-        + b"\r\n\r\n<html></html>",
+        # Code-Review zu Mineroo#17: ein `mimetype`, dessen LZMA- oder
+        # bzip2-Daten kaputt sind, und ein Manifest mit einer Kodierung, die es
+        # nicht gibt (`LookupError`).
         _verdorbener_eintrag(
             {"mimetype": "application/epub+zip"}, "mimetype", zipfile.ZIP_LZMA
         ),
@@ -222,8 +219,7 @@ def _zentralverzeichnis_aendern(daten: bytes, versatz: int, wert: bytes) -> byte
     ],
     ids=[
         "mhtml-parameter-kurz", "mhtml-parameter", "zip-version", "zip-name-kein-utf8",
-        "mhtml-verschachtelt", "mimetype-lzma-kaputt", "mimetype-bzip2-kaputt",
-        "manifest-kodierung-unbekannt",
+        "mimetype-lzma-kaputt", "mimetype-bzip2-kaputt", "manifest-kodierung-unbekannt",
     ],
 )
 def test_kaputter_kopf_ist_ein_unbekannter_typ_kein_absturz(
@@ -238,6 +234,60 @@ def test_kaputter_kopf_ist_ein_unbekannter_typ_kein_absturz(
     datei.write_bytes(daten)
     with pytest.raises(UnsupportedTypeError):
         sniff_path(datei)
+
+
+def test_verschachtelte_kommentare_hinter_der_grenze_brechen_die_vorerkennung_nicht_ab(
+    tmp_path: Path,
+) -> None:
+    """Code-Review zu Mineroo#17: Tausend verschachtelte Kommentare hinter der
+    Grenze liessen den Kopf-Parser mit `email.policy.default` in einen
+    `RecursionError` laufen. Gelesen mit `compat32` ist es ein Kopf mit Typ
+    `multipart/related` und Grenze, also MHTML; ob MinerU die Datei liest,
+    entscheidet der Worker (Mineroo#17)."""
+    daten = (
+        b"MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=x "
+        + b"(" * 1100
+        + b"\r\n\r\n<html></html>"
+    )
+    assert sniff_bytes(daten) is DocumentType.MHTML
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    assert sniff_path(datei) is DocumentType.MHTML
+
+
+def _schnellste_laufzeit(daten: bytes, laeufe: int = 3) -> float:
+    """Die kuerzeste von `laeufe` Laufzeiten der Vorerkennung, in Sekunden; ein
+    unbekannter Typ zaehlt wie ein erkannter. Die kuerzeste, weil Last auf der
+    Maschine einzelne Laeufe verlaengert, aber keinen verkuerzt."""
+    zeiten = []
+    for _ in range(laeufe):
+        beginn = time.perf_counter()
+        try:
+            sniff_bytes(daten)
+        except UnsupportedTypeError:
+            pass
+        zeiten.append(time.perf_counter() - beginn)
+    return min(zeiten)
+
+
+@pytest.mark.parametrize("einheit", [b";", b" (a)", b"; a=b"], ids=["semikola", "kommentare", "parameter"])
+def test_ein_entgleister_mhtml_kopf_haelt_die_vorerkennung_nicht_auf(einheit: bytes) -> None:
+    """Ein Kopf, dessen `Content-Type` die gelesenen 64 KiB mit Semikola,
+    Kommentaren oder Parametern fuellt, wird in linearer Zeit gelesen
+    (Code-Review zur Spec #1). Die Vorerkennung laeuft im Daemon synchron; der
+    Kopf-Parser mit `email.policy.default` brauchte dafuer quadratische Zeit, fast
+    dreissig Sekunden, und hielt alle Jobs und den Herzschlag an.
+
+    Gemessen gegen einen gleich langen harmlosen MHTML-Kopf auf derselben
+    Maschine: Eine feste Sekundengrenze hinge an Maschine und Last. Linear lagen
+    die Semikola beim 26-fachen des harmlosen Kopfs, die quadratische Zeit beim
+    rund 10 000-fachen."""
+    kopf = b"Content-Type: multipart/related; boundary=x"
+    entgleist = kopf + einheit * ((KOPF_BYTES - len(kopf)) // len(einheit))
+    zeile = b"X-Kopfzeile: w\r\n"
+    harmlos = kopf + b"\r\n" + zeile * ((KOPF_BYTES - len(kopf) - 2) // len(zeile))
+    assert len(entgleist) > KOPF_BYTES - len(einheit) and len(harmlos) > KOPF_BYTES - len(zeile)
+    assert _schnellste_laufzeit(entgleist) < 100 * _schnellste_laufzeit(harmlos)
 
 
 def test_ein_unlesbares_merkmal_verdeckt_kein_anderes() -> None:

@@ -418,6 +418,43 @@ async def test_kaputte_pdf_endet_input_error_auch_bei_leerem_konto(
     assert zeile.status is DocumentStatus.INPUT_ERROR
 
 
+def _pdf_mit_kaputter_letzter_seite(seiten: int) -> bytes:
+    """Eine PDF, deren Seitenbaum `seiten` Seiten zaehlt, deren letzte sich aber
+    nicht laden laesst: Ihr Seitenobjekt ist kein Woerterbuch. Die PDF oeffnet,
+    `page_count` stimmt, erst das Laden der Seite scheitert."""
+    roh = _pdf(seiten)
+    letzte = list(re.finditer(rb"(\d+) 0 obj\s*<<[^\n]*/Type/Page>>", roh))[-1]
+    ende = roh.index(b"endobj", letzte.start())
+    ersatz_objekt = (letzte.group(1) + b" 0 obj\n(kaputt)\n").ljust(
+        ende - letzte.start(), b" "
+    )
+    return roh[: letzte.start()] + ersatz_objekt + roh[ende:]
+
+
+async def test_kleine_pdf_mit_kaputter_seite_endet_input_error_ohne_runpod_kontakt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Eine PDF, die ungeteilt hinausgeht und eine Seite traegt, die sich nicht
+    laden laesst, endet `input_error`, ohne RunPod zu fragen, wie dieselbe Datei
+    geschnitten (Code-Review zur Spec #1). Sonst ginge sie hinaus, der Worker
+    scheiterte an der Seite (`PdfiumError: Failed to load page.`), und sie
+    endete `failed`: bezahlt, und mit jedem `retry` noch einmal."""
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf_mit_kaputter_letzter_seite(4))
+
+    runpod = FalscherRunPod([ersatz.fertige_antwort(seiten=4)])
+    with pytest.raises(CorruptDocumentError, match="Seite 3"):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert runpod.kontakte == []
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.page_count == 4
+
+
 def _passwortgeschuetzte_pdf() -> bytes:
     """Eine PDF mit `/Encrypt`, deren Passwort pdfium nicht kennt.
 
@@ -1352,6 +1389,104 @@ async def test_ein_nullzeichen_in_den_meldungen_verhindert_das_ergebnis_nicht(
     assert any(v["kind"] == "ergebnis_nicht_speicherbar" for v in zeile.notes)
 
 
+async def test_ein_nullzeichen_im_abweisungsgrund_verhindert_das_ergebnis_nicht(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Traegt der Grund, mit dem der Worker eine Datei abweist, ein U+0000, geht
+    er in `error`, in den Fehler-Umschlag und in den Vermerk. Das Dokument endet
+    trotzdem `input_error`, ohne den Inhalt (Mineroo#27), und der Grund steht mit
+    dem Nullzeichen als `\\u0000` da; sonst scheiterte auch das Schreiben ohne
+    Inhalt, und das Dokument bliebe ohne Ergebnis (Code-Review zur Spec #1)."""
+    grund = "HtmlParseError: Steuerzeichen \x00 im Kopf"
+    sha, _ = _anlegen(
+        db_conn, tmp_path, ganzdokumente.JE_TYP[DocumentType.HTML], name="d.html",
+        typ=DocumentType.HTML,
+    )
+    with pytest.raises(InputError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod([ersatz.fehlerantwort(grund)]),
+            pool=pool,
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.error is not None and "Steuerzeichen \\u0000 im Kopf" in zeile.error
+    assert zeile.raw is not None
+    assert "\\u0000" in zeile.raw["failure"]["message"]
+    assert any(v["kind"] == "ergebnis_nicht_speicherbar" for v in zeile.notes)
+
+
+async def test_ein_nullzeichen_im_degraded_verhindert_das_ergebnis_nicht(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ein `degraded`, das ein U+0000 traegt, geht in den Vermerk
+    `unvollstaendige_antwort` (Mineroo#12). Das Dokument endet trotzdem, `failed`
+    ohne den Inhalt, und der Vermerk traegt das Nullzeichen als `\\u0000`."""
+    degraded = {
+        "count": 1,
+        "items": [
+            {
+                "artifact": "structured_content",
+                "file": "structured_content.json",
+                "reason": "un\x00readable",
+                "error_type": "JSONDecodeError",
+            }
+        ],
+    }
+    sha, _ = _anlegen(db_conn, tmp_path, _echtes_material("normale_seite.pdf"))
+    with pytest.raises(UnstorableResultError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod(
+                [
+                    ersatz.abgeleitete_antwort(
+                        "normale_seite", ohne=("structured_content.json",), degraded=degraded
+                    )
+                ]
+            ),
+            pool=pool,
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+    vermerk = _vermerk(zeile, "unvollstaendige_antwort")
+    assert vermerk["degraded"]["items"][0]["reason"] == "un\\u0000readable"
+
+
+async def test_ein_einzelnes_surrogat_in_der_version_verhindert_das_ergebnis_nicht(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ein einzelnes Surrogat (`"\\ud800"` im JSON der Antwort) ist kein Zeichen,
+    das sich als UTF-8 schreiben laesst: psycopg weist es in der Spalte ab, Postgres
+    in `jsonb`. Das Dokument endet trotzdem, `failed` ohne den Inhalt, und die
+    Spalte traegt das Surrogat sichtbar als `\\ud800` (Code-Review zur Spec #1)."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"surrogat", name="s.png", typ=DocumentType.PNG
+    )
+    antwort = ersatz.fertige_antwort("Text", mineru_version="4.0.12\ud800")
+    with pytest.raises(UnstorableResultError):
+        await process_document(
+            sha, settings=exec_settings, runpod=FalscherRunPod([antwort]), pool=pool
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+    assert zeile.mineru_version == "4.0.12\\ud800"
+    assert any(v["kind"] == "ergebnis_nicht_speicherbar" for v in zeile.notes)
+
+
 async def test_scheitert_das_endschreiben_stehen_die_lese_vermerke_einmal(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
@@ -1471,7 +1606,9 @@ async def test_degraded_benoetigte_datei_endet_failed_mit_der_antwort_in_raw(
     assert zeile is not None
     assert zeile.status is DocumentStatus.FAILED
     assert zeile.error is not None and "MissingArtifactError" in zeile.error
+    # Die Meldung nennt die Datei und Grund und Fehlertyp aus `degraded`.
     assert "middle_json.json" in zeile.error
+    assert "unreadable" in zeile.error and "JSONDecodeError" in zeile.error
     assert zeile.raw is not None
     assert "Geschaeftsverlauf" in zeile.raw["markdown"]
     assert len(zeile.raw["images"]) == 2
@@ -1511,25 +1648,38 @@ async def test_degraded_andere_datei_endet_done_mit_vermerk(
     assert zeile.raw["structured_content"] == [None]
 
 
+@pytest.mark.parametrize(
+    ("material", "antwort", "zustand"),
+    [
+        ("normale_seite.pdf", "normale_seite", DocumentStatus.DONE),
+        ("leere_seite.pdf", "leere_seite_pdf", DocumentStatus.EMPTY),
+    ],
+    ids=["normale-seite", "leere-seite"],
+)
 async def test_intakte_antwort_hat_keinen_vermerk(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
     exec_settings: Settings,
     tmp_path: Path,
+    material: str,
+    antwort: str,
+    zustand: DocumentStatus,
 ) -> None:
     """`degraded` fehlt in einer intakten Antwort, also gibt es nichts zu
-    vermerken: Die echte normale Seite endet `done` ohne Vermerk."""
-    sha, _ = _anlegen(db_conn, tmp_path, _echtes_material("normale_seite.pdf"))
+    vermerken: Die echte normale Seite endet `done` ohne Vermerk. Die echte
+    leere Seite zaehlt als die eine geschickte Seite, obwohl sie keine Bloecke
+    traegt, und endet `empty`."""
+    sha, _ = _anlegen(db_conn, tmp_path, _echtes_material(material))
     await process_document(
         sha,
         settings=exec_settings,
-        runpod=FalscherRunPod([ersatz.echte_antwort("normale_seite")]),
+        runpod=FalscherRunPod([ersatz.echte_antwort(antwort)]),
         pool=pool,
     )
 
     zeile = get_document(db_conn, sha)
     assert zeile is not None
-    assert zeile.status is DocumentStatus.DONE
+    assert zeile.status is zustand
     assert not [v for v in zeile.notes if v.get("kind") == "unvollstaendige_antwort"]
 
 
@@ -1923,6 +2073,152 @@ async def test_unlesbarer_degraded_eintrag_verdeckt_keine_benoetigte_datei(
     zeile = get_document(db_conn, sha)
     assert zeile is not None
     assert zeile.status is DocumentStatus.FAILED
+
+
+def _seiten_ersetzt(seiten: Any) -> Any:
+    def aendern(middle: dict[str, Any]) -> dict[str, Any]:
+        middle["pages"] = seiten
+        return middle
+
+    return aendern
+
+
+def _seite_doppelt(middle: dict[str, Any]) -> dict[str, Any]:
+    middle["pages"][3]["page_idx"] = 2
+    return middle
+
+
+@pytest.mark.parametrize(
+    ("seiten", "antwort", "aendern"),
+    [
+        (1, "mehrteilig_2_seiten_10-11", None),
+        (5, "mehrteilig_0_seiten_0-4", _seite_doppelt),
+        (1, "normale_seite", _seiten_ersetzt("keine Liste")),
+        (1, "normale_seite", _seiten_ersetzt([{"blocks": []}])),
+        (1, "normale_seite", _seiten_ersetzt([{"page_idx": "0"}])),
+        (1, "normale_seite", _seiten_ersetzt([{"page_idx": True}])),
+        (1, "normale_seite", _seiten_ersetzt(["keine Seite"])),
+    ],
+    ids=[
+        "zu-viele", "doppelt-bei-richtiger-anzahl", "keine-liste", "ohne-page-idx",
+        "page-idx-text", "page-idx-wahrheitswert", "keine-seite",
+    ],
+)
+async def test_seiten_die_nicht_den_geschickten_entsprechen_enden_failed(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    seiten: int,
+    antwort: str,
+    aendern: Any,
+) -> None:
+    """Ein Dokument wird nur `done`, wenn MinerU genau die geschickten Seiten
+    verarbeitet hat (Mineroo#12). Mehr Seiten als geschickt, eine Seite doppelt
+    bei richtiger Anzahl und Seiten, an denen sich nicht ablesen laesst, welche
+    es sind, enden `failed`: Ein faelschlich `done` verbuchtes Dokument mit
+    fehlender Seite fiele nie auf. Abgeleitet aus den echten Antworten."""
+    from mineru_ocr.errors import MissingPagesError
+
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(seiten))
+    gesendet = (
+        ersatz.echte_antwort(antwort)
+        if aendern is None
+        else ersatz.abgeleitete_antwort(antwort, middle_json_aendern=aendern)
+    )
+    with pytest.raises(MissingPagesError):
+        await process_document(
+            sha, settings=exec_settings, runpod=FalscherRunPod([gesendet]), pool=pool
+        )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+
+
+@pytest.mark.parametrize(
+    ("ohne", "eintrag"),
+    [
+        ((), {"artifact": None, "file": "middle_json.json"}),
+        ((), {"artifact": "markdown", "file": "irgendwas"}),
+        (("markdown_full.md",), {"artifact": "markdown_full", "file": "markdown_full.md"}),
+    ],
+    ids=["middle-json-am-dateinamen", "markdown-am-artefakt", "vollfassung"],
+)
+async def test_degraded_einer_benoetigten_datei_endet_failed_auch_wenn_sie_da_ist(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    ohne: tuple[str, ...],
+    eintrag: dict[str, Any],
+) -> None:
+    """Beim Inline-Transport kommt eine verlorene Datei als leerer Ersatzwert
+    zurueck, sie ist also DA und trotzdem verloren (Job-Vertrag). Nennt
+    `degraded` eine Datei, die das Paket braucht (`markdown.md`,
+    `markdown_full.md`, `middle_json.json`), am Dateinamen oder am Artefakt,
+    endet das Dokument `failed`, nicht `done`."""
+    from mineru_ocr.errors import MissingArtifactError
+
+    degraded = {
+        "count": 1,
+        "items": [{**eintrag, "reason": "unreadable", "error_type": "JSONDecodeError"}],
+    }
+    sha, _ = _anlegen(db_conn, tmp_path, _echtes_material("normale_seite.pdf"))
+    with pytest.raises(MissingArtifactError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod(
+                [ersatz.abgeleitete_antwort("normale_seite", ohne=ohne, degraded=degraded)]
+            ),
+            pool=pool,
+        )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+
+
+_DEGRADED_GEKUERZT: dict[str, Any] = {
+    "count": 73,
+    "items": [{"artifact": None, "file": "page_0_chart_5.jpg"}],
+}
+"""Ein `degraded`, dessen Liste der Worker gekuerzt hat (bei 50 Eintraegen)."""
+
+
+@pytest.mark.parametrize(
+    ("degraded", "vermerkt"),
+    [
+        (_DEGRADED_GEKUERZT, _DEGRADED_GEKUERZT),
+        ("kaputt", {"unlesbar": "kaputt"}),
+        ({"items": "keine Liste"}, {"unlesbar": {"items": "keine Liste"}}),
+        ({"items": ["kein Objekt"]}, {"unlesbar": {"items": ["kein Objekt"]}}),
+    ],
+    ids=["gekuerzt", "kein-objekt", "items-keine-liste", "eintrag-kein-objekt"],
+)
+async def test_degraded_ohne_benoetigte_datei_endet_done_und_wird_vermerkt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    degraded: Any,
+    vermerkt: Any,
+) -> None:
+    """Ein `degraded`, das keine benoetigte Datei nennt, ist kein Fehler: Das
+    Dokument wird `done`, und der Vermerk traegt es. Eine gekuerzte Liste (`count`
+    ueber der Laenge von `items`) steht samt `count` da; ein `degraded` ohne die
+    Form des Vertrags sagt nur, dass etwas fehlt, und steht unveraendert unter
+    `unlesbar`. Ob dann eine benoetigte Datei fehlt, entscheidet ihr Fehlen im
+    Archiv."""
+    sha, _ = _anlegen(db_conn, tmp_path, _echtes_material("normale_seite.pdf"))
+    await process_document(
+        sha,
+        settings=exec_settings,
+        runpod=FalscherRunPod(
+            [ersatz.abgeleitete_antwort("normale_seite", degraded=degraded)]
+        ),
+        pool=pool,
+    )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    assert _vermerk(zeile, "unvollstaendige_antwort")["degraded"] == vermerkt
 
 
 def _ohne_seitenliste(middle: dict[str, Any]) -> dict[str, Any]:
