@@ -447,6 +447,26 @@ Eine Eingabe über `db.MAX_INPUT_BYTES` (1 GB, Postgres begrenzt ein Feld auf kn
 vor dem Lesen einer Datei und zählt sie in Ordnern als `zu_gross`. Das gilt auch für
 PDFs, die der Job später in Stücke schneiden würde.
 
+### Die Vorerkennung lässt grob durch; MinerU entscheidet
+
+`mime` erkennt am Inhalt, nie am Namen, und nur grob (Mineroo#17): Welcher Typ
+eine Datei genau ist, entscheidet MinerUs Erkennung im Worker (DocVortex 0.5.16,
+`guess_suffix_by_bytes`). Durch lässt `mime` PDF, die Bilder und die
+**Ganzdokument-Formate** (`DocumentType.is_whole_document`, alles außer PDF und
+Bild): jeden OLE2-Container (DOC, XLS, PPT unterscheidet es nicht, `mime` heißt
+dann `application/x-ole-storage`), ZIP mit dem Aufbau von OOXML, OpenDocument
+(nur ODT, ODS, ODP), EPUB oder OFD, RTF und MHTML an ihrem Kopf, HTML an seinem
+Anfang. Dafür liest es bis 64 KiB (`KOPF_BYTES`, der MHTML-Kopf); die Meldung bei
+einem unbekannten Typ nennt davon die ersten 16 Bytes. Was durchgeht und MinerU
+dann nicht liest, endet `input_error` über `errors.ist_dateiabweisung`; dafür
+stehen DocVortex' Fehlertypen der Ganzdokumente in `DATEIABWEISUNG_KENNUNGEN`
+(am Endpoint beobachtet: ein OLE2-Container ohne `WordDocument` endete sonst
+`failed`, `artifacts/2026-10-27-ganzdokumente/`). Ein
+Ganzdokument-Format geht ungeteilt als ein Stück hinaus (unter
+`max_payload_bytes`, sonst weist schon das Abschicken es ab) und hat keine
+Seitenzahl, also keinen Seitenvergleich. CSV und TSV tragen keine Kennung und
+bleiben draußen.
+
 ### Die Lese-Einstellungen eines Dokuments stehen an seiner Eingabe
 
 Stufe, OCR-Modus und Bildanalyse reisen als **ein Wert**, `config.ReadSettings`
@@ -475,7 +495,8 @@ was er sagt, geht an RunPod und an die Zeile. Wo er auf dem Weg steht:
 - **Vermerkt** an der Ergebniszeile: `documents` trägt `tier`, `ocr_mode`,
   `image_analysis` (die BESTELLTEN; `db.write_terminal_async` nimmt sie in derselben
   Anweisung aus der Eingabe, also auch beim `failed` des Wächters, und ohne Eingabe
-  bleiben sie leer) und `mineru_version` (die der Worker meldet, auch in einer
+  bleiben sie leer, ebenso bei einem Ganzdokument-Format, siehe unten) und
+  `mineru_version` (die der Worker meldet, auch in einer
   Fehlerantwort; bei mehreren Teilstücken die niedrigste nach PEP 440, eine
   unlesbare zählt als die niedrigste, `db.mineru_versionsrang`; beim Überschreiben
   eines `failed` die des neuen Laufs, auch keine). Ein U+0000 in dem, was der
@@ -491,8 +512,13 @@ was er sagt, geht an RunPod und an die Zeile. Wo er auf dem Weg steht:
   Antwort, sofern sie Einstellungen meldet (eine Fehlerantwort tut es nicht), und
   `mineru_versionen_verschieden`. Bestimmt werden beide einmal; scheitert das
   Endschreiben, nimmt der Fehlerzweig sie.
-  DOCX und HTML meldet der Worker heute als `flash`/`txt`, gleich was bestellt war;
-  die Ausnahmen für Ganzdokument-Formate regelt Mineroo#17.
+- **Bei Ganzdokument-Formaten wirken sie nicht** (Mineroo#17): Der Worker liest
+  alles außer PDF und Bildern in `flash`, gleich was bestellt war, und meldet es
+  so. Gesendet werden die Einstellungen der Eingabe trotzdem, aber die
+  Ergebniszeile trägt keine (`write_terminal_async(store_read_settings=False)`,
+  auch beim Überschreiben eines `failed` und beim `failed` des Wächters, der dafür
+  die Eingabe liest und ihren Typ bestimmt), und verglichen wird nicht. Die Eingabe
+  trägt sie weiter, denn `inputs` verlangt sie NOT NULL.
 - **Gezählt** in `status()["readings"]` (`db.counts_by_reading`): je Version und
   bestellten Einstellungen die Zahl der Dokumente mit `done` oder `empty`, nach
   Version geordnet wie MinerU sie zählt (4.0.9 vor 4.0.12), ohne Version am Ende. Bei
@@ -799,6 +825,11 @@ demselben Weg eine Seite mit zwei Bildern, die keine Diagramme sind (Mineroo#13,
 `ersatz_antworten.ECHT_BILDANALYSE`). Sie zeigt, wo die Bild-Deutungen stehen:
 in beiden Markdowns hinter dem Bild als `<details>`, eine Szene als
 Beschreibung, ein Organigramm als Mermaid-Graph.
+
+Unter `artifacts/2026-10-27-ganzdokumente/` liegen zwei weitere Läufe zu
+Mineroo#17 (ein erfundenes DOC und ein OLE2-Container ohne Word-Daten, über
+`mineru-ocr` mit Daemon); die Abweisung spielt `ersatz_antworten.echte_antwort`
+mit `ECHT_GANZDOKUMENTE` ab.
 
 **Wo es keine echte Ausgabe gibt, spielen die Tests Ersatz-Antworten aus
 `tests/ersatz_antworten.py`.**

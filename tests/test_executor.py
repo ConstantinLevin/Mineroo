@@ -24,6 +24,7 @@ from PIL import Image
 from psycopg_pool import AsyncConnectionPool
 
 import ersatz_antworten as ersatz
+import ganzdokumente
 from mineru_ocr import db as db_modul
 from mineru_ocr.config import ReadSettings, Settings
 from mineru_ocr.db import DocumentStatus, get_document, insert_input, write_terminal_async
@@ -1675,6 +1676,195 @@ async def test_ganzdokument_format_hat_keine_seitenzahl(
     zeile = get_document(db_conn, sha)
     assert zeile is not None
     assert zeile.status is DocumentStatus.DONE
+
+
+@pytest.mark.parametrize(
+    "material, aufnahme, typ",
+    [
+        ("dokument.docx", "dokument_docx", DocumentType.DOCX),
+        ("seite.html", "seite_html", DocumentType.HTML),
+    ],
+)
+async def test_echte_ganzdokument_antworten_ohne_einstellungen_und_vermerk(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    material: str,
+    aufnahme: str,
+    typ: DocumentType,
+) -> None:
+    """Die aufgenommenen DOCX- und HTML-Antworten (Mineroo#17): Der Worker liest
+    sie als `flash` mit `txt`, gleich was bestellt war. Die Lese-Einstellungen
+    wirken bei Ganzdokument-Formaten nicht; gespeichert werden keine, und es gibt
+    keinen Vermerk. Seitenzahl gibt es keine, die Version schon."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, _echtes_material(material), name=material, typ=typ,
+        lesen=ReadSettings("advanced", "ocr", True),
+    )
+    await process_document(
+        sha,
+        settings=exec_settings,
+        runpod=FalscherRunPod([ersatz.echte_antwort(aufnahme)]),
+        pool=pool,
+    )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    assert (zeile.tier, zeile.ocr_mode, zeile.image_analysis) == (None, None, None)
+    assert zeile.read_settings is None
+    assert zeile.page_count is None
+    assert zeile.mime == typ.mime
+    assert zeile.mineru_version == "4.0.12"
+    assert all(v["kind"] != "lese_einstellungen_abweichend" for v in zeile.notes)
+
+
+@pytest.mark.parametrize("typ", list(ganzdokumente.JE_TYP), ids=lambda t: t.value)
+async def test_ganzdokument_formate_gehen_ungeteilt_als_ein_stueck(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    typ: DocumentType,
+) -> None:
+    """Jedes Ganzdokument-Format geht ungeteilt als EIN Stueck an den Worker, mit
+    genau den Bytes der Eingabe (Mineroo#17). Die Antwort ist die aufgenommene
+    DOCX-Antwort: MinerU liest alle Ganzdokument-Formate denselben Weg, ganz und
+    in `flash`. Gespeichert werden keine Lese-Einstellungen, auch nicht die
+    gesendeten, und es gibt keinen Vermerk."""
+    daten = ganzdokumente.JE_TYP[typ]
+    sha, _ = _anlegen(
+        db_conn, tmp_path, daten, name="d", typ=typ, lesen=ReadSettings("basic", "txt", False)
+    )
+    runpod = FalscherRunPod([ersatz.echte_antwort("dokument_docx")])
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert [base64.b64decode(gesendet) for gesendet in runpod.abgesendet] == [daten]
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    assert zeile.read_settings is None
+    assert (zeile.tier, zeile.ocr_mode, zeile.image_analysis) == (None, None, None)
+    assert zeile.mime == typ.mime and zeile.page_count is None
+    assert all(v["kind"] != "lese_einstellungen_abweichend" for v in zeile.notes)
+
+
+async def test_bei_ganzdokument_formaten_entfaellt_der_seitenvergleich(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ganzdokument-Formate haben keine Seitenzahl, der Vergleich der Seiten
+    entfaellt (Mineroo#17). Abgeleitet aus der echten DOCX-Antwort: ihr
+    Middle-JSON traegt drei logische Seiten mit Luecke (0, 3, 7). Bei einem Bild
+    endete das `failed`; das DOCX endet `done`."""
+
+    def seiten_mit_luecke(middle: dict[str, Any]) -> dict[str, Any]:
+        (seite,) = middle["pages"]
+        middle["pages"] = [{**seite, "page_idx": nummer} for nummer in (0, 3, 7)]
+        return middle
+
+    sha, _ = _anlegen(
+        db_conn, tmp_path, _echtes_material("dokument.docx"), name="d.docx",
+        typ=DocumentType.DOCX,
+    )
+    await process_document(
+        sha,
+        settings=exec_settings,
+        runpod=FalscherRunPod(
+            [ersatz.abgeleitete_antwort("dokument_docx", middle_json_aendern=seiten_mit_luecke)]
+        ),
+        pool=pool,
+    )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+
+
+@pytest.mark.parametrize("typ", [DocumentType.OLE2, DocumentType.ODT, DocumentType.HTML])
+async def test_vom_worker_abgewiesenes_ganzdokument_endet_input_error_mit_seinem_grund(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    typ: DocumentType,
+) -> None:
+    """Die Vorerkennung laesst grob durch; was MinerU dann doch nicht liest (ein
+    OLE2-Container ohne Office-Daten etwa), weist der Worker ab. Die Datei endet
+    `input_error` mit dem Grund aus der Antwort, ueber die eine Entscheidung in
+    `errors` (Mineroo#17), und ohne gespeicherte Lese-Einstellungen."""
+    grund = (
+        "ValueError: input is not a file type MinerU 4.0.12 reads (detected "
+        "'unknown'). It reads PDF, images, Office, OpenDocument, RTF, EPUB, OFD, "
+        "HTML and MHTML files."
+    )
+    sha, _ = _anlegen(db_conn, tmp_path, ganzdokumente.JE_TYP[typ], name="d", typ=typ)
+    with pytest.raises(InputError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod([ersatz.fehlerantwort(grund)]),
+            pool=pool,
+        )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.error is not None and grund in zeile.error
+    assert zeile.read_settings is None
+    assert zeile.mime == typ.mime
+
+
+async def test_echte_abweisung_eines_ole2_containers_ohne_word_daten_endet_input_error(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Am Endpoint aufgenommen (Mineroo#17,
+    `artifacts/2026-10-27-ganzdokumente/`): Ein OLE2-Container, dem der Strom
+    `WordDocument` fehlt, geht durch die Vorerkennung, MinerU versucht ihn als
+    DOC zu lesen und scheitert mit DocVortex' `LegacyOfficeMissingPartError`.
+    Das ist eine Abweisung der Datei, kein Fehler des Laufs: Das Dokument endet
+    `input_error` mit dem Grund aus der Antwort, und die Antwort steht in `raw`."""
+    material = (ersatz.ECHT_GANZDOKUMENTE / "material" / "ohne_word_daten.cfb").read_bytes()
+    antwort = ersatz.echte_antwort("ole2_ohne_word_daten", ersatz.ECHT_GANZDOKUMENTE)
+    sha, _ = _anlegen(db_conn, tmp_path, material, name="d.cfb", typ=DocumentType.OLE2)
+    with pytest.raises(InputError):
+        await process_document(
+            sha, settings=exec_settings, runpod=FalscherRunPod([antwort]), pool=pool
+        )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.error is not None
+    assert "missing required OLE stream: WordDocument" in zeile.error
+    assert zeile.raw is not None
+    assert zeile.raw["unverwertbare_antworten"][0]["antwort"] == antwort
+    assert zeile.read_settings is None
+
+
+async def test_der_waechter_speichert_bei_ganzdokument_formaten_keine_einstellungen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Auch das `failed` des Waechters (`write_failure_if_no_result`) traegt fuer
+    ein Ganzdokument-Format keine Lese-Einstellungen (Mineroo#17); fuer ein Bild
+    die bestellten, wie bisher."""
+    bestellt = ReadSettings("basic", "txt", False)
+    ganz, _ = _anlegen(
+        db_conn, tmp_path, ganzdokumente.JE_TYP[DocumentType.RTF], name="d.rtf",
+        typ=DocumentType.RTF, lesen=bestellt,
+    )
+    bild, _ = _anlegen(
+        db_conn, tmp_path, b"b", name="b.png", typ=DocumentType.PNG, lesen=bestellt
+    )
+    for sha in (ganz, bild):
+        assert await write_failure_if_no_result(
+            sha, settings=exec_settings, pool=pool, grund="Worker wiederholt abgestuerzt"
+        )
+    zeile = get_document(db_conn, ganz)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+    assert zeile.read_settings is None
+    zeile = get_document(db_conn, bild)
+    assert zeile is not None and zeile.read_settings == bestellt
 
 
 async def test_ganzdokument_format_ohne_middle_json_endet_failed(

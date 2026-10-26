@@ -199,6 +199,18 @@ verschiedene Versionen, steht ein Vermerk in `notes`. `show` zeigt beides, und
 `status` zählt, wie viele Dokumente mit welcher Version und welchen Einstellungen
 gelesen sind.
 
+Gelesen werden PDFs, Bilder und die **Ganzdokument-Formate**, die MinerU 4 als
+ganzes Dokument liest: Office (DOC, XLS, PPT, DOCX, XLSX, PPTX), OpenDocument
+(ODT, ODS, ODP), RTF, EPUB, OFD, HTML und MHTML (`mineru_ocr.DocumentType`).
+Erkannt wird am Inhalt, nie am Dateinamen; Text, CSV und ein beliebiges ZIP weist
+das Abschicken ab. Welcher Typ eine Datei genau ist, entscheidet MinerUs eigene
+Erkennung im Worker; was das Paket durchlässt und MinerU dann nicht liest, endet
+`input_error` mit dem Grund des Workers. Ein Ganzdokument-Format geht ungeteilt
+als ein Stück hinaus und muss deshalb unter die Größengrenze einer Anfrage
+passen; es hat keine Seitenzahl. Die Lese-Einstellungen wirken bei ihm nicht (der
+Worker liest es immer in `flash`): Am Ergebnis stehen keine, und es gibt keinen
+Vermerk über abweichende.
+
 Gibt es zu den Bytes schon ein Ergebnis (auch ein `failed`), ist das ein Treffer:
 Es wird nichts angelegt und nichts eingereiht; ein gescheitertes Dokument liest
 nur `retry` neu. `client.retry(h)` bringt ein Dokument ohne gültiges Ergebnis

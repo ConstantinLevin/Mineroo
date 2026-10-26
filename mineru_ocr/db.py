@@ -1561,6 +1561,7 @@ async def write_terminal_async(
     notes: Sequence[dict[str, Any]] | None = None,
     page_count: int | None = None,
     mineru_version: str | None = None,
+    store_read_settings: bool = True,
 ) -> None:
     """Legt das Ergebnis eines Durchlaufs an und weckt alle Warter.
 
@@ -1604,12 +1605,19 @@ async def write_terminal_async(
             meldete. Anders als Typ, Groesse und Image-Tag gilt sie auch beim
             Ueberschreiben eines `failed` so, wie sie kommt: Sie gehoert zu dem
             `raw`, das dieser Aufruf schreibt, nicht zu dem des frueheren Laufs.
+        store_read_settings: Ob die bestellten Lese-Einstellungen an die Zeile
+            gehen. False fuer ein Ganzdokument-Format
+            (`mime.DocumentType.is_whole_document`): Bei ihm wirken sie nicht,
+            und gespeichert werden keine (Mineroo#17). Beim Ueberschreiben
+            eines `failed` stehen sie dann leer da, auch wenn die alte Zeile
+            welche trug.
 
     Die bestellten Lese-Einstellungen (`tier`, `ocr_mode`, `image_analysis`)
     werden NICHT uebergeben: Das Endschreiben nimmt sie in derselben Anweisung
     aus der Eingabe, an der das Abschicken sie ablegte. So stehen an der Zeile
     genau die, die bestellt waren, auch beim `failed` des Waechters, der kein
-    Teilstueck sah; ohne Eingabe bleiben sie leer.
+    Teilstueck sah; ohne Eingabe bleiben sie leer, ebenso mit
+    `store_read_settings=False`.
 
     Zusicherung:
         Nach der Rueckkehr steht ein Ergebnis da, und ein `NOTIFY` auf dem Kanal
@@ -1695,6 +1703,7 @@ async def write_terminal_async(
             notes=notes,
             page_count=page_count,
             mineru_version=mineru_version,
+            store_read_settings=store_read_settings,
         )
     except psycopg.Error as fehler:
         if not _nicht_speicherbar(fehler):
@@ -1728,13 +1737,14 @@ async def _endergebnis_schreiben(
     notes: Sequence[dict[str, Any]] | None,
     page_count: int | None,
     mineru_version: str | None,
+    store_read_settings: bool,
 ) -> None:
     """Der Schreibvorgang von `write_terminal_async`, ohne das Einpacken der Fehler."""
     vermerke = Jsonb(list(notes) if notes else [])
     async with conn.transaction():
         # Die bestellten Lese-Einstellungen aus der Eingabe, in DIESER Anweisung
         # (siehe `write_terminal_async`): Das LEFT JOIN liefert genau eine Zeile,
-        # mit NULL, wo es keine Eingabe gibt.
+        # mit NULL, wo es keine Eingabe gibt oder `store_read_settings` falsch ist.
         angelegt = await (
             await conn.execute(
                 """
@@ -1746,7 +1756,7 @@ async def _endergebnis_schreiben(
                 SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                        i.tier, i.ocr_mode, i.image_analysis
                   FROM (SELECT 1) AS eine
-                  LEFT JOIN inputs i ON i.sha256 = %s
+                  LEFT JOIN inputs i ON i.sha256 = %s AND %s
                 ON CONFLICT (sha256) DO NOTHING
                 RETURNING sha256
                 """,
@@ -1763,6 +1773,7 @@ async def _endergebnis_schreiben(
                     vermerke,
                     mineru_version,
                     sha256,
+                    store_read_settings,
                 ),
             )
         ).fetchone()
@@ -1797,6 +1808,9 @@ async def _endergebnis_schreiben(
                                       COALESCE(i.image_analysis, documents.image_analysis)
                                  FROM (SELECT 1) AS eine
                                  LEFT JOIN inputs i ON i.sha256 = documents.sha256
+                                -- Ohne Zeile (`store_read_settings` falsch) sind
+                                -- alle drei NULL, auch wo das `failed` welche trug.
+                                WHERE %s
                            ),
                            notes = notes || %s::jsonb,
                            updated_at = now()
@@ -1812,6 +1826,7 @@ async def _endergebnis_schreiben(
                         image_tag_at_submit,
                         page_count,
                         mineru_version,
+                        store_read_settings,
                         vermerke,
                         sha256,
                     ),

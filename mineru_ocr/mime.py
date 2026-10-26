@@ -1,38 +1,97 @@
-"""Typerkennung an den Magic Bytes — nie an der Dateiendung.
+"""Typerkennung am Inhalt — nie an der Dateiendung.
 
 Warum nicht an der Endung: Eine Endung ist eine Behauptung des Dateisystems, kein
 Befund ueber den Inhalt. In einem gewachsenen Dokumentenbestand liegen `.pdf`, die
 JPEG sind, und `.doc`, die in Wahrheit DOCX sind. Wer der Endung glaubt, schickt
 eine Datei los, die die Engine nicht lesen kann, und bezahlt fuer den Fehlschlag.
 
-Die eine Stelle, an der es nicht ohne Zusatzarbeit geht, ist ZIP: DOCX, PPTX und
-XLSX tragen alle dieselben vier Magic Bytes wie jede beliebige andere ZIP-Datei
-(`PK\\x03\\x04`). Ein ZIP ohne Office-Struktur muss abgewiesen werden, statt es
-durchzureichen und zu hoffen — deshalb schaut die Erkennung in diesem einen Fall
-in das Archiv hinein und sucht die Verzeichnisse `word/`, `xl/` oder `ppt/`
-(Plan 6).
+Die Erkennung ist eine GROBE VORERKENNUNG (Mineroo#17; Mineroo#1, Paket,
+„Dateitypen"): Welcher Typ eine Datei ist, entscheidet maßgeblich MinerUs eigene
+Erkennung im Worker (DocVortex 0.5.16, `document/detection.py`,
+`guess_suffix_by_bytes`). Das Paket laesst nur durch, was die Kennung eines Formats
+traegt, das MinerU 4 liest, damit offensichtlich Fremdes (Text, CSV, ein
+beliebiges ZIP) nicht an RunPod geht. Weist der Worker eine so durchgelassene
+Datei dennoch ab, endet sie `input_error` (`errors.ist_dateiabweisung`).
+
+Durch laesst sie, neben PDF und den Bildern:
+
+* jeden OLE2-Container (darunter DOC, XLS, PPT), an seinen acht Kennbytes;
+* ZIP-Container mit dem Aufbau von OOXML (DOCX, XLSX, PPTX), OpenDocument (ODT,
+  ODS, ODP), EPUB oder OFD;
+* RTF und MHTML an ihrem Kopf, HTML an seinem Anfang (`<!DOCTYPE html` oder
+  `<html`).
+
+ZIP braucht Zusatzarbeit: Alle diese Container tragen dieselben vier Magic Bytes
+wie jede beliebige andere ZIP-Datei (`PK\\x03\\x04`). Ein ZIP ohne den Aufbau
+eines dieser Formate muss abgewiesen werden, statt es durchzureichen und zu
+hoffen — deshalb schaut die Erkennung in diesem Fall in das Archiv hinein.
+
+CSV und TSV laesst sie nicht durch: Sie tragen keine Kennung im Inhalt (Mineroo#1,
+Out of Scope).
 """
 
 from __future__ import annotations
 
+import email.parser
+import email.policy
 import enum
 import io
+import re
 import zipfile
+import zlib
+from collections.abc import Callable
 from typing import BinaryIO, Final
+from xml.etree import ElementTree
 
 from .errors import UnsupportedTypeError
 
-KOPF_BYTES: Final = 16
-"""So viele Bytes braucht die Erkennung am Dateianfang. WebP ist der laengste
-Fall: vier Bytes `RIFF`, vier Bytes Groesse, dann `WEBP` — zwoelf. Sechzehn sind
-Puffer."""
+KOPF_BYTES: Final = 65536
+"""So viele Bytes liest die Erkennung am Dateianfang: so viele, wie die Kennungen
+brauchen. MHTML ist der laengste Fall: Sein Kopf nennt `multipart/related` oft erst
+nach vielen Kopfzeilen, und DocVortex liest dafuer bis 64 KiB
+(`document/filetypes.py`, `has_mhtml_header`). RTF darf nach bis zu 64
+Leerzeichen beginnen und wird in den ersten 128 Bytes gesucht (`RTF_KOPF_BYTES`),
+alle uebrigen Kennungen stehen in den ersten zwoelf (WebP: `RIFF`, vier Bytes
+Groesse, `WEBP`)."""
 
-_OFFICE_VERZEICHNISSE: Final = {
+RTF_KOPF_BYTES: Final = 128
+"""In so vielen Bytes am Anfang sucht die Erkennung den Kopf einer RTF-Datei, wie
+DocVortex (`detection.py`, `guess_suffix_by_bytes`: `file_bytes[:128]`)."""
+
+MELDUNG_BYTES: Final = 16
+"""So viele Bytes vom Anfang nennt die Meldung bei einem unbekannten Typ,
+ungekuerzt: die Kennbytes, an denen man einen Typ von Hand nachschlaegt. Nicht den
+ganzen gelesenen Kopf, der bis zu `KOPF_BYTES` gross ist und in `error` und auf
+stderr landete."""
+
+_OLE2_KENNUNG: Final = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+"""Die acht Kennbytes eines OLE2-Containers (Compound File Binary, MS-CFB 2.2).
+DocVortex unterscheidet darin DOC, XLS und PPT an den Namen der Datenstroeme; die
+Vorerkennung laesst jeden Container durch, und was MinerU darin nicht liest, weist
+der Worker ab."""
+
+_RTF_KOPF: Final = re.compile(
+    rb"\A(?:\xef\xbb\xbf)?[ \t\r\n]{0,64}\{\\rtf(?=[0-9])", re.IGNORECASE
+)
+"""Der Kopf einer RTF-Datei, woertlich wie DocVortex 0.5.16
+(`document/filetypes.py`, `_RTF_HEADER_RE`): eine BOM, bis zu 64 Leerzeichen,
+dann `{\\rtf` mit einer Versionsnummer. Eine Datei, die mit anderem Text beginnt,
+ist kein RTF."""
+
+_HTML_ANFANG: Final = re.compile(
+    rb"\A(?:\xef\xbb\xbf)?\s*<(?:!doctype\s+html|html)(?=[\s>])", re.IGNORECASE
+)
+"""Der Anfang einer HTML-Datei: `<!DOCTYPE html` oder `<html`, gross oder klein,
+nach einer BOM und Leerraum. MinerU erkennt HTML an keiner Kennung, sondern mit
+seinem Inhaltsklassifizierer (Magika); das Paket laesst nur durch, was so
+beginnt, und kein Text, in dem irgendwo ein Tag steht."""
+
+_OOXML_VERZEICHNISSE: Final = {
     "word/": "DOCX",
     "xl/": "XLSX",
     "ppt/": "PPTX",
 }
-"""Woran ein Office-Archiv von einem beliebigen ZIP zu unterscheiden ist.
+"""Woran ein OOXML-Archiv von einem beliebigen ZIP zu unterscheiden ist.
 
 Gesucht wird im ZENTRALVERZEICHNIS des Archivs, nicht in den ersten Bytes. Der
 Unterschied ist nicht theoretisch: Von LibreOffice geschriebene Office-Dateien
@@ -41,14 +100,56 @@ ansieht — wie es verbreitete Erkennungs-Bibliotheken tun —, weist ein guelti
 DOCX als nicht unterstuetzt ab. Das Zentralverzeichnis kennt alle Eintraege,
 unabhaengig von ihrer Reihenfolge."""
 
+_OPENDOCUMENT_TYPEN: Final = {
+    "application/vnd.oasis.opendocument.text": "ODT",
+    "application/vnd.oasis.opendocument.spreadsheet": "ODS",
+    "application/vnd.oasis.opendocument.presentation": "ODP",
+}
+"""Die OpenDocument-Typen, die MinerU 4 liest, nach dem Medientyp des Pakets
+(DocVortex 0.5.16, `detection.py`, `ODF_MIMETYPE_SUFFIXES`). Eine Zeichnung oder
+Formel hat den Aufbau von OpenDocument, liest MinerU aber nicht."""
+
+_EPUB_TYP: Final = "application/epub+zip"
+_MANIFEST_NS: Final = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"
+
+_KLEINER_EINTRAG: Final = 256
+"""So gross darf die Datei `mimetype` eines Pakets hoechstens sein, damit die
+Erkennung sie liest (DocVortex: 256). Sie traegt nur den Medientyp; eine grosse
+waere kein Paket, sondern womoeglich eine ZIP-Bombe."""
+
+_GROSSER_EINTRAG: Final = 1024 * 1024
+"""So gross darf das Manifest eines OpenDocument-Pakets hoechstens sein, damit die
+Erkennung es liest (DocVortex: 1 MiB)."""
+
+_ZIP_LESEFEHLER: Final = (
+    zipfile.BadZipFile,
+    zlib.error,
+    EOFError,
+    NotImplementedError,
+    RuntimeError,
+    ValueError,
+    LookupError,
+    ElementTree.ParseError,
+)
+"""Was `zipfile` beim Oeffnen eines Archivs und beim Lesen eines Eintrags werfen
+kann, wenn der INHALT nicht stimmt: ein beschaedigtes oder verschluesseltes
+Archiv, eine Version oder ein Kompressionsverfahren, das `zipfile` nicht kennt
+(`NotImplementedError`), ein als UTF-8 markierter Name, der keines ist
+(`UnicodeDecodeError`, ein `ValueError`), unlesbares XML, auch eines mit einer
+Kodierung, die es nicht gibt (`LookupError`). Fuer die Vorerkennung
+heisst jedes davon nur: Dieses Merkmal traegt das Archiv nicht, oder es ist kein
+lesbares ZIP. `OSError` steht bewusst nicht hier: Beim Lesen von der Platte ist
+er ein Problem der Datei, kein Typproblem (`sniff_file`)."""
+
+
 
 class DocumentType(enum.Enum):
     """Die unterstuetzten Eingabearten. Was hier nicht steht, wird abgewiesen.
 
-    Die Liste ist die des Plans (7, `OCRWrapper`-Init) und nicht laenger: Sie
-    deckt, was MinerU als Erstklass-Eingabe nimmt. Ein Typ dazuzunehmen heisst,
-    ihn vorher an der echten Engine geprueft zu haben — nicht, hier eine Zeile
-    einzufuegen.
+    Die Liste deckt, was MinerU 4 liest (Job-Vertrag des Forks, `api.mdx`; Mineroo#1,
+    Worker, „Dateitypen"), ausser JP2 und dem, was keine Kennung im Inhalt traegt
+    (CSV, TSV). Ein Typ dazuzunehmen heisst, ihn vorher an der echten Engine
+    geprueft zu haben — nicht, hier eine Zeile einzufuegen.
     """
 
     PDF = "pdf"
@@ -61,15 +162,25 @@ class DocumentType(enum.Enum):
     DOCX = "docx"
     PPTX = "pptx"
     XLSX = "xlsx"
+    OLE2 = "ole2"
+    """Ein OLE2-Container: DOC, XLS oder PPT. Welches davon, entscheidet der Worker."""
+    ODT = "odt"
+    ODS = "ods"
+    ODP = "odp"
+    RTF = "rtf"
+    EPUB = "epub"
+    OFD = "ofd"
+    HTML = "html"
+    MHTML = "mhtml"
 
     @property
     def is_pdf(self) -> bool:
         """Ob dieser Typ seitenweise zerlegt werden kann.
 
         Nur PDF kann das. Bilder gehen ungeteilt hinaus (ein Bild je Datei; die
-        mit mehreren Bildern prueft `can_hold_several_images`), Office-Formate sind
-        nicht seitenweise zerlegbar — beide gehen ungeteilt hinaus oder gar nicht
-        (Plan 6).
+        mit mehreren Bildern prueft `can_hold_several_images`), Ganzdokument-Formate
+        (`is_whole_document`) sind nicht seitenweise zerlegbar — beide gehen
+        ungeteilt hinaus oder gar nicht (Plan 6).
 
         Der Name sagt „ist PDF", die Frage lautet „ist zerlegbar". Heute ist das
         dasselbe. Kaeme je ein zweites zerlegbares Format dazu, ist DIESE Stelle
@@ -88,6 +199,20 @@ class DocumentType(enum.Enum):
         return self in _BILDER
 
     @property
+    def is_whole_document(self) -> bool:
+        """Ob MinerU 4 diesen Typ als ganzes Dokument liest, ohne Seiten.
+
+        Alles ausser PDF und Bildern (Mineroo#1, Worker, „Dateitypen": „local Flash
+        and whole-document parsing"). Fuer diese Ganzdokument-Formate gelten die
+        Ausnahmen aus Mineroo#17: Sie gehen ungeteilt als ein Stueck hinaus, unter
+        der Groessengrenze einer Anfrage; der Seitenvergleich entfaellt, denn sie
+        haben keine Seitenzahl; und die Lese-Einstellungen wirken nicht, der
+        Worker liest sie immer in `flash`. Gespeichert werden fuer sie deshalb
+        keine, und es gibt keinen Vermerk ueber abweichende.
+        """
+        return not (self.is_pdf or self.is_image)
+
+    @property
     def can_hold_several_images(self) -> bool:
         """Ob dieser Typ eine Bilddatei ist, die eine Folge von Seiten tragen kann.
 
@@ -95,8 +220,8 @@ class DocumentType(enum.Enum):
         gehoeren nicht dazu: Ein JPEG mit einem zweiten Bild (Multi-Picture-Format,
         von Kameras und Telefonen fuer Vorschau oder Tiefenkarte geschrieben) ist
         ein Foto, keine Seitenfolge, und Pillow zaehlte dort trotzdem zwei Frames.
-        Office-Formate gehoeren auch nicht dazu, auch wenn sie Bilder enthalten:
-        Sie sind ein Dokument, keine Folge von Bildern.
+        Ganzdokument-Formate gehoeren auch nicht dazu, auch wenn sie Bilder
+        enthalten: Sie sind ein Dokument, keine Folge von Bildern.
         """
         return self in _BILDFOLGEN
 
@@ -151,6 +276,15 @@ _TABELLE: Final[dict[DocumentType, tuple[str, str]]] = {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ".xlsx",
     ),
+    DocumentType.OLE2: ("application/x-ole-storage", ".cfb"),
+    DocumentType.ODT: ("application/vnd.oasis.opendocument.text", ".odt"),
+    DocumentType.ODS: ("application/vnd.oasis.opendocument.spreadsheet", ".ods"),
+    DocumentType.ODP: ("application/vnd.oasis.opendocument.presentation", ".odp"),
+    DocumentType.RTF: ("application/rtf", ".rtf"),
+    DocumentType.EPUB: ("application/epub+zip", ".epub"),
+    DocumentType.OFD: ("application/ofd", ".ofd"),
+    DocumentType.HTML: ("text/html", ".html"),
+    DocumentType.MHTML: ("multipart/related", ".mhtml"),
 }
 """MIME-Zeichenkette und Endung je Typ. DIESE WERTE SIND DAUERHAFT.
 
@@ -160,23 +294,138 @@ sie mit dem Endergebnis. Wer hier spaeter eine MIME-Zeichenkette aendert, laesst
 alte und neue Zeilen denselben Typ verschieden nennen, ohne dass etwas auffaellt.
 
 Wo es zwei uebliche Schreibweisen gibt, ist die kuerzere gewaehlt (`.jpg`,
-`.tif`) — die Wahl ist beliebig, ihre Bestaendigkeit nicht."""
+`.tif`) — die Wahl ist beliebig, ihre Bestaendigkeit nicht. Die Zeichenketten der
+Ganzdokument-Formate sind die von DocVortex 0.5.16 (`document/filetypes.py`,
+`MIME_TYPE_BY_EXTENSION`). Fuer OLE2 nicht: Das Paket weiss nur, dass es ein
+OLE2-Container ist, und nennt ihn so (`application/x-ole-storage`, `.cfb` fuer
+Compound File Binary), statt DOC, XLS oder PPT zu raten."""
+
+
+_KLEINE_VERFAHREN: Final = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
+"""Die Kompressionsverfahren, deren Eintraege die Erkennung liest. Ein OpenDocument-
+und ein EPUB-Paket legen `mimetype` ungepackt ab (ODF 1.2, Teil 3, 3.3; EPUB OCF
+3.3, 4.2.5), DocVortex liest `OFD.xml` nur ungepackt oder mit deflate
+(`detect_ofd_path`). bzip2 und LZMA laeuft die Erkennung deshalb nicht an: Ihre
+Dekoder werfen bei kaputten Daten `OSError` und `LZMAError`, und ein `OSError`
+hiesse in `sniff_file` sonst, die Datei sei nicht lesbar (Code-Review zu
+Mineroo#17)."""
+
+
+def _klein_lesen(archiv: zipfile.ZipFile, name: str, grenze: int) -> bytes | None:
+    """Ein Eintrag des Archivs, wenn es ihn gibt, er hoechstens `grenze` Bytes hat
+    und ungepackt oder mit deflate gepackt ist (`_KLEINE_VERFAHREN`); sonst None.
+    Gelesen wird hoechstens `grenze + 1` Bytes, auch wenn das Verzeichnis eine
+    falsche Groesse angibt."""
+    try:
+        eintrag = archiv.getinfo(name)
+    except KeyError:
+        return None
+    if eintrag.file_size > grenze or eintrag.compress_type not in _KLEINE_VERFAHREN:
+        return None
+    with archiv.open(eintrag) as strom:
+        daten = strom.read(grenze + 1)
+    return daten if len(daten) <= grenze else None
+
+
+def _ist_ofd(archiv: zipfile.ZipFile) -> bool:
+    """OFD: `OFD.xml` an der Wurzel des Archivs (GB/T 33190, 7.1; DocVortex
+    `analyzers/native/ofd/package.py`, `detect_ofd_path`)."""
+    return "OFD.xml" in archiv.namelist()
+
+
+def _ist_epub(archiv: zipfile.ZipFile) -> bool:
+    """EPUB: `mimetype` mit `application/epub+zip`, oder `META-INF/container.xml`
+    (EPUB OCF 3.3, 4.2; DocVortex `analyzers/native/epub/package.py`,
+    `_detect_epub_zip`)."""
+    mimetype = _klein_lesen(archiv, "mimetype", _KLEINER_EINTRAG)
+    if mimetype is not None and mimetype.strip() == _EPUB_TYP.encode("ascii"):
+        return True
+    return "META-INF/container.xml" in archiv.namelist()
+
+
+def _opendocument_typ(archiv: zipfile.ZipFile) -> DocumentType | None:
+    """ODT, ODS oder ODP am Medientyp des Pakets: in `mimetype` oder, fehlt die, im
+    Manifest am Eintrag fuer die Wurzel (ODF 1.2, Teil 3, 3.3 und 4.3; DocVortex
+    `detection.py`, `_guess_odf_suffix_from_zip`)."""
+    mimetype = _klein_lesen(archiv, "mimetype", _KLEINER_EINTRAG)
+    if mimetype is not None:
+        typ = _OPENDOCUMENT_TYPEN.get(mimetype.decode("ascii", errors="replace").strip())
+        return DocumentType[typ] if typ is not None else None
+    manifest = _klein_lesen(archiv, "META-INF/manifest.xml", _GROSSER_EINTRAG)
+    if manifest is None:
+        return None
+    for eintrag in ElementTree.fromstring(manifest).iter(f"{{{_MANIFEST_NS}}}file-entry"):
+        if eintrag.get(f"{{{_MANIFEST_NS}}}full-path") == "/":
+            typ = _OPENDOCUMENT_TYPEN.get(
+                eintrag.get(f"{{{_MANIFEST_NS}}}media-type", "").strip()
+            )
+            return DocumentType[typ] if typ is not None else None
+    return None
+
+
+def _merkmal[T](pruefung: Callable[[zipfile.ZipFile], T], archiv: zipfile.ZipFile) -> T | None:
+    """Eine Pruefung am Archiv; ein Lesefehler heisst: Merkmal nicht vorhanden."""
+    try:
+        return pruefung(archiv)
+    except _ZIP_LESEFEHLER:
+        return None
 
 
 def _typ_aus_zip(archiv: zipfile.ZipFile) -> DocumentType:
-    """Entscheidet, welches Office-Format ein ZIP traegt — oder weist es ab."""
+    """Entscheidet, welches Format ein ZIP traegt — oder weist es ab.
+
+    In der Reihenfolge von DocVortex (`guess_suffix_by_bytes`): OFD, EPUB, OOXML,
+    OpenDocument.
+    """
+    if _merkmal(_ist_ofd, archiv):
+        return DocumentType.OFD
+    if _merkmal(_ist_epub, archiv):
+        return DocumentType.EPUB
     for name in archiv.namelist():
-        for praefix, typ in _OFFICE_VERZEICHNISSE.items():
+        for praefix, typ in _OOXML_VERZEICHNISSE.items():
             if name.startswith(praefix):
                 return DocumentType[typ]
+    opendocument = _merkmal(_opendocument_typ, archiv)
+    if opendocument is not None:
+        return opendocument
     raise UnsupportedTypeError(
-        "ZIP-Archiv ohne Office-Struktur (weder word/, xl/ noch ppt/ im "
-        "Zentralverzeichnis) — nicht unterstuetzt."
+        "ZIP-Archiv ohne den Aufbau eines Formats, das MinerU liest: weder Office "
+        "(word/, xl/ oder ppt/ im Zentralverzeichnis) noch OpenDocument (Text, "
+        "Tabelle, Praesentation), EPUB oder OFD — nicht unterstuetzt."
     )
 
 
+def _ist_mhtml(kopf: bytes) -> bool:
+    """MHTML: ein Kopf nach RFC 5322 mit `multipart/related` und einer Grenze
+    (RFC 2557), in den ersten `KOPF_BYTES`. Wie DocVortex 0.5.16
+    (`document/filetypes.py`, `has_mhtml_header`); eine E-Mail mit anderen Teilen
+    ist kein MHTML."""
+    if b"multipart/related" not in kopf.lower():
+        return False
+    try:
+        nachricht = email.parser.BytesHeaderParser(policy=email.policy.default).parsebytes(
+            kopf
+        )
+        return (
+            nachricht.get_content_type() == "multipart/related"
+            and bool(nachricht.get_boundary())
+        )
+    except Exception:  # noqa: BLE001 — jeder Fehler des Parsers heisst: kein MHTML
+        # Der Header-Parser der Standardbibliothek wirft bei kaputten Koepfen
+        # nicht nur seinen `HeaderParseError`: CPython 3.12 laeuft bei einem
+        # RFC-2231-Parameter, der mit `*` endet, in einen `IndexError`, bei
+        # tausend verschachtelten Kommentaren in einen `RecursionError` (QA und
+        # Code-Review zu Mineroo#17). Der Aufruf liest nur `kopf` im Speicher, es
+        # gibt keine Ein- und Ausgabe, deren Fehler hier verschluckt wuerde.
+        return False
+
+
 def _typ_aus_kopf(kopf: bytes) -> DocumentType | None:
-    """Erkennt alles ausser ZIP an den ersten Bytes. None heisst: kein Treffer."""
+    """Erkennt alles ausser ZIP am Anfang der Datei. None heisst: kein Treffer.
+
+    Die festen Kennbytes zuerst, dann die Textformate in der Reihenfolge von
+    DocVortex (RTF vor MHTML); HTML zuletzt, denn ein MHTML-Teil ist HTML.
+    """
     if kopf.startswith(b"%PDF-"):
         return DocumentType.PDF
     if kopf.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -193,12 +442,30 @@ def _typ_aus_kopf(kopf: bytes) -> DocumentType | None:
     # WebP ist ein RIFF-Behaelter; die vier Bytes dazwischen sind die Groesse.
     if kopf.startswith(b"RIFF") and kopf[8:12] == b"WEBP":
         return DocumentType.WEBP
+    if kopf.startswith(_OLE2_KENNUNG):
+        return DocumentType.OLE2
+    if _RTF_KOPF.match(kopf[:RTF_KOPF_BYTES]):
+        return DocumentType.RTF
+    if _ist_mhtml(kopf):
+        return DocumentType.MHTML
+    if _HTML_ANFANG.match(kopf):
+        return DocumentType.HTML
     return None
 
 
 def _ist_zip(kopf: bytes) -> bool:
-    """DOCX, PPTX, XLSX und jedes andere ZIP tragen dieselben vier Magic Bytes."""
+    """DOCX, ODT, EPUB, OFD und jedes andere ZIP tragen dieselben vier Magic Bytes."""
     return kopf.startswith(b"PK\x03\x04")
+
+
+def _unbekannt(kopf: bytes, groesse: str) -> UnsupportedTypeError:
+    """Die Meldung fuer einen Typ ohne Treffer. Die Kennbytes stehen UNGEKUERZT
+    darin (`MELDUNG_BYTES`): Wer sie abschneidet, nimmt genau die Angabe weg, mit
+    der man den Typ von Hand nachschlaegt."""
+    return UnsupportedTypeError(
+        f"Kein unterstuetzter Typ (die ersten {MELDUNG_BYTES} Byte: "
+        f"{kopf[:MELDUNG_BYTES]!r}; {groesse})."
+    )
 
 
 def sniff_file(file: BinaryIO) -> DocumentType:
@@ -206,10 +473,11 @@ def sniff_file(file: BinaryIO) -> DocumentType:
 
     Der Weg fuer die Kommandozeile, die Dateien liest: Eine grosse Datei fremden
     Typs soll nicht erst ganz in den Speicher, um dann abgewiesen zu werden. Liest
-    so wenig wie noetig: fuer alle Typen ausser ZIP genuegen die ersten Bytes; bei
-    ZIP wird zusaetzlich das Archivverzeichnis gelesen (nicht das Archiv
-    ausgepackt). Die Bibliothek selbst kennt keine Pfade — wer eine Datei hat,
-    oeffnet sie und reicht das Dateiobjekt herein.
+    so wenig wie noetig: fuer alle Typen ausser ZIP genuegt der Anfang
+    (`KOPF_BYTES`); bei ZIP wird zusaetzlich das Archivverzeichnis gelesen und,
+    wo das Format es verlangt, ein kleiner Eintrag (nicht das Archiv ausgepackt).
+    Die Bibliothek selbst kennt keine Pfade — wer eine Datei hat, oeffnet sie und
+    reicht das Dateiobjekt herein.
 
     Args:
         file: Eine zum Lesen geoeffnete, durchsuchbare Datei (`open(..., "rb")`),
@@ -223,10 +491,10 @@ def sniff_file(file: BinaryIO) -> DocumentType:
         nicht kennt — im Zweifel wird geworfen.
 
     Raises:
-        UnsupportedTypeError: Die Magic Bytes gehoeren zu keinem unterstuetzten
-            Typ, ODER die Datei ist ein ZIP ohne Office-Struktur, ODER sie ist
-            kuerzer als die noetigen Magic Bytes (auch eine leere Datei ist kein
-            unterstuetzter Typ, sondern ein Eingabefehler).
+        UnsupportedTypeError: Der Anfang gehoert zu keinem unterstuetzten Typ,
+            ODER die Datei ist ein ZIP ohne den Aufbau eines unterstuetzten
+            Formats, ODER sie ist kuerzer als die noetigen Kennbytes (auch eine
+            leere Datei ist kein unterstuetzter Typ, sondern ein Eingabefehler).
         OSError: Die Datei ist nicht lesbar. Wird bewusst NICHT eingepackt: Ein
             Rechteproblem ist kein Typproblem, und die Verwechslung der beiden
             wuerde die Fehlersuche in die falsche Richtung schicken.
@@ -243,25 +511,20 @@ def sniff_file(file: BinaryIO) -> DocumentType:
         try:
             with zipfile.ZipFile(file) as archiv:
                 return _typ_aus_zip(archiv)
-        except zipfile.BadZipFile as fehler:
+        except _ZIP_LESEFEHLER as fehler:
             raise UnsupportedTypeError(
-                f"Beginnt wie ein ZIP, ist aber keines: {fehler}."
+                f"Beginnt wie ein ZIP, ist aber keines: {type(fehler).__name__}: {fehler}."
             ) from fehler
 
-    # Die gelesenen Kopfbytes stehen VOLLSTAENDIG in der Meldung. Wer sie
-    # abschneidet, nimmt genau die Angabe weg, mit der man den Typ von Hand
-    # nachschlaegt.
-    raise UnsupportedTypeError(
-        f"Kein unterstuetzter Typ (gelesene Kopfbytes: {kopf!r}, {len(kopf)} Byte)."
-    )
+    raise _unbekannt(kopf, f"gelesen {len(kopf)} Byte")
 
 
 def sniff_bytes(data: bytes) -> DocumentType:
     """Bestimmt den Typ eines Byte-Puffers im Speicher.
 
-    Der Weg des Abschickens (`OCRClient.ocr_start`, `core.prepare`), das nur
-    Bytes kennt und keine Datei. Verhaelt sich sonst genau wie `sniff_file`, das
-    die Kommandozeile vor dem Lesen einer Datei benutzt.
+    Der Weg des Abschickens (`OCRClient.ocr_start`, `core.prepare`) und des Jobs,
+    die nur Bytes kennen und keine Datei. Verhaelt sich sonst genau wie
+    `sniff_file`, das die Kommandozeile vor dem Lesen einer Datei benutzt.
 
     Args:
         data: Die VOLLSTAENDIGEN Bytes. Nicht nur der Anfang: Bei einem ZIP
@@ -287,18 +550,21 @@ def sniff_bytes(data: bytes) -> DocumentType:
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archiv:
                 return _typ_aus_zip(archiv)
-        except zipfile.BadZipFile as fehler:
-            # Der haeufigste Grund hierfuer ist ein ABGESCHNITTENER Puffer: Das
-            # Zentralverzeichnis steht am Ende der Datei. Deshalb sagt die
-            # Meldung es dazu — sonst sucht man den Fehler im Archiv statt beim
-            # Aufrufer.
-            raise UnsupportedTypeError(
-                f"Beginnt wie ein ZIP, ist aber keines lesbares: {fehler}. "
-                f"Haeufigste Ursache: Der uebergebene Puffer ist unvollstaendig "
+        except _ZIP_LESEFEHLER as fehler:
+            # Ohne Zentralverzeichnis (`BadZipFile`) ist der haeufigste Grund ein
+            # ABGESCHNITTENER Puffer: Das Verzeichnis steht am Ende der Datei.
+            # Deshalb sagt die Meldung es dazu — sonst sucht man den Fehler im
+            # Archiv statt beim Aufrufer. Ein Verzeichnis, das `zipfile` liest,
+            # aber nicht versteht, ist ein Fehler des Archivs.
+            hinweis = (
+                f" Haeufigste Ursache: Der uebergebene Puffer ist unvollstaendig "
                 f"({len(data)} Byte) — das Zentralverzeichnis steht am Dateiende."
+                if isinstance(fehler, zipfile.BadZipFile)
+                else ""
+            )
+            raise UnsupportedTypeError(
+                f"Beginnt wie ein ZIP, ist aber keines lesbares: "
+                f"{type(fehler).__name__}: {fehler}.{hinweis}"
             ) from fehler
 
-    raise UnsupportedTypeError(
-        f"Kein unterstuetzter Typ (gelesene Kopfbytes: {kopf!r}, "
-        f"Puffergroesse {len(data)} Byte)."
-    )
+    raise _unbekannt(kopf, f"Puffergroesse {len(data)} Byte")

@@ -853,7 +853,9 @@ class OCRClient:
                 nur in `advanced` und ist sonst als aus bestellt.
                 Alle drei gelten fuer jedes Dokument dieses Aufrufs; ohne Angabe
                 gelten die Voreinstellungen der Einstellung
-                (`Settings.read_settings`).
+                (`Settings.read_settings`). Bei einem Ganzdokument-Format
+                (`DocumentType.is_whole_document`) wirken sie nicht: Der Worker
+                liest es in `flash`, und am Ergebnis stehen keine (Mineroo#17).
 
         Returns:
             Bei Bytes ein `Submitted`, bei einer Folge eine Liste in der

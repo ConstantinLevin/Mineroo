@@ -15,8 +15,10 @@ großer Lauf läuft; kein Dokument läuft dabei doppelt.
 Optionen, Exit-Codes und Ausgabeformen stehen in `mineru-ocr --help` und
 `mineru-ocr <kommando> --help`, die Bibliothek in ihren Docstrings
 (`help(mineru_ocr.OCRClient)`, `help(mineru_ocr.AsyncOCRClient)`). Welche
-Dateitypen gelesen werden, steht in `mineru_ocr.DocumentType`; alles andere
-weist das Abschicken ab.
+Dateitypen gelesen werden, steht in `mineru_ocr.DocumentType`: PDFs, Bilder und
+Dateien, die MinerU als ganzes Dokument liest (Office auch im alten Format,
+OpenDocument, RTF, EPUB, OFD, HTML, MHTML). Erkannt wird am Inhalt, nicht am
+Namen; alles andere, auch CSV, weist das Abschicken ab.
 
 ## Vor dem ersten Abschicken: Rechenzentren prüfen
 
@@ -95,6 +97,10 @@ Stufe, OCR-Modus und Bildanalyse wählst du je Lauf: beim Kommando `ocr` mit
 `ocr_mode=` und `image_analysis=` an `ocr_start` und `ocr`. Ohne Angabe liest
 MinerU in `advanced` mit erzwungenem OCR und Bildanalyse; davon weichst du nur ab,
 wenn der Nutzer es verlangt (etwa eine saubere digitale PDF im Textmodus).
+
+Bei Dateien, die MinerU als ganzes Dokument liest (Office, OpenDocument, RTF,
+EPUB, OFD, HTML, MHTML), wirken sie nicht: Der Worker liest sie immer in `flash`,
+und am Ergebnis stehen keine Einstellungen.
 
 Die Einstellungen wirken nur auf Dokumente, die der Aufruf neu einreiht. Ein
 Treffer liefert das gespeicherte Ergebnis, gleich welche Einstellungen du

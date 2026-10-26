@@ -142,6 +142,24 @@ DATEIABWEISUNG_KENNUNGEN: Final = (
     "OSError: Truncated File Read",
     "OSError: image file is truncated",
     "OSError: broken data stream when reading image file",
+    # DocVortex 0.5.16 fuer Ganzdokument-Formate (Mineroo#17).
+    "LegacyOfficeError:",
+    "LegacyOfficeMalformedError:",
+    "LegacyOfficeMissingPartError:",
+    "LegacyOfficeEncryptedError:",
+    "LegacyOfficeResourceLimitError:",
+    "OdfParseError:",
+    "OdfEncryptedError:",
+    "OdfResourceLimitError:",
+    "EpubError:",
+    "EpubParseError:",
+    "EpubEncryptedError:",
+    "EpubResourceLimitError:",
+    "OfdParseError:",
+    "OfdEncryptedError:",
+    "OfdResourceLimitError:",
+    "HtmlParseError:",
+    "HtmlResourceLimitError:",
 )
 """Die Anfaenge des `error` einer `FAILED`-Antwort, an denen der Worker eine Datei
 als nicht lesbar abweist.
@@ -174,11 +192,27 @@ von MinerU 4.0.12, nicht geraten:
     allgemein: Ein voller Datentraeger ist auch ein `OSError` und sagt nichts
     ueber die Datei.
 
+    Die Fehlertypen, mit denen DocVortex 0.5.16 (in MinerU 4.0.12) ein
+    Ganzdokument als nicht lesbar abweist, je Format aus
+    `analyzers/native/{office,office/odf,epub,ofd,html}/errors.py`: ein Container
+    oder Datensatz, der kein gueltiges Dokument ergibt (`…MalformedError`,
+    `…ParseError`), ein fehlender Teil (`LegacyOfficeMissingPartError`, „missing
+    required OLE stream"), eine Verschluesselung, die der reine Python-Weg nicht
+    liest (`…EncryptedError`), und eine Eingabe ueber den festen
+    Sicherheitsgrenzen (`…ResourceLimitError`); dazu die Oberklassen
+    `LegacyOfficeError` und `EpubError`. Alle erben von `ValueError`, und der
+    Worker behaelt den Typnamen. Am Endpoint beobachtet fuer einen
+    OLE2-Container ohne den Strom `WordDocument`
+    (`artifacts/2026-10-27-ganzdokumente/`, `ole2_ohne_word_daten`): Die
+    Vorerkennung des Pakets laesst ihn durch, MinerU liest ihn als DOC und
+    scheitert. Jeder weitere Lauf kaufte dieselbe Meldung. Gemeint ist immer der
+    ganze Typname mit Doppelpunkt; ein Typ, der nur so beginnt, ist keiner davon.
+
 Was NICHT darunter faellt und `failed` bleibt: die Pruefungen der Anfrage durch
 den Worker (`ValueError: input validation failed: …` und die uebrigen
-`ValueError` seiner Schema-Pruefung) und jeder andere Fehler der Engine. Weitere
-Abweisungen, die die Ganzdokument-Formate mitbringen (Office, HTML), gehoeren mit
-deren Ticket (Mineroo#17) und den Aufnahmen (Mineroo#10) hierher."""
+`ValueError` seiner Schema-Pruefung) und jeder andere Fehler der Engine, auch
+einer, den ein Ganzdokument mit einem anderen Typ ausloest (etwa ein OOXML-Paket,
+an dem eine Bibliothek unter DocVortex mit einem allgemeinen Fehler scheitert)."""
 
 
 def ist_dateiabweisung(fehlertext: str) -> bool:

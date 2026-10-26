@@ -1331,6 +1331,28 @@ def test_ocr_start_weist_ein_bild_ueber_der_groessengrenze_ab_ohne_etwas_einzure
         assert _zaehlen(db_conn, tabelle) == 0, tabelle
 
 
+@pytest.mark.parametrize(
+    "kopf",
+    [b"{\\rtf1 ", b"<!DOCTYPE html><html>", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"],
+    ids=["rtf", "html", "ole2"],
+)
+def test_ocr_start_weist_ein_ganzdokument_ueber_der_groessengrenze_ab(
+    offener_client: OCRClient, db_conn: psycopg.Connection[Any], kopf: bytes
+) -> None:
+    """Ganzdokument-Formate gehen ungeteilt als ein Stueck hinaus; fuer sie gilt
+    die Groessengrenze einer Anfrage, und eine groessere Datei weist schon das
+    Abschicken ab (Mineroo#17). Genau an der Grenze geht sie durch."""
+    _worker_am_leben(db_conn)
+    grenze = offener_client.settings.max_payload_bytes
+    with pytest.raises(TooLargeError, match="AUFRUESTBAR"):
+        offener_client.ocr_start(kopf + b" " * (grenze + 1 - len(kopf)))
+    for tabelle in ("documents", "inputs", "procrastinate_jobs"):
+        assert _zaehlen(db_conn, tabelle) == 0, tabelle
+
+    h = offener_client.ocr_start(kopf + b" " * (grenze - len(kopf)))
+    assert h.queued is True
+
+
 def test_ocr_start_weist_eine_eingabe_ueber_der_ablagegrenze_ab(
     offener_client: OCRClient,
     db_conn: psycopg.Connection[Any],
