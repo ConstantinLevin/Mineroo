@@ -787,7 +787,7 @@ async def test_dauerhaft_fehlschlagende_abfragen_werden_aufgegeben(
     ohne Ende besetzt.
     """
     knapp = dataclasses.replace(
-        echte_settings, job_timeout_seconds=100.0, poll_interval_seconds=1.0
+        echte_settings, poll_failure_timeout_seconds=100.0, poll_interval_seconds=1.0
     )
     client, transport = _client(
         knapp, Aufzeichnung(_antwort({"error": "kaputt"}, code=503))
@@ -797,6 +797,37 @@ async def test_dauerhaft_fehlschlagende_abfragen_werden_aufgegeben(
 
     assert "Wiederholbar" in str(fehler.value)
     assert sum("/cancel/" in str(a.url) for a in transport.anfragen) == 1
+
+
+async def test_ein_ausfall_laenger_als_das_wartebudget_gibt_den_job_nicht_auf(
+    echte_settings: Settings, uhr: _Uhr
+) -> None:
+    """Mineroo#20: Das Wartebudget je Teilstueck ist auf `executionTimeout`
+    gesunken (300 s). Ein Ausfall der Abfragen hat seine eigene, laengere Frist:
+    Das Ergebnis liegt bei RunPod noch bis zu dreissig Minuten, und ein Job, der
+    nach fuenf Minuten Ausfall aufgegeben wuerde, wuerde neu bezahlt."""
+    einstellung = dataclasses.replace(
+        echte_settings,
+        job_timeout_seconds=300.0,
+        poll_failure_timeout_seconds=1500.0,
+        poll_interval_seconds=10.0,
+    )
+    ausfall = _antwort({"error": "kaputt"}, code=503)
+    client, transport = _client(
+        einstellung,
+        Aufzeichnung(
+            # Der Job laeuft schon, als die Abfragen ausfallen: Auch die Zeit in
+            # Bearbeitung gibt ihn waehrend des Ausfalls nicht auf.
+            [_antwort({"status": "IN_PROGRESS"})]
+            # Rund zehn Minuten Ausfall bei wachsendem Abstand bis 60 s.
+            + [ausfall] * 12
+            + [_antwort({"status": "COMPLETED", "output": {"ok": True}})]
+        ),
+    )
+    antwort = await client.await_result("j")
+
+    assert antwort["status"] == "COMPLETED"
+    assert not any("/cancel/" in str(a.url) for a in transport.anfragen)
 
 
 async def test_ein_gelungenes_abfragen_setzt_die_fehlerfrist_zurueck(

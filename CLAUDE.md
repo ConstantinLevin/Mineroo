@@ -179,7 +179,13 @@ auch für Aufrufer aus Python. Der Preflight beim Öffnen eines `OCRClient` läu
 wenn Schlüssel und Endpoint eingestellt sind; ohne einen davon entfällt er still. Die Sollwerte des Preflights (`expected_image_tag`, `workers_min`,
 `workers_max`, `idle_timeout`, `execution_timeout_ms`, `allowed_data_centers`, die
 Tabelle `[endpoint_env]`) sind Felder von `Settings` mit den Voreinstellungen aus
-Mineroo#3 (0, 10, 60, 600000). Ein unbekannter Schlüssel in der Datei, eine
+Mineroo#3 und den Werten am Endpoint (0, 10, 60, 300000). Ebenso eingestellte
+Werte sind die Grenzen eines Teilstücks (Mineroo#20): `max_pages_per_chunk`
+(20 Seiten), `max_payload_bytes` (7,4 MB roh) und `job_timeout_seconds` (300 s);
+die Herleitung aus Antwort-, Anfrage- und Zeitgrenze steht an den Feldern in
+`config.py` und unter „Teilstücke sind vor Postgres vollständig abstrahiert“.
+Die Seitenzahl wirkt im Daemon, der zerlegt: Ein neuer Wert gilt nach dessen
+Neustart. Ein unbekannter Schlüssel in der Datei, eine
 ausdrücklich genannte, aber fehlende Datei und ein Wert vom falschen Typ sind
 Fehler: ein Tippfehler im Namen wäre sonst ein Wert, der da steht und nirgends
 wirkt. Der RunPod-Schlüssel bleibt in `~/.runpod/config.toml` und gehört nie in
@@ -656,10 +662,28 @@ Ergebnisse gibt es nicht zu bedienen (Mineroo#1, „Nur noch MinerU 4").
 ### Teilstücke sind vor Postgres vollständig abstrahiert
 
 Hinein geht das ganze Dokument, heraus kommt das ganze Dokument. Dass ein PDF
-unterwegs in Stücke zu 20 Seiten zerfällt (`chunking.plan_chunks`), sieht die
-Datenbank nie: Der Exekutor setzt die Teilergebnisse **vor** dem Schreiben mit
-`assembly.assemble` zusammen, und `raw` ist **ein** Objekt auf Dokumentebene. Es
-gibt keine Chunk-Tabelle und keine Teil-Zeilen.
+unterwegs in Stücke von höchstens `max_pages_per_chunk` Seiten zerfällt
+(`chunking.plan_chunks`), sieht die Datenbank nie: Der Exekutor setzt die
+Teilergebnisse **vor** dem Schreiben mit `assembly.assemble` zusammen, und `raw`
+ist **ein** Objekt auf Dokumentebene. Es gibt keine Chunk-Tabelle und keine
+Teil-Zeilen.
+
+**Die Größe eines Teilstücks begrenzt die Antwort, nicht die Anfrage**
+(Mineroo#20). Der Worker weist eine Antwort über 19,4 MB selbst ab
+(`ResponseTooLargeError`); das Dokument endet dann `failed`, nie still `done`,
+und ein `retry` mit denselben Werten scheitert wieder. Die 10 MB, die RunPod
+laut Doku und Worker auf `/run` kappen soll, gelten für die Antwort nicht: Eine
+Antwort von 14,0 MB kam vollständig an. Die dichtesten echten Scans brachten
+729 KB Antwort je Seite; mit 25 % Abstand zu 19,4 MB sind das **20 Seiten**
+(`max_pages_per_chunk`), und 20 Seiten × 5,0 s × 3 sind genau `executionTimeout`. Die Rohbytes eines Teilstücks begrenzt
+`max_payload_bytes` (**7,4 MB**, kodiert 9,87 MB unter der Anfragegrenze von
+`/run`, `config.RUN_ANFRAGEGRENZE_BYTES`; ein größerer Wert wirft beim Bilden der
+Einstellung). Das Wartebudget je Teilstück, `job_timeout_seconds` (**300 s**),
+folgt derselben Rechnung wie `executionTimeout` des Endpoints (langsamste Seite
+5,0 s × 20 × 3) und ist ihm gleich. Belegt mit zwei Live-Jobs am 27.10.2026
+(erfundene dichte Scan-Seiten: 24 Seiten, 26,7 MB, abgewiesen; 12 Seiten,
+14,0 MB, vollständig angekommen); die Messwerte
+stehen in `docs/MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md`, Abschnitt 8.
 
 Jede Datei der Antwort hat in `raw` ihren eigenen Schlüssel: `markdown` und
 `markdown_full` als Text über alle Teilstücke (`markdown_full` ist `None`, wenn
@@ -783,8 +807,10 @@ Jede steht wegen eines bezahlten Fehlers, nicht wegen einer Vorliebe.
   Herunterfahren abbricht — sonst läuft er bei RunPod weiter und kostet. Das
   Zeitbudget (`job_timeout_seconds`) zählt die Zeit in `IN_PROGRESS` über alle
   Läufe des Jobs; Warteschlange und Kaltstart zählen nicht, und die Zeit in der
-  Warteschlange hat keine Obergrenze. Fehlschlagende Abfragen haben dieselbe
-  Frist. Vor dem Aufgeben fragt das Paket ein letztes Mal ab.
+  Warteschlange hat keine Obergrenze. Fehlschlagende Abfragen haben eine eigene,
+  längere Frist (`poll_failure_timeout_seconds`, 1500 s), denn das Ergebnis liegt
+  bei RunPod rund 30 Minuten; solange sie scheitern, gibt auch das Zeitbudget
+  nicht auf. Vor dem Aufgeben fragt das Paket ein letztes Mal ab.
 - **Der API-Schlüssel steht nur im `Authorization`-Header**, nie in einer URL,
   und wird nie ausgegeben. Er liegt in `~/.runpod/config.toml` im Feld `apikey`.
 - **PDFium ist nicht threadsicher.** `asyncio.to_thread` um `pdf.py` herum ist

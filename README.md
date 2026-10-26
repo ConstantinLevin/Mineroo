@@ -78,9 +78,14 @@ expected_image_tag = "<Tag des gebauten Images>"   # (keiner: dann "nicht prüfb
 workers_min = 0                                      # (0)
 workers_max = 10                                     # (10, die Kontogrenze)
 idle_timeout = 60                                    # (60, Sekunden)
-execution_timeout_ms = 600000                        # (600000)
+execution_timeout_ms = 300000                        # (300000)
 allowed_data_centers = ["EU-RO-1", "EU-CZ-1", "EUR-IS-1", "EUR-IS-2", "EUR-NO-1"]
                                                      # (alle EWR-Rechenzentren)
+
+# Grenzen eines Teilstuecks; wirken im Daemon, der zerlegt (Mineroo#20):
+max_pages_per_chunk = 20                             # (20 Seiten)
+max_payload_bytes = 7400000                          # (7,4 MB roh; mehr passt nicht durch /run)
+job_timeout_seconds = 300                            # (300, wie executionTimeout)
 
 # Endpoint-Variablen, die der Preflight nach Wert prüft; was die Tabelle nicht
 # nennt, behält seinen Sollwert. Variablen, die das Image setzt (etwa
@@ -332,6 +337,15 @@ zerfällt, sieht die Datenbank nie: Der Exekutor setzt die Teilergebnisse **vor*
 dem Schreiben zusammen. Es gibt keine Chunk-Tabelle. Nach jedem Teilstück
 prüft er, ob die Antwort vollständig ist: Fehlen Seiten oder eine Datei, die das
 Paket braucht, endet das Dokument `failed`, statt still `done` zu werden.
+
+Ein Teilstück hat höchstens 20 Seiten und 7,4 MB (`max_pages_per_chunk`,
+`max_payload_bytes`), und das Paket wartet je Teilstück höchstens 300 s
+Bearbeitung ab (`job_timeout_seconds`, wie `executionTimeout` am Endpoint). Die
+Grenzen sind die Antwort und die Zeit: Der Worker gibt höchstens 19,4 MB zurück,
+die dichtesten gemessenen Scans brachten 729 KB je Seite, und die langsamste
+Seite brauchte 5,0 s. Wird eine Antwort
+zu groß, endet das Dokument `failed`; ein `retry` hilft erst mit einem
+kleineren `max_pages_per_chunk` im Daemon.
 
 **Die Abruf-Regel — alles holen, alles persistieren, nie filtern — ist als
 Bauweise umgesetzt, nicht als Vorsatz.** Die Ergebnisse liegen auf der Gegenseite

@@ -15,6 +15,7 @@ fuehrt diese Punkte als offene Nachmessungen.
 from __future__ import annotations
 
 import dataclasses
+import math
 import os
 import re
 import tomllib
@@ -44,6 +45,13 @@ ZAHL_SCHLUESSEL: Final = (
 )
 """Die Sollwerte des Endpoints, die Ganzzahlen sind."""
 
+TEILSTUECK_ZAHL_SCHLUESSEL: Final = (
+    "max_pages_per_chunk",
+    "max_payload_bytes",
+)
+"""Die Grenzen eines Teilstuecks, die Ganzzahlen sind (Mineroo#20). Das
+Wartebudget je Teilstueck, `job_timeout_seconds`, ist eine Kommazahl."""
+
 DATEI_SCHLUESSEL: Final = frozenset(
     {
         "endpoint_id",
@@ -52,6 +60,8 @@ DATEI_SCHLUESSEL: Final = frozenset(
         "allowed_data_centers",
         "endpoint_env",
         *ZAHL_SCHLUESSEL,
+        *TEILSTUECK_ZAHL_SCHLUESSEL,
+        "job_timeout_seconds",
     }
 )
 """Die Schluessel, die die Konfigurationsdatei kennt. Ein anderer ist ein Fehler
@@ -101,6 +111,17 @@ gelesen, nie geschrieben."""
 
 MASKE: Final = "***"
 """Was anstelle des Schluessels in jeder Ausgabe steht."""
+
+RUN_ANFRAGEGRENZE_BYTES: Final = 10_000_000
+"""Die groesste JSON-Anfrage, die RunPod auf `/run` annimmt: 10 MB (RunPod-Doku,
+„Payload limits"; Job-Vertrag des Forks, `file_b64`). Gegen sie prueft `Settings`
+die Rohgroesse eines Teilstuecks (`max_payload_bytes`), denn ein zu grosses
+scheitert erst am Gateway."""
+
+UMSCHLAG_RESERVE_BYTES: Final = 100_000
+"""Was neben dem Base64-Text in der Anfrage Platz braucht: der Umschlag
+`{"input": {…}}` mit Stufe, Modus, Bildanalyse und Transport, gut 150 Byte.
+Grosszuegig gerundet, weil ein Byte zu wenig den ganzen Job kostet."""
 
 _GEHEIMNIS_TEILE: Final = frozenset(
     {
@@ -269,6 +290,22 @@ def _zahl(name: str, wert: Any, herkunft: str) -> int:
     )
 
 
+def _sekunden(name: str, wert: Any, herkunft: str) -> float:
+    """Eine Zahl, auch mit Komma, aus Umgebung (Text) oder Datei (Zahl). Ob sie
+    endlich und groesser als null ist, prueft `Settings` selbst."""
+    if isinstance(wert, str):
+        try:
+            return float(wert)
+        except ValueError:
+            pass
+    elif isinstance(wert, (int, float)) and not isinstance(wert, bool):
+        return float(wert)
+    raise ConfigurationError(
+        f"{herkunft}: `{name}` muss eine Zahl sein, ist aber vom Typ "
+        f"{type(wert).__name__}."
+    )
+
+
 def _namen(name: str, wert: Any, herkunft: str) -> tuple[str, ...]:
     """Eine Liste von Namen: in der Umgebung durch Kommas getrennt, in der Datei
     eine Liste. Leer ist ein Fehler — eine leere Liste liesse nichts zu."""
@@ -325,6 +362,27 @@ def _sollwerte(
                 )
             env[variable] = str(soll)
         ergebnis["endpoint_env"] = env
+    return ergebnis
+
+
+def _teilstueck_grenzen(
+    umgebung: Mapping[str, str], datei: Mapping[str, Any], pfad: Path
+) -> dict[str, Any]:
+    """Die Grenzen eines Teilstuecks, die irgendwo eingestellt sind (Mineroo#20).
+
+    Wie bei den Sollwerten kommt nur in das Ergebnis, was eingestellt ist; alles
+    andere behaelt seine Feld-Voreinstellung. Ob ein Wert taugt (mindestens eine
+    Seite, unter der Anfragegrenze von `/run`, ein endliches Budget), prueft
+    `Settings` beim Bilden.
+    """
+    ergebnis: dict[str, Any] = {}
+    for name in TEILSTUECK_ZAHL_SCHLUESSEL:
+        gefunden = _wert(name, umgebung, datei, pfad)
+        if gefunden is not None:
+            ergebnis[name] = _zahl(name, *gefunden)
+    gefunden = _wert("job_timeout_seconds", umgebung, datei, pfad)
+    if gefunden is not None:
+        ergebnis["job_timeout_seconds"] = _sekunden("job_timeout_seconds", *gefunden)
     return ergebnis
 
 
@@ -569,49 +627,45 @@ class Settings:
 
     # -- Zerlegung grosser Dokumente --------------------------------------
 
-    max_payload_bytes: int = 7_000_000
-    """Obergrenze fuer die ROHE Groesse eines Chunks vor der Base64-Kodierung.
-    Hergeleitet: Das Gateway nimmt auf `/run` hoechstens 10 MB an; Base64 blaeht
-    um Faktor 1,33; der Rest ist Puffer fuer den Umschlag ringsum. 7,0 MB roh
-    ergeben rund 9,3 MB kodiert."""
+    max_payload_bytes: int = 7_400_000
+    """Obergrenze fuer die ROHE Groesse eines Teilstuecks vor der Base64-Kodierung.
+    Ein eingestellter Wert (Schluessel `max_payload_bytes`, Mineroo#20).
+
+    Hergeleitet aus der Anfragegrenze: `/run` nimmt hoechstens 10 MB JSON an
+    (`RUN_ANFRAGEGRENZE_BYTES`), Base64 blaeht um 4/3. 7,4 MB roh ergeben
+    9,87 MB kodiert, und es bleiben rund 130 KB fuer den Umschlag
+    (`UMSCHLAG_RESERVE_BYTES`). Am Endpoint angenommen wurde am 27.10.2026 eine
+    Anfrage mit 8,02 MB Base64 (6,02 MB roh). Ein groesserer Wert wirft beim
+    Bilden der Einstellung, statt jedes grosse Teilstueck am Gateway scheitern zu
+    lassen."""
 
     max_pages_per_chunk: int = 20
-    """Obergrenze fuer die Seitenzahl eines Chunks.
+    """Obergrenze fuer die Seitenzahl eines Teilstuecks. Ein eingestellter Wert
+    (Schluessel `max_pages_per_chunk`, Mineroo#20).
 
-    AM TARBALL NACHGEMESSEN am 09.08.2026, an den fuenf damals konservierten
-    echten Antworten unter `artifacts/2026-08-08-erster-tarball-lauf/` (vier
-    davon sind vor dem ersten Push entfernt worden, weil sie personenbezogene
-    Daten trugen, Mineroo#2; die Messung bleibt gueltig):
+    Jede Grenze zwischen zwei Teilstuecken kann eine Tabelle zerreissen, weil
+    MinerU Tabellen hoechstens innerhalb eines Jobs zusammenfuegt. Das Teilstueck
+    ist deshalb so gross, wie die engsten Grenzen es tragen:
 
-        41,5 KB je Seite — ein dichter Einzelseiter mit Tabelle und Bild
-        29,5 KB je Seite — fuenf Seiten dichter Fliesstext mit Bildern
-        16,2 KB je Seite — fuenf Seiten Deckblatt und Inhaltsverzeichnis
-        10,1 KB je Seite — zwei Seiten Ablaufplan
-         1,9 KB je Seite — eine leere Seite
+    ANTWORT. Der Worker gibt beim Transport `tarball_b64` hoechstens 19,4 MB
+    zurueck und weist eine groessere Antwort mit `ResponseTooLargeError` ab
+    (belegt am 27.10.2026: 24 erfundene dichte Scan-Seiten, 26,7 MB). Die
+    10 MB, die RunPod angeblich auf `/run` kappt, gelten nicht: Am selben Tag kam
+    eine Antwort von 14,0 MB (12 solche Seiten) vollstaendig an. Die dichtesten
+    echten Scans des Messlaufs (Mineroo#19) brachten 729 KB je Seite; 20 Seiten
+    sind 14,6 MB, gut 25 % unter den 19,4 MB. Die erfundenen Seiten der Belege
+    brachten 1,17 MB je Seite; Seiten dieser Dichte passen nur zu sechzehnt.
 
-    Der schlechteste gemessene Wert ist also rund 41,5 KB je Seite. Bei 20
-    Seiten sind das etwa 0,81 MB Antwort gegen ein Cap von 20 MB — die Schwelle
-    hat Faktor 25 Reserve, und das Cap waere erst bei rund 490 Seiten je
-    Teilstueck ausgereizt.
+    ZEIT. Die langsamste gemessene Seite brauchte 5,0 s; mit dreifachem Puffer
+    sind 20 Seiten 300 s, genau `executionTimeout` am Endpoint.
 
-    DIE SCHAETZUNG, DIE HIER STAND, LAG UM ZWEI GROESSENORDNUNGEN DANEBEN: Sie
-    rechnete mit „konservativ 0,75 MB je Seite" und kam auf rund 15 MB fuer 20
-    Seiten, also knapp unter das Cap. Gemessen sind es 0,81 MB. Der Fehler lag
-    in der Zutat, nicht in der Rechnung — angenommen war, der Tarball trage
-    zusaetzlich zu den Inline-Formaten noch Layout- UND Span-PDF; das Span-PDF
-    gab es mit dem damaligen Backend gar nicht, und das Layout-PDF war mit rund
-    40 KB klein.
+    ANFRAGE. Die Bytes begrenzt `max_payload_bytes`; ein Teilstueck, das zu
+    gross ist, wird halbiert (`chunking.iter_chunks`).
 
-    Gemessen ist das an MinerU 3.4. Die Antworten des MinerU-4-Workers tragen
-    andere Dateien (Mineroo#11); ihre Groesse misst der Qualitaets- und
-    Messlauf (Mineroo#19), aus dem die Teilstueck-Grenzen kommen (Mineroo#20).
-
-    Die Schwelle BLEIBT trotzdem bei 20, und das ist eine Entscheidung und kein
-    Versaeumnis: Die Antwortgroesse ist nicht die einzige Grenze. Ein groesseres
-    Teilstueck heisst auch laengere Verarbeitung je Job, mehr verlorene Arbeit
-    bei einem Fehlschlag und ein groesseres Fenster gegen die
-    Dreissig-Minuten-Aufbewahrung. Wer sie erhoehen will, hat mit dieser Messung
-    jetzt den Kopfraum belegt — und sollte die anderen drei Groessen mitdenken."""
+    Wer den Wert hebt, hebt auch `executionTimeout` und `job_timeout_seconds`
+    und prueft die Antwort: Ab 27 Seiten der dichtesten Scans reisst sie die
+    19,4 MB. Reisst sie, endet das Dokument `failed`; der Weg zurueck ist ein
+    kleinerer Wert und `retry`."""
 
     # -- Zeitverhalten -----------------------------------------------------
 
@@ -628,7 +682,7 @@ class Settings:
     Grund, warum es sie ueberhaupt einzeln gibt: httpx setzt ohne Zutun EINE
     Schranke von fuenf Sekunden fuer Verbindungsaufbau, Lesen, Schreiben und Pool
     zusammen (`httpx/_config.py`, `DEFAULT_TIMEOUT_CONFIG = Timeout(timeout=5.0)`).
-    Ein Teilstueck geht mit bis zu 9,3 MB Base64 hinaus — gegen fuenf Sekunden ist
+    Ein Teilstueck geht mit bis zu 9,9 MB Base64 hinaus — gegen fuenf Sekunden ist
     das bei maessigem Upstream nicht zu schaffen. Und der Fehlschlag waere teuer:
     Ein Schreib-Abbruch gilt als wiederholbar, der Chunk geht noch einmal raus,
     waehrend der erste Job auf der Gegenseite moeglicherweise schon angenommen und
@@ -668,16 +722,38 @@ class Settings:
     `/status`, und dessen Antwort traegt im Moment des Fertigwerdens gleich das
     ganze Ergebnis — Abfrage und Abholung sind derselbe Aufruf."""
 
-    job_timeout_seconds: float = 1_500.0
+    job_timeout_seconds: float = 300.0
     """Zeitbudget fuer EIN Teilstueck: die Zeit, in der RunPod den Job bearbeitet
-    (nicht `IN_QUEUE`), ueber alle Laeufe des Jobs zusammen. Warteschlange und
+    (nicht `IN_QUEUE`), ueber alle Laeufe des Jobs zusammen. Ein eingestellter
+    Wert (Schluessel `job_timeout_seconds`, Mineroo#20). Warteschlange und
     Kaltstart zaehlen nicht mit: Sonst wuerde ein Job, der hinter einem grossen
     Lauf wartet, bei Ablauf abgebrochen (`/cancel`) und neu eingereiht, immer
-    wieder und jedes Mal neu bezahlt. Dieselbe Frist gilt fuer eine Reihe
-    fehlgeschlagener Abfragen (RunPod nicht erreichbar). 25 Minuten, damit ein
-    Parse auch dann reicht, wenn der Worker waehrend des Parsens erst Modelle
-    laedt. Wird das Budget gerissen, geht `/cancel` fuer den Job hinaus; der
-    Fehler ist wiederholbar, nicht endgueltig."""
+    wieder und jedes Mal neu bezahlt. Der Kaltstart samt Laden der Modelle
+    (gemessen 104–128 s) liegt vor dem ersten Job eines Workers und damit in der
+    Warteschlange. Eine Reihe fehlgeschlagener Abfragen hat ihre eigene Frist
+    (`poll_failure_timeout_seconds`). Wird das Budget gerissen, geht `/cancel`
+    fuer den Job hinaus; der Fehler ist wiederholbar, nicht endgueltig.
+
+    300 s aus derselben Rechnung wie `executionTimeout` des Endpoints
+    (Mineroo#19): die langsamste gemessene Seite 5,0 s, mal 20 Seiten, mal drei.
+    20 Seiten sind auch die Voreinstellung von `max_pages_per_chunk`; das
+    laengste gemessene Teilstueck lief 17,8 s. Mehr als
+    `executionTimeout` kauft nichts, denn dann beendet der Endpoint den Job
+    schon selbst; weniger gaebe Teilstuecke auf, die der Endpoint noch laufen
+    liesse. Wer Seiten je Teilstueck oder `executionTimeout` aendert, rechnet
+    diesen Wert mit."""
+
+    poll_failure_timeout_seconds: float = 1_500.0
+    """Wie lange eine Reihe fehlgeschlagener Abfragen (RunPod nicht erreichbar,
+    5xx) dauern darf, bevor das Paket den Job aufgibt und `/cancel` schickt. Die
+    Frist beginnt beim ersten Fehler einer Reihe und endet mit der ersten
+    gelungenen Abfrage.
+
+    Eigene Frist und nicht `job_timeout_seconds` (Review zu Mineroo#20): Seit das
+    Wartebudget `executionTimeout` folgt (300 s), gaebe ein Ausfall von fuenf
+    Minuten jeden wartenden Job auf, und das Teilstueck wuerde neu bezahlt,
+    obwohl sein Ergebnis bei RunPod noch rund dreissig Minuten liegt. 25 Minuten
+    bleiben darunter, mit Abstand fuer die letzte Abfrage."""
 
     ocr_concurrency: int = 24
     """Wie viele Dokumente der Daemon gleichzeitig betreut. GESETZT, nicht
@@ -768,12 +844,14 @@ class Settings:
 
     idle_timeout: int = 60
     """`idleTimeout` in Sekunden: wie lange ein Worker nach seinem letzten Job warm
-    bleibt und bezahlt wird. Vorerst 60, wie am Endpoint gesetzt; den endgueltigen
-    Wert setzt der Eigentuemer aus der gemessenen Kaltstartzeit."""
+    bleibt und bezahlt wird. 60, wie am Endpoint gesetzt; den endgueltigen Wert
+    setzt der Eigentuemer aus den gemessenen Kaltstartzeiten (Mineroo#19)."""
 
-    execution_timeout_ms: int = 600000
-    """`executionTimeoutMs`: wie lange ein Job laufen darf. Vorerst 600000, wie am
-    Endpoint gesetzt; er folgt der Messung zur Teilstueck-Groesse."""
+    execution_timeout_ms: int = 300000
+    """`executionTimeoutMs`: wie lange ein Job laufen darf. 300000, wie am
+    Endpoint gesetzt seit dem 26.10.2026: die langsamste gemessene Seite 5,0 s,
+    mal 20 Seiten, mal drei (Mineroo#19). Das Wartebudget des Pakets je
+    Teilstueck, `job_timeout_seconds`, folgt derselben Rechnung."""
 
     allowed_data_centers: tuple[str, ...] = EWR_RECHENZENTREN
     """Die Rechenzentren, in denen der Endpoint rechnen darf. Der Preflight
@@ -857,10 +935,38 @@ class Settings:
 
         Geprueft wird ueber `ReadSettings`, die eine Stelle dafuer.
 
+        Dazu die Grenzen eines Teilstuecks (Mineroo#20), seit sie eingestellte
+        Werte sind: Null Seiten liessen `plan_chunks` nie fertig werden, ein
+        Teilstueck ueber der Anfragegrenze von `/run` scheiterte erst am Gateway,
+        und ein Budget von null oder `nan` gaebe jeden Job sofort auf, `inf` nie.
+
         Raises:
-            ConfigurationError: Stufe oder OCR-Modus steht nicht in seiner Liste.
+            ConfigurationError: Stufe oder OCR-Modus steht nicht in seiner Liste,
+                oder eine Grenze eines Teilstuecks taugt nicht.
         """
         self.read_settings()
+        if self.max_pages_per_chunk < 1:
+            raise ConfigurationError(
+                f"max_pages_per_chunk={self.max_pages_per_chunk!r}: Ein Teilstueck "
+                f"braucht mindestens eine Seite."
+            )
+        kodiert = 4 * math.ceil(self.max_payload_bytes / 3) + UMSCHLAG_RESERVE_BYTES
+        if self.max_payload_bytes < 1 or kodiert > RUN_ANFRAGEGRENZE_BYTES:
+            raise ConfigurationError(
+                f"max_payload_bytes={self.max_payload_bytes!r} taugt nicht: Ein "
+                f"Teilstueck braucht mindestens ein Byte, und Base64 samt Umschlag "
+                f"({kodiert} Byte) muss unter die Anfragegrenze von /run passen "
+                f"({RUN_ANFRAGEGRENZE_BYTES} Byte)."
+            )
+        for name, frist in (
+            ("job_timeout_seconds", self.job_timeout_seconds),
+            ("poll_failure_timeout_seconds", self.poll_failure_timeout_seconds),
+        ):
+            if not (math.isfinite(frist) and frist > 0):
+                raise ConfigurationError(
+                    f"{name}={frist!r}: Die Frist je Teilstueck muss eine endliche "
+                    f"Zahl groesser als null sein."
+                )
 
     def read_settings(
         self,
@@ -1019,6 +1125,7 @@ class Settings:
             strict=strict,
             config_path=config_path,
             **_sollwerte(umgebung, datei, config_path),
+            **_teilstueck_grenzen(umgebung, datei, config_path),
         )
 
         # Die zwei uebrigen ueberschreiben ihre Feld-Voreinstellung nur, wenn sie

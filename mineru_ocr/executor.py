@@ -307,9 +307,10 @@ async def process_document(
         Eine Verbindung wird ZWEIMAL kurz genommen — am Anfang zum Nachsehen, am Ende
         zum Schreiben — und dazwischen ZURUECKGEGEBEN. Waehrend des Wartens auf
         RunPod haelt diese Funktion KEINE Verbindung. Das ist keine Feinheit: Ein
-        Dokument haengt bis zu fuenfundzwanzig Minuten in seiner Abfrageschleife,
-        und vierundzwanzig gleichzeitig gehaltene Verbindungen ueber diese Zeit
-        wuerden den Verbindungspool blockieren, waehrend niemand ihn benutzt.
+        Dokument haengt lange in seiner Abfrageschleife (die Warteschlange hat
+        keine Obergrenze), und vierundzwanzig gleichzeitig gehaltene Verbindungen
+        ueber diese Zeit wuerden den Verbindungspool blockieren, waehrend niemand
+        ihn benutzt.
 
     Idempotenz:
         Ja, ueber das Nachsehen — mit der ausdruecklichen und gewollten
@@ -382,8 +383,8 @@ async def process_document(
         # Dokument ohne Ergebnis zurueckzulassen (Mineroo#27).
         #
         # Die Verbindung wird SOFORT wieder zurueckgegeben. Alles Weitere
-        # geschieht ohne Verbindung — ein Dokument haengt bis zu
-        # fuenfundzwanzig Minuten in seiner Abfrageschleife, und
+        # geschieht ohne Verbindung — ein Dokument haengt lange in seiner
+        # Abfrageschleife (die Warteschlange hat keine Obergrenze), und
         # vierundzwanzig gehaltene Verbindungen ueber diese Zeit blockierten den
         # Pool, waehrend niemand ihn benutzt.
         async with pool.connection() as conn:
