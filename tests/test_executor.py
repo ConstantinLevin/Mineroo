@@ -3840,17 +3840,17 @@ async def test_endgueltiger_fehler_beim_abfragen_bricht_den_job_ab(
     tmp_path: Path,
 ) -> None:
     """Endet das Warten mit einem Fehler, der den Job nicht beendet hat (etwa
-    HTTP 429 auf `/status`), geht `/cancel` hinaus; der Fehler bleibt der Grund."""
+    HTTP 400 auf `/status`), geht `/cancel` hinaus; der Fehler bleibt der Grund."""
     sha, _ = _anlegen(
         db_conn, tmp_path, b"ein bild", name="b.png", typ=DocumentType.PNG
     )
 
-    class Gedrosselt(FalscherRunPod):
+    class Abgewiesen(FalscherRunPod):
         async def await_result(self, job_id: str) -> dict[str, Any]:
-            raise TerminalRunPodError("HTTP 429 beim Abfragen")
+            raise TerminalRunPodError("HTTP 400 beim Abfragen")
 
-    runpod = Gedrosselt()
-    with pytest.raises(TerminalRunPodError, match="429"):
+    runpod = Abgewiesen()
+    with pytest.raises(TerminalRunPodError, match="400"):
         await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     assert runpod.abgebrochen == ["job-0"]
@@ -3931,7 +3931,7 @@ async def test_aufgegebener_job_mit_misslungenem_abbruch_wird_vom_executor_abgeb
 @pytest.mark.parametrize(
     "fehler",
     [
-        TerminalRunPodError("HTTP 429 beim Abfragen"),
+        TerminalRunPodError("HTTP 400 beim Abfragen"),
         JobAufgegebenError("Abbruch misslang", abgebrochen=False),
     ],
     ids=["anderer_fehler", "aufgegeben_ohne_abbruch"],

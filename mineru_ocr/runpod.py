@@ -332,7 +332,9 @@ class RunPodClient:
                 f"dreissig Minuten abgelaufen, oder die Kennung ist unbekannt. "
                 f"{text}"
             )
-        if code >= 500:
+        # Ein Rate-Limit ist voruebergehend, auch fuer /run und /cancel.
+        # /status fragt damit denselben Job innerhalb seiner Ausfallfrist weiter ab.
+        if code == 429 or code >= 500:
             raise TransientRunPodError(
                 f"{was}: HTTP {code} auf der Gegenseite. {text}"
             )
@@ -500,7 +502,7 @@ class RunPodClient:
             ConfigurationError: HTTP 401 oder 403 — der Schluessel taugt nicht.
                 Kein Retry: Wiederholen macht einen ungueltigen Schluessel nicht
                 gueltig.
-            TransientRunPodError: Transportfehler oder HTTP 5xx.
+            TransientRunPodError: Transportfehler, HTTP 429 oder HTTP 5xx.
             TerminalRunPodError: Alles uebrige, insbesondere HTTP 400 (zu grosse
                 Nutzlast, unbrauchbare Eingabe).
 
@@ -574,7 +576,7 @@ class RunPodClient:
                 weiter unten sagte `await_result` das Gegenteil und verwies
                 dabei ausgerechnet auf diese Stelle. Am Verhalten gemessen
                 stimmt `errors.py`: wiederholbar.
-            TransientRunPodError: Transportfehler oder HTTP 5xx — hier wird
+            TransientRunPodError: Transportfehler, HTTP 429 oder HTTP 5xx — hier wird
                 weiter abgefragt.
             ConfigurationError: HTTP 401 oder 403.
 
@@ -613,7 +615,7 @@ class RunPodClient:
         Raises:
             ResultLostError: HTTP 404, die Kennung ist unbekannt oder abgelaufen.
             ConfigurationError: HTTP 401 oder 403.
-            TransientRunPodError: Transportfehler oder HTTP 5xx.
+            TransientRunPodError: Transportfehler, HTTP 429 oder HTTP 5xx.
             TerminalRunPodError: Alles uebrige.
 
         Kosten: keine; spart im Gegenteil, was der Job sonst weiter kostete.
@@ -679,7 +681,7 @@ class RunPodClient:
         dreissig Minuten bereit. Wer hier abbricht, wirft ein bezahltes, noch
         abholbares Ergebnis weg und bezahlt es beim naechsten Anlauf ein zweites
         Mal. Eine fehlgeschlagene Abfrage vom Typ `TransientRunPodError` (Netz,
-        5xx) wird so wiederholt, bis die Frist fuer fehlgeschlagene Abfragen um
+        429, 5xx) wird so wiederholt, bis die Frist fuer fehlgeschlagene Abfragen um
         ist. Sofort beendet das Warten `ResultLostError` (404), denn dann ist
         wirklich nichts mehr da, und jeder Fehler, der nicht wiederholbar ist
         (`TerminalRunPodError`, `ConfigurationError`, `InsufficientBalanceError`):

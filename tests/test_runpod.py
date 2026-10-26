@@ -427,6 +427,46 @@ async def test_401_und_403_sind_konfigurationsfehler(
         assert "testendpoint" in str(fehler.value)
 
 
+@pytest.mark.parametrize("zugang", ["status", "schlussabruf", "submit", "cancel"])
+async def test_429_ist_voruebergehend_und_der_aufruf_kann_fortgesetzt_werden(
+    echte_settings: Settings, uhr: _Uhr, zugang: str
+) -> None:
+    """Ein Rate-Limit beendet keinen Job: Status fragt denselben weiter ab;
+    submit und cancel melden den wiederholbaren Fehler ihrem Aufrufer."""
+    einstellung = dataclasses.replace(
+        echte_settings, job_timeout_seconds=300.0, poll_interval_seconds=10.0
+    )
+    bezahlt = {"status": "COMPLETED", "output": {"markdown": "Bezahlter Text"}}
+    erfolg = (
+        {"id": "j"} if zugang == "submit"
+        else {"status": "CANCELLED"} if zugang == "cancel"
+        else bezahlt
+    )
+    davor = [_antwort({"status": "IN_PROGRESS"})] * 30 if zugang == "schlussabruf" else []
+    client, transport = _client(
+        einstellung,
+        Aufzeichnung(davor + [
+            httpx.Response(429, headers={"Retry-After": "1"}, text="Too Many Requests"),
+            _antwort(erfolg),
+        ]),
+    )
+
+    if zugang in {"status", "schlussabruf"}:
+        assert await client.await_result("j") == bezahlt
+        assert all(a.url.path.endswith("/status/j") for a in transport.anfragen)
+    else:
+        with pytest.raises(TransientRunPodError, match="429"):
+            if zugang == "submit":
+                await _absenden(client)
+            else:
+                await client.cancel("j")
+        assert len(transport.anfragen) == 1
+        if zugang == "submit":
+            assert await _absenden(client) == "j"
+        else:
+            assert await client.cancel("j") == erfolg
+
+
 async def test_5xx_ist_wiederholbar(echte_settings: Settings) -> None:
     """HTTP 5xx ergibt TransientRunPodError."""
     for code in (500, 502, 503):
@@ -781,10 +821,11 @@ async def test_jeder_zustand_ausser_der_schlange_laesst_das_budget_laufen(
     assert sum("/cancel/" in str(a.url) for a in transport.anfragen) == 1
 
 
+@pytest.mark.parametrize("code", [503, 429])
 async def test_dauerhaft_fehlschlagende_abfragen_werden_aufgegeben(
-    echte_settings: Settings, uhr: _Uhr
+    echte_settings: Settings, uhr: _Uhr, code: int
 ) -> None:
-    """Fallen die Abfragen vor dem ersten `IN_PROGRESS` dauerhaft aus (5xx), gibt
+    """Fallen die Abfragen vor dem ersten `IN_PROGRESS` dauerhaft aus (503/429), gibt
     das Paket nach dem Zeitbudget auf und bricht ab.
 
     Das Budget laeuft erst ab `IN_PROGRESS`; ohne eine eigene Grenze fuer
@@ -795,7 +836,7 @@ async def test_dauerhaft_fehlschlagende_abfragen_werden_aufgegeben(
         echte_settings, poll_failure_timeout_seconds=100.0, poll_interval_seconds=1.0
     )
     client, transport = _client(
-        knapp, Aufzeichnung(_antwort({"error": "kaputt"}, code=503))
+        knapp, Aufzeichnung(_antwort({"error": "kaputt"}, code=code))
     )
     with pytest.raises(JobAufgegebenError) as fehler:
         await client.await_result("j")
@@ -926,12 +967,11 @@ async def test_402_im_schlussabruf_erlaubt_das_fortsetzen_desselben_jobs(
         (_antwort({"error": "kein Zugang"}, code=401), ConfigurationError),
         (_antwort({"error": "verboten"}, code=403), ConfigurationError),
         (_antwort({"error": "ungueltig"}, code=400), TerminalRunPodError),
-        (_antwort({"error": "zu viele Anfragen"}, code=429), TerminalRunPodError),
         (_antwort({"error": "nicht mehr da"}, code=404), ResultLostError),
         (httpx.Response(200, text="kein JSON"), TerminalRunPodError),
         (httpx.Response(200, json=[]), TerminalRunPodError),
     ],
-    ids=["401", "403", "400", "429", "404", "kein-json", "kein-objekt"],
+    ids=["401", "403", "400", "404", "kein-json", "kein-objekt"],
 )
 async def test_schlussabruf_reicht_fehler_wie_der_regulaere_abruf_durch(
     echte_settings: Settings,

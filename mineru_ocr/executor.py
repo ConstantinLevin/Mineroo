@@ -1351,8 +1351,8 @@ async def _stuecke_verarbeiten(
         except Exception:
             # Das Warten endet mit einem Fehler, und der Job kann bei RunPod
             # weiterlaufen: die Kontopause, die nach der dritten widerspruechlichen
-            # 402 aufgibt, ein endgueltiger Fehler der Abfrage (HTTP 429 oder
-            # 400), ein Fehler der Zugangsdaten. Das Paket gibt ihn damit auf,
+            # 402 aufgibt, ein endgueltiger Fehler der Abfrage (HTTP 400),
+            # ein Fehler der Zugangsdaten. Das Paket gibt ihn damit auf,
             # und ohne Abbruch kostete er weiter, ohne dass ihn noch jemand
             # abholt. Der Grund des Fehlers bleibt der Grund: Er wird weitergeworfen.
             await _abbruch_nach_fehler(runpod, job)
