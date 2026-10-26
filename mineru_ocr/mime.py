@@ -128,12 +128,23 @@ _ZIP_LESEFEHLER: Final = (
     NotImplementedError,
     RuntimeError,
     ValueError,
-    OSError,
     ElementTree.ParseError,
 )
-"""Was das Lesen eines Eintrags werfen kann: ein beschaedigter oder verschluesselter
-Eintrag, ein Kompressionsverfahren, das `zipfile` nicht kennt, unlesbares XML. Fuer
-die Vorerkennung heisst jedes davon nur: Dieses Merkmal traegt das Archiv nicht."""
+"""Was `zipfile` beim Oeffnen eines Archivs und beim Lesen eines Eintrags werfen
+kann, wenn der INHALT nicht stimmt: ein beschaedigtes oder verschluesseltes
+Archiv, eine Version oder ein Kompressionsverfahren, das `zipfile` nicht kennt
+(`NotImplementedError`), ein als UTF-8 markierter Name, der keines ist
+(`UnicodeDecodeError`, ein `ValueError`), unlesbares XML. Fuer die Vorerkennung
+heisst jedes davon nur: Dieses Merkmal traegt das Archiv nicht, oder es ist kein
+lesbares ZIP. `OSError` steht bewusst nicht hier: Beim Lesen von der Platte ist
+er ein Problem der Datei, kein Typproblem (`sniff_file`)."""
+
+_KOPF_LESEFEHLER: Final = (ValueError, LookupError, TypeError, AttributeError)
+"""Was der Header-Parser der Standardbibliothek bei einem kaputten Kopf werfen
+kann. Er wirft nicht nur seinen `HeaderParseError` (ein `ValueError`): CPython
+3.12 laeuft bei einem RFC-2231-Parameter, der mit `*` endet, in einen
+`IndexError` (QA zu Mineroo#17, `_header_value_parser.get_parameter`). Fuer die
+Vorerkennung heisst jedes davon nur: kein MHTML."""
 
 
 class DocumentType(enum.Enum):
@@ -392,7 +403,7 @@ def _ist_mhtml(kopf: bytes) -> bool:
             nachricht.get_content_type() == "multipart/related"
             and bool(nachricht.get_boundary())
         )
-    except ValueError:
+    except _KOPF_LESEFEHLER:
         return False
 
 
@@ -487,9 +498,9 @@ def sniff_file(file: BinaryIO) -> DocumentType:
         try:
             with zipfile.ZipFile(file) as archiv:
                 return _typ_aus_zip(archiv)
-        except zipfile.BadZipFile as fehler:
+        except _ZIP_LESEFEHLER as fehler:
             raise UnsupportedTypeError(
-                f"Beginnt wie ein ZIP, ist aber keines: {fehler}."
+                f"Beginnt wie ein ZIP, ist aber keines: {type(fehler).__name__}: {fehler}."
             ) from fehler
 
     raise _unbekannt(kopf, f"gelesen {len(kopf)} Byte")
@@ -526,15 +537,21 @@ def sniff_bytes(data: bytes) -> DocumentType:
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archiv:
                 return _typ_aus_zip(archiv)
-        except zipfile.BadZipFile as fehler:
-            # Der haeufigste Grund hierfuer ist ein ABGESCHNITTENER Puffer: Das
-            # Zentralverzeichnis steht am Ende der Datei. Deshalb sagt die
-            # Meldung es dazu — sonst sucht man den Fehler im Archiv statt beim
-            # Aufrufer.
-            raise UnsupportedTypeError(
-                f"Beginnt wie ein ZIP, ist aber keines lesbares: {fehler}. "
-                f"Haeufigste Ursache: Der uebergebene Puffer ist unvollstaendig "
+        except _ZIP_LESEFEHLER as fehler:
+            # Ohne Zentralverzeichnis (`BadZipFile`) ist der haeufigste Grund ein
+            # ABGESCHNITTENER Puffer: Das Verzeichnis steht am Ende der Datei.
+            # Deshalb sagt die Meldung es dazu — sonst sucht man den Fehler im
+            # Archiv statt beim Aufrufer. Ein Verzeichnis, das `zipfile` liest,
+            # aber nicht versteht, ist ein Fehler des Archivs.
+            hinweis = (
+                f" Haeufigste Ursache: Der uebergebene Puffer ist unvollstaendig "
                 f"({len(data)} Byte) — das Zentralverzeichnis steht am Dateiende."
+                if isinstance(fehler, zipfile.BadZipFile)
+                else ""
+            )
+            raise UnsupportedTypeError(
+                f"Beginnt wie ein ZIP, ist aber keines lesbares: "
+                f"{type(fehler).__name__}: {fehler}.{hinweis}"
             ) from fehler
 
     raise _unbekannt(kopf, f"Puffergroesse {len(data)} Byte")

@@ -156,6 +156,45 @@ def test_zip_ohne_den_aufbau_eines_formats_wird_zurueckgehalten(
         sniff_bytes(zip_aus(eintraege))
 
 
+def _zentralverzeichnis_aendern(daten: bytes, versatz: int, wert: bytes) -> bytes:
+    """Ueberschreibt im ersten Eintrag des Zentralverzeichnisses (`PK\\x01\\x02`) die
+    Bytes ab `versatz` (APPNOTE 4.3.12)."""
+    anfang = daten.index(b"PK\x01\x02") + versatz
+    return daten[:anfang] + wert + daten[anfang + len(wert) :]
+
+
+@pytest.mark.parametrize(
+    "daten",
+    [
+        # QA zu Mineroo#17: Der Header-Parser von CPython wirft bei einem
+        # RFC-2231-Parameter, der mit `*` endet, einen `IndexError`.
+        b"Content-Type:multipart/related;\xff*",
+        b"MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary*\r\n\r\n"
+        b"<html></html>\r\n",
+        # Ein Zentralverzeichnis, das `zipfile` schon beim Oeffnen nicht liest:
+        # eine Version, die es nicht kennt (`NotImplementedError`), und ein als
+        # UTF-8 markierter Name, der keines ist (`UnicodeDecodeError`).
+        _zentralverzeichnis_aendern(office_zip("word/"), 6, b"\x63\x00"),
+        _zentralverzeichnis_aendern(
+            zip_aus({"a.xml": "<x/>"}).replace(b"a.xml", b"\xff.xml"), 8, b"\x00\x08"
+        ),
+    ],
+    ids=["mhtml-parameter-kurz", "mhtml-parameter", "zip-version", "zip-name-kein-utf8"],
+)
+def test_kaputter_kopf_ist_ein_unbekannter_typ_kein_absturz(
+    daten: bytes, tmp_path: Path
+) -> None:
+    """Was der Header-Parser oder `zipfile` nicht lesen, ist kein Typ, den das
+    Paket kennt: `UnsupportedTypeError`, sonst bricht die Kommandozeile einen
+    Ordnerlauf ab und `ocr_start` eine ganze Folge."""
+    with pytest.raises(UnsupportedTypeError):
+        sniff_bytes(daten)
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    with pytest.raises(UnsupportedTypeError):
+        sniff_path(datei)
+
+
 def test_ganzdokument_formate_werden_nicht_am_namen_erkannt(tmp_path: Path) -> None:
     """Der Name einer Datei sagt nichts (Mineroo#17): Ein DOCX namens `.txt` ist
     ein DOCX, ein Text namens `.rtf`, `.html` oder `.odt` ist kein Dokument."""
