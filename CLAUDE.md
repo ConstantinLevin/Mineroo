@@ -776,6 +776,12 @@ Bildnamen der Teilstücke kollidieren wirklich, eine leere Seite trägt keinen
 Bestellung als `flash` mit `txt`. Neu erzeugen lassen sie sich mit den Skripten
 unter `erzeugung/` dort; das kostet Geld.
 
+Daneben liegt unter `artifacts/2026-10-26-mineru-4.0.12-bildanalyse/` auf
+demselben Weg eine Seite mit zwei Bildern, die keine Diagramme sind (Mineroo#13,
+`ersatz_antworten.ECHT_BILDANALYSE`). Sie zeigt, wo die Bild-Deutungen stehen:
+in beiden Markdowns hinter dem Bild als `<details>`, eine Szene als
+Beschreibung, ein Organigramm als Mermaid-Graph.
+
 **Wo es keine echte Ausgabe gibt, spielen die Tests Ersatz-Antworten aus
 `tests/ersatz_antworten.py`.**
 Sie sind nicht geraten, sondern nach den Quellen gebaut, die die Antwortform

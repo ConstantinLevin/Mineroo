@@ -890,6 +890,35 @@ def test_echte_normale_seite_traegt_alle_fuenf_randklassen() -> None:
     assert not is_empty(ergebnis)
 
 
+def test_echte_bild_deutungen_stehen_hinter_ihrem_bild_im_text() -> None:
+    """Mit eingeschalteter Bildanalyse schreibt MinerU die Deutung jedes Bildes
+    hinter das Bild, als eingeklappten Block (`<details>`), auch fuer Bilder,
+    die keine Diagramme sind: eine gezeichnete Szene als Beschreibung, ein
+    Organigramm als Mermaid-Graph. Gemessen an der echten Seite
+    (`ECHT_BILDANALYSE`, `advanced` mit OCR und Bildanalyse an); der Text fuer
+    Abnehmer traegt beide je einmal, zwischen Bild und Bildunterschrift."""
+    antwort = ersatz.echte_antwort("bild_seite", ersatz.ECHT_BILDANALYSE)
+    assert antwort["output"]["image_analysis"] is True
+    dargestellt = rendered_markdown(assemble([unpack_response(antwort, Chunk(0, 0))]))
+
+    for bild, deutung, unterschrift in [
+        (
+            "![](images/teilstueck_0/page_0_image_3.jpg)",
+            "Simple illustration of a house with red roof, green tree, and yellow sun",
+            "Bild 1: Das Gaestehaus am Werk Nord",
+        ),
+        (
+            "![](images/teilstueck_0/page_0_image_6.jpg)",
+            'A["Geschaeftsfuehrung"] --> B["Einkauf"]',
+            "Bild 2: Gliederung des Werks Nord",
+        ),
+    ]:
+        assert dargestellt.count(deutung) == 1, deutung
+        assert dargestellt.index(bild) < dargestellt.index(deutung) < dargestellt.index(unterschrift)
+    assert "<summary>natural_image</summary>" in dargestellt
+    assert "<summary>flowchart</summary>" in dargestellt
+
+
 @pytest.mark.parametrize(
     ("aufnahme", "text"),
     [("dokument_docx", "Druckluftanlage"), ("seite_html", "Heizzeiten")],

@@ -73,10 +73,16 @@ Bildanalyse — dem Produktionsweg. Unter
 Teilstuecke."""
 
 
-def echte_antwort(name: str) -> dict[str, Any]:
+ECHT_BILDANALYSE = ECHT_ENDPOINT.parent / "2026-10-26-mineru-4.0.12-bildanalyse"
+"""ECHTE Antwort desselben Endpoints auf eine Seite mit zwei Bildern, die keine
+Diagramme sind (Herkunft: `README.md` dort): wo die Bild-Deutungen stehen
+(Mineroo#13). Auf demselben Weg wie `ECHT_ENDPOINT` aufgenommen."""
+
+
+def echte_antwort(name: str, ordner: Path = ECHT_ENDPOINT) -> dict[str, Any]:
     """Die volle `/status`-Antwort eines aufgenommenen Jobs."""
     geladen: dict[str, Any] = json.loads(
-        (ECHT_ENDPOINT / "antworten" / f"{name}.response.json").read_text()
+        (ordner / "antworten" / f"{name}.response.json").read_text()
     )
     return geladen
 
