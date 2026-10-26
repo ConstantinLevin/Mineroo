@@ -52,6 +52,7 @@ from .errors import (
     TerminalRunPodError,
     TransientRunPodError,
     UnstorableResultError,
+    UnsupportedTypeError,
     WorkerRejectedError,
     ist_dateiabweisung,
     should_run_again,
@@ -363,6 +364,10 @@ async def process_document(
     # Die bestellten Lese-Einstellungen, sobald die Eingabe gelesen ist; der
     # Fehlerpfad vergleicht nur, wenn es sie gibt.
     lesen: ReadSettings | None = None
+    # Ob die Eingabe ein Ganzdokument-Format ist, sobald ihr Typ feststeht. Dann
+    # wirken die Lese-Einstellungen nicht: Die Zeile traegt keine, und
+    # verglichen wird nicht (Mineroo#17).
+    ganzdokument = False
     # Version und Lese-Vermerke, sobald der Erfolgsweg sie bestimmt hat; scheitert
     # danach das Endschreiben, nimmt der Fehlerzweig sie, statt die Vermerke ein
     # zweites Mal anzuhaengen.
@@ -425,6 +430,7 @@ async def process_document(
         # Kontakt mit RunPod.
         typ = sniff_bytes(rohbytes)
         art = typ.mime
+        ganzdokument = typ.is_whole_document
 
         # --- 2.: zerlegen, absenden, abholen ----------------------------
         # Zuerst wird geprueft, was sich billig ohne RunPod pruefen laesst (eine
@@ -501,8 +507,11 @@ async def process_document(
                 )
             image_tag = await _image_tag_lesen(runpod, vermerke)
             await wait_for_balance(runpod, settings)
-            # Ein Bild ist eine Seite; eine Datei, die MinerU als ganzes Dokument
-            # liest (Office), hat keine Seitenzahl, die das Paket kennt.
+            # Ein Bild ist eine Seite; ein Ganzdokument-Format (Office,
+            # OpenDocument, RTF, EPUB, OFD, HTML, MHTML) hat keine Seitenzahl, die
+            # das Paket kennt, und geht ungeteilt als EIN Stueck hinaus
+            # (Mineroo#17). Die Lese-Einstellungen gehen trotzdem mit: Der Worker
+            # nimmt sie an und liest die Datei unabhaengig davon in `flash`.
             await _stuecke_verarbeiten(
                 [(chunking.Chunk(first_page=0, last_page=0), rohbytes)],
                 settings=settings,
@@ -527,7 +536,9 @@ async def process_document(
             if assembly.is_empty(ergebnis)
             else db.DocumentStatus.DONE
         )
-        version = _lesung_vermerken(teile, unverwertbar, lesen, vermerke)
+        version = _lesung_vermerken(
+            teile, unverwertbar, None if ganzdokument else lesen, vermerke
+        )
         version_bestimmt = True
         vermerke.append(
             {
@@ -552,6 +563,7 @@ async def process_document(
                     notes=vermerke,
                     page_count=seitenzahl,
                     mineru_version=version,
+                    store_read_settings=not ganzdokument,
                 )
 
         # Abgeschirmt wie das Schreiben von `failed` unten (Mineroo#27): Das
@@ -627,7 +639,9 @@ async def process_document(
         # Vermerk `gescheitert`, damit der der letzte bleibt. Hat der Erfolgsweg
         # beides schon bestimmt (das Endschreiben scheiterte), gilt das.
         if not version_bestimmt:
-            version = _lesung_vermerken(teile, unverwertbar, lesen, vermerke)
+            version = _lesung_vermerken(
+                teile, unverwertbar, None if ganzdokument else lesen, vermerke
+            )
         vermerke.append(_vermerk_gescheitert(len(teile), beschreibung))
         status = (
             db.DocumentStatus.INPUT_ERROR
@@ -650,6 +664,7 @@ async def process_document(
                     notes=vermerke,
                     page_count=seitenzahl,
                     mineru_version=version,
+                    store_read_settings=not ganzdokument,
                 )
 
         async def ergebnis_schreiben() -> None:
@@ -710,7 +725,9 @@ async def write_failure_if_no_result(
 
     Die Form ist die des Fehlerpfads von `process_document` (ohne Teilstuecke,
     mit Fehler-Umschlag und Vermerk). Die Eingabe bleibt stehen, wie bei jedem
-    `failed`, damit `retry` etwas zu lesen hat.
+    `failed`, damit `retry` etwas zu lesen hat. Ist sie ein Ganzdokument-Format,
+    traegt die Zeile keine Lese-Einstellungen, wie beim Job (Mineroo#17); dafuer
+    liest der Waechter die Eingabe und bestimmt ihren Typ aus den Bytes.
 
     Args:
         sha256: Welches Dokument.
@@ -729,6 +746,12 @@ async def write_failure_if_no_result(
     async with pool.connection() as conn:
         if await db.get_status_async(conn, sha256) is not None:
             return False
+    # Auf einer eigenen Verbindung wie im Job (`db.read_input_async`), nicht aus
+    # dem Pool; ein anderer Job dieses Dokuments legt dazwischen kein Ergebnis
+    # an, siehe oben.
+    eingabe = await db.read_input_async(settings.db_dsn, sha256)
+    ganzdokument = eingabe is not None and _ist_ganzdokument(eingabe.content)
+    async with pool.connection() as conn:
         await db.write_terminal_async(
             conn,
             sha256=sha256,
@@ -737,8 +760,18 @@ async def write_failure_if_no_result(
             endpoint_id=settings.require_endpoint_id(),
             error=grund,
             notes=vermerke,
+            store_read_settings=not ganzdokument,
         )
     return True
+
+
+def _ist_ganzdokument(daten: bytes) -> bool:
+    """Ob `daten` ein Ganzdokument-Format sind; ein Typ, den das Paket nicht
+    kennt, ist keins (Mineroo#17)."""
+    try:
+        return sniff_bytes(daten).is_whole_document
+    except UnsupportedTypeError:
+        return False
 
 
 _LESE_FELDER: Final = ("tier", "ocr_mode", "image_analysis")

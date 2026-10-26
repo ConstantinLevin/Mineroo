@@ -296,7 +296,9 @@ def ocr(
     Lese-Einstellungen dieses Laufs, fuer jede Datei; ohne Angabe gelten die
     Voreinstellungen (`advanced`, `ocr`, Bildanalyse an). Sie gelten nur fuer
     Dateien, die dieser Lauf einreiht: Eine mit Ergebnis oder eine, die schon
-    unterwegs ist, behaelt ihre. Womit ein Dokument gelesen wurde, zeigt `show`.
+    unterwegs ist, behaelt ihre. Bei Dateien, die MinerU als ganzes Dokument liest
+    (Office, OpenDocument, RTF, EPUB, OFD, HTML, MHTML), wirken sie nicht. Womit ein
+    Dokument gelesen wurde, zeigt `show`.
 
     Die Kommandozeile ist die einzige, die Pfade kennt: Sie liest die Dateien (in
     Verzeichnissen ueber ein Muster), hasht sie und nennt in der Ausgabe je Datei

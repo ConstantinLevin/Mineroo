@@ -1092,6 +1092,39 @@ async def test_endschreiben_nimmt_die_bestellten_lese_einstellungen_aus_der_eing
 
 
 @pytest.mark.db
+async def test_ohne_lese_einstellungen_bleiben_sie_leer_auch_ueber_einem_failed(
+    db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """Fuer ein Ganzdokument-Format speichert das Endschreiben keine
+    Lese-Einstellungen (`store_read_settings=False`, Mineroo#17): beim Anlegen
+    nicht, obwohl die Eingabe welche traegt, und beim Ueberschreiben eines
+    `failed`, das welche trug, werden sie leer."""
+    bestellt = ReadSettings("standard", "auto", False)
+    neu = "d" * 64
+    insert_input(db_conn, sha256=neu, content=b"x", read_settings=bestellt)
+    await write_terminal_async(
+        async_conn, sha256=neu, status=DocumentStatus.FAILED, raw={},
+        endpoint_id="e", store_read_settings=False,
+    )
+    zeile = get_document(db_conn, neu)
+    assert zeile is not None and zeile.read_settings is None
+
+    insert_input(db_conn, sha256=HASH, content=b"x", read_settings=bestellt)
+    await write_terminal_async(
+        async_conn, sha256=HASH, status=DocumentStatus.FAILED, raw={}, endpoint_id="e"
+    )
+    zeile = get_document(db_conn, HASH)
+    assert zeile is not None and zeile.read_settings == bestellt
+    await write_terminal_async(
+        async_conn, sha256=HASH, status=DocumentStatus.DONE, raw={"neu": 1},
+        endpoint_id="e", store_read_settings=False,
+    )
+    zeile = get_document(db_conn, HASH)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    assert (zeile.tier, zeile.ocr_mode, zeile.image_analysis) == (None, None, None)
+
+
+@pytest.mark.db
 async def test_ueberschreibt_ein_lauf_ohne_version_ein_failed_ist_die_version_leer(
     db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
 ) -> None:

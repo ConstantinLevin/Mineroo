@@ -107,9 +107,10 @@ def teilstueck_pruefen(
         teil: Das ausgepackte Teilstueck (`assembly.unpack_response`).
         seiten_geschickt: Wie viele Seiten das Paket in diesem Teilstueck
             geschickt hat: bei PDFs die Seiten des Ausschnitts, bei einem Bild
-            1. `None` fuer Dateien, die MinerU als ganzes Dokument liest (Office,
-            HTML); fuer sie kennt das Paket keine Seitenzahl, und der Vergleich
-            entfaellt.
+            1. `None` fuer die Ganzdokument-Formate, die MinerU als ganzes
+            Dokument liest (`mime.DocumentType.is_whole_document`: Office,
+            OpenDocument, RTF, EPUB, OFD, HTML, MHTML); fuer sie kennt das Paket
+            keine Seitenzahl, und der Vergleich entfaellt (Mineroo#17).
 
     Returns:
         Was zu vermerken ist: das `degraded` der Antwort, wenn sie eins traegt

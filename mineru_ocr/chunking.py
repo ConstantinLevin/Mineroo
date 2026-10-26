@@ -163,7 +163,8 @@ def check_fits_unsplit(
 ) -> None:
     """Prueft ein nicht zerlegbares Dokument gegen die Upload-Grenze.
 
-    Gilt fuer alles ausser PDF — Bilder, DOCX, PPTX, XLSX. AUSDRUECKLICH NICHT
+    Gilt fuer alles ausser PDF — Bilder und die Ganzdokument-Formate
+    (`DocumentType.is_whole_document`, Mineroo#17). AUSDRUECKLICH NICHT
     fuer die einzelne zu grosse PDF-Seite: Die faellt erst beim Zerlegen auf, und
     `iter_chunks` ruft dafuer DIESE Funktion (statt selbst zu werfen), damit
     Schwelle und Meldung samt Aufruest-Hinweis an einer Stelle stehen und nicht
