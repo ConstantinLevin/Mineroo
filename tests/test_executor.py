@@ -1662,7 +1662,7 @@ async def test_echte_fehlerantwort_landet_vollstaendig_in_raw(
     Sie traegt weit mehr als „es ging schief": `error` auf oberster Ebene, ein
     volles `output` mit `ok: false`, den `debug`-Block mit GPU,
     Modellverzeichnis und Phasenzeiten — und einen kompletten `traceback` aus
-    dem Worker (Herkunft bei `conftest.FEHLERANTWORT_FIXTURE`).
+    dem Worker (Herkunft bei der Vorrichtung `echte_fehlerantwort`).
 
     Frueher stand `_endzustand_uebersetzen` VOR dem Schutzblock, der bezahlte
     Antworten aufhebt. Der Traceback ueberlebte damit nur als Python-
