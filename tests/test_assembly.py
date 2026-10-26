@@ -301,6 +301,24 @@ def test_verweise_im_html_einer_tabelle_werden_mit_umbenannt(src: str) -> None:
         assert _bild_unter(ergebnis, verweis) == erwartet
 
 
+def _html_nach_zusammensetzen(inhalt: str) -> str:
+    """Das HTML eines Tabellenblocks nach dem Zusammensetzen. Die Seite traegt
+    dazu ein eigenes Bild (`images/page_0_image_1.jpg`), damit die Verweise
+    ueberhaupt umbenannt werden."""
+    tabelle = {
+        "type": "table",
+        "index": 0,
+        "content": [{"type": "table_body", "index": 0, "content": inhalt}],
+    }
+    teil = _teil_aus(
+        Chunk(0, 0),
+        [ersatz.seite(0, [tabelle, ersatz.bild_block(1, 0)])],
+        {ersatz.bild_pfad(0, 1): b"eigenes"},
+    )
+    html: str = assemble([teil])["middle_json"][0]["pages"][0]["blocks"][0]["content"][0]["content"]
+    return html
+
+
 @pytest.mark.parametrize(
     "inhalt",
     [
@@ -314,20 +332,10 @@ def test_ein_entgleistes_img_haelt_das_zusammensetzen_nicht_auf(inhalt: str) -> 
     (entgleiste Modellausgabe, OCR-Text) setzt sich in linearer Zeit zusammen.
     Das Zusammensetzen laeuft im Daemon synchron; eine Rueckwaertssuche in
     quadratischer Zeit hielte alle Jobs und den Herzschlag sekundenlang an."""
-    tabelle = {
-        "type": "table",
-        "index": 0,
-        "content": [{"type": "table_body", "index": 0, "content": inhalt}],
-    }
-    teil = _teil_aus(
-        Chunk(0, 0),
-        [ersatz.seite(0, [tabelle, ersatz.bild_block(1, 0)])],
-        {ersatz.bild_pfad(0, 1): b"eigenes"},
-    )
     beginn = time.perf_counter()
-    ergebnis = assemble([teil])
+    html = _html_nach_zusammensetzen(inhalt)
     assert time.perf_counter() - beginn < 1.0
-    assert ergebnis["middle_json"][0]["pages"][0]["blocks"][0]["content"][0]["content"] == inhalt
+    assert html == inhalt
 
 
 def test_eine_html_quelle_wird_nur_als_ganzes_umbenannt() -> None:
@@ -335,18 +343,7 @@ def test_eine_html_quelle_wird_nur_als_ganzes_umbenannt() -> None:
     traegt (`images/page_0_image_1.jpg?x=1`), ist nicht der Name, unter dem
     DocVortex das Bild ablegt, und bleibt stehen."""
     inhalt = f'<img src="{ersatz.bild_pfad(0, 1)}?x=1">'
-    tabelle = {
-        "type": "table",
-        "index": 0,
-        "content": [{"type": "table_body", "index": 0, "content": inhalt}],
-    }
-    teil = _teil_aus(
-        Chunk(0, 0),
-        [ersatz.seite(0, [tabelle, ersatz.bild_block(1, 0)])],
-        {ersatz.bild_pfad(0, 1): b"eigenes"},
-    )
-    ergebnis = assemble([teil])
-    assert ergebnis["middle_json"][0]["pages"][0]["blocks"][0]["content"][0]["content"] == inhalt
+    assert _html_nach_zusammensetzen(inhalt) == inhalt
 
 
 def test_ein_name_ist_kein_praefix_eines_anderen() -> None:
@@ -661,19 +658,7 @@ def test_ein_fremder_verweis_mit_demselben_pfadende_bleibt_stehen() -> None:
     `_materialize_markup`); endet eine solche URL zufaellig auf den Pfad eines
     eigenen Bildes, wird sie nicht umgebogen."""
     fremd = f"https://example.org/{ersatz.bild_pfad(0, 1)}"
-    tabelle = {
-        "type": "table",
-        "index": 0,
-        "content": [{"type": "table_body", "index": 0, "content": f'<img src="{fremd}">'}],
-    }
-    teil = _teil_aus(
-        Chunk(0, 0),
-        [ersatz.seite(0, [tabelle, ersatz.bild_block(1, 0)])],
-        {ersatz.bild_pfad(0, 1): b"eigenes"},
-    )
-    ergebnis = assemble([teil])
-    html = ergebnis["middle_json"][0]["pages"][0]["blocks"][0]["content"][0]["content"]
-    assert html == f'<img src="{fremd}">'
+    assert _html_nach_zusammensetzen(f'<img src="{fremd}">') == f'<img src="{fremd}">'
 
 
 @pytest.mark.parametrize(
@@ -692,19 +677,7 @@ def test_ein_bildpfad_als_parameter_einer_fremden_url_bleibt_stehen(vorlage: str
     anderen Pfad. Das gilt auch, wenn der Parameter selbst `src` heisst oder den
     Pfad in Anfuehrungszeichen setzt."""
     inhalt = vorlage.format(bild=ersatz.bild_pfad(0, 1))
-    tabelle = {
-        "type": "table",
-        "index": 0,
-        "content": [{"type": "table_body", "index": 0, "content": inhalt}],
-    }
-    teil = _teil_aus(
-        Chunk(0, 0),
-        [ersatz.seite(0, [tabelle, ersatz.bild_block(1, 0)])],
-        {ersatz.bild_pfad(0, 1): b"eigenes"},
-    )
-    ergebnis = assemble([teil])
-    html = ergebnis["middle_json"][0]["pages"][0]["blocks"][0]["content"][0]["content"]
-    assert html == inhalt
+    assert _html_nach_zusammensetzen(inhalt) == inhalt
 
 
 def test_nur_randbloecke_werden_angehaengt() -> None:
