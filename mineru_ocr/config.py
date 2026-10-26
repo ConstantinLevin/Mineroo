@@ -639,35 +639,33 @@ class Settings:
     Bilden der Einstellung, statt jedes grosse Teilstueck am Gateway scheitern zu
     lassen."""
 
-    max_pages_per_chunk: int = 10
+    max_pages_per_chunk: int = 20
     """Obergrenze fuer die Seitenzahl eines Teilstuecks. Ein eingestellter Wert
     (Schluessel `max_pages_per_chunk`, Mineroo#20).
 
     Jede Grenze zwischen zwei Teilstuecken kann eine Tabelle zerreissen, weil
     MinerU Tabellen hoechstens innerhalb eines Jobs zusammenfuegt. Das Teilstueck
-    ist deshalb so gross, wie die engste von drei Grenzen es traegt:
+    ist deshalb so gross, wie die engsten Grenzen es tragen:
 
-    ANTWORT (die engste). RunPod gibt auf `/run` hoechstens 10 MB Antwort zurueck
-    (die Haelfte der 20 MB von `/runsync`). Belegt am 27.10.2026 mit einem Job
-    aus 24 erfundenen dichten Scan-Seiten: Der Worker wies die Antwort mit
-    `ResponseTooLargeError` ab (26,7 MB gegen seine eigene Obergrenze von
-    19,4 MB) und nannte als Grund, dass das Gateway eine zu grosse Antwort
-    verwirft und den Job trotzdem `COMPLETED` ohne Ausgabe meldet. Die
-    dichtesten echten Scans des Messlaufs (Mineroo#19) brachten 729 KB je Seite.
-    Mit 25 % Abstand zur Grenze, also 7,5 MB, tragen das 10 Seiten (7,3 MB).
-    Die erfundenen Seiten des Belegs brachten 1,1 MB je Seite; Seiten dieser
-    Dichte passten mit demselben Abstand nur zu sechst.
+    ANTWORT. Der Worker gibt beim Transport `tarball_b64` hoechstens 19,4 MB
+    zurueck und weist eine groessere Antwort mit `ResponseTooLargeError` ab
+    (belegt am 27.10.2026: 24 erfundene dichte Scan-Seiten, 26,7 MB). Die
+    10 MB, die RunPod angeblich auf `/run` kappt, gelten nicht: Am selben Tag kam
+    eine Antwort von 14,0 MB (12 solche Seiten) vollstaendig an. Die dichtesten
+    echten Scans des Messlaufs (Mineroo#19) brachten 729 KB je Seite; 20 Seiten
+    sind 14,6 MB, gut 25 % unter den 19,4 MB. Die erfundenen Seiten der Belege
+    brachten 1,17 MB je Seite; Seiten dieser Dichte passen nur zu sechzehnt.
 
     ZEIT. Die langsamste gemessene Seite brauchte 5,0 s; mit dreifachem Puffer
-    sind 10 Seiten 150 s, gut unter `executionTimeout` von 300 s.
+    sind 20 Seiten 300 s, genau `executionTimeout` am Endpoint.
 
     ANFRAGE. Die Bytes begrenzt `max_payload_bytes`; ein Teilstueck, das zu
     gross ist, wird halbiert (`chunking.iter_chunks`).
 
-    Wer den Wert hebt, prueft alle drei: Ab 14 Seiten der dichtesten Scans
-    reisst die Antwort die 10 MB. Reisst sie, endet das Dokument `failed` (der
-    Worker weist ab, oder `COMPLETED` kommt ohne Ausgabe); der Weg zurueck ist
-    ein kleinerer Wert und `retry`."""
+    Wer den Wert hebt, hebt auch `executionTimeout` und `job_timeout_seconds`
+    und prueft die Antwort: Ab 27 Seiten der dichtesten Scans reisst sie die
+    19,4 MB. Reisst sie, endet das Dokument `failed`; der Weg zurueck ist ein
+    kleinerer Wert und `retry`."""
 
     # -- Zeitverhalten -----------------------------------------------------
 
@@ -738,8 +736,8 @@ class Settings:
 
     300 s aus derselben Rechnung wie `executionTimeout` des Endpoints
     (Mineroo#19): die langsamste gemessene Seite 5,0 s, mal 20 Seiten, mal drei.
-    Bei 10 Seiten je Teilstueck (`max_pages_per_chunk`) ist das der doppelte
-    Puffer; das laengste gemessene Teilstueck lief 17,8 s. Mehr als
+    20 Seiten sind auch die Voreinstellung von `max_pages_per_chunk`; das
+    laengste gemessene Teilstueck lief 17,8 s. Mehr als
     `executionTimeout` kauft nichts, denn dann beendet der Endpoint den Job
     schon selbst; weniger gaebe Teilstuecke auf, die der Endpoint noch laufen
     liesse. Wer Seiten je Teilstueck oder `executionTimeout` aendert, rechnet

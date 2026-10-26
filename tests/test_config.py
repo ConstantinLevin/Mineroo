@@ -394,10 +394,10 @@ def test_wahrheitswert_ist_keine_zahl(tmp_path: Path) -> None:
 
 
 def test_teilstueck_grenzen_haben_die_voreinstellungen_aus_der_messung() -> None:
-    """Zehn Seiten, 7,4 MB roh und 300 Sekunden Wartebudget. Das Budget folgt
+    """Zwanzig Seiten, 7,4 MB roh und 300 Sekunden Wartebudget. Das Budget folgt
     derselben Rechnung wie `executionTimeout` des Endpoints und ist ihm gleich."""
     e = _einstellung()
-    assert e.max_pages_per_chunk == 10
+    assert e.max_pages_per_chunk == 20
     assert e.max_payload_bytes == 7_400_000
     assert e.job_timeout_seconds == 300.0
     assert e.job_timeout_seconds * 1000 == e.execution_timeout_ms

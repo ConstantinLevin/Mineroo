@@ -181,7 +181,7 @@ wenn Schlüssel und Endpoint eingestellt sind; ohne einen davon entfällt er sti
 Tabelle `[endpoint_env]`) sind Felder von `Settings` mit den Voreinstellungen aus
 Mineroo#3 und den Werten am Endpoint (0, 10, 60, 300000). Ebenso eingestellte
 Werte sind die Grenzen eines Teilstücks (Mineroo#20): `max_pages_per_chunk`
-(10 Seiten), `max_payload_bytes` (7,4 MB roh) und `job_timeout_seconds` (300 s);
+(20 Seiten), `max_payload_bytes` (7,4 MB roh) und `job_timeout_seconds` (300 s);
 die Herleitung aus Antwort-, Anfrage- und Zeitgrenze steht an den Feldern in
 `config.py` und unter „Teilstücke sind vor Postgres vollständig abstrahiert“.
 Die Seitenzahl wirkt im Daemon, der zerlegt: Ein neuer Wert gilt nach dessen
@@ -669,19 +669,20 @@ ist **ein** Objekt auf Dokumentebene. Es gibt keine Chunk-Tabelle und keine
 Teil-Zeilen.
 
 **Die Größe eines Teilstücks begrenzt die Antwort, nicht die Anfrage**
-(Mineroo#20). RunPod gibt auf `/run` höchstens 10 MB Antwort zurück; der Worker
-weist eine Antwort über 19,4 MB selbst ab (`ResponseTooLargeError`), und eine
-zwischen 10 und 19,4 MB verwirft laut Worker das Gateway, der Job meldet dann
-`COMPLETED` ohne Ausgabe. Beides endet `failed`, nie still `done`, und ein
-`retry` mit denselben Werten scheitert wieder. Die dichtesten echten Scans
-brachten 729 KB Antwort je Seite; mit 25 % Abstand zu 10 MB sind das **10 Seiten**
-(`max_pages_per_chunk`). Die Rohbytes eines Teilstücks begrenzt
+(Mineroo#20). Der Worker weist eine Antwort über 19,4 MB selbst ab
+(`ResponseTooLargeError`); das Dokument endet dann `failed`, nie still `done`,
+und ein `retry` mit denselben Werten scheitert wieder. Die 10 MB, die RunPod
+laut Doku und Worker auf `/run` kappen soll, gelten für die Antwort nicht: Eine
+Antwort von 14,0 MB kam vollständig an. Die dichtesten echten Scans brachten
+729 KB Antwort je Seite; mit 25 % Abstand zu 19,4 MB sind das **20 Seiten**
+(`max_pages_per_chunk`), und 20 Seiten × 5,0 s × 3 sind genau `executionTimeout`. Die Rohbytes eines Teilstücks begrenzt
 `max_payload_bytes` (**7,4 MB**, kodiert 9,87 MB unter der Anfragegrenze von
 `/run`, `config.RUN_ANFRAGEGRENZE_BYTES`; ein größerer Wert wirft beim Bilden der
 Einstellung). Das Wartebudget je Teilstück, `job_timeout_seconds` (**300 s**),
 folgt derselben Rechnung wie `executionTimeout` des Endpoints (langsamste Seite
-5,0 s × 20 × 3) und ist ihm gleich. Belegt mit einem Live-Job am 27.10.2026
-(24 erfundene dichte Scan-Seiten, 26,7 MB Antwort, abgewiesen); die Messwerte
+5,0 s × 20 × 3) und ist ihm gleich. Belegt mit zwei Live-Jobs am 27.10.2026
+(erfundene dichte Scan-Seiten: 24 Seiten, 26,7 MB, abgewiesen; 12 Seiten,
+14,0 MB, vollständig angekommen); die Messwerte
 stehen in `docs/MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md`, Abschnitt 8.
 
 Jede Datei der Antwort hat in `raw` ihren eigenen Schlüssel: `markdown` und

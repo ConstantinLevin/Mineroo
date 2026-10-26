@@ -129,8 +129,8 @@ wieder. Das sagst du dem Nutzer, bevor er zustimmt. Ebenso bei
 `MissingArtifactError` (der Antwort fehlte eine Datei, die das Paket braucht):
 Die bezahlte Antwort steht in `show ZIEL --raw`, und ein `retry` bezahlt das
 Dokument neu; eine Seite, die MinerU verwirft, verwirft es voraussichtlich
-wieder. Nennt der Fehler `ResponseTooLargeError` oder eine Antwort ohne
-verwertbares `output`, war die Antwort eines Teilstücks zu groß für RunPod; ein
+wieder. Nennt der Fehler `ResponseTooLargeError`, war die Antwort eines Teilstücks
+größer als die 19,4 MB, die der Worker zurückgibt; ein
 `retry` scheitert mit denselben Einstellungen wieder. Erst ein kleineres
 `max_pages_per_chunk` in der Konfiguration des Daemons hilft, und das stellt der
 Betreiber ein.

@@ -83,7 +83,7 @@ allowed_data_centers = ["EU-RO-1", "EU-CZ-1", "EUR-IS-1", "EUR-IS-2", "EUR-NO-1"
                                                      # (alle EWR-Rechenzentren)
 
 # Grenzen eines Teilstuecks; wirken im Daemon, der zerlegt (Mineroo#20):
-max_pages_per_chunk = 10                             # (10 Seiten)
+max_pages_per_chunk = 20                             # (20 Seiten)
 max_payload_bytes = 7400000                          # (7,4 MB roh; mehr passt nicht durch /run)
 job_timeout_seconds = 300                            # (300, wie executionTimeout)
 
@@ -338,11 +338,12 @@ dem Schreiben zusammen. Es gibt keine Chunk-Tabelle. Nach jedem Teilstück
 prüft er, ob die Antwort vollständig ist: Fehlen Seiten oder eine Datei, die das
 Paket braucht, endet das Dokument `failed`, statt still `done` zu werden.
 
-Ein Teilstück hat höchstens 10 Seiten und 7,4 MB (`max_pages_per_chunk`,
+Ein Teilstück hat höchstens 20 Seiten und 7,4 MB (`max_pages_per_chunk`,
 `max_payload_bytes`), und das Paket wartet je Teilstück höchstens 300 s
 Bearbeitung ab (`job_timeout_seconds`, wie `executionTimeout` am Endpoint). Die
-engste Grenze ist die Antwort: RunPod gibt auf `/run` höchstens 10 MB zurück,
-und die dichtesten gemessenen Scans brachten 729 KB je Seite. Wird eine Antwort
+Grenzen sind die Antwort und die Zeit: Der Worker gibt höchstens 19,4 MB zurück,
+die dichtesten gemessenen Scans brachten 729 KB je Seite, und die langsamste
+Seite brauchte 5,0 s. Wird eine Antwort
 zu groß, endet das Dokument `failed`; ein `retry` hilft erst mit einem
 kleineren `max_pages_per_chunk` im Daemon.
 

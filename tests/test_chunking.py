@@ -187,8 +187,8 @@ def test_letzter_block_ist_kuerzer(settings: Settings) -> None:
 
 
 def test_plan_folgt_der_voreinstellung(settings: Settings) -> None:
-    """25 Seiten bei der voreingestellten Schwelle von 10 ergeben 10 + 10 + 5."""
-    assert [s.page_count for s in plan_chunks(25, settings)] == [10, 10, 5]
+    """45 Seiten bei der voreingestellten Schwelle von 20 ergeben 20 + 20 + 5."""
+    assert [s.page_count for s in plan_chunks(45, settings)] == [20, 20, 5]
 
 
 def test_plan_folgt_dem_eingestellten_wert(tmp_path: Path) -> None:
