@@ -1352,6 +1352,104 @@ async def test_ein_nullzeichen_in_den_meldungen_verhindert_das_ergebnis_nicht(
     assert any(v["kind"] == "ergebnis_nicht_speicherbar" for v in zeile.notes)
 
 
+async def test_ein_nullzeichen_im_abweisungsgrund_verhindert_das_ergebnis_nicht(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Traegt der Grund, mit dem der Worker eine Datei abweist, ein U+0000, geht
+    er in `error`, in den Fehler-Umschlag und in den Vermerk. Das Dokument endet
+    trotzdem `input_error`, ohne den Inhalt (Mineroo#27), und der Grund steht mit
+    dem Nullzeichen als `\\u0000` da; sonst scheiterte auch das Schreiben ohne
+    Inhalt, und das Dokument bliebe ohne Ergebnis (Code-Review zur Spec #1)."""
+    grund = "HtmlParseError: Steuerzeichen \x00 im Kopf"
+    sha, _ = _anlegen(
+        db_conn, tmp_path, ganzdokumente.JE_TYP[DocumentType.HTML], name="d.html",
+        typ=DocumentType.HTML,
+    )
+    with pytest.raises(InputError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod([ersatz.fehlerantwort(grund)]),
+            pool=pool,
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.error is not None and "Steuerzeichen \\u0000 im Kopf" in zeile.error
+    assert zeile.raw is not None
+    assert "\\u0000" in zeile.raw["failure"]["message"]
+    assert any(v["kind"] == "ergebnis_nicht_speicherbar" for v in zeile.notes)
+
+
+async def test_ein_nullzeichen_im_degraded_verhindert_das_ergebnis_nicht(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ein `degraded`, das ein U+0000 traegt, geht in den Vermerk
+    `unvollstaendige_antwort` (Mineroo#12). Das Dokument endet trotzdem, `failed`
+    ohne den Inhalt, und der Vermerk traegt das Nullzeichen als `\\u0000`."""
+    degraded = {
+        "count": 1,
+        "items": [
+            {
+                "artifact": "structured_content",
+                "file": "structured_content.json",
+                "reason": "un\x00readable",
+                "error_type": "JSONDecodeError",
+            }
+        ],
+    }
+    sha, _ = _anlegen(db_conn, tmp_path, _echtes_material("normale_seite.pdf"))
+    with pytest.raises(UnstorableResultError):
+        await process_document(
+            sha,
+            settings=exec_settings,
+            runpod=FalscherRunPod(
+                [
+                    ersatz.abgeleitete_antwort(
+                        "normale_seite", ohne=("structured_content.json",), degraded=degraded
+                    )
+                ]
+            ),
+            pool=pool,
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+    vermerk = _vermerk(zeile, "unvollstaendige_antwort")
+    assert vermerk["degraded"]["items"][0]["reason"] == "un\\u0000readable"
+
+
+async def test_ein_einzelnes_surrogat_in_der_version_verhindert_das_ergebnis_nicht(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Ein einzelnes Surrogat (`"\\ud800"` im JSON der Antwort) ist kein Zeichen,
+    das sich als UTF-8 schreiben laesst: psycopg weist es in der Spalte ab, Postgres
+    in `jsonb`. Das Dokument endet trotzdem, `failed` ohne den Inhalt, und die
+    Spalte traegt das Surrogat sichtbar als `\\ud800` (Code-Review zur Spec #1)."""
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"surrogat", name="s.png", typ=DocumentType.PNG
+    )
+    antwort = ersatz.fertige_antwort("Text", mineru_version="4.0.12\ud800")
+    with pytest.raises(UnstorableResultError):
+        await process_document(
+            sha, settings=exec_settings, runpod=FalscherRunPod([antwort]), pool=pool
+        )
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+    assert zeile.mineru_version == "4.0.12\\ud800"
+    assert any(v["kind"] == "ergebnis_nicht_speicherbar" for v in zeile.notes)
+
+
 async def test_scheitert_das_endschreiben_stehen_die_lese_vermerke_einmal(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,

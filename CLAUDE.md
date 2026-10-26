@@ -506,8 +506,10 @@ was er sagt, geht an RunPod und an die Zeile. Wo er auf dem Weg steht:
   Fehlerantwort; bei mehreren Teilstücken die niedrigste nach PEP 440, eine
   unlesbare zählt als die niedrigste, `db.mineru_versionsrang`; beim Überschreiben
   eines `failed` die des neuen Laufs, auch keine). Ein U+0000 in dem, was der
-  Worker meldet, steht in Spalte und Vermerken als `\u0000`, sonst ließe sich
-  auch das `failed` ohne Inhalt nicht schreiben. Was MinerU tatsächlich nahm, steht im
+  Worker meldet, steht in Spalte, `error`, Vermerken und dem Fehler-Umschlag des
+  `failed` ohne Inhalt als `\u0000`, ein einzelnes Surrogat als `\ud800`
+  (`executor._tief_speicherbar`), sonst ließe sich auch das `failed` ohne Inhalt
+  nicht schreiben; `raw` bleibt unbereinigt. Was MinerU tatsächlich nahm, steht im
   Rohergebnis unter `envelopes[…]["output_meta"]`; bei `auto` der Modus, den es für
   die Datei wählte. `DocumentRow.read_settings`, die Hülle (`mineru_version`,
   `read_settings`), `document()` und `show` nennen sie.

@@ -561,7 +561,7 @@ async def process_document(
                     mime=art,
                     size_bytes=groesse,
                     image_tag_at_submit=image_tag,
-                    notes=vermerke,
+                    notes=_tief_speicherbar(vermerke),
                     page_count=seitenzahl,
                     mineru_version=version,
                     store_read_settings=not ganzdokument,
@@ -661,8 +661,8 @@ async def process_document(
                     mime=art,
                     size_bytes=groesse,
                     image_tag_at_submit=image_tag,
-                    error=beschreibung,
-                    notes=vermerke,
+                    error=_text_speicherbar(beschreibung),
+                    notes=_tief_speicherbar(vermerke),
                     page_count=seitenzahl,
                     mineru_version=version,
                     store_read_settings=not ganzdokument,
@@ -802,9 +802,9 @@ def _lesung_vermerken(
       Vermerk nennt alle, in der Reihenfolge der Antworten, und die gespeicherte.
 
     Was der Worker meldet, geht in die Vermerke und die Spalte, wie er es
-    meldete, nur ein U+0000 als `\\u0000` sichtbar (`_speicherbar`): Postgres
-    nimmt es weder in Text noch in jsonb, und sonst liesse sich auch das
-    `failed` ohne Inhalt nicht schreiben.
+    meldete, nur ein U+0000 als `\\u0000` und ein einzelnes Surrogat als
+    `\\ud800` sichtbar (`_speicherbar`): Postgres nimmt beides weder in Text noch
+    in jsonb, und sonst liesse sich auch das `failed` ohne Inhalt nicht schreiben.
 
     Haengt die Vermerke an `vermerke` an. Wirft nicht, denn der Fehlerpfad ruft es.
 
@@ -896,20 +896,52 @@ def _ausgabe_unverwertbar(eintrag: dict[str, Any]) -> Any:
     return antwort.get("output") if isinstance(antwort, dict) else None
 
 
+def _text_speicherbar(text: str) -> str:
+    """Ein Text, den Postgres in Text und jsonb nimmt.
+
+    Ein U+0000 steht als `\\u0000` da, ein einzelnes Surrogat (etwa `"\\ud800"`
+    im JSON einer Antwort; es laesst sich nicht als UTF-8 schreiben) als
+    `\\ud800`: sichtbar und vom Gemeldeten unterscheidbar. Alles andere bleibt."""
+    return text.replace("\x00", "\\u0000").encode("utf-8", "backslashreplace").decode("utf-8")
+
+
 def _speicherbar(wert: Any) -> Any:
     """Eine Meldung des Workers, so dass Postgres sie in Text und jsonb nimmt.
 
-    Text mit U+0000 bekommt das Zeichen als `\\u0000` geschrieben, sichtbar und
-    vom Gemeldeten unterscheidbar; Wahrheitswerte, Zahlen und None bleiben.
-    Alles andere (eine Liste, ein Woerterbuch) steht als seine Python-Darstellung
-    da, die jedes Steuerzeichen darin schon maskiert: Verglichen wurde es ohnehin
-    nur, um festzustellen, dass es nicht passt. Das Rohergebnis (`raw`) bleibt
-    davon unberuehrt; es wird nie bereinigt (Mineroo#27)."""
+    Text steht wie bei `_text_speicherbar` da; Wahrheitswerte, Zahlen und None
+    bleiben. Alles andere (eine Liste, ein Woerterbuch) steht als seine
+    Python-Darstellung da, die jedes Steuerzeichen darin schon maskiert:
+    Verglichen wurde es ohnehin nur, um festzustellen, dass es nicht passt. Das
+    Rohergebnis (`raw`) bleibt davon unberuehrt; es wird nie bereinigt
+    (Mineroo#27)."""
     if isinstance(wert, str):
-        return wert.replace("\x00", "\\u0000")
+        return _text_speicherbar(wert)
     if wert is None or isinstance(wert, (bool, int, float)):
         return wert
     return repr(wert)
+
+
+def _tief_speicherbar(wert: Any) -> Any:
+    """Eine Kopie von `wert`, in der jeder Text (auch jeder Schluessel) steht wie
+    bei `_text_speicherbar`; die Form bleibt.
+
+    Fuer `error`, `notes` und den Fehler-Umschlag: Sie tragen, was der Worker
+    meldete (einen Abweisungsgrund, ein `degraded`), und muessen sich immer
+    schreiben lassen, auch beim `failed` ohne Inhalt. Sonst scheiterte das
+    Schreiben am selben Zeichen wie das Ergebnis, und das Dokument bliebe ohne
+    Ergebnis (Mineroo#27)."""
+    if isinstance(wert, str):
+        return _text_speicherbar(wert)
+    if isinstance(wert, dict):
+        return {
+            _text_speicherbar(schluessel) if isinstance(schluessel, str) else schluessel: (
+                _tief_speicherbar(inhalt)
+            )
+            for schluessel, inhalt in wert.items()
+        }
+    if isinstance(wert, (list, tuple)):
+        return [_tief_speicherbar(inhalt) for inhalt in wert]
+    return wert
 
 
 def _passt(bestellt: ReadSettings, gemeldet: dict[str, Any]) -> bool:
@@ -941,8 +973,8 @@ def _gemeldete_versionen(
     Je ausgepacktem Teilstueck (aus `output_meta` seines Umschlags) und je
     bezahlter Antwort, die sich nicht verwerten liess, etwa einer Fehlerantwort
     (aus ihrem `output`): Auch sie traegt die Version, mit der der Worker lief.
-    None, wo eine Antwort keine als Text meldete; ein U+0000 darin steht als
-    `\\u0000` (`_speicherbar`).
+    None, wo eine Antwort keine als Text meldete; ein U+0000 oder ein einzelnes
+    Surrogat darin steht maskiert (`_speicherbar`).
 
     Wirft nicht, denn der Fehlerpfad ruft es: Jede Stufe wird auf ihre Form
     geprueft, statt sie vorauszusetzen.
@@ -1009,7 +1041,13 @@ def _ohne_inhalt(
             ),
         }
     )
-    return {"failure": ergebnis["failure"], "ergebnis_nicht_speicherbar": str(grund)}
+    # Der Umschlag traegt den Fehlertext, und der kann wiedergeben, was der Worker
+    # meldete (einen Abweisungsgrund mit U+0000): Er muss sich schreiben lassen,
+    # sonst scheiterte auch dieses `failed` (`_tief_speicherbar`).
+    return {
+        "failure": _tief_speicherbar(ergebnis["failure"]),
+        "ergebnis_nicht_speicherbar": str(grund),
+    }
 
 
 def _ergebnis_fuer_endzustand(
