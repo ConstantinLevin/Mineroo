@@ -88,7 +88,7 @@
   "felder": {
    "tier": "gibt-es-nicht",
    "ocr_mode": "ocr",
-   "image_analysis": true,
+   "image_analysis": false,
    "transport": "tarball_b64"
   }
  }

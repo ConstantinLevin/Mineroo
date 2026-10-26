@@ -1,4 +1,4 @@
-"""Baut die Job-Eingaben der Aufnahme, Feld fuer Feld wie `runpod.RunPodClient.submit`.
+"""Baut die Job-Eingaben der Aufnahme mit `runpod.job_eingabe`, der Nutzlast von `submit`.
 
 Aufruf (mit diesem Repository auf dem PYTHONPATH): jobs_bauen.py MATERIAL LEERE_PDF ZIEL
 Je Job eine Datei ZIEL/<name>.job.json mit {"id": null, "input": {...}} und eine
@@ -13,18 +13,19 @@ import sys
 from mineru_ocr.chunking import plan_chunks
 from mineru_ocr.config import Settings
 from mineru_ocr.pdf import PdfReader
+from mineru_ocr.runpod import job_eingabe
 
 material, leere_pdf, ziel = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
 ziel.mkdir(parents=True, exist_ok=True)
 einstellung = Settings(db_dsn="ungenutzt", endpoint_id=None, api_key=None)
-lesen = {"tier": einstellung.tier, "ocr_mode": einstellung.ocr_mode,
-         "image_analysis": einstellung.image_analysis and einstellung.tier == "advanced"}
 plan = []
 
 
-def job(name: str, daten: bytes, **abweichend: object) -> None:
-    eingabe = {"file_b64": base64.b64encode(daten).decode("ascii"), **lesen,
-               "transport": einstellung.transport, **abweichend}
+def job(name: str, daten: bytes, **abweichend: str) -> None:
+    felder = {"tier": einstellung.tier, "ocr_mode": einstellung.ocr_mode,
+              "transport": einstellung.transport, **abweichend}
+    eingabe = job_eingabe(file_b64=base64.b64encode(daten).decode("ascii"),
+                          image_analysis=einstellung.image_analysis, **felder)
     (ziel / f"{name}.job.json").write_text(json.dumps({"id": None, "input": eingabe}))
     plan.append({"name": name, "felder": {k: v for k, v in eingabe.items() if k != "file_b64"}})
 
