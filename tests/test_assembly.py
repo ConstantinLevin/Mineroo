@@ -621,6 +621,27 @@ def test_ein_fremder_verweis_mit_demselben_pfadende_bleibt_stehen() -> None:
     assert html == f'<img src="{fremd}">'
 
 
+def test_ein_bildpfad_als_parameter_einer_fremden_url_bleibt_stehen() -> None:
+    """Umbenannt wird nur ein ganzes lokales Bildziel. Eine externe URL, die den
+    Pfad eines eigenen Bildes als Parameter traegt, ist kein Verweis auf dieses
+    Bild und geht unveraendert weiter; sonst fragte ihr Server nach einem
+    anderen Pfad."""
+    fremd = f"https://example.org/render?path={ersatz.bild_pfad(0, 1)}"
+    tabelle = {
+        "type": "table",
+        "index": 0,
+        "content": [{"type": "table_body", "index": 0, "content": f'<img src="{fremd}">'}],
+    }
+    teil = _teil_aus(
+        Chunk(0, 0),
+        [ersatz.seite(0, [tabelle, ersatz.bild_block(1, 0)])],
+        {ersatz.bild_pfad(0, 1): b"eigenes"},
+    )
+    ergebnis = assemble([teil])
+    html = ergebnis["middle_json"][0]["pages"][0]["blocks"][0]["content"][0]["content"]
+    assert html == f'<img src="{fremd}">'
+
+
 def test_nur_randbloecke_werden_angehaengt() -> None:
     """Gewoehnlicher Text, der im Markdown fehlt, wird nicht angehaengt: Die
     Ergaenzung gilt den Randklassen, die MinerU aus dem Markdown weglaesst."""

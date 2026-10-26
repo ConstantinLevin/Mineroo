@@ -572,11 +572,20 @@ T = TypeVar("T")
 def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:
     """Eine Kopie von `wert`, in deren Zeichenketten jeder Bildverweis umbenannt ist.
 
-    Ein Verweis ist ein Schluessel von `umbenannt` (`images/{name}`), vor dem
-    kein Zeichen eines Pfads steht: Eine externe URL, die zufaellig auf denselben
-    Pfad endet, bleibt stehen (DocVortex laesst externe Bilder in visuellem HTML
-    unveraendert). Laengere Namen werden zuerst versucht; da jeder Name auf seine
-    Endung schliesst, ist keiner der Anfang eines anderen
+    Ein Verweis ist ein Schluessel von `umbenannt` (`images/{name}`), mit dem ein
+    lokales Bildziel BEGINNT, in den Formen, in denen MinerU 4 ein Bild nennt:
+    am Anfang eines Feldes (`image_path` im Middle-JSON, `image_source` im
+    strukturierten Inhalt), nach der Klammer eines Markdown-Bildes
+    (`![…](images/…)`, DocVortex `build_markdown_image`) und nach dem
+    Anfuehrungszeichen eines HTML-Attributs (`<img src="images/…">`, DocVortex
+    `_materialize_markup`). Gemessen an den echten Antworten des Endpoints:
+    Andere Formen kommen dort nicht vor.
+
+    Alles andere bleibt stehen, auch wenn es den Pfad enthaelt: Eine externe
+    URL, die auf denselben Pfad endet oder ihn als Parameter traegt
+    (`https://example.org/render?path=images/…`; DocVortex laesst externe Bilder
+    in visuellem HTML unveraendert), ist kein Verweis auf das eigene Bild. Da
+    jeder Name auf seine Endung schliesst, ist keiner der Anfang eines anderen
     (`page_0_image_1.jpg`, `page_0_image_10.jpg`). MinerU schreibt die Verweise
     unmaskiert (DocVortex `normalize_image_source` laesst die Zeichen der Namen
     stehen), deshalb genuegt der woertliche Vergleich.
@@ -584,9 +593,7 @@ def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:
     if not umbenannt:
         return wert
     muster = re.compile(
-        r"(?<![\w./-])("
-        + "|".join(re.escape(alt) for alt in sorted(umbenannt, key=len, reverse=True))
-        + r")"
+        r"(?:^|(?<=[(\"]))(" + "|".join(re.escape(alt) for alt in umbenannt) + r")"
     )
 
     def ersetzen(teil: Any) -> Any:
