@@ -882,7 +882,7 @@ def rendered_markdown(result: dict[str, Any]) -> str:
             "die Darstellung im Betrieb nie erreichen. Was da ist, steht "
             "unveraendert in `raw`."
         )
-    if "markdown_full" in result and result["markdown_full"] is None:
+    if "markdown_full" in result and result["markdown_full"] is None and "markdown" in result:
         raise IncompleteResultError(_ohne_vollfassung(result))
     return _pflichtfeld(result, "markdown_full", str)
 
@@ -891,9 +891,10 @@ def _ohne_vollfassung(result: dict[str, Any]) -> str:
     """Die Meldung, wenn `assemble` keine ganze Vollfassung bilden konnte.
 
     Das Ergebnis ist dann nicht beschaedigt, sondern so zusammengesetzt
-    (`markdown_full` ist None); die Meldung nennt den Grund und wo das Bezahlte
-    liegt, statt `_pflichtfeld` von einer beschaedigten Zeile sprechen zu lassen.
-    Auf `markdown_full_je_teilstueck` verweist sie nur, wenn es den Schluessel
+    (`markdown_full` ist None, `markdown` steht da, denn `assemble` schreibt es
+    immer); die Meldung nennt den Grund und wo das Bezahlte liegt, statt
+    `_pflichtfeld` von einer beschaedigten Zeile sprechen zu lassen. Auf
+    `markdown_full_je_teilstueck` verweist sie nur, wenn es den Schluessel
     gibt."""
     uebrige = (
         "die Vollfassungen der uebrigen Teilstuecke unter "
@@ -902,9 +903,11 @@ def _ohne_vollfassung(result: dict[str, Any]) -> str:
         else ""
     )
     return (
-        "Es gibt keinen ganzen Text fuer Abnehmer: Einem Teilstueck fehlte die "
-        "Vollfassung `markdown_full.md` (der Worker meldet das in `degraded`), "
-        "und aus Teilen wird kein Text zusammengesetzt, der vollstaendig "
-        f"aussaehe. Was bezahlt ist, steht in `raw`: {uebrige}der Text ohne "
-        "Kopf- und Fusszeilen, Seitenzahlen und Randtexte unter `markdown`."
+        "Es gibt keinen ganzen Text fuer Abnehmer: Der Antwort des Workers "
+        "fehlte die Vollfassung `markdown_full.md`, ganz oder fuer ein "
+        "Teilstueck des Dokuments (der Worker meldet das in `degraded`), und aus "
+        "Teilen wird kein Text zusammengesetzt, der vollstaendig aussaehe. Was "
+        f"bezahlt ist, steht in `raw` (`mineru-ocr show ZIEL --raw`): {uebrige}"
+        "der Text ohne Kopf- und Fusszeilen, Seitenzahlen und Randtexte unter "
+        "`markdown`."
     )

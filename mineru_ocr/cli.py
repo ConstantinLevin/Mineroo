@@ -662,7 +662,7 @@ def markdown(
     Ist das Dokument nicht erfolgreich terminal, wird NICHTS ausgegeben und der
     Exit-Code ist 3 (`raise typer.Exit(code=3)`). Fehlte einem Teilstueck die
     Vollmodus-Fassung, gibt es ebenfalls keinen Text; die Meldung nennt, wo das
-    Bezahlte liegt, und der Exit-Code ist 1. Einen halben Text auszugeben
+    Bezahlte liegt (`mineru-ocr show ZIEL --raw`), und der Exit-Code ist 1. Einen halben Text auszugeben
     waere schlimmer als keinen: Er saehe vollstaendig aus.
     """
     try:

@@ -669,6 +669,14 @@ def test_ohne_vollfassung_eines_ungeschnittenen_dokuments_nennt_die_darstellung_
     assert "beschaedigt" not in meldung
 
 
+def test_eine_fremde_zeile_ohne_vollfassung_gilt_weiter_als_beschaedigt() -> None:
+    """`assemble` schreibt `markdown` immer. Eine Zeile mit `markdown_full: null`
+    ohne `markdown` hat nicht `assemble` geschrieben; sie heisst beschaedigt, und
+    die Meldung verweist nicht auf ein `markdown`, das es nicht gibt."""
+    with pytest.raises(IncompleteResultError, match="beschaedigt"):
+        rendered_markdown({"markdown_full": None, "middle_json": []})
+
+
 def test_die_darstellung_braucht_nur_die_vollfassung() -> None:
     """Der Text fuer Abnehmer ist `markdown_full` und sonst nichts; ein Ergebnis,
     das ihn traegt, wird dargestellt, auch ohne `markdown` und `middle_json`."""
