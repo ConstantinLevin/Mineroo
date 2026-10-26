@@ -294,9 +294,9 @@ def ocr(
 
     `--tier`, `--ocr-mode` und `--image-analysis/--no-image-analysis` sind die
     Lese-Einstellungen dieses Laufs, fuer jede Datei; ohne Angabe gelten die
-    Voreinstellungen der Konfiguration. Sie gelten nur fuer Dateien, die dieser
-    Lauf einreiht: Eine mit Ergebnis oder eine, die schon unterwegs ist, behaelt
-    ihre.
+    Voreinstellungen (`advanced`, `ocr`, Bildanalyse an). Sie gelten nur fuer
+    Dateien, die dieser Lauf einreiht: Eine mit Ergebnis oder eine, die schon
+    unterwegs ist, behaelt ihre. Womit ein Dokument gelesen wurde, zeigt `show`.
 
     Die Kommandozeile ist die einzige, die Pfade kennt: Sie liest die Dateien (in
     Verzeichnissen ueber ein Muster), hasht sie und nennt in der Ausgabe je Datei

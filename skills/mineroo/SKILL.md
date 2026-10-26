@@ -85,6 +85,21 @@ Die Hüllen des Async-Clients kommen mit geladenem `raw`. Bei vielen großen
 Dokumenten nimmst du `as_completed` und verarbeitest jede Hülle, bevor die
 nächste kommt.
 
+## Lese-Einstellungen
+
+Stufe, OCR-Modus und Bildanalyse wählst du je Lauf: beim Kommando `ocr` mit
+`--tier`, `--ocr-mode` und `--no-image-analysis`, in der Bibliothek mit `tier=`,
+`ocr_mode=` und `image_analysis=` an `ocr_start` und `ocr`. Ohne Angabe liest
+MinerU in `advanced` mit erzwungenem OCR und Bildanalyse; davon weichst du nur ab,
+wenn der Nutzer es verlangt (etwa eine saubere digitale PDF im Textmodus).
+
+Die Einstellungen wirken nur auf Dokumente, die der Aufruf neu einreiht. Ein
+Treffer liefert das gespeicherte Ergebnis, gleich welche Einstellungen du
+verlangst, und ein Neu-Lesen mit anderen gibt es nicht. Womit ein Ergebnis
+gelesen wurde, zeigen `mineru-ocr show ZIEL` und an der Hülle `.read_settings` und
+`.mineru_version`; wie viele Dokumente mit welchen gelesen sind, zeigt
+`mineru-ocr status`.
+
 ## Der Daemon
 
 Fertig wird ein Dokument nur, wenn ein `mineru-ocr daemon` läuft: Er ist der

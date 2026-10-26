@@ -454,7 +454,11 @@ class RunPodClient:
         Args:
             file_b64: Die Datei oder der Ausschnitt, Base64-kodiert.
             tier: Die Stufe, wie tief MinerU 4 liest (`config.GUELTIGE_STUFEN`).
-                Aus den Einstellungen durchgereicht, nicht hier gewaehlt.
+                Aus den Lese-Einstellungen des Dokuments durchgereicht
+                (`config.ReadSettings`, an seiner Eingabe), nicht hier gewaehlt.
+                Einzeln und ungeprueft, damit die Nutzlast auch einen Wert tragen
+                kann, den das Paket nie bilden wuerde (die erzwungene
+                Fehlerantwort der Aufnahmen).
             ocr_mode: Woher der Text kommt (`config.GUELTIGE_OCR_MODI`). Ebenso.
             image_analysis: Ob das Modell Bilder und Diagramme beschreibt. Wirkt
                 laut Vertrag nur in der Stufe `advanced`; ausserhalb davon wird

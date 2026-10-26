@@ -800,7 +800,8 @@ class OCRClient:
            den ersten warten, und danach tut der zweite nichts. Kam sie neu
            hinein, samt den Lese-Einstellungen dieses Aufrufs, wird in derselben
            Transaktion der Job eingereiht. Der Job traegt nur den Hash und nimmt
-           die Einstellungen von der Eingabe (Mineroo#14). Eine Ergebniszeile legt erst der Job an, wenn er endet.
+           die Einstellungen von der Eingabe (Mineroo#14). Eine Ergebniszeile
+           legt erst der Job an, wenn er endet.
            Jedes Dokument in seiner eigenen Transaktion und nie mehrere in einer:
            Zwei Aufrufer mit ueberlappenden Mengen in verschiedener Reihenfolge
            wuerden sich sonst gegenseitig blockieren. Das Signal, das die Worker
