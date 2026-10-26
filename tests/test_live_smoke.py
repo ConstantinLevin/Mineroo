@@ -28,7 +28,7 @@ Beleg, dass sie zu spät gefahren wurde. Die Vorgabe lautete: „es wird ja nich
 ohne interaktion gebaut es ist ja consigment gegen die api" (Plan 2.4).
 
 DIESE LISTE BESCHREIBT DEN STAND VON MINERU 3.4. Seit Mineroo#11 spricht das
-Paket den MinerU-4-Worker; die Antworten dieser Läufe (unter
+Paket den MinerU-4-Worker; die Antworten dieser Laeufe (unter
 `artifacts/2026-08-08-erster-tarball-lauf/`) tragen Dateien, die es unter MinerU
 4 nicht gibt, und werden offline nicht mehr abgespielt, bis auf die Form einer
 echten Fehlerantwort. Auspacken, Zusammensetzen und das `empty`-Kriterium laufen
