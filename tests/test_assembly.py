@@ -180,6 +180,72 @@ def test_rohantwort_bleibt_unveraendert() -> None:
     assert antwort == vorher
 
 
+def test_ein_doppeltes_archivmitglied_geht_nicht_verloren() -> None:
+    """Steht ein Name zweimal im Archiv, gilt das erste Mitglied; das zweite steht
+    mit einer Nummer am Pfad in `extras`, statt das erste zu ueberschreiben oder
+    selbst zu verschwinden."""
+    middle, dateien = _ein_dokument()
+    archiv = io.BytesIO()
+    with tarfile.open(fileobj=archiv, mode="w:gz") as tar:
+        doppelte = [
+            ("middle_json.json", b'{"zweites": true}'),
+            ("notiz.txt", b"eins"),
+            ("notiz.txt", b"zwei"),
+        ]
+        for pfad, daten in [*dateien.items(), *doppelte]:
+            eintrag = tarfile.TarInfo(name=pfad)
+            eintrag.size = len(daten)
+            tar.addfile(eintrag, io.BytesIO(daten))
+    eintrag_ergebnis = {"basename": "doc", "tarball_b64": base64.b64encode(archiv.getvalue()).decode()}
+    teil = unpack_response(ersatz.antwort(eintrag_ergebnis), Chunk(0, 0))
+
+    assert teil.middle_json == middle
+    assert base64.b64decode(teil.extras["middle_json.json"]) == b'{"zweites": true}'
+    assert base64.b64decode(teil.extras["notiz.txt"]) == b"eins"
+    assert base64.b64decode(teil.extras["notiz.txt#2"]) == b"zwei"
+
+
+def test_ein_inline_feld_mit_falschem_typ_geht_nach_extras() -> None:
+    """JSON-`null` an Stelle einer Datei ist keine Datei: Das Feld ist None, und
+    der Wert steht unter seinem Namen in `extras`."""
+    _, dateien = _ein_dokument()
+    eintrag: dict[str, Any] = {
+        "markdown": dateien["markdown.md"].decode(),
+        "middle_json": None,
+        "images": {},
+    }
+    teil = unpack_response(ersatz.antwort(eintrag), Chunk(0, 0))
+    assert teil.middle_json is None
+    assert teil.extras == {"middle_json": None}
+
+
+def test_ein_inline_bild_mit_ungueltigem_base64_wirft_endgueltig() -> None:
+    """Ein Bild, dessen Wert nicht reines Base64 ist (hier mit einem fremden
+    Zeichen), wird nicht still zu anderen Bytes dekodiert; ohne die strenge
+    Pruefung wuerde `*` einfach uebergangen. Die Antwort ist unverwertbar, ein
+    zweiter Versuch kaufte dieselbe."""
+    _, dateien = _ein_dokument()
+    eintrag: dict[str, Any] = {
+        "markdown": dateien["markdown.md"].decode(),
+        "images": {"page_0_image_2.jpg": "QUJD*"},
+    }
+    with pytest.raises(TerminalRunPodError, match="page_0_image_2.jpg"):
+        unpack_response(ersatz.antwort(eintrag), Chunk(0, 0))
+
+
+def test_ein_unlesbarer_text_im_archiv_geht_nach_extras() -> None:
+    """Eine Textdatei, die kein UTF-8 ist, wird nicht mit Ersatzzeichen
+    gelesen: Sie fehlt in ihrem Feld (None) und steht Byte fuer Byte in
+    `extras`."""
+    _, dateien = _ein_dokument()
+    kaputt = b"Fu\xdfzeile \xff\xfe"
+    teil = unpack_response(
+        ersatz.tarball_antwort({**dateien, "markdown_full.md": kaputt}), Chunk(0, 0)
+    )
+    assert teil.markdown_full is None
+    assert base64.b64decode(teil.extras["markdown_full.md"]) == kaputt
+
+
 # --- Zusammensetzen -------------------------------------------------------
 
 
@@ -393,6 +459,33 @@ def test_html_quellen_werden_umbenannt_wie_docvortex_sie_findet() -> None:
         inhalt = "x" + "".join(zufall.choice(bausteine) for _ in range(zufall.randint(1, 30)))
         erwartet = _DOCVORTEX_HTML_BILDQUELLE.sub(wie_docvortex, inhalt)
         assert _html_nach_zusammensetzen(inhalt) == erwartet, inhalt
+
+
+def test_ein_fremder_verweis_mit_demselben_pfadende_bleibt_stehen() -> None:
+    """Externe Bilder in visuellem HTML behalten ihre URL (DocVortex
+    `_materialize_markup`); endet eine solche URL zufaellig auf den Pfad eines
+    eigenen Bildes, wird sie nicht umgebogen."""
+    fremd = f"https://example.org/{ersatz.bild_pfad(0, 1)}"
+    assert _html_nach_zusammensetzen(f'<img src="{fremd}">') == f'<img src="{fremd}">'
+
+
+@pytest.mark.parametrize(
+    "vorlage",
+    [
+        '<img src="https://example.org/render?path={bild}">',
+        '<img src="https://example.org/render?src={bild}">',
+        "<img src=\"https://example.org/render?img='{bild}'\">",
+        "![](https://example.org/render?src={bild})",
+    ],
+)
+def test_ein_bildpfad_als_parameter_einer_fremden_url_bleibt_stehen(vorlage: str) -> None:
+    """Umbenannt wird nur ein ganzes lokales Bildziel. Eine externe URL, die den
+    Pfad eines eigenen Bildes als Parameter traegt, ist kein Verweis auf dieses
+    Bild und geht unveraendert weiter; sonst fragte ihr Server nach einem
+    anderen Pfad. Das gilt auch, wenn der Parameter selbst `src` heisst oder den
+    Pfad in Anfuehrungszeichen setzt."""
+    inhalt = vorlage.format(bild=ersatz.bild_pfad(0, 1))
+    assert _html_nach_zusammensetzen(inhalt) == inhalt
 
 
 def test_ein_name_ist_kein_praefix_eines_anderen() -> None:
@@ -624,99 +717,6 @@ def test_ein_fehlendes_feld_wird_gemeldet() -> None:
         rendered_markdown(ergebnis)
     with pytest.raises(IncompleteResultError):
         rendered_markdown({})
-
-
-def test_ein_doppeltes_archivmitglied_geht_nicht_verloren() -> None:
-    """Steht ein Name zweimal im Archiv, gilt das erste Mitglied; das zweite steht
-    mit einer Nummer am Pfad in `extras`, statt das erste zu ueberschreiben oder
-    selbst zu verschwinden."""
-    middle, dateien = _ein_dokument()
-    archiv = io.BytesIO()
-    with tarfile.open(fileobj=archiv, mode="w:gz") as tar:
-        doppelte = [
-            ("middle_json.json", b'{"zweites": true}'),
-            ("notiz.txt", b"eins"),
-            ("notiz.txt", b"zwei"),
-        ]
-        for pfad, daten in [*dateien.items(), *doppelte]:
-            eintrag = tarfile.TarInfo(name=pfad)
-            eintrag.size = len(daten)
-            tar.addfile(eintrag, io.BytesIO(daten))
-    eintrag_ergebnis = {"basename": "doc", "tarball_b64": base64.b64encode(archiv.getvalue()).decode()}
-    teil = unpack_response(ersatz.antwort(eintrag_ergebnis), Chunk(0, 0))
-
-    assert teil.middle_json == middle
-    assert base64.b64decode(teil.extras["middle_json.json"]) == b'{"zweites": true}'
-    assert base64.b64decode(teil.extras["notiz.txt"]) == b"eins"
-    assert base64.b64decode(teil.extras["notiz.txt#2"]) == b"zwei"
-
-
-def test_ein_inline_feld_mit_falschem_typ_geht_nach_extras() -> None:
-    """JSON-`null` an Stelle einer Datei ist keine Datei: Das Feld ist None, und
-    der Wert steht unter seinem Namen in `extras`."""
-    _, dateien = _ein_dokument()
-    eintrag: dict[str, Any] = {
-        "markdown": dateien["markdown.md"].decode(),
-        "middle_json": None,
-        "images": {},
-    }
-    teil = unpack_response(ersatz.antwort(eintrag), Chunk(0, 0))
-    assert teil.middle_json is None
-    assert teil.extras == {"middle_json": None}
-
-
-def test_ein_inline_bild_mit_ungueltigem_base64_wirft_endgueltig() -> None:
-    """Ein Bild, dessen Wert nicht reines Base64 ist (hier mit einem fremden
-    Zeichen), wird nicht still zu anderen Bytes dekodiert; ohne die strenge
-    Pruefung wuerde `*` einfach uebergangen. Die Antwort ist unverwertbar, ein
-    zweiter Versuch kaufte dieselbe."""
-    _, dateien = _ein_dokument()
-    eintrag: dict[str, Any] = {
-        "markdown": dateien["markdown.md"].decode(),
-        "images": {"page_0_image_2.jpg": "QUJD*"},
-    }
-    with pytest.raises(TerminalRunPodError, match="page_0_image_2.jpg"):
-        unpack_response(ersatz.antwort(eintrag), Chunk(0, 0))
-
-
-def test_ein_unlesbarer_text_im_archiv_geht_nach_extras() -> None:
-    """Eine Textdatei, die kein UTF-8 ist, wird nicht mit Ersatzzeichen
-    gelesen: Sie fehlt in ihrem Feld (None) und steht Byte fuer Byte in
-    `extras`."""
-    _, dateien = _ein_dokument()
-    kaputt = b"Fu\xdfzeile \xff\xfe"
-    teil = unpack_response(
-        ersatz.tarball_antwort({**dateien, "markdown_full.md": kaputt}), Chunk(0, 0)
-    )
-    assert teil.markdown_full is None
-    assert base64.b64decode(teil.extras["markdown_full.md"]) == kaputt
-
-
-def test_ein_fremder_verweis_mit_demselben_pfadende_bleibt_stehen() -> None:
-    """Externe Bilder in visuellem HTML behalten ihre URL (DocVortex
-    `_materialize_markup`); endet eine solche URL zufaellig auf den Pfad eines
-    eigenen Bildes, wird sie nicht umgebogen."""
-    fremd = f"https://example.org/{ersatz.bild_pfad(0, 1)}"
-    assert _html_nach_zusammensetzen(f'<img src="{fremd}">') == f'<img src="{fremd}">'
-
-
-@pytest.mark.parametrize(
-    "vorlage",
-    [
-        '<img src="https://example.org/render?path={bild}">',
-        '<img src="https://example.org/render?src={bild}">',
-        "<img src=\"https://example.org/render?img='{bild}'\">",
-        "![](https://example.org/render?src={bild})",
-    ],
-)
-def test_ein_bildpfad_als_parameter_einer_fremden_url_bleibt_stehen(vorlage: str) -> None:
-    """Umbenannt wird nur ein ganzes lokales Bildziel. Eine externe URL, die den
-    Pfad eines eigenen Bildes als Parameter traegt, ist kein Verweis auf dieses
-    Bild und geht unveraendert weiter; sonst fragte ihr Server nach einem
-    anderen Pfad. Das gilt auch, wenn der Parameter selbst `src` heisst oder den
-    Pfad in Anfuehrungszeichen setzt."""
-    inhalt = vorlage.format(bild=ersatz.bild_pfad(0, 1))
-    assert _html_nach_zusammensetzen(inhalt) == inhalt
 
 
 def test_nur_randbloecke_werden_angehaengt() -> None:
