@@ -631,8 +631,35 @@ def test_ohne_vollfassung_eines_teilstuecks_wirft_die_darstellung() -> None:
     ergebnis = assemble([erster, dataclasses.replace(zweiter, markdown_full=None)])
     assert ergebnis["markdown_full"] is None
 
-    with pytest.raises(IncompleteResultError, match="markdown_full"):
+    with pytest.raises(IncompleteResultError) as fehler:
         rendered_markdown(ergebnis)
+    # Die Meldung nennt den Grund und wo das Bezahlte liegt; beschaedigt ist
+    # an dieser Zeile nichts, sie ist so zusammengesetzt worden.
+    meldung = str(fehler.value)
+    assert "markdown_full_je_teilstueck" in meldung
+    assert "Teilstueck" in meldung
+    assert "beschaedigt" not in meldung
+
+
+def test_ohne_vollfassung_eines_ungeschnittenen_dokuments_nennt_die_darstellung_den_grund() -> None:
+    """Dasselbe fuer ein Dokument aus einem Teilstueck, dem `markdown_full.md`
+    fehlte: Die Meldung nennt die Datei und verweist nicht auf Vollfassungen
+    anderer Teilstuecke, die es nicht gibt."""
+    teil = _teil_aus(Chunk(0, 0), [ersatz.seite(0, [ersatz.text_block(0, "Az. 12/34", typ="header")])])
+    ergebnis = assemble([dataclasses.replace(teil, markdown_full=None)])
+
+    with pytest.raises(IncompleteResultError) as fehler:
+        rendered_markdown(ergebnis)
+    meldung = str(fehler.value)
+    assert "markdown_full.md" in meldung
+    assert "markdown_full_je_teilstueck" not in meldung
+    assert "beschaedigt" not in meldung
+
+
+def test_die_darstellung_braucht_nur_die_vollfassung() -> None:
+    """Der Text fuer Abnehmer ist `markdown_full` und sonst nichts; ein Ergebnis,
+    das ihn traegt, wird dargestellt, auch ohne `markdown` und `middle_json`."""
+    assert rendered_markdown({"markdown_full": "Az. 12/34\n\nText"}) == "Az. 12/34\n\nText"
 
 
 @pytest.mark.parametrize("vollfassung", [None, 5, "fehlt"])

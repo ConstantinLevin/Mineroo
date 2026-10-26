@@ -648,9 +648,10 @@ def markdown(
     Ausgegeben wird `OCRWrapper.rendered_markdown`, die Vollmodus-Fassung —
     also alles, was auf dem Dokument steht, einschliesslich Kopf- und
     Fusszeilen, Seitenzahlen und Randtexten, die MinerU aus seinem
-    gewoehnlichen Markdown herausfiltert und in denen das Aktenzeichen liegt.
-    Wer dieses gewoehnliche Markdown will, nimmt den Python-Weg
-    (`huelle["markdown"]`).
+    gewoehnlichen Markdown herausfiltert und in denen das Aktenzeichen liegt,
+    dazu die Seitenfussnoten und, war die Bildanalyse an, hinter jedem Bild
+    die Deutung des Modells als eingeklappten Block (`<details>`). Wer das
+    gewoehnliche Markdown will, nimmt den Python-Weg (`huelle["markdown"]`).
 
     Nur der Text. Seiten und Bloecke, Bilder und die Rohantworten gibt es ueber
     den Python-Weg (`huelle["middle_json"]`, `huelle.images`, `huelle.raw`) — sie
@@ -659,7 +660,9 @@ def markdown(
     nichts zu suchen.
 
     Ist das Dokument nicht erfolgreich terminal, wird NICHTS ausgegeben und der
-    Exit-Code ist 3 (`raise typer.Exit(code=3)`). Einen halben Text auszugeben
+    Exit-Code ist 3 (`raise typer.Exit(code=3)`). Fehlte einem Teilstueck die
+    Vollmodus-Fassung, gibt es ebenfalls keinen Text; die Meldung nennt, wo das
+    Bezahlte liegt, und der Exit-Code ist 1. Einen halben Text auszugeben
     waere schlimmer als keinen: Er saehe vollstaendig aus.
     """
     try:

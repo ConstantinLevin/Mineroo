@@ -1724,7 +1724,10 @@ async def test_markdown_meldet_eine_beschaedigte_zeile_statt_sie_auszugeben(
 
     Hier steht der Fliesstext noch in `markdown`, das Aktenzeichen nur in der
     Kopfzeile, die `markdown` weglaesst. Ein Ersatz aus `markdown` saehe
-    vollstaendig aus, und das Aktenzeichen fehlte (Mineroo#13).
+    vollstaendig aus, und das Aktenzeichen fehlte (Mineroo#13). Seit Mineroo#13
+    ist das auch die Form, die `assemble` schreibt, wenn einem Teilstueck
+    `markdown_full.md` fehlte; beschaedigt ist die Zeile dann nicht, der Weg
+    endet aber ebenso.
     """
     huelle = _anlegen(db_conn, tmp_path, "beschaedigt.png", _test_datenbank)
     await write_terminal_async(

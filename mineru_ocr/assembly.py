@@ -868,9 +868,10 @@ def rendered_markdown(result: dict[str, Any]) -> str:
             "`raw` ist leer oder NULL. Es gibt nichts darzustellen. Was der "
             "Lauf gemacht hat, steht in `notes` und `error`."
         )
-    if "markdown" not in result and "middle_json" not in result:
+    if not {"markdown_full", "markdown", "middle_json"} & result.keys():
         raise IncompleteResultError(
-            "Dieses Ergebnis traegt weder `markdown` noch `middle_json` und ist "
+            "Dieses Ergebnis traegt weder `markdown_full` noch `markdown` noch "
+            "`middle_json` und ist "
             "damit gar kein zusammengesetztes Ergebnis. Die eine bekannte Form "
             "dieser Art ist die Notfassung aus dem Fehlerpfad "
             "(`_rohfassung_der_teile`, erkennbar an `chunks` und "
@@ -878,4 +879,29 @@ def rendered_markdown(result: dict[str, Any]) -> str:
             "die Darstellung im Betrieb nie erreichen. Was da ist, steht "
             "unveraendert in `raw`."
         )
+    if "markdown_full" in result and result["markdown_full"] is None:
+        raise IncompleteResultError(_ohne_vollfassung(result))
     return _pflichtfeld(result, "markdown_full", str)
+
+
+def _ohne_vollfassung(result: dict[str, Any]) -> str:
+    """Die Meldung, wenn `assemble` keine ganze Vollfassung bilden konnte.
+
+    Das Ergebnis ist dann nicht beschaedigt, sondern so zusammengesetzt
+    (`markdown_full` ist None); die Meldung nennt den Grund und wo das Bezahlte
+    liegt, statt `_pflichtfeld` von einer beschaedigten Zeile sprechen zu lassen.
+    Auf `markdown_full_je_teilstueck` verweist sie nur, wenn es den Schluessel
+    gibt."""
+    uebrige = (
+        "die Vollfassungen der uebrigen Teilstuecke unter "
+        "`markdown_full_je_teilstueck`, "
+        if "markdown_full_je_teilstueck" in result
+        else ""
+    )
+    return (
+        "Es gibt keinen ganzen Text fuer Abnehmer: Einem Teilstueck fehlte die "
+        "Vollfassung `markdown_full.md` (der Worker meldet das in `degraded`), "
+        "und aus Teilen wird kein Text zusammengesetzt, der vollstaendig "
+        f"aussaehe. Was bezahlt ist, steht in `raw`: {uebrige}der Text ohne "
+        "Kopf- und Fusszeilen, Seitenzahlen und Randtexte unter `markdown`."
+    )
