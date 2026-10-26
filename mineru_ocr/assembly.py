@@ -576,10 +576,10 @@ def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:
     lokales Bildziel BEGINNT, in den Formen, in denen MinerU 4 ein Bild nennt:
     am Anfang eines Feldes (`image_path` im Middle-JSON, `image_source` im
     strukturierten Inhalt), nach der Klammer eines Markdown-Bildes
-    (`![…](images/…)`, DocVortex `build_markdown_image`) und nach dem
-    Anfuehrungszeichen eines HTML-Attributs (`<img src="images/…">`, DocVortex
-    `_materialize_markup`). Gemessen an den echten Antworten des Endpoints:
-    Andere Formen kommen dort nicht vor.
+    (`![…](images/…)`, DocVortex `build_markdown_image`) und am Anfang eines
+    HTML-Attributs, in Anfuehrungszeichen oder ohne (`<img src="images/…">`;
+    DocVortex `_materialize_markup` behaelt die Form, die das Modell schrieb).
+    Die echten Antworten des Endpoints tragen nur die ersten beiden Formen.
 
     Alles andere bleibt stehen, auch wenn es den Pfad enthaelt: Eine externe
     URL, die auf denselben Pfad endet oder ihn als Parameter traegt
@@ -593,7 +593,9 @@ def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:
     if not umbenannt:
         return wert
     muster = re.compile(
-        r"(?:^|(?<=[(\"]))(" + "|".join(re.escape(alt) for alt in umbenannt) + r")"
+        r"(?:^|(?<=[(\"'])|(?<=src=))("
+        + "|".join(re.escape(alt) for alt in umbenannt)
+        + r")"
     )
 
     def ersetzen(teil: Any) -> Any:

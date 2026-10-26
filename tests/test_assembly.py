@@ -267,10 +267,14 @@ def test_bilder_bekommen_je_teilstueck_einen_eigenen_namensraum() -> None:
     assert re.findall(r"!\[\]\(([^)]+)\)", ergebnis["markdown_full"]) == verweise
 
 
-def test_verweise_im_html_einer_tabelle_werden_mit_umbenannt() -> None:
+@pytest.mark.parametrize("src", ['src="{}"', "src='{}'", "src={}"])
+def test_verweise_im_html_einer_tabelle_werden_mit_umbenannt(src: str) -> None:
     """Bilder in visuellem HTML (eine Tabelle mit eingebettetem Bild) stehen als
     `<img src="images/…">` im `content` des `table_body` (DocVortex
-    `_materialize_markup`, Namen `page_{p}_table_image_{index}_{ordinal}`)."""
+    `_materialize_markup`, Namen `page_{p}_table_image_{index}_{ordinal}`).
+    DocVortex behaelt dabei die Anfuehrungszeichen des HTML, das das Modell
+    geschrieben hat; jede dieser Formen ist ein Verweis."""
+    attribut = src.format("images/page_0_table_image_0_1.png")
     tabelle = {
         "type": "table",
         "index": 0,
@@ -278,7 +282,7 @@ def test_verweise_im_html_einer_tabelle_werden_mit_umbenannt() -> None:
             {
                 "type": "table_body",
                 "index": 0,
-                "content": '<table><tr><td><img src="images/page_0_table_image_0_1.png"></td></tr></table>',
+                "content": f"<table><tr><td><img {attribut}></td></tr></table>",
             }
         ],
     }
@@ -290,7 +294,8 @@ def test_verweise_im_html_einer_tabelle_werden_mit_umbenannt() -> None:
 
     for nummer, erwartet in enumerate([b"a", b"b"]):
         html = ergebnis["middle_json"][nummer]["pages"][0]["blocks"][0]["content"][0]["content"]
-        (verweis,) = re.findall(r'src="([^"]+)"', html)
+        (verweis,) = re.findall(r"""src=["']?([^"'\s>]+)""", html)
+        assert verweis in ergebnis["images"]
         assert _bild_unter(ergebnis, verweis) == erwartet
 
 
