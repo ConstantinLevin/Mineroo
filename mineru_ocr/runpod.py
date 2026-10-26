@@ -742,10 +742,10 @@ class RunPodClient:
             if lauf_seit is not None:
                 laufzeit += jetzt - lauf_seit
             grund = None
-            if fehler_seit is None and laufzeit >= budget:
-                grund = f"{budget} Sekunden in Bearbeitung (IN_PROGRESS)"
-            elif fehler_seit is not None and jetzt - fehler_seit >= ausfall_frist:
+            if fehler_seit is not None and jetzt - fehler_seit >= ausfall_frist:
                 grund = f"{ausfall_frist} Sekunden lang nur fehlgeschlagene Abfragen"
+            elif laufzeit >= budget:
+                grund = f"{budget} Sekunden in Bearbeitung (IN_PROGRESS)"
             if grund is not None:
                 # Vor dem Aufgeben ein letztes Mal fragen: Wird der Job im
                 # letzten Takt fertig, ist er bezahlt, und ihn abzubrechen und neu
@@ -759,11 +759,11 @@ class RunPodClient:
                 except TransientRunPodError as fehler:
                     letzter_fehler = fehler
                     if fehler_seit is None:
-                        # Auch beim letzten Abruf nach Laufzeitablauf kann die
-                        # bezahlte Antwort nur voruebergehend unerreichbar sein.
-                        # Die Ausfallfrist beginnt hier; eine bereits abgelaufene
-                        # Ausfallfrist wird dagegen nicht verlaengert.
                         fehler_seit = jetzt
+                    # Der Schlussabruf bleibt bei transienten Fehlern innerhalb
+                    # derselben Ausfallfrist offen. Die erste wieder lesbare
+                    # Antwort entscheidet unten: terminal zurueck, sonst Abbruch.
+                    if jetzt - fehler_seit < ausfall_frist:
                         abstand = min(abstand * 2, 60.0)
                         await asyncio.sleep(abstand)
                         continue
