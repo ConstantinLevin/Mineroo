@@ -629,6 +629,41 @@ def test_nur_randbloecke_werden_angehaengt() -> None:
     assert text.startswith("Kurzfassung.")
 
 
+def _fussnote_im_markdown(text: str, wie_im_markdown: str) -> dict[str, Any]:
+    """Ein Ergebnis, dessen einzige Seite eine Seitenfussnote mit `text` traegt und
+    dessen `markdown.md` sie so enthaelt, wie DocVortex 0.5.16 sie rendert:
+    `wie_im_markdown` ist die Fussnote nach DocVortex' Maskierung
+    (`render/_internal/markdown/blocks.py`, `_render_page_footnote`), in der
+    Huelle, die die echte normale Seite des Endpoints zeigt."""
+    fussnote = {"type": "page_footnote", "index": 0, "content": [{"type": "text", "content": text}]}
+    ergebnis = _mit_bloecken([fussnote])
+    ergebnis["markdown"] = (
+        "Der Fliesstext.\n\n"
+        '<small><span class="docvortex-page-footnote" data-block-type="page_footnote" '
+        f'style="color:#6b7280">{wie_im_markdown}</span></small>'
+    )
+    return ergebnis
+
+
+def test_eine_fussnote_mit_maskierten_zeichen_wird_nicht_doppelt_angehaengt() -> None:
+    """DocVortex maskiert im Markdown `*`, `_`, `` ` ``, `~` und `$` mit einem
+    Backslash (`escaping.py`, `escape_conservative_markdown_text`). Die Fussnote
+    steht also im Markdown, nur nicht zeichengleich mit ihrem Rohtext."""
+    ergebnis = _fussnote_im_markdown(
+        "Vertrag Nr. 2025_17_B, Betrag in US-$ zu Kurs 2*3, Kennung `K1`, ca. ~5 %",
+        r"Vertrag Nr. 2025\_17\_B, Betrag in US-\$ zu Kurs 2\*3, Kennung \`K1\`, ca. \~5 %",
+    )
+    assert rendered_markdown(ergebnis) == ergebnis["markdown"]
+
+
+def test_eine_fussnote_mit_text_wie_ein_html_tag_wird_nicht_doppelt_angehaengt() -> None:
+    """Text, der wie ein HTML-Tag aussieht, schreibt DocVortex als Entities
+    (`inline.py`, `_escape_plain_markdown_text`: `html.escape`), damit ihn kein
+    Markdown-Leser als Tag nimmt."""
+    ergebnis = _fussnote_im_markdown("Aktenzeichen <Az 12/34>", "Aktenzeichen &lt;Az 12/34&gt;")
+    assert rendered_markdown(ergebnis) == ergebnis["markdown"]
+
+
 # --- Echte Antworten des Endpoints --------------------------------------
 
 

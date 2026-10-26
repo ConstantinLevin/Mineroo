@@ -39,6 +39,7 @@ from __future__ import annotations
 import base64
 import binascii
 import copy
+import html
 import io
 import json
 import re
@@ -827,6 +828,25 @@ def _randbloecke(middles: list[Any]) -> list[str]:
     return texte
 
 
+_MASKIERT: Final = re.compile(r"\\([*_`~$])")
+"""Ein Zeichen, das DocVortex 0.5.16 im Markdown mit einem Backslash maskiert
+(`render/_internal/markdown/escaping.py`, `escape_conservative_markdown_text`:
+`*`, `_`, `` ` ``, `~`, `$`)."""
+
+
+def _ohne_maskierung(markdown: str) -> str:
+    """Das Markdown, wie es ohne DocVortex' Maskierung lautete.
+
+    Nur fuer den Vergleich mit dem Rohtext eines Randblocks: Der steht im
+    Middle-JSON unmaskiert, im Markdown aber als `2025\\_17`, und Text, der wie
+    ein HTML-Tag oder eine Entity aussieht, als Entity (`&lt;Az 12/34&gt;`;
+    DocVortex 0.5.16, `render/_internal/markdown/inline.py`,
+    `_escape_plain_markdown_text`). Ausgegeben wird das Markdown immer
+    unveraendert.
+    """
+    return html.unescape(_MASKIERT.sub(r"\1", markdown))
+
+
 def rendered_markdown(result: dict[str, Any]) -> str:
     """Das GANZE Dokument in Markdown-Form. Leseseite, aendert nichts am Gespeicherten.
 
@@ -855,7 +875,9 @@ def rendered_markdown(result: dict[str, Any]) -> str:
         Weitere ist angehaengt. Es wird nie etwas entfernt, nur ergaenzt.
 
         Angehaengt wird ein Randblock nur, wenn sein Text im Markdown FEHLT.
-        Verglichen wird gegen das Markdown und nicht gegen die bereits
+        Verglichen wird mit dem Markdown ohne DocVortex' Maskierung
+        (`_ohne_maskierung`): Dort steht `2025_17` als `2025\\_17`, und das ist
+        derselbe Text. Verglichen wird gegen das Markdown und nicht gegen die bereits
         angehaengten: Elf Seiten mit derselben Fusszeile sind elfmal dieselbe
         Fusszeile, kein Duplikat. Die Randbloecke kommen in Dokumentreihenfolge,
         ohne eingefuegte Marker.
@@ -891,8 +913,9 @@ def rendered_markdown(result: dict[str, Any]) -> str:
     markdown = _pflichtfeld(result, "markdown", str)
     middles = _pflichtfeld(result, "middle_json", list)
 
+    vergleich = _ohne_maskierung(markdown)
     angehaengt = [
-        text for text in _randbloecke(middles) if text and text not in markdown
+        text for text in _randbloecke(middles) if text and text not in vergleich
     ]
     if not angehaengt:
         return markdown
