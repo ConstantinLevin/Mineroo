@@ -468,6 +468,29 @@ def test_teilstueck_ueber_der_anfragegrenze_von_run_wirft(tmp_path: Path) -> Non
         _einstellung(config_path=datei)
 
 
+def test_anfragegrenze_von_run_ist_genau_getroffen(tmp_path: Path) -> None:
+    """7.425.000 Byte roh sind kodiert 9.900.000 Byte, mit dem Umschlag genau die
+    10.000.000 Byte der Grenze: Das passt noch. Ein Byte mehr nicht."""
+    datei = tmp_path / "config.toml"
+    datei.write_text("max_payload_bytes = 7425000\n")
+    assert _einstellung(config_path=datei).max_payload_bytes == 7_425_000
+    datei.write_text("max_payload_bytes = 7425001\n")
+    with pytest.raises(ConfigurationError, match="max_payload_bytes"):
+        _einstellung(config_path=datei)
+
+
+def test_ausfall_der_abfragen_hat_eine_eigene_laengere_frist() -> None:
+    """Das Wartebudget folgt `executionTimeout`; ein Ausfall der Abfragen darf
+    laenger dauern, weil das Ergebnis bei RunPod noch rund dreissig Minuten
+    liegt (Mineroo#20)."""
+    e = _einstellung()
+    assert e.poll_failure_timeout_seconds == 1500.0
+    assert e.poll_failure_timeout_seconds > e.job_timeout_seconds
+    for falsch in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ConfigurationError, match="poll_failure_timeout_seconds"):
+            dataclasses.replace(e, poll_failure_timeout_seconds=falsch)
+
+
 def test_leere_rechenzentrumsliste_wirft(tmp_path: Path) -> None:
     """Eine leere Liste liesse kein einziges Rechenzentrum zu."""
     datei = tmp_path / "config.toml"

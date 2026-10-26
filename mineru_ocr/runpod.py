@@ -673,7 +673,7 @@ class RunPodClient:
             geworfen, waere die bezahlte Fehlerantwort verloren.
 
         Eine FEHLGESCHLAGENE Abfrage bricht das Warten NICHT ab. Sie wird mit
-        wachsendem Abstand wiederholt, bis das Zeitbudget erschoepft ist. Das ist
+        wachsendem Abstand wiederholt, bis ihre eigene Frist um ist. Das ist
         der wichtigste Einzelfall dieser Schleife: Ein Netzwackeln heisst nicht,
         dass das Ergebnis weg ist — es liegt auf der Gegenseite noch bis zu
         dreissig Minuten bereit. Wer hier abbricht, wirft ein bezahltes, noch
@@ -696,7 +696,8 @@ class RunPodClient:
         Raises:
             JobAufgegebenError: `settings.job_timeout_seconds` Sekunden in
                 Bearbeitung (alle Laeufe zusammen, die Schlange zaehlt nicht)
-                oder ebenso lange nur fehlgeschlagene Abfragen. Wiederholbar.
+                oder `settings.poll_failure_timeout_seconds` Sekunden lang nur
+                fehlgeschlagene Abfragen. Wiederholbar.
                 Vorher fragt das Paket ein letztes Mal ab und gibt das Ergebnis
                 zurueck, wenn der Job inzwischen terminal ist; sonst ging
                 `/cancel` fuer genau diesen Job hinaus. Ein misslungener Abbruch
@@ -713,6 +714,7 @@ class RunPodClient:
         Kosten: keine ueber die von `submit` hinaus.
         """
         budget = self._settings.job_timeout_seconds
+        ausfall_frist = self._settings.poll_failure_timeout_seconds
         # Das Zeitbudget zaehlt die Zeit, in der RunPod den Job bearbeitet, und
         # zwar ueber alle Laeufe zusammen. Warteschlange und Kaltstart zaehlen
         # nicht: Mit `/cancel` bei Ablauf wuerde ein Job, der hinter einem
@@ -726,7 +728,10 @@ class RunPodClient:
         # Eine eigene Grenze fuer fehlschlagende Abfragen, denn das Budget oben
         # laeuft erst ab dem ersten Lauf: Faellt die Abfrage vorher dauerhaft aus,
         # bliebe sonst kein Ende. Sie beginnt beim ersten Fehler einer Reihe und
-        # endet mit der ersten gelungenen Abfrage.
+        # endet mit der ersten gelungenen Abfrage. Waehrend einer solchen Reihe
+        # gibt das Budget oben den Job NICHT auf: Ob er noch laeuft, weiss dann
+        # niemand, und sein Ergebnis liegt bei RunPod noch rund dreissig Minuten
+        # (`poll_failure_timeout_seconds`, Review zu Mineroo#20).
         fehler_seit: float | None = None
         abstand = self._settings.poll_interval_seconds
         letzter_fehler: Exception | None = None
@@ -737,10 +742,10 @@ class RunPodClient:
             if lauf_seit is not None:
                 laufzeit += jetzt - lauf_seit
             grund = None
-            if laufzeit >= budget:
+            if fehler_seit is None and laufzeit >= budget:
                 grund = f"{budget} Sekunden in Bearbeitung (IN_PROGRESS)"
-            elif fehler_seit is not None and jetzt - fehler_seit >= budget:
-                grund = f"{budget} Sekunden lang nur fehlgeschlagene Abfragen"
+            elif fehler_seit is not None and jetzt - fehler_seit >= ausfall_frist:
+                grund = f"{ausfall_frist} Sekunden lang nur fehlgeschlagene Abfragen"
             if grund is not None:
                 # Vor dem Aufgeben ein letztes Mal fragen: Wird der Job im
                 # letzten Takt fertig, ist er bezahlt, und ihn abzubrechen und neu

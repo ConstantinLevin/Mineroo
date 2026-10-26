@@ -806,8 +806,10 @@ Jede steht wegen eines bezahlten Fehlers, nicht wegen einer Vorliebe.
   Herunterfahren abbricht — sonst läuft er bei RunPod weiter und kostet. Das
   Zeitbudget (`job_timeout_seconds`) zählt die Zeit in `IN_PROGRESS` über alle
   Läufe des Jobs; Warteschlange und Kaltstart zählen nicht, und die Zeit in der
-  Warteschlange hat keine Obergrenze. Fehlschlagende Abfragen haben dieselbe
-  Frist. Vor dem Aufgeben fragt das Paket ein letztes Mal ab.
+  Warteschlange hat keine Obergrenze. Fehlschlagende Abfragen haben eine eigene,
+  längere Frist (`poll_failure_timeout_seconds`, 1500 s), denn das Ergebnis liegt
+  bei RunPod rund 30 Minuten; solange sie scheitern, gibt auch das Zeitbudget
+  nicht auf. Vor dem Aufgeben fragt das Paket ein letztes Mal ab.
 - **Der API-Schlüssel steht nur im `Authorization`-Header**, nie in einer URL,
   und wird nie ausgegeben. Er liegt in `~/.runpod/config.toml` im Feld `apikey`.
 - **PDFium ist nicht threadsicher.** `asyncio.to_thread` um `pdf.py` herum ist

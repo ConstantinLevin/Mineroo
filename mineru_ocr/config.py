@@ -732,10 +732,9 @@ class Settings:
     Lauf wartet, bei Ablauf abgebrochen (`/cancel`) und neu eingereiht, immer
     wieder und jedes Mal neu bezahlt. Der Kaltstart samt Laden der Modelle
     (gemessen 104–128 s) liegt vor dem ersten Job eines Workers und damit in der
-    Warteschlange. Dieselbe Frist gilt fuer eine Reihe fehlgeschlagener Abfragen
-    (RunPod nicht erreichbar); das Ergebnis liegt dort danach noch bis zu
-    dreissig Minuten. Wird das Budget gerissen, geht `/cancel` fuer den Job
-    hinaus; der Fehler ist wiederholbar, nicht endgueltig.
+    Warteschlange. Eine Reihe fehlgeschlagener Abfragen hat ihre eigene Frist
+    (`poll_failure_timeout_seconds`). Wird das Budget gerissen, geht `/cancel`
+    fuer den Job hinaus; der Fehler ist wiederholbar, nicht endgueltig.
 
     300 s aus derselben Rechnung wie `executionTimeout` des Endpoints
     (Mineroo#19): die langsamste gemessene Seite 5,0 s, mal 20 Seiten, mal drei.
@@ -745,6 +744,18 @@ class Settings:
     schon selbst; weniger gaebe Teilstuecke auf, die der Endpoint noch laufen
     liesse. Wer Seiten je Teilstueck oder `executionTimeout` aendert, rechnet
     diesen Wert mit."""
+
+    poll_failure_timeout_seconds: float = 1_500.0
+    """Wie lange eine Reihe fehlgeschlagener Abfragen (RunPod nicht erreichbar,
+    5xx) dauern darf, bevor das Paket den Job aufgibt und `/cancel` schickt. Die
+    Frist beginnt beim ersten Fehler einer Reihe und endet mit der ersten
+    gelungenen Abfrage.
+
+    Eigene Frist und nicht `job_timeout_seconds` (Review zu Mineroo#20): Seit das
+    Wartebudget `executionTimeout` folgt (300 s), gaebe ein Ausfall von fuenf
+    Minuten jeden wartenden Job auf, und das Teilstueck wuerde neu bezahlt,
+    obwohl sein Ergebnis bei RunPod noch rund dreissig Minuten liegt. 25 Minuten
+    bleiben darunter, mit Abstand fuer die letzte Abfrage."""
 
     ocr_concurrency: int = 24
     """Wie viele Dokumente der Daemon gleichzeitig betreut. GESETZT, nicht
@@ -949,11 +960,15 @@ class Settings:
                 f"({kodiert} Byte) muss unter die Anfragegrenze von /run passen "
                 f"({RUN_ANFRAGEGRENZE_BYTES} Byte)."
             )
-        if not (math.isfinite(self.job_timeout_seconds) and self.job_timeout_seconds > 0):
-            raise ConfigurationError(
-                f"job_timeout_seconds={self.job_timeout_seconds!r}: Das Wartebudget "
-                f"je Teilstueck muss eine endliche Zahl groesser als null sein."
-            )
+        for name, frist in (
+            ("job_timeout_seconds", self.job_timeout_seconds),
+            ("poll_failure_timeout_seconds", self.poll_failure_timeout_seconds),
+        ):
+            if not (math.isfinite(frist) and frist > 0):
+                raise ConfigurationError(
+                    f"{name}={frist!r}: Die Frist je Teilstueck muss eine endliche "
+                    f"Zahl groesser als null sein."
+                )
 
     def read_settings(
         self,
