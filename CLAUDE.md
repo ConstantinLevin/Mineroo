@@ -566,9 +566,12 @@ Ergebnisse gibt es nicht zu bedienen (Mineroo#1, „Nur noch MinerU 4").
   (`endpoint_id`), nie im Code; der alte Endpoint `l79lebhinxaqjz` wird nicht
   repariert. Seine echten Antworten im Betriebsweg liegen als Aufnahmen unter
   `artifacts/2026-10-26-mineru-4.0.12-endpoint/` (siehe „Das Testmaterial").
-  Der Build-Test des Forks (`.runpod/tests.json`) erlaubt nur CUDA 13.0; auf
-  Hosts mit neuerer CUDA scheitert er, und RunPod gibt das gebaute Image dann
-  nicht frei.
+  Jeder Push auf `main` des Forks baut ein Image, und RunPod gibt es nach dem
+  Build-Test (`.runpod/tests.json`) selbst frei; das Image wird nie von Hand am
+  Endpoint gesetzt. Die erlaubten CUDA-Versionen in `tests.json` und `hub.json`
+  müssen die Hosts einschließen, die RunPod wirklich anbietet: Stand nur `13.0`
+  darin, fand der Test keinen Host, scheiterte, und das Image blieb
+  unveröffentlicht (Fork-Commit `46dd9e7` behebt das).
 
 ### Teilstücke sind vor Postgres vollständig abstrahiert
 
