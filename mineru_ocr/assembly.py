@@ -712,7 +712,10 @@ def is_empty(result: dict[str, Any]) -> bool:
     Endzustand (Story 25).
 
     DIE REGEL: Leer ist ein Dokument genau dann, wenn sein `markdown` und sein
-    `markdown_full` nach dem Entfernen von Leerraum leer sind, keine Seite seines
+    `markdown_full` nach dem Entfernen von Leerraum und Seitentrennern
+    (`SEITENTRENNER_VOLLFASSUNG`: die Vollfassung verbindet auch leere Seiten
+    mit ihm, DocVortex 0.5.16, `render/_internal/markdown/renderer.py`) leer
+    sind, keine Seite seines
     Middle-JSON einen einzigen Block traegt und es kein Bild hat. Im Zweifel gilt
     es als NICHT leer — ein faelschlich als fertig verbuchtes leeres Dokument
     faellt beim Ansehen auf, ein faelschlich als leer verbuchtes volles nie:
@@ -739,7 +742,7 @@ def is_empty(result: dict[str, Any]) -> bool:
     """
     for feld in ("markdown", "markdown_full"):
         text = result.get(feld)
-        if isinstance(text, str) and text.strip():
+        if isinstance(text, str) and text.replace(SEITENTRENNER_VOLLFASSUNG, "").strip():
             return False
     bilder = result.get("images")
     if not isinstance(bilder, dict) or bilder:

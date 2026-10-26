@@ -618,6 +618,19 @@ def test_die_echte_leere_seite_ist_empty(aufnahme: str) -> None:
     assert rendered_markdown(ergebnis) == ""
 
 
+def test_ein_leeres_dokument_aus_mehreren_teilstuecken_ist_empty() -> None:
+    """Zwei leere Seiten, in zwei Teilstuecke geschnitten, je mit der echten
+    Antwort auf die leere PDF-Seite: Die Vollfassung traegt dann nur die
+    Trennlinie zwischen den Seiten, die MinerU auch ungeschnitten setzte
+    (DocVortex 0.5.16 verbindet im Vollmodus jede Seite, auch eine leere, mit
+    ihr). Eine Trennlinie ist kein Inhalt; das Dokument ist `empty`."""
+    teile = [
+        unpack_response(ersatz.echte_antwort("leere_seite_pdf"), Chunk(seite, seite))
+        for seite in (0, 1)
+    ]
+    assert is_empty(assemble(teile))
+
+
 # --- Die Leseseite --------------------------------------------------------
 
 
