@@ -1,6 +1,6 @@
 # OCR-Qualität am echten Bestand: Schadensklassen, Engine-Verhalten und Evaluations-Methodik
 
-> **Hinweis (Mineroo#2):** Dieses Dokument beschreibt den Stand bis MinerU 3.4 und den alten Endpoint. Es ist Geschichte und wird nicht umgeschrieben. Aktuell gelten das [README](../README.md) des Repositories und die Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1). Namen, Anschriften und Kennungen Dritter in den Belegen sind durch erfundene Werte ersetzt; die Schadensmuster der OCR-Lesungen sind dabei erhalten.
+> **Hinweis (Mineroo#2):** Dieses Dokument beschreibt den Stand bis MinerU 3.4 und den alten Endpoint. Es ist Geschichte und wird nicht umgeschrieben. Aktuell gelten das [README](../README.md) des Repositories und die Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1). Namen, Anschriften und Kennungen Dritter in den Belegen sind durch erfundene Werte ersetzt; die Schadensmuster der OCR-Lesungen sind dabei erhalten. **Ausnahme ist Abschnitt 8:** Er ist neu, stammt aus dem Messlauf zu [Mineroo#19](https://github.com/ConstantinLevin/Mineroo/issues/19) und gilt für MinerU 4.0.12 auf dem Endpoint `csfbvej3d4cna5`.
 
 **Stand:** 05.08.2026.
 **Zweck:** Dieses Dokument ist die Beweis- und Methodikschicht des OCR-Projekts. Es hält generalisiert fest: (1) **welche Schadensklassen** der Bestand enthält und woran man sie erkennt, (2) **was OCR-Engines auf diesen Klassen leisten** — lokale Backends wie MinerU —, (3) **wie man das misst**, ohne sich selbst zu betrügen, und (4) welche Qualitätsfragen offen sind. Es ist bewusst KEIN Dokumenten-Dossier: Einzelbefunde stehen hier nur, wo sie eine generelle Lektion belegen oder auf der Nachprüf-Liste stehen. Die Einzeldokument-Details leben in den Artefakten, auf die Abschnitt 7 zeigt.
@@ -243,3 +243,83 @@ Bis zum 02.08.2026 stützte sich dieses Dokument auf die Urteils-Schicht des Bak
 - **NEU: Zwei Steuernummern derselben Stammnummer für die KG.** Der Grunderwerbsteuer-Bescheid trägt bei tesseract, paddle-ocr und easyocr übereinstimmend `123/456/78901`; der geerntete Kennungsbestand des Pass-1-Suchrahmens führt für dieselbe Gesellschaft `123/456/23456`. Stamm identisch, Endnummer verschieden — entweder zwei echte Nummern (verschiedene Steuerarten oder Zeiträume) oder ein Erntefehler. Da drei Engines übereinstimmen, ist die Bescheid-Lesung belastbar; welche Nummer wofür gilt, ist offen.
 - Eine Kfz-Steuernummer aus dem Kennungs-Erntebestand ist OCR-unsicher (ein Buchstabe ist ein Artefakt) — Sichtprüfung nötig, falls sie je tragend wird.
 - **NEU (Werkzeugfrage, nicht Dokumentfrage): Kennt die MinerU-Bibliothek eine Option, Kopf-/Fußzeilen im Markdown zu behalten?** Der Job-Contract des Workers hat keine; ob die Bibliothek darunter eine besitzt (und ob der Worker sie durchreichen würde), ist ungeprüft. Falls ja, wäre das der einfachere Weg als das Anhängen der `header`-Einträge aus `content_list`. Beide Wege führen zum selben Ziel — die Frage ist nur, welcher weniger Code kostet.
+
+---
+
+## 8. Messlauf MinerU 4 (26.10.2026, Mineroo#19)
+
+**Gegenstand:** MinerU 4.0.12, Stufe `advanced`, OCR erzwungen, Bildanalyse an, Image `2bccaebd0`, RTX 4090 (24 GB), EWR. Abgeschickt über `mineru-ocr ocr` und den Daemon (`--concurrency 4`) in eine eigene Datenbank `mineroo_messlauf`. Die Texte der Dokumente stehen nur lokal in der Lesemappe des Eigentümers (`Mineroo-Arbeitsstand-2026-10-24/messlauf-19/lesemappe/`), nicht hier.
+
+**Material, 20 Dokumente mit 102 Seiten:** die 15 Fixture-Dokumente aus Abschnitt 3 (97 Seiten) und fünf Formel-Folien des Kursmaterials, je eine Seite (B819 „Binomial model“ S. 7, 8, 12, 21; „Black–Scholes model“ S. 8). Welche fünf Seiten die Hybrid-gegen-VLM-Messung aus 5.3 benutzte, lässt sich nicht mehr feststellen: Die gbrain-Seite gibt es nicht mehr. Gewählt sind deshalb die fünf formeldichtesten Folienseiten nach der 3.4-Ausgabe. Die Vergleichsfassung 3.4 ist für die Fixtures die aus 5.1 (Juni 2026), für die Folien die des Kursmaterial-Laufs (Juli 2026). Alle 20 Dokumente endeten `done`, ohne Vermerk.
+
+### 8.1 Bewertungsweise (vom Eigentümer, nicht automatisch)
+
+Je Fixture-Dokument, gegen `rendered_markdown` (MinerU 4) und das 3.4-Markdown:
+
+1. jeden Müll-Schnipsel aus `OCR-Befunde.md` nachschlagen: korrekt, fehlt oder anders falsch;
+2. Kennungen gesondert prüfen, jedes Vorkommen. In MinerU 4 kommen sie auch aus Kopf- und Fußzeile. Dem 3.4-Markdown fehlen vier Randklassen (5.1-2), dort ist ihr Fehlen kein Lesefehler;
+3. Rechenketten der Bescheide nachrechnen (Abschnitt 4);
+4. auf Erfindungen achten (CJK-Passagen, wiederholte Legenden, verfälschte Eigennamen);
+5. je Klasse urteilen: besser, gleich oder schlechter. Keine Gesamtzahl bilden.
+
+Je Folie: Formeln gegen die Folie zählen, Subskripte prüfen, und an Folie S. 12 eine Rechenkette nachrechnen (uS, dS, C_u, C_d und die Gleichung des Hedge-Portfolios).
+
+**Hinweise aus den Kennzahlen für das Lesen.** Die Kennzahlen stammen aus Abschnitt 4 und werden über beide Fassungen gezählt.
+
+- MinerU 4 liefert auf den Bescheiden 4–13 % mehr Zeichen; die Randklassen stehen jetzt im Text.
+- Mojibake und Junk-Zeilen sind in beiden Fassungen gleich, bis auf ±2.
+- In den sechs Grundsteuer- und Einkommensteuer-Bescheiden stehen 3–8 englische Sätze des Modells über Bildbereiche im Text, Muster „The image provided is a QR code …“. Die 3.4-Fassung hat 0. Das ist die Falle aus 5.1-2, jetzt im Abnehmer-Text, weil die Randklassen mitkommen.
+- Auf den Folien setzt MinerU 4 weniger `$…$`: 11/12/13/11/28 gegen 21/16/15/17/41 bei 3.4. Ob dabei Mathematik verloren geht oder nur Einzelbuchstaben nicht mehr gesetzt werden, entscheidet der Blick auf die Folie. `$R_{f}$` und `$N(d_{1})$` sind erhalten.
+- Beim Handschrift-Dokument meldete MinerU im Worker-Log eine am Längenlimit abgeschnittene Ausgabe und unbekannte Blocktypen (`list_block`).
+
+| Nr | Seiten | Zeichen 4 / 3.4 | Alpha-Token | Mojibake | Junk-Zeilen | Inline-Formeln | CJK | Modell-Prosa (en) | Bild-Deutungen |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 8 | 34106 / 32873 | 4071 / 4037 | 3 / 2 | 1 / 1 | 9 / 7 | 0 / 0 | 0 / 0 | 0 / 0 |
+| 2 | 8 | 38695 / 37129 | 4409 / 4353 | 9 / 9 | 1 / 1 | 0 / 0 | 0 / 0 | 0 / 0 | 1 / 1 |
+| 3 | 10 | 23745 / 20932 | 2586 / 2443 | 25 / 25 | 1 / 1 | 0 / 0 | 0 / 0 | 8 / 0 | 2 / 2 |
+| 4 | 8 | 15117 / 13356 | 1831 / 1639 | 10 / 10 | 0 / 0 | 3 / 3 | 0 / 0 | 8 / 0 | 2 / 2 |
+| 5 | 16 | 45092 / 40957 | 5150 / 4695 | 20 / 20 | 0 / 0 | 0 / 0 | 0 / 0 | 7 / 0 | 8 / 8 |
+| 6 | 6 | 12829 / 11550 | 1455 / 1368 | 9 / 11 | 0 / 0 | 7 / 7 | 0 / 0 | 4 / 0 | 2 / 2 |
+| 7 | 6 | 12427 / 11226 | 1419 / 1308 | 13 / 13 | 0 / 0 | 0 / 0 | 0 / 0 | 4 / 0 | 2 / 2 |
+| 8 | 6 | 12375 / 11118 | 1403 / 1305 | 13 / 13 | 0 / 0 | 0 / 0 | 0 / 0 | 3 / 0 | 2 / 2 |
+| 9 | 1 | 1156 / 654 | 123 / 65 | 0 / 0 | 0 / 0 | 0 / 0 | 1 / 0 | 0 / 0 | 1 / 1 |
+| 10 | 1 | 1866 / 1818 | 174 / 199 | 1 / 1 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| 11 | 14 | 31148 / 30993 | 3610 / 3908 | 0 / 0 | 3 / 4 | 0 / 0 | 32 / 32 | 0 / 0 | 0 / 0 |
+| 12 | 4 | 3133 / 3025 | 376 / 357 | 1 / 1 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 2 / 2 |
+| 13 | 3 | 3096 / 2613 | 370 / 299 | 0 / 0 | 1 / 1 | 0 / 0 | 0 / 0 | 0 / 0 | 2 / 2 |
+| 14 | 5 | 1382 / 1369 | 161 / 159 | 3 / 3 | 0 / 0 | 0 / 0 | 2 / 2 | 0 / 0 | 0 / 0 |
+| 15 | 1 | 2538 / 2547 | 219 / 217 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| 16 | 1 | 2538 / 2527 | 380 / 374 | 1 / 0 | 0 / 0 | 11 / 21 | 0 / 0 | 0 / 0 | 0 / 0 |
+| 17 | 1 | 2278 / 2233 | 383 / 395 | 1 / 0 | 0 / 0 | 12 / 16 | 0 / 0 | 0 / 0 | 0 / 0 |
+| 18 | 1 | 2479 / 2421 | 346 / 340 | 29 / 28 | 0 / 0 | 13 / 15 | 0 / 0 | 0 / 0 | 2 / 2 |
+| 19 | 1 | 2462 / 2335 | 330 / 315 | 1 / 0 | 0 / 0 | 11 / 17 | 0 / 0 | 0 / 0 | 0 / 0 |
+| 20 | 1 | 3014 / 2925 | 439 / 426 | 1 / 0 | 0 / 0 | 28 / 41 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+Die Nummern 1–15 folgen der Dateiordnung des Fixture-Ordners. Welche Nummer welches Dokument ist, steht nur in der lokalen Lesemappe (`index.json`). Mojibake zählt `®£±¥©…`. Junk-Zeilen sind Zeilen mit drei oder mehr Doppelpunkten. „Modell-Prosa (en)“ ist eine Mustersuche nach Sätzen wie „the image …“ oder „appears to …“, also eine untere Schranke. **Das Urteil des Eigentümers steht noch aus** und gehört hierher, als Zählung und Urteil je Klasse.
+
+### 8.2 Messwerte
+
+Alle Zeiten stammen aus dem Rohergebnis (`raw.envelopes[*]`: `delayTime`, `executionTime`, `output_meta.debug.phase_ms`), ohne neuen Code. Die Kosten rechnen mit 1,10 USD/h für die 4090 serverless (0,000306 USD/s).
+
+| Größe | Wert |
+|---|---|
+| Teilstücke / Seiten | 25 / 102 |
+| Ausführung je Seite | Mittel 1,84 s; je Teilstück Median 1,92 s, Spanne 1,11–5,03 s; davon MinerU-Parse 85 % |
+| Kosten je Seite, nur Ausführung | 0,00056 USD |
+| Kosten des Blocks laut Guthaben | 0,322 USD (2,486 → 2,164), mit vier Kaltstarts und Leerlauf; also 0,0032 USD je Seite bei einem Lauf dieser Größe |
+| Warten bei RunPod, warmer Worker | Median 94 ms, höchstens 1,7 s |
+| Kaltstart nach längerem Leerlauf (Dauer nicht festgehalten) | 104–128 s (4 Worker) |
+| Kaltstart nach 4,5 min Leerlauf | 1,3 s (FlashBoot holt den Worker samt geladenem Modell zurück) |
+| Kaltstart nach 15 min Leerlauf | 124,8 s (neuer Worker) |
+| Aufschlüsselung eines Kaltstarts (Worker-Log) | 114 s vom Start bis zur Bereitschaft: vLLM-Engine 89 s (davon torch.compile 18 s), Aufwärm-Parse einer Testseite 15 s |
+| größte Antwort von `/status` | 6,05 MB (10 Seiten, 605 KB/Seite) |
+| größte Antwort je Seite | 729 KB/Seite (Teilstück mit 7 Seiten, 5,10 MB) |
+| Antwort bei 20 Seiten dieser Dichte, hochgerechnet | ≈ 14,6 MB |
+
+**Antwortgröße gegen `/run`:** Keine Antwort erreichte die angebliche Grenze von 10 MB; bestätigt oder widerlegt ist sie damit nicht. Hochgerechnet läge ein volles Teilstück mit 20 Seiten der dichtesten Scans bei rund 14,6 MB: über 10 MB, unter den 20 MB, die der Worker erzwingt. Gilt die 10-MB-Grenze, tragen höchstens 13 solche Seiten (13 × 729 KB ≈ 9,5 MB). Die Entscheidung (Teilstückgröße oder Speicherweg) liegt beim Eigentümer.
+
+**GPU-Speicheranteil.** MinerU 4.0.12 setzt für vLLM `gpu_memory_utilization = max(6 / VRAM_GB, 0,1)` bei mehr als 8 GB (`mineru/model/vlm/engine_utils.py`). Auf der 4090 sind das 0,25. Laut Worker-Log stehen damit 2,17 GiB KV-Cache bereit, 189.440 Tokens, genug für 23 gleichzeitige Anfragen zu je 8.192 Tokens. `MINERU_VIRTUAL_VRAM_SIZE` ersetzt nur die erkannte Größe: Ein **kleinerer** Wert ergibt einen **höheren** Anteil. Mit `12` waren es 0,5, also 8,05 GiB, 703.200 Tokens und 85,8 gleichzeitige Anfragen. Gemessen an denselben 3 Dokumenten (7 Teilstücke, 40 Seiten) betrug die Ausführung zusammen 59,4 s bei 0,25 und 64,3 s bei 0,5. Ein Zwischenlauf, in dem 6 der 7 Teilstücke noch auf einem Worker mit 0,25 liefen, brauchte 67,6 s. Ein höherer Anteil bringt keinen Durchsatz: Bei `MINERU_MAX_CONCURRENCY=1` und höchstens 20 Seiten je Teilstück reicht schon der Cache der Voreinstellung. Bei gleicher Einstellung streut dasselbe Teilstück zwischen zwei Läufen um bis zu 46 %. **Der Endpoint bleibt bei MinerUs Voreinstellung; die Variable ist nicht gesetzt.**
+
+**`executionTimeout`** steht seit dem 26.10.2026 auf **300 s** (vorher 600 s). Das längste Teilstück lief 17,8 s, die langsamste Seite 5,0 s. 20 Seiten × 5 s ergeben 100 s, dazu ein dreifacher Puffer. Der Sollwert des Preflights (`execution_timeout_ms`, Voreinstellung 600000) muss folgen.
+
+**Leerlaufzeit:** bleibt Entscheidung des Eigentümers. Die Grundlage sind die drei Kaltstart-Zeilen oben. Bis 4,5 min Leerlauf kostet ein neuer Job 1,3 s, nach 15 min wieder rund 2 min. Wo die Grenze dazwischen liegt, ist nicht gemessen.
