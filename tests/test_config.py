@@ -291,14 +291,16 @@ def test_zulaessige_rechenzentren_sind_nur_ewr() -> None:
 
 
 def test_voreingestellte_endpoint_variablen() -> None:
-    """Geprueft werden Modellquelle, Parallelitaet und GPU-Speicheranteil. Fuer
-    den Speicheranteil gibt es noch keinen gemessenen Wert: Ohne Sollwert (`None`)
+    """Geprueft werden Parallelitaet und GPU-Speicheranteil. Fuer den
+    Speicheranteil gibt es noch keinen gemessenen Wert: Ohne Sollwert (`None`)
     steht er in der Liste, damit der Preflight ihn berichtet statt ihn zu
-    vergessen."""
+    vergessen.
+
+    `MINERU_MODEL_SOURCE` steht nicht darin (#31): Das Image setzt es selbst, und
+    RunPods Worker-Umgebung zeigt Image-Variablen nicht. Als Sollwert waere es an
+    jedem echten Worker eine Abweichung, die es nicht gibt."""
     env = _einstellung().endpoint_env
-    assert env["MINERU_MODEL_SOURCE"] == "local"
-    assert env["MINERU_MAX_CONCURRENCY"] == "1"
-    assert env["MINERU_VIRTUAL_VRAM_SIZE"] is None
+    assert dict(env) == {"MINERU_MAX_CONCURRENCY": "1", "MINERU_VIRTUAL_VRAM_SIZE": None}
 
 
 def test_sollwerte_kommen_aus_der_datei(tmp_path: Path) -> None:
@@ -324,7 +326,7 @@ def test_sollwerte_kommen_aus_der_datei(tmp_path: Path) -> None:
     assert e.endpoint_env["MINERU_MAX_CONCURRENCY"] == "2"
     assert e.endpoint_env["MINERU_VIRTUAL_VRAM_SIZE"] == "12"
     assert e.endpoint_env["NEUE_VARIABLE"] == "x"
-    assert e.endpoint_env["MINERU_MODEL_SOURCE"] == "local"
+    assert "MINERU_MODEL_SOURCE" not in e.endpoint_env
 
 
 def test_sollwerte_kommen_aus_der_umgebung() -> None:

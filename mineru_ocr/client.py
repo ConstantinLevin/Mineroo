@@ -496,8 +496,9 @@ class OCRClient:
             * Soll gegen Ist bei `workersMin`, `idleTimeout`, `executionTimeoutMs`
               und `workersMax`. Die Sollwerte kommen aus der Konfiguration
               (`Settings`), nicht aus dem Code.
-            * Die Endpoint-Variablen, auf die es ankommt (Modellquelle,
-              `MINERU_MAX_CONCURRENCY`, GPU-Speicheranteil), nach ihrem WERT, an
+            * Die Endpoint-Variablen, auf die es ankommt (`MINERU_MAX_CONCURRENCY`,
+              GPU-Speicheranteil; die Modellquelle setzt das Image, siehe
+              `config.DEFAULT_ENDPOINT_ENV`), nach ihrem WERT, an
               der Umgebung, die die Endpoint-Antwort fuer die zuletzt gelaufenen
               Worker fuehrt — auch fuer beendete — und an jedem davon. Gibt es
               keinen Worker, lautet das Ergebnis „nicht pruefbar" und
@@ -506,8 +507,9 @@ class OCRClient:
             * Das Template-Image und das Image jedes Workers gegen den erwarteten
               Tag. Ein anderer Tag ist eine WARNUNG, kein Abbruch — auch mit
               einem anderen Image kann man arbeiten, man sollte es nur wissen.
-            * Die Rechenzentren: alle muessen in der zulaessigen Liste (EWR)
-              liegen. Nennt die Antwort keine, ist es „nicht pruefbar".
+            * Die Rechenzentren, aus der REST-API v2 (`RunPodClient.serverless`):
+              alle muessen in der zulaessigen Liste (EWR) liegen. Nennt die
+              Antwort keine oder scheitert die Abfrage, ist es „nicht pruefbar".
             * FlashBoot, nur berichtet.
             * Der Kontostand gegen `min_balance`.
             * Ob ein Daemon lebt — ueber Procrastinates Worker-Lebenszeichen. Das
@@ -595,18 +597,37 @@ class OCRClient:
             #
             # Nennt die Antwort keine, lautet das Ergebnis „nicht pruefbar" — die
             # Frage bleibt sichtbar offen, statt falsch beantwortet zu sein.
+            #
+            # Gelesen aus der REST-API v2 und nicht aus `konfiguration` (v1):
+            # Die v1-Antwort traegt am echten Endpoint kein `dataCenterIds`, die
+            # v2-Antwort die gesetzten (gelesen am 26.10.2026, #31).
             zulaessig = list(einstellung.allowed_data_centers)
-            rechenzentren = konfiguration.get("dataCenterIds")
-            if isinstance(rechenzentren, list) and rechenzentren:
-                bewertung = (
-                    "in_ordnung"
-                    if all(name in zulaessig for name in rechenzentren)
-                    else "abweichung"
+            try:
+                v2 = _runpod_fragen(self._settings, lambda z: z.serverless())
+            except Exception as fehler:  # noqa: BLE001
+                merken(
+                    "datacenters",
+                    zulaessig,
+                    f"{type(fehler).__name__}: {fehler}",
+                    "nicht_pruefbar",
                 )
             else:
-                bewertung = "nicht_pruefbar"
-                rechenzentren = None
-            merken("datacenters", zulaessig, rechenzentren, bewertung)
+                rechenzentren = v2.get("dataCenterIds")
+                if rechenzentren == []:
+                    # In v2 ist das Feld Pflicht, und leer heisst beim Anlegen:
+                    # Der Scheduler waehlt jede Region. Nicht auf den EWR
+                    # beschraenkt — eine Abweichung, kein „nicht pruefbar".
+                    bewertung = "abweichung"
+                elif isinstance(rechenzentren, list):
+                    bewertung = (
+                        "in_ordnung"
+                        if all(name in zulaessig for name in rechenzentren)
+                        else "abweichung"
+                    )
+                else:
+                    bewertung = "nicht_pruefbar"
+                    rechenzentren = None
+                merken("datacenters", zulaessig, rechenzentren, bewertung)
 
             # Was TATSAECHLICH laeuft, steht an den Workern der Antwort.
             arbeiter = _worker_kennungen(konfiguration.get("workers") or [])

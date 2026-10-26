@@ -25,6 +25,7 @@ from mineru_ocr.errors import (
     DatabaseError,
     DocumentNotFound,
     TooLargeError,
+    TransientRunPodError,
     UnsupportedTypeError,
     WaitTimeoutError,
 )
@@ -47,11 +48,17 @@ class RunPodAntworten:
         self,
         *,
         endpoint: dict[str, Any] | None = None,
+        serverless: dict[str, Any] | Exception | None = None,
         marke: str | None = ":neu12345",
         kontostand: float = 5.0,
         worker: list[dict[str, Any]] | None = None,
     ) -> None:
         self.endpoint = endpoint if endpoint is not None else _guter_endpoint()
+        # Die Antwort der REST-API v2 (`RunPodClient.serverless`). Ohne
+        # Vorgabe nennt sie keine Rechenzentren; eine Ausnahme wird geworfen.
+        self.serverless: dict[str, Any] | Exception = (
+            serverless if serverless is not None else {"id": "testendpoint"}
+        )
         self.marke = marke
         self.kontostand = kontostand
         self.worker = worker if worker is not None else []
@@ -80,6 +87,12 @@ class Zugang:
     async def endpoint(self) -> dict[str, Any]:
         self._a.aufrufe.append("endpoint")
         return self._a.endpoint
+
+    async def serverless(self) -> dict[str, Any]:
+        self._a.aufrufe.append("serverless")
+        if isinstance(self._a.serverless, Exception):
+            raise self._a.serverless
+        return self._a.serverless
 
     async def image_tag(self) -> str | None:
         self._a.aufrufe.append("image_tag")
@@ -231,7 +244,7 @@ def test_preflight_mutiert_nichts(
     ) as klient:
         befund = klient.preflight()
 
-    assert set(runpod.aufrufe) <= {"endpoint", "image_tag", "balance"}
+    assert set(runpod.aufrufe) <= {"endpoint", "serverless", "image_tag", "balance"}
     assert befund["drift"] == 0
 
 
@@ -248,9 +261,10 @@ def _worker(
     status: str = "RUNNING",
 ) -> dict[str, Any]:
     """Ein Worker in der Form des konservierten Schnappschusses: `id`,
-    `imageName`, `desiredStatus` und eine `env`, die auch Geheimnisse traegt."""
+    `imageName`, `desiredStatus` und eine `env`, die auch Geheimnisse traegt.
+    Wie am echten Endpoint fehlen Variablen, die das Image setzt
+    (`MINERU_MODEL_SOURCE`): RunPod meldet nur Endpoint- und Template-Variablen."""
     umgebung = {
-        "MINERU_MODEL_SOURCE": "local",
         "MINERU_MAX_CONCURRENCY": "1",
         "RUNPOD_AI_API_KEY": GEHEIMNIS,
     }
@@ -294,7 +308,7 @@ def test_ohne_worker_ist_das_laufende_nicht_pruefbar(
     _worker_am_leben(db_conn)
     befund = _pruefen(_test_datenbank)
 
-    for punkt in ("env:MINERU_MAX_CONCURRENCY", "env:MINERU_MODEL_SOURCE", "worker_image"):
+    for punkt in ("env:MINERU_MAX_CONCURRENCY", "worker_image"):
         assert _befund(befund, punkt)["bewertung"] == "nicht_pruefbar", punkt
 
 
@@ -307,11 +321,10 @@ def test_passende_umgebung_ist_in_ordnung(
     runpod.endpoint = _guter_endpoint(workers=[_worker("w1")])
     befund = _pruefen(_test_datenbank)
 
-    modell = _befund(befund, "env:MINERU_MODEL_SOURCE")
-    assert modell["bewertung"] == "in_ordnung"
-    assert modell["soll"] == "local"
-    assert modell["ist"] == {"w1": "local"}
-    assert _befund(befund, "env:MINERU_MAX_CONCURRENCY")["bewertung"] == "in_ordnung"
+    parallel = _befund(befund, "env:MINERU_MAX_CONCURRENCY")
+    assert parallel["bewertung"] == "in_ordnung"
+    assert parallel["soll"] == "1"
+    assert parallel["ist"] == {"w1": "1"}
     # Ohne eingestellten Tag ist das Image kein Vergleich wert, auch mit Workern.
     assert _befund(befund, "worker_image")["bewertung"] == "nicht_pruefbar"
 
@@ -340,13 +353,13 @@ def test_fehlende_variable_ist_eine_abweichung(
     Die Umgebung ist bekannt, die Variable fehlt in ihr."""
     _worker_am_leben(db_conn)
     arbeiter = _worker("w1")
-    del arbeiter["env"]["MINERU_MODEL_SOURCE"]
+    del arbeiter["env"]["MINERU_MAX_CONCURRENCY"]
     runpod.endpoint = _guter_endpoint(workers=[arbeiter])
     befund = _pruefen(_test_datenbank)
 
-    modell = _befund(befund, "env:MINERU_MODEL_SOURCE")
-    assert modell["bewertung"] == "abweichung"
-    assert modell["ist"] == {"w1": None}
+    parallel = _befund(befund, "env:MINERU_MAX_CONCURRENCY")
+    assert parallel["bewertung"] == "abweichung"
+    assert parallel["ist"] == {"w1": None}
 
 
 def test_jeder_worker_wird_geprueft_auch_beendete(
@@ -359,14 +372,14 @@ def test_jeder_worker_wird_geprueft_auch_beendete(
     runpod.endpoint = _guter_endpoint(
         workers=[
             _worker("w1"),
-            _worker("w2", env={"MINERU_MODEL_SOURCE": "huggingface"}, status="EXITED"),
+            _worker("w2", env={"MINERU_MAX_CONCURRENCY": "4"}, status="EXITED"),
         ]
     )
     befund = _pruefen(_test_datenbank)
 
-    modell = _befund(befund, "env:MINERU_MODEL_SOURCE")
-    assert modell["bewertung"] == "abweichung"
-    assert modell["ist"] == {"w1": "local", "w2": "huggingface"}
+    parallel = _befund(befund, "env:MINERU_MAX_CONCURRENCY")
+    assert parallel["bewertung"] == "abweichung"
+    assert parallel["ist"] == {"w1": "1", "w2": "4"}
 
 
 def test_worker_ohne_umgebung_macht_den_befund_unsicher(
@@ -543,14 +556,14 @@ def test_rechenzentren_muessen_alle_in_der_zulaessigen_liste_liegen(
     haengt, ob personenbezogene Daten die EU verlassen koennen."""
     _worker_am_leben(db_conn)
 
-    runpod.endpoint = _guter_endpoint(dataCenterIds=["EU-RO-1", "EUR-IS-1"])
+    runpod.serverless = {"id": "testendpoint", "dataCenterIds": ["EU-RO-1", "EUR-IS-1"]}
     befund = _pruefen(_test_datenbank, strict=True)
     zentren = _befund(befund, "datacenters")
     assert zentren["bewertung"] == "in_ordnung"
     assert zentren["ist"] == ["EU-RO-1", "EUR-IS-1"]
     assert "EU-RO-1" in zentren["soll"]
 
-    runpod.endpoint = _guter_endpoint(dataCenterIds=["EU-RO-1", "US-CA-2"])
+    runpod.serverless = {"id": "testendpoint", "dataCenterIds": ["EU-RO-1", "US-CA-2"]}
     befund = _pruefen(_test_datenbank)
     assert _befund(befund, "datacenters")["bewertung"] == "abweichung"
     with pytest.raises(ConfigDriftError):
@@ -560,20 +573,79 @@ def test_rechenzentren_muessen_alle_in_der_zulaessigen_liste_liegen(
 def test_rechenzentren_sind_ohne_angabe_der_antwort_nicht_pruefbar(
     _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
 ) -> None:
-    """Die Frage bleibt OFFEN, wenn die Antwort keine Rechenzentren nennt — die
-    Aufnahme vom 05.08.2026 hat kein `dataCenterIds`.
+    """Die Frage bleibt OFFEN, wenn die Antwort keine Rechenzentren nennt.
 
     WAS FRUEHER AN DIESER STELLE FALSCH WAR: Die Pruefung las `dataCenterIds`
     ODER, ersatzweise, `gpuTypeIds` und meldete GPU-Typen
-    (`['NVIDIA RTX A5000', …]`) unter der Ueberschrift „EU". Die Vorrichtung
-    bildet den echten Schnappschuss ab (mit `gpuTypeIds`, ohne
-    `dataCenterIds`); der richtige Befund ist `nicht_pruefbar`.
+    (`['NVIDIA RTX A5000', …]`) unter der Ueberschrift „EU". Beide Antworten
+    tragen hier GPU-Typen und keine Rechenzentren; der richtige Befund ist
+    `nicht_pruefbar`.
     """
     _worker_am_leben(db_conn)
+    runpod.serverless = {"id": "testendpoint", "gpuTypeIds": ["NVIDIA RTX A5000"]}
     befund = _pruefen(_test_datenbank, strict=True)
     zentren = _befund(befund, "datacenters")
     assert zentren["bewertung"] == "nicht_pruefbar"
     assert zentren["ist"] is None
+
+
+def test_rechenzentren_kommen_aus_der_v2_antwort_nicht_aus_v1(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Die Antwort der REST-API v1 traegt am echten Endpoint keine Rechenzentren
+    (gelesen am 26.10.2026), die der v2 die fuenf gesetzten. Gelesen wird
+    deshalb v2, und ein Feld in v1 zaehlt nicht."""
+    _worker_am_leben(db_conn)
+    runpod.endpoint = _guter_endpoint(dataCenterIds=["US-CA-2"])
+    runpod.serverless = {
+        "id": "testendpoint",
+        "dataCenterIds": ["EU-RO-1", "EU-CZ-1", "EUR-IS-1", "EUR-IS-2", "EUR-NO-1"],
+    }
+    zentren = _befund(_pruefen(_test_datenbank, strict=True), "datacenters")
+    assert zentren["bewertung"] == "in_ordnung"
+    assert zentren["ist"] == ["EU-RO-1", "EU-CZ-1", "EUR-IS-1", "EUR-IS-2", "EUR-NO-1"]
+
+
+def test_scheitert_die_v2_abfrage_sind_die_rechenzentren_nicht_pruefbar(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """Scheitert die Abfrage der Rechenzentren, bleibt die Frage offen; die
+    uebrigen Punkte aus der v1-Antwort stehen trotzdem im Befund."""
+    _worker_am_leben(db_conn)
+    runpod.serverless = TransientRunPodError("HTTP 503 auf der Gegenseite")
+    befund = _pruefen(_test_datenbank, strict=True)
+    zentren = _befund(befund, "datacenters")
+    assert zentren["bewertung"] == "nicht_pruefbar"
+    assert "TransientRunPodError" in str(zentren["ist"])
+    assert _befund(befund, "workersMax")["bewertung"] == "in_ordnung"
+
+
+def test_preflight_in_der_form_des_echten_endpoints_hat_keine_abweichung(
+    _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
+) -> None:
+    """#31: Am echten Endpoint meldet die Worker-Umgebung nur Endpoint- und
+    `RUNPOD_*`-Variablen; `MINERU_MODEL_SOURCE` setzt das Image und erscheint
+    dort nie. Mit den Voreinstellungen oeffnet `strict` trotzdem ohne
+    `ConfigDriftError`, und die Rechenzentren sind in Ordnung."""
+    _worker_am_leben(db_conn)
+    echt = {"MINERU_MAX_CONCURRENCY": "1", "RUNPOD_AI_API_KEY": GEHEIMNIS,
+            "RUNPOD_ENDPOINT_ID": "testendpoint"}
+    runpod.endpoint = _guter_endpoint(
+        workers=[
+            {"id": f"w{n}", "desiredStatus": "EXITED", "env": dict(echt),
+             "imageName": "registry.runpod.net/k-r-dockerfile:neu12345", "machine": {}}
+            for n in range(3)
+        ]
+    )
+    runpod.serverless = {
+        "id": "testendpoint",
+        "dataCenterIds": ["EU-RO-1", "EU-CZ-1", "EUR-IS-1", "EUR-IS-2", "EUR-NO-1"],
+    }
+    befund = _pruefen(_test_datenbank, strict=True)
+    assert befund["drift"] == 0
+    assert "env:MINERU_MODEL_SOURCE" not in [b["punkt"] for b in befund["checks"]]
+    assert _befund(befund, "datacenters")["bewertung"] == "in_ordnung"
+    assert [b for b in befund["checks"] if b["bewertung"] == "abweichung"] == []
 
 
 def test_image_ohne_tag_ist_nicht_pruefbar_auch_mit_registry_port(
@@ -610,14 +682,19 @@ def test_image_mit_leerem_tag_ist_nicht_pruefbar(
     assert punkt["ist"] == {"w1": None}
 
 
-def test_leere_rechenzentrumsliste_ist_nicht_pruefbar(
+def test_leere_rechenzentrumsliste_ist_eine_abweichung(
     _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
 ) -> None:
-    """Eine leere Liste ist keine Aussage — „alle liegen in der Liste" waere
-    ueber nichts trivial wahr."""
+    """In v2 ist `dataCenterIds` ein Pflichtfeld, und eine leere Liste heisst
+    beim Anlegen: Der Scheduler waehlt jede Region. Ob GET dann `[]` liefert,
+    ist nicht belegt; wenn ja, ist der Endpoint nicht auf den EWR beschraenkt.
+    Das ist eine Abweichung, kein „nicht pruefbar", an dem `strict` vorbeiliesse."""
     _worker_am_leben(db_conn)
-    runpod.endpoint = _guter_endpoint(dataCenterIds=[])
-    assert _befund(_pruefen(_test_datenbank), "datacenters")["bewertung"] == "nicht_pruefbar"
+    runpod.serverless = {"id": "testendpoint", "dataCenterIds": []}
+    zentren = _befund(_pruefen(_test_datenbank), "datacenters")
+    assert (zentren["bewertung"], zentren["ist"]) == ("abweichung", [])
+    with pytest.raises(ConfigDriftError):
+        _pruefen(_test_datenbank, strict=True)
 
 
 def test_flashboot_wird_berichtet(

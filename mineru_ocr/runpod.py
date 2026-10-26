@@ -72,14 +72,19 @@ traegt als Quelle
 `GET https://rest.runpod.io/v1/endpoints/<endpoint-id>?includeWorkers=true`, und
 das Betriebshandbuch nennt dieselbe Adresse als Nachpruef-Ort fuer `workersMax`.
 
-OFFENER PUNKT, ausdruecklich benannt statt still uebergangen: RunPods eigene
-Werkzeugbeschreibung fuehrt diese Fassung als VERALTET und verweist auf eine
-Nachfolgerin unter `https://api.runpod.io/v2`. Deren Antwortform ist hier NICHT
-geprueft — es gibt keinen Schnappschuss davon, und sie ungeprueft zu benutzen
-hiesse, die Feldnamen zu erfinden. Deshalb steht hier die bewiesene Fassung, und
-der Wechsel ist eine Zeile, sobald ein Lauf gegen die neue Fassung ihre Form
-gezeigt hat. Die Alternative — auf gut Glueck gegen die neue Fassung zu bauen —
-faellt erst im Betrieb auf, und dann an einer Stelle, die Geld ausgibt."""
+RunPods eigene Werkzeugbeschreibung fuehrt diese Fassung als VERALTET und
+verweist auf die Nachfolgerin unter `V2_BASE`. Sie bleibt hier die Quelle fuer
+Sollwerte und Worker, denn nur sie fuehrt die Worker samt ihrer Umgebung; die
+Rechenzentren liest der Preflight aus v2 (siehe dort)."""
+
+V2_BASE: Final = "https://api.runpod.io/v2"
+"""Wurzel der REST-API v2 der Verwaltung (`GET /serverless/<endpoint-id>`).
+
+Am echten Endpoint gelesen (26.10.2026, #31): Die Antwort traegt
+`dataCenterIds` mit den gesetzten Rechenzentren, die v1-Antwort traegt sie nicht.
+Daher kommen sie hier her und nur sie; Sollwerte und Worker bleiben bei
+`REST_BASE`, weil diese v2-Antwort keine Worker samt Umgebung fuehrt. Wieder ein Wirtsname, der sich
+von `API_BASE` (`api.runpod.ai/v2`, Jobs) nur in der Endung unterscheidet."""
 
 GRAPHQL_URL: Final = "https://api.runpod.io/graphql"
 """Fuer Kontostand, Worker-Liste und Template-Angaben — Dinge, die die
@@ -913,16 +918,17 @@ class RunPodClient:
 
         Returns:
             Die rohen Angaben, darunter `workersMin`, `workersMax`,
-            `idleTimeout`, `executionTimeoutMs`, die Rechenzentren und die
-            Template-Kennung. Der Preflight vergleicht das gegen die Sollwerte
-            der Konfiguration (`Settings`).
+            `idleTimeout`, `executionTimeoutMs`, die Template-Kennung und die
+            Worker samt Umgebung. Der Preflight vergleicht das gegen die
+            Sollwerte der Konfiguration (`Settings`).
 
-            Die Rechenzentren sind dabei kein Nebenwert: Ein allgemeiner Wrapper
-            weiss nicht, ob die Daten personenbezogen sind, und soll deshalb in
-            der EU verarbeiten lassen. Der Preflight vergleicht sie mit
-            der zulaessigen Liste der Konfiguration (EWR) und MELDET eine
-            Abweichung, statt ein Flag danach zu richten — die Entscheidung
-            gehoert dem Menschen (Plan 2.4, kein `pii`-Flag im Client).
+            Die Rechenzentren traegt diese Antwort am echten Endpoint NICHT;
+            die liest der Preflight aus `serverless` (v2, #31). Sie sind kein
+            Nebenwert: Ein allgemeiner Wrapper weiss nicht,
+            ob die Daten personenbezogen sind, und soll deshalb in der EU
+            verarbeiten lassen. Der Preflight MELDET eine Abweichung, statt ein
+            Flag danach zu richten — die Entscheidung gehoert dem Menschen
+            (Plan 2.4, kein `pii`-Flag im Client).
 
         Kosten: keine. Liest, veraendert nie.
         """
@@ -931,6 +937,22 @@ class RunPodClient:
             f"{REST_BASE}/endpoints/{self._settings.require_endpoint_id()}"
             f"?includeWorkers=true",
             "Endpoint-Konfiguration lesen",
+        )
+
+    async def serverless(self) -> dict[str, Any]:
+        """Liest die Konfiguration des Endpoints aus der REST-API v2.
+
+        Returns:
+            Die rohen Angaben (`GET {V2_BASE}/serverless/<id>`). Der Preflight
+            liest daraus `dataCenterIds`, die v1 (`endpoint`) am echten Endpoint
+            nicht fuehrt.
+
+        Kosten: keine. Liest, veraendert nie.
+        """
+        return await self._anfragen(
+            "GET",
+            f"{V2_BASE}/serverless/{self._settings.require_endpoint_id()}",
+            "Endpoint-Konfiguration (v2) lesen",
         )
 
     async def image_tag(self) -> str | None:

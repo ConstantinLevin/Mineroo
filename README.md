@@ -79,12 +79,13 @@ workers_min = 0                                      # (0)
 workers_max = 10                                     # (10, die Kontogrenze)
 idle_timeout = 60                                    # (60, Sekunden)
 execution_timeout_ms = 600000                        # (600000)
-allowed_data_centers = ["EU-RO-1", "EUR-IS-1"]       # (alle EWR-Rechenzentren)
+allowed_data_centers = ["EU-RO-1", "EU-CZ-1", "EUR-IS-1", "EUR-IS-2", "EUR-NO-1"]
+                                                     # (alle EWR-Rechenzentren)
 
 # Endpoint-Variablen, die der Preflight nach Wert prüft; was die Tabelle nicht
-# nennt, behält seinen Sollwert:
+# nennt, behält seinen Sollwert. Variablen, die das Image setzt (etwa
+# MINERU_MODEL_SOURCE), zeigt RunPods Worker-Umgebung nicht; sie gehören nicht hierher:
 [endpoint_env]
-MINERU_MODEL_SOURCE = "local"                        # (local)
 MINERU_MAX_CONCURRENCY = "1"                         # (1)
 MINERU_VIRTUAL_VRAM_SIZE = "<Wert aus der Messung>"  # (offen: nur berichtet)
 ```
@@ -126,8 +127,11 @@ Templates und jedes Workers gegen `expected_image_tag`, die Endpoint-Variablen
 nach Wert an der Umgebung aller zuletzt gelaufenen Worker (auch der beendeten),
 dass alle Rechenzentren in der zulässigen Liste liegen, und die Sollwerte des
 Endpoints. FlashBoot wird berichtet. Was sich nicht feststellen lässt — kein
-Worker, ein Worker ohne Umgebung, keine Rechenzentren in der Antwort, kein
-erwarteter Tag —, heißt „nicht prüfbar" und ausdrücklich nicht „in Ordnung".
+Worker, ein Worker ohne Umgebung, keine Rechenzentren in der Antwort oder eine
+gescheiterte Abfrage danach, kein erwarteter Tag —, heißt „nicht prüfbar" und
+ausdrücklich nicht „in Ordnung". Die Rechenzentren liest er aus RunPods REST-API
+v2, alles andere aus v1; die Liste in `allowed_data_centers` muss jedes
+Rechenzentrum enthalten, auf das der Endpoint gesetzt ist.
 
 Neun Kommandos gibt es: `setup`, `daemon`, `ocr`, `status`, `show`, `wait`,
 `markdown`, `retry`, `preflight`. Die Exit-Codes sind belegt (0/1/2/3/4, 130 bei

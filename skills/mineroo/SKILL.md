@@ -33,7 +33,7 @@ ersten Abschicken, auf jedem Weg:
 - `in_ordnung`: Du darfst abschicken, auch personenbezogene Dokumente.
 - `abweichung`: Du schickst nichts ab und zeigst dem Nutzer `soll` und `ist`.
 - Jedes andere Ergebnis: `nicht_pruefbar` (der Endpoint nennt seine
-  Rechenzentren nicht), kein `datacenters`-Eintrag (der Endpoint war nicht
+  Rechenzentren nicht, oder ihre Abfrage scheiterte), kein `datacenters`-Eintrag (der Endpoint war nicht
   erreichbar) oder ein Preflight, der mit einem Fehler endet (etwa ohne
   RunPod-Schlüssel oder Endpoint). Dann sagst du dem Nutzer, dass sich die
   Rechenzentren nicht bestätigen lassen, samt der Meldung, und schickst erst ab,
