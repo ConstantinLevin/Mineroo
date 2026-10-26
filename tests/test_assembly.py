@@ -474,6 +474,7 @@ def test_alle_fuenf_randklassen_werden_erfasst() -> None:
         {"middle_json": None},
         {"middle_json": [None]},
         {"middle_json": [{"pages": "keine Liste"}]},
+        {"middle_json": [{"pages": [{"page_idx": 0, "blocks": "keine Liste"}]}]},
     ],
 )
 def test_beschaedigtes_ergebnis_wirft_statt_weniger_zu_liefern(

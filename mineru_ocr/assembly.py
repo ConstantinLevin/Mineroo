@@ -704,6 +704,35 @@ def _bloecke(seite: Any) -> list[Any] | None:
     return bloecke if isinstance(bloecke, list) else None
 
 
+def _bloecke_aller_seiten(middles: list[Any]) -> list[Any]:
+    """Jeder Block aller Seiten von `middle_json`, in Dokumentreihenfolge.
+
+    Raises:
+        IncompleteResultError: Ein Eintrag oder eine seiner Seiten hat nicht die
+            Form des Schemas. Uebersprungen wird nichts: Ein uebersprungener
+            Eintrag kann der Randblock mit dem Aktenzeichen sein.
+    """
+    bloecke: list[Any] = []
+    for nummer, middle in enumerate(middles):
+        seiten = middle.get("pages") if isinstance(middle, dict) else None
+        if not isinstance(seiten, list):
+            raise IncompleteResultError(
+                f"Eintrag {nummer} von `middle_json` traegt keine Seitenliste "
+                f"({type(middle).__name__}). Uebersprungen wird er NICHT: Er kann "
+                f"den Randblock mit dem Aktenzeichen tragen, und die Ausgabe saehe "
+                f"dann vollstaendig aus. Was da ist, steht unveraendert in `raw`."
+            )
+        for seite in seiten:
+            auf_der_seite = _bloecke(seite)
+            if auf_der_seite is None:
+                raise IncompleteResultError(
+                    f"Eine Seite in Eintrag {nummer} von `middle_json` traegt keine "
+                    f"Blockliste. Was da ist, steht unveraendert in `raw`."
+                )
+            bloecke.extend(auf_der_seite)
+    return bloecke
+
+
 def is_empty(result: dict[str, Any]) -> bool:
     """Sagt, ob ein vollstaendig verarbeitetes Dokument gar keinen Inhalt hatte.
 
@@ -749,15 +778,10 @@ def is_empty(result: dict[str, Any]) -> bool:
     middles = result.get("middle_json")
     if not isinstance(middles, list):
         return False
-    for middle in middles:
-        seiten = middle.get("pages") if isinstance(middle, dict) else None
-        if not isinstance(seiten, list):
-            return False
-        for seite in seiten:
-            bloecke = _bloecke(seite)
-            if bloecke is None or bloecke:
-                return False
-    return True
+    try:
+        return not _bloecke_aller_seiten(middles)
+    except IncompleteResultError:
+        return False
 
 
 def _pflichtfeld(result: dict[str, Any], name: str, typ: type[W]) -> W:
@@ -806,30 +830,12 @@ def _randbloecke(middles: list[Any]) -> list[str]:
     """Die Texte der Randbloecke aller Seiten, in Dokumentreihenfolge.
 
     Raises:
-        IncompleteResultError: Ein Eintrag von `middle_json` oder seine Seiten
-            haben nicht die Form des Schemas. Uebersprungen wird nichts: Ein
-            uebersprungener Eintrag kann der Randblock mit dem Aktenzeichen sein.
+        IncompleteResultError: siehe `_bloecke_aller_seiten`.
     """
     texte: list[str] = []
-    for nummer, middle in enumerate(middles):
-        seiten = middle.get("pages") if isinstance(middle, dict) else None
-        if not isinstance(seiten, list):
-            raise IncompleteResultError(
-                f"Eintrag {nummer} von `middle_json` traegt keine Seitenliste "
-                f"({type(middle).__name__}). Uebersprungen wird er NICHT: Er kann "
-                f"den Randblock mit dem Aktenzeichen tragen, und die Ausgabe saehe "
-                f"dann vollstaendig aus. Was da ist, steht unveraendert in `raw`."
-            )
-        for seite in seiten:
-            bloecke = _bloecke(seite)
-            if bloecke is None:
-                raise IncompleteResultError(
-                    f"Eine Seite in Eintrag {nummer} von `middle_json` traegt keine "
-                    f"Blockliste. Was da ist, steht unveraendert in `raw`."
-                )
-            for block in bloecke:
-                if isinstance(block, dict) and block.get("type") in FURNITURE_TYPES:
-                    texte.append(_blocktext(block).strip())
+    for block in _bloecke_aller_seiten(middles):
+        if isinstance(block, dict) and block.get("type") in FURNITURE_TYPES:
+            texte.append(_blocktext(block).strip())
     return texte
 
 
