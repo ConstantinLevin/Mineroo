@@ -1056,6 +1056,40 @@ async def test_fertiges_dokument_wird_nie_ueberschrieben(
 
 
 @pytest.mark.db
+async def test_endschreiben_nimmt_die_bestellten_lese_einstellungen_aus_der_eingabe(
+    db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
+) -> None:
+    """Die bestellten Lese-Einstellungen kommen an die Zeile, wie sie an der
+    Eingabe stehen, beim Anlegen wie beim Ueberschreiben eines `failed`; ohne
+    Eingabe bleiben sie leer. Die Version kommt vom Aufrufer (Mineroo#14)."""
+    ohne = "c" * 64
+    await write_terminal_async(
+        async_conn, sha256=ohne, status=DocumentStatus.INPUT_ERROR, raw={},
+        endpoint_id="e",
+    )
+    zeile = get_document(db_conn, ohne)
+    assert zeile is not None and zeile.read_settings is None
+
+    bestellt = ReadSettings("standard", "auto", False)
+    insert_input(db_conn, sha256=HASH, content=b"x", read_settings=bestellt)
+    await write_terminal_async(
+        async_conn, sha256=HASH, status=DocumentStatus.FAILED, raw={},
+        endpoint_id="e", mineru_version="4.0.11",
+    )
+    zeile = get_document(db_conn, HASH)
+    assert zeile is not None
+    assert (zeile.read_settings, zeile.mineru_version) == (bestellt, "4.0.11")
+
+    await write_terminal_async(
+        async_conn, sha256=HASH, status=DocumentStatus.DONE, raw={"neu": 1},
+        endpoint_id="e", mineru_version="4.0.12",
+    )
+    zeile = get_document(db_conn, HASH)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    assert (zeile.read_settings, zeile.mineru_version) == (bestellt, "4.0.12")
+
+
+@pytest.mark.db
 async def test_gescheitertes_dokument_darf_ueberschrieben_werden(
     db_conn: psycopg.Connection[Any], async_conn: psycopg.AsyncConnection[Any]
 ) -> None:

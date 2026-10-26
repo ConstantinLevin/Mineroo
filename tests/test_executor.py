@@ -1073,6 +1073,77 @@ async def test_image_tag_wird_mitgeschrieben(
     assert zeile.image_tag_at_submit == ":abc12345"
 
 
+async def test_die_zeile_traegt_mineru_version_und_bestellte_lese_einstellungen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Zu jedem Ergebnis die MinerU-Version, die der Worker meldet, und die
+    Lese-Einstellungen, die das Abschicken bestellt hat (Mineroo#14), neben dem
+    Image-Tag wie bisher. Was MinerU tatsaechlich nahm (bei `auto` den Modus, den
+    es fuer die Datei waehlte), steht im Rohergebnis."""
+    bestellt = ReadSettings("advanced", "auto", True)
+    sha, _ = _anlegen(
+        db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG, lesen=bestellt
+    )
+    runpod = FalscherRunPod(
+        [ersatz.fertige_antwort(ocr_mode="txt", mineru_version="4.0.12")],
+        marke=":abc12345",
+    )
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.mineru_version == "4.0.12"
+    assert (zeile.tier, zeile.ocr_mode, zeile.image_analysis) == ("advanced", "auto", True)
+    assert zeile.read_settings == bestellt
+    assert zeile.image_tag_at_submit == ":abc12345"
+    assert zeile.raw is not None
+    assert zeile.raw["envelopes"][0]["output_meta"]["ocr_mode"] == "txt"
+
+
+async def test_auch_ein_gescheitertes_dokument_traegt_version_und_bestellte_einstellungen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """„Zu jedem Ergebnis": auch zu `input_error` und `failed`, ohne Lauf (der
+    Waechter) und mit einem. Die Version ist die, die der Worker meldete, auch in
+    einer Fehlerantwort; ohne Antwort gibt es keine."""
+    bestellt = ReadSettings("basic", "txt", False)
+    kaputt, _ = _anlegen(db_conn, tmp_path, b"%PDF-1.7\nnur ein Kopf", lesen=bestellt)
+    with pytest.raises(CorruptDocumentError):
+        await process_document(
+            kaputt, settings=exec_settings, runpod=FalscherRunPod([]), pool=pool
+        )
+    zeile = get_document(db_conn, kaputt)
+    assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.read_settings == bestellt
+    assert zeile.mineru_version is None
+
+    liegen, _ = _anlegen(
+        db_conn, tmp_path, b"l", name="l.png", typ=DocumentType.PNG, lesen=bestellt
+    )
+    await write_failure_if_no_result(
+        liegen, settings=exec_settings, pool=pool, grund="Worker wiederholt abgestuerzt"
+    )
+    zeile = get_document(db_conn, liegen)
+    assert zeile is not None and zeile.read_settings == bestellt
+
+    abgewiesen, _ = _anlegen(
+        db_conn, tmp_path, b"f", name="f.png", typ=DocumentType.PNG, lesen=bestellt
+    )
+    runpod = FalscherRunPod([ersatz.fehlerantwort("RuntimeError: kaputt im Worker")])
+    with pytest.raises(TerminalRunPodError):
+        await process_document(abgewiesen, settings=exec_settings, runpod=runpod, pool=pool)
+    zeile = get_document(db_conn, abgewiesen)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+    assert zeile.read_settings == bestellt
+    assert zeile.mineru_version == ersatz.MINERU_VERSION
+
+
 async def test_image_tag_wird_auch_bei_einer_pdf_mitgeschrieben(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,

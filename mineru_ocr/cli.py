@@ -529,6 +529,17 @@ def show(
         )
         if angaben["error"]:
             zeilen.append(f"  Fehler:    {angaben['error']}")
+        if angaben["mineru_version"] or angaben["tier"]:
+            # Womit gelesen wurde: die gemeldete Version und die bestellten
+            # Lese-Einstellungen (Mineroo#14).
+            teile = [f"MinerU {angaben['mineru_version'] or 'unbekannt'}"]
+            if angaben["tier"]:
+                teile += [
+                    angaben["tier"],
+                    angaben["ocr_mode"],
+                    f"Bildanalyse {'an' if angaben['image_analysis'] else 'aus'}",
+                ]
+            zeilen.append(f"  Gelesen:   {', '.join(teile)}")
         if angaben["image_tag_at_submit"]:
             zeilen.append(f"  Image:     {angaben['image_tag_at_submit']}")
         for vermerk in angaben["notes"]:

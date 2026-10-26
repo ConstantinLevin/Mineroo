@@ -37,6 +37,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, TypeVar
 
+from packaging.version import InvalidVersion, Version
 from psycopg_pool import AsyncConnectionPool
 
 from . import assembly, chunking, db, images
@@ -503,6 +504,7 @@ async def process_document(
             if assembly.is_empty(ergebnis)
             else db.DocumentStatus.DONE
         )
+        version = _niedrigste_version(_gemeldete_versionen(teile, unverwertbar))
         vermerke.append(
             {
                 "kind": "verarbeitet",
@@ -525,6 +527,7 @@ async def process_document(
                     image_tag_at_submit=image_tag,
                     notes=vermerke,
                     page_count=seitenzahl,
+                    mineru_version=version,
                 )
 
         # Abgeschirmt wie das Schreiben von `failed` unten (Mineroo#27): Das
@@ -601,6 +604,9 @@ async def process_document(
             if isinstance(fehler, InputError)
             else db.DocumentStatus.FAILED
         )
+        # Auch eine Fehlerantwort meldet die Version (eine unverwertbare Antwort
+        # steht in `unverwertbar`). Kann nicht werfen, siehe dort.
+        version = _niedrigste_version(_gemeldete_versionen(teile, unverwertbar))
 
         async def schreiben(roh: dict[str, Any]) -> None:
             async with pool.connection() as conn:
@@ -616,6 +622,7 @@ async def process_document(
                     error=beschreibung,
                     notes=vermerke,
                     page_count=seitenzahl,
+                    mineru_version=version,
                 )
 
         async def ergebnis_schreiben() -> None:
@@ -705,6 +712,58 @@ async def write_failure_if_no_result(
             notes=vermerke,
         )
     return True
+
+
+def _gemeldete_versionen(
+    teile: list[assembly.ChunkArtifacts], unverwertbar: list[dict[str, Any]]
+) -> list[str | None]:
+    """Die MinerU-Version, die der Worker meldete, je Antwort dieses Laufs.
+
+    Je ausgepacktem Teilstueck (aus `output_meta` seines Umschlags) und je
+    bezahlter Antwort, die sich nicht verwerten liess, etwa einer Fehlerantwort
+    (aus ihrem `output`): Auch sie traegt die Version, mit der der Worker lief.
+    None, wo eine Antwort keine als Text meldete.
+
+    Wirft nicht, denn der Fehlerpfad ruft es: Jede Stufe wird auf ihre Form
+    geprueft, statt sie vorauszusetzen.
+    """
+
+    def version_aus(ausgabe: Any) -> str | None:
+        wert = ausgabe.get("mineru_version") if isinstance(ausgabe, dict) else None
+        return wert if isinstance(wert, str) and wert else None
+
+    versionen: list[str | None] = []
+    for teil in teile:
+        umschlag = getattr(teil, "envelope", None)
+        versionen.append(
+            version_aus(umschlag.get("output_meta") if isinstance(umschlag, dict) else None)
+        )
+    for eintrag in unverwertbar:
+        antwort = eintrag.get("antwort")
+        versionen.append(
+            version_aus(antwort.get("output") if isinstance(antwort, dict) else None)
+        )
+    return versionen
+
+
+def _niedrigste_version(versionen: list[str | None]) -> str | None:
+    """Die niedrigste gemeldete Version, None ohne jede.
+
+    Verglichen nach PEP 440 (`packaging.version`), so wie MinerU seine Fassungen
+    zaehlt, also `4.0.9` vor `4.0.12`. Eine Angabe, die keine Versionsnummer ist,
+    gilt als niedriger als jede: Die Spalte dient der Entscheidung nach einem
+    Upgrade, was neu gelesen wird, und eine unbekannte Fassung zaehlt dabei als
+    alt (Mineroo#14). Wirft nicht.
+    """
+
+    def rang(version: str) -> tuple[int, Version, str]:
+        try:
+            return (1, Version(version), version)
+        except InvalidVersion:
+            return (0, Version("0"), version)
+
+    gemeldet = [v for v in versionen if v is not None]
+    return min(gemeldet, key=rang) if gemeldet else None
 
 
 _GUARD_ZUSTAENDE: frozenset[db.DocumentStatus] = frozenset(

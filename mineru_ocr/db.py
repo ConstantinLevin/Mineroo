@@ -97,6 +97,10 @@ CREATE TABLE IF NOT EXISTS documents (
     error         text,
     endpoint_id   text NOT NULL,
     image_tag_at_submit text,
+    mineru_version text,
+    tier          text,
+    ocr_mode      text,
+    image_analysis boolean,
     notes         jsonb NOT NULL DEFAULT '[]',
     created_at    timestamptz NOT NULL DEFAULT now(),
     updated_at    timestamptz NOT NULL DEFAULT now()
@@ -208,6 +212,19 @@ und verschwindet mit dem Endergebnis.
 `image_tag_at_submit` ist Herkunft. Ohne diese Angabe an der Zeile laesst sich
 eine spaetere Qualitaetsfrage nicht mehr beantworten.
 
+`mineru_version`, `tier`, `ocr_mode` und `image_analysis` sagen, womit gelesen
+wurde (Mineroo#14): die MinerU-Version, die der Worker meldet, und die
+Lese-Einstellungen, die das Abschicken BESTELLT hat. Die bestellten nimmt das
+Endschreiben aus der Eingabe, in derselben Anweisung; es gibt sie also nur dort,
+wo eine Eingabe stand. Was MinerU tatsaechlich nahm, steht im Rohergebnis (je
+Teilstueck unter `envelopes`); bei `ocr_mode=auto` ist das der Modus, den MinerU
+fuer die Datei waehlte. Weicht das Gemeldete von der Bestellung ab, steht ein
+Vermerk in `notes`, und das Ergebnis gilt trotzdem. Gaben die Teilstuecke
+verschiedene Versionen an, traegt `mineru_version` die niedrigste, und ein
+Vermerk nennt alle. Leer ist die Version, wo keine Antwort eine meldete. So laesst
+sich nach einem Upgrade entscheiden, was neu gelesen wird; ein Neu-Lesen selbst
+gibt es nicht (Mineroo#1, Out of Scope).
+
 `notes` ist eine Ereignisliste, kein Freitext: angehaengt wird, nie ersetzt.
 Darin landen Aufruest-Hinweise und Auffaelligkeiten.
 
@@ -306,6 +323,17 @@ class DocumentRow:
     created_at: datetime
     updated_at: datetime
 
+    mineru_version: str | None = None
+    """Die MinerU-Version, die der Worker meldete, bei mehreren die niedrigste;
+    None, wenn keine Antwort eine meldete (siehe SCHEMA_SQL)."""
+
+    tier: str | None = None
+    """Die bestellte Stufe; None, wo es keine Eingabe gab. Ebenso die zwei
+    folgenden. Zusammen: `read_settings`."""
+
+    ocr_mode: str | None = None
+    image_analysis: bool | None = None
+
     raw_loaded: bool = True
     """Ob `raw` wirklich gelesen wurde. `list_documents` setzt es auf False und
     laesst `raw` None — ohne diese Unterscheidung waere „nicht geladen" von „ist
@@ -333,6 +361,15 @@ class DocumentRow:
         """
         object.__setattr__(self, "status", DocumentStatus(self.status))
 
+    @property
+    def read_settings(self) -> ReadSettings | None:
+        """Die bestellten Lese-Einstellungen als ein Wert, None ohne Eingabe."""
+        if self.tier is None or self.ocr_mode is None or self.image_analysis is None:
+            return None
+        return ReadSettings(
+            tier=self.tier, ocr_mode=self.ocr_mode, image_analysis=self.image_analysis
+        )
+
     def angaben(self) -> dict[str, Any]:
         """Die Angaben der Zeile als einfache Abbildung, ohne `raw`.
 
@@ -349,6 +386,10 @@ class DocumentRow:
             "error": self.error,
             "endpoint_id": self.endpoint_id,
             "image_tag_at_submit": self.image_tag_at_submit,
+            "mineru_version": self.mineru_version,
+            "tier": self.tier,
+            "ocr_mode": self.ocr_mode,
+            "image_analysis": self.image_analysis,
             "notes": self.notes,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
@@ -886,6 +927,7 @@ async def _verbinden_async(
 _SPALTEN_VOLL: Final = (
     "sha256, size_bytes, mime, page_count, status, "
     "raw, error, endpoint_id, image_tag_at_submit, notes, created_at, updated_at, "
+    "mineru_version, tier, ocr_mode, image_analysis, "
     "true AS raw_loaded"
 )
 """Die Spaltenliste fuer ein VOLLSTAENDIGES Lesen, inklusive `raw`.
@@ -907,7 +949,8 @@ derselben Stelle `false`, und keine Aufrufstelle muss den Unterschied kennen."""
 _SPALTEN_OHNE_RAW: Final = (
     "sha256, size_bytes, mime, page_count, status, "
     "NULL::jsonb AS raw, error, endpoint_id, image_tag_at_submit, notes, "
-    "created_at, updated_at, false AS raw_loaded"
+    "created_at, updated_at, mineru_version, tier, ocr_mode, image_analysis, "
+    "false AS raw_loaded"
 )
 """Dieselbe Liste ohne den teuren Teil — `raw` bleibt ungelesen und leer.
 
@@ -1458,6 +1501,7 @@ async def write_terminal_async(
     error: str | None = None,
     notes: Sequence[dict[str, Any]] | None = None,
     page_count: int | None = None,
+    mineru_version: str | None = None,
 ) -> None:
     """Legt das Ergebnis eines Durchlaufs an und weckt alle Warter.
 
@@ -1496,6 +1540,15 @@ async def write_terminal_async(
             ANGEHAENGT, nie ersetzt.
         page_count: Die Seitenzahl, die der Job aus den Bytes bestimmt hat (nur
             bei PDF).
+        mineru_version: Die MinerU-Version, die der Worker meldete (bei
+            mehreren Teilstuecken die niedrigste); None, wenn keine Antwort eine
+            meldete.
+
+    Die bestellten Lese-Einstellungen (`tier`, `ocr_mode`, `image_analysis`)
+    werden NICHT uebergeben: Das Endschreiben nimmt sie in derselben Anweisung
+    aus der Eingabe, an der das Abschicken sie ablegte. So stehen an der Zeile
+    genau die, die bestellt waren, auch beim `failed` des Waechters, der kein
+    Teilstueck sah; ohne Eingabe bleiben sie leer.
 
     Zusicherung:
         Nach der Rueckkehr steht ein Ergebnis da, und ein `NOTIFY` auf dem Kanal
@@ -1580,6 +1633,7 @@ async def write_terminal_async(
             error=error,
             notes=notes,
             page_count=page_count,
+            mineru_version=mineru_version,
         )
     except psycopg.Error as fehler:
         if not _nicht_speicherbar(fehler):
@@ -1612,18 +1666,26 @@ async def _endergebnis_schreiben(
     error: str | None,
     notes: Sequence[dict[str, Any]] | None,
     page_count: int | None,
+    mineru_version: str | None,
 ) -> None:
     """Der Schreibvorgang von `write_terminal_async`, ohne das Einpacken der Fehler."""
     vermerke = Jsonb(list(notes) if notes else [])
     async with conn.transaction():
+        # Die bestellten Lese-Einstellungen aus der Eingabe, in DIESER Anweisung
+        # (siehe `write_terminal_async`): Das LEFT JOIN liefert genau eine Zeile,
+        # mit NULL, wo es keine Eingabe gibt.
         angelegt = await (
             await conn.execute(
                 """
                 INSERT INTO documents (
                     sha256, size_bytes, mime, page_count, status, raw, error,
-                    endpoint_id, image_tag_at_submit, notes
+                    endpoint_id, image_tag_at_submit, notes, mineru_version,
+                    tier, ocr_mode, image_analysis
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                       i.tier, i.ocr_mode, i.image_analysis
+                  FROM (SELECT 1) AS eine
+                  LEFT JOIN inputs i ON i.sha256 = %s
                 ON CONFLICT (sha256) DO NOTHING
                 RETURNING sha256
                 """,
@@ -1638,6 +1700,8 @@ async def _endergebnis_schreiben(
                     endpoint_id,
                     image_tag_at_submit,
                     vermerke,
+                    mineru_version,
+                    sha256,
                 ),
             )
         ).fetchone()
@@ -1665,6 +1729,14 @@ async def _endergebnis_schreiben(
                            size_bytes = COALESCE(%s, size_bytes),
                            image_tag_at_submit = COALESCE(%s, image_tag_at_submit),
                            page_count = COALESCE(%s, page_count),
+                           mineru_version = COALESCE(%s, mineru_version),
+                           (tier, ocr_mode, image_analysis) = (
+                               SELECT COALESCE(i.tier, documents.tier),
+                                      COALESCE(i.ocr_mode, documents.ocr_mode),
+                                      COALESCE(i.image_analysis, documents.image_analysis)
+                                 FROM (SELECT 1) AS eine
+                                 LEFT JOIN inputs i ON i.sha256 = documents.sha256
+                           ),
                            notes = notes || %s::jsonb,
                            updated_at = now()
                      WHERE sha256 = %s
@@ -1678,6 +1750,7 @@ async def _endergebnis_schreiben(
                         size_bytes,
                         image_tag_at_submit,
                         page_count,
+                        mineru_version,
                         vermerke,
                         sha256,
                     ),

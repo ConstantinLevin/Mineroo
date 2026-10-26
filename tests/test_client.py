@@ -2047,6 +2047,39 @@ async def test_document_meldet_endzustand_offen_samt_job_und_unbekannt_ohne_raw(
         assert "raw" not in ohne_platzhalter, f"document() liest raw: {anweisung}"
 
 
+async def test_document_und_huelle_nennen_mineru_version_und_bestellte_lese_einstellungen(
+    offener_client: OCRClient,
+    db_conn: psycopg.Connection[Any],
+    async_conn: psycopg.AsyncConnection[Any],
+) -> None:
+    """Mit welcher MinerU-Version und welchen bestellten Einstellungen ein
+    Ergebnis entstand, sagen `document()` und die Huelle (Mineroo#14)."""
+    h = offener_client.ocr_start(_png("gelesen"), tier="standard", ocr_mode="txt")
+    await write_terminal_async(
+        async_conn,
+        sha256=h,
+        status=DocumentStatus.DONE,
+        raw={"markdown": "x"},
+        endpoint_id="testendpoint",
+        mineru_version="4.0.12",
+    )
+
+    angaben = offener_client.document(h).to_dict()
+    assert {
+        name: angaben[name]
+        for name in ("mineru_version", "tier", "ocr_mode", "image_analysis")
+    } == {
+        "mineru_version": "4.0.12",
+        "tier": "standard",
+        "ocr_mode": "txt",
+        "image_analysis": False,
+    }
+    huelle = offener_client.get(h)
+    assert huelle.mineru_version == "4.0.12"
+    assert huelle.read_settings == ReadSettings("standard", "txt", False)
+    assert huelle.to_dict()["mineru_version"] == "4.0.12"
+
+
 # --- Nachsehen ------------------------------------------------------------
 
 

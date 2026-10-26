@@ -30,6 +30,7 @@ from typing import Any, TypeVar
 import psycopg
 
 from . import assembly, db
+from .config import ReadSettings
 from .db import DocumentRow, DocumentStatus
 from .errors import ConfigurationError, DocumentNotFound, IncompleteResultError
 
@@ -110,6 +111,19 @@ class OCRWrapper:
     @property
     def notes(self) -> list[dict[str, Any]]:
         return self.row.notes
+
+    @property
+    def mineru_version(self) -> str | None:
+        """Die MinerU-Version, mit der das Ergebnis entstand, wie der Worker sie
+        meldete (bei mehreren Teilstuecken die niedrigste, Mineroo#14)."""
+        return self.row.mineru_version
+
+    @property
+    def read_settings(self) -> ReadSettings | None:
+        """Die Lese-Einstellungen, die fuer dieses Ergebnis bestellt waren; None,
+        wenn es keine Eingabe gab. Was MinerU tatsaechlich nahm, steht in `raw`
+        (je Teilstueck unter `envelopes`)."""
+        return self.row.read_settings
 
     @property
     def success(self) -> bool:

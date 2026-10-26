@@ -772,6 +772,7 @@ async def test_show_zeigt_was_document_sagt_und_raw_die_vollstaendige_antwort(
         status=DocumentStatus.DONE,
         raw=antwort,
         endpoint_id="testendpoint",
+        mineru_version="4.0.12",
     )
 
     stand = json.loads(cli.invoke(app, ["show", huelle.sha256, "--json"]).stdout)
@@ -785,6 +786,10 @@ async def test_show_zeigt_was_document_sagt_und_raw_die_vollstaendige_antwort(
     assert text.exit_code == 0, text.output
     assert "Zustand:   done" in text.stdout and "terminal" in text.stdout
     assert f"Typ:       image/png  {huelle.size_bytes} Byte" in text.stdout
+    # Womit gelesen wurde (Mineroo#14): die Version, die der Worker meldete, und
+    # die bestellten Lese-Einstellungen.
+    assert "Gelesen:   MinerU 4.0.12, advanced, ocr, Bildanalyse an" in text.stdout
+    assert stand["mineru_version"] == "4.0.12" and stand["tier"] == "advanced"
     assert "ganz" not in text.stdout  # kein raw
 
     # Ein Eingabefehler ohne Eingabe hat weder Typ noch Groesse: Das sagt die
