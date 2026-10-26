@@ -79,8 +79,14 @@ Diagramme sind (Herkunft: `README.md` dort): wo die Bild-Deutungen stehen
 (Mineroo#13). Auf demselben Weg wie `ECHT_ENDPOINT` aufgenommen."""
 
 
+ECHT_GANZDOKUMENTE = ECHT_ENDPOINT.parent / "2026-10-27-ganzdokumente"
+"""ECHTE Antworten desselben Endpoints zu Ganzdokument-Formaten (Mineroo#17,
+Herkunft: `README.md` dort), abgeschickt ueber `mineru-ocr` mit Daemon, wie der
+Betrieb es tut."""
+
+
 def echte_antwort(name: str, ordner: Path = ECHT_ENDPOINT) -> dict[str, Any]:
-    """Die volle `/status`-Antwort eines aufgenommenen Jobs."""
+    """Die volle `/status`-Antwort eines aufgenommenen Jobs aus `ordner`."""
     geladen: dict[str, Any] = json.loads(
         (ordner / "antworten" / f"{name}.response.json").read_text()
     )

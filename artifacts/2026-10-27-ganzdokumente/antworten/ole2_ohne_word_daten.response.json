@@ -1,0 +1,26 @@
+{
+  "id": "4f8517ab-343d-4760-b99f-4daf888e20e4-e2",
+  "error": "LegacyOfficeMissingPartError: missing required OLE stream: WordDocument",
+  "output": {
+    "ok": false,
+    "debug": {
+      "gpu": {
+        "name": "NVIDIA GeForce RTX 4090",
+        "available": true,
+        "total_memory_gb": 23.52,
+        "compute_capability": "8.9"
+      },
+      "phase_ms": {
+        "fetch_input": 0
+      },
+      "model_dir": "/root/.cache/huggingface/hub/models--opendatalab--MinerU2.5-Pro-2605-1.2B"
+    },
+    "traceback": "Traceback (most recent call last):\n  File \"/worker/handler.py\", line 317, in handler\n    return await _handle_parse(job, cleaned, started, gpu_info, phase_ms, reading)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/worker/handler.py\", line 166, in _handle_parse\n    output_dir = await _parse.run_mineru(\n                 ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/worker/worker/parse.py\", line 127, in run_mineru\n    result = await _parse_async(\n             ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/mineru/parser/__init__.py\", line 57, in parse_async\n    return await parser.parse_async(path, page_range=page_range, source_context=source_context)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/mineru/parser/mineru_parser.py\", line 104, in parse_async\n    middle_json, model_output = await self._arun_analysis(prepared)\n                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ndocvortex.analyzers.native.office.errors.LegacyOfficeMissingPartError: missing required OLE stream: WordDocument\n",
+    "mineru_version": "4.0.12",
+    "elapsed_seconds": 0.92
+  },
+  "status": "FAILED",
+  "workerId": "i6qq4m9h9gksbk",
+  "delayTime": 98738,
+  "executionTime": 1220
+}

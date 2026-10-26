@@ -97,6 +97,29 @@ def test_eingabefehler_ist_endgueltig() -> None:
         ("UnidentifiedImageError: cannot identify image file <_io.BytesIO object at 0x7419>", True),
         ("OSError: Truncated File Read", True),
         ("OSError: image file is truncated (4 bytes not processed)", True),
+        # Am Endpoint beobachtet (Mineroo#17): ein OLE2-Container ohne den Strom
+        # `WordDocument`, den MinerU als DOC zu lesen versucht.
+        ("LegacyOfficeMissingPartError: missing required OLE stream: WordDocument", True),
+        # Die uebrigen Fehlertypen, mit denen DocVortex 0.5.16 ein Ganzdokument
+        # als nicht lesbar abweist (`analyzers/native/*/errors.py`).
+        ("LegacyOfficeMalformedError: invalid FIB", True),
+        ("LegacyOfficeError: unsupported record", True),
+        ("EpubError: unreadable package", True),
+        ("LegacyOfficeEncryptedError: encrypted document", True),
+        ("LegacyOfficeResourceLimitError: too many records", True),
+        ("OdfParseError: content.xml missing", True),
+        ("OdfEncryptedError: encrypted member", True),
+        ("OdfResourceLimitError: too large", True),
+        ("EpubParseError: no rootfile", True),
+        ("EpubEncryptedError: encrypted resource", True),
+        ("EpubResourceLimitError: too many items", True),
+        ("OfdParseError: OFD.xml invalid", True),
+        ("OfdEncryptedError: encrypted member", True),
+        ("OfdResourceLimitError: too large", True),
+        ("HtmlParseError: no document element", True),
+        ("HtmlResourceLimitError: DOM too deep", True),
+        # Ein Name, der nur so beginnt, ist keiner dieser Typen.
+        ("LegacyOfficeMissingPartErrorX: anders", False),
         # Ein OSError, der nichts ueber die Datei sagt, bleibt ein Fehler des Laufs.
         ("OSError: [Errno 28] No space left on device", False),
         # Die Pruefung der ANFRAGE durch den Worker ist keine Abweisung der Datei.

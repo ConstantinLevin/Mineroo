@@ -1811,6 +1811,34 @@ async def test_vom_worker_abgewiesenes_ganzdokument_endet_input_error_mit_seinem
     assert zeile.mime == typ.mime
 
 
+async def test_echte_abweisung_eines_ole2_containers_ohne_word_daten_endet_input_error(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Am Endpoint aufgenommen (Mineroo#17,
+    `artifacts/2026-10-27-ganzdokumente/`): Ein OLE2-Container, dem der Strom
+    `WordDocument` fehlt, geht durch die Vorerkennung, MinerU versucht ihn als
+    DOC zu lesen und scheitert mit DocVortex' `LegacyOfficeMissingPartError`.
+    Das ist eine Abweisung der Datei, kein Fehler des Laufs: Das Dokument endet
+    `input_error` mit dem Grund aus der Antwort, und die Antwort steht in `raw`."""
+    material = (ersatz.ECHT_GANZDOKUMENTE / "material" / "ohne_word_daten.cfb").read_bytes()
+    antwort = ersatz.echte_antwort("ole2_ohne_word_daten", ersatz.ECHT_GANZDOKUMENTE)
+    sha, _ = _anlegen(db_conn, tmp_path, material, name="d.cfb", typ=DocumentType.OLE2)
+    with pytest.raises(InputError):
+        await process_document(
+            sha, settings=exec_settings, runpod=FalscherRunPod([antwort]), pool=pool
+        )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.error is not None
+    assert "missing required OLE stream: WordDocument" in zeile.error
+    assert zeile.raw is not None
+    assert zeile.raw["unverwertbare_antworten"][0]["antwort"] == antwort
+    assert zeile.read_settings is None
+
+
 async def test_der_waechter_speichert_bei_ganzdokument_formaten_keine_einstellungen(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,

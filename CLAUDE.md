@@ -458,7 +458,10 @@ dann `application/x-ole-storage`), ZIP mit dem Aufbau von OOXML, OpenDocument
 (nur ODT, ODS, ODP), EPUB oder OFD, RTF und MHTML an ihrem Kopf, HTML an seinem
 Anfang. Dafür liest es bis 64 KiB (`KOPF_BYTES`, der MHTML-Kopf); die Meldung bei
 einem unbekannten Typ nennt davon die ersten 16 Bytes. Was durchgeht und MinerU
-dann nicht liest, endet `input_error` über `errors.ist_dateiabweisung`. Ein
+dann nicht liest, endet `input_error` über `errors.ist_dateiabweisung`; dafür
+stehen DocVortex' Fehlertypen der Ganzdokumente in `DATEIABWEISUNG_KENNUNGEN`
+(am Endpoint beobachtet: ein OLE2-Container ohne `WordDocument` endete sonst
+`failed`, `artifacts/2026-10-27-ganzdokumente/`). Ein
 Ganzdokument-Format geht ungeteilt als ein Stück hinaus (unter
 `max_payload_bytes`, sonst weist schon das Abschicken es ab) und hat keine
 Seitenzahl, also keinen Seitenvergleich. CSV und TSV tragen keine Kennung und
@@ -822,6 +825,11 @@ demselben Weg eine Seite mit zwei Bildern, die keine Diagramme sind (Mineroo#13,
 `ersatz_antworten.ECHT_BILDANALYSE`). Sie zeigt, wo die Bild-Deutungen stehen:
 in beiden Markdowns hinter dem Bild als `<details>`, eine Szene als
 Beschreibung, ein Organigramm als Mermaid-Graph.
+
+Unter `artifacts/2026-10-27-ganzdokumente/` liegen zwei weitere Läufe zu
+Mineroo#17 (ein erfundenes DOC und ein OLE2-Container ohne Word-Daten, über
+`mineru-ocr` mit Daemon); die Abweisung spielt `ersatz_antworten.echte_antwort`
+mit `ECHT_GANZDOKUMENTE` ab.
 
 **Wo es keine echte Ausgabe gibt, spielen die Tests Ersatz-Antworten aus
 `tests/ersatz_antworten.py`.**
