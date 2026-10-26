@@ -573,16 +573,16 @@ def test_rechenzentren_muessen_alle_in_der_zulaessigen_liste_liegen(
 def test_rechenzentren_sind_ohne_angabe_der_antwort_nicht_pruefbar(
     _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
 ) -> None:
-    """Die Frage bleibt OFFEN, wenn die Antwort keine Rechenzentren nennt — die
-    Aufnahme vom 05.08.2026 (REST v1) hat kein `dataCenterIds`.
+    """Die Frage bleibt OFFEN, wenn die Antwort keine Rechenzentren nennt.
 
     WAS FRUEHER AN DIESER STELLE FALSCH WAR: Die Pruefung las `dataCenterIds`
     ODER, ersatzweise, `gpuTypeIds` und meldete GPU-Typen
-    (`['NVIDIA RTX A5000', …]`) unter der Ueberschrift „EU". Die Vorrichtung
-    bildet den echten Schnappschuss ab (mit `gpuTypeIds`, ohne
-    `dataCenterIds`); der richtige Befund ist `nicht_pruefbar`.
+    (`['NVIDIA RTX A5000', …]`) unter der Ueberschrift „EU". Beide Antworten
+    tragen hier GPU-Typen und keine Rechenzentren; der richtige Befund ist
+    `nicht_pruefbar`.
     """
     _worker_am_leben(db_conn)
+    runpod.serverless = {"id": "testendpoint", "gpuTypeIds": ["NVIDIA RTX A5000"]}
     befund = _pruefen(_test_datenbank, strict=True)
     zentren = _befund(befund, "datacenters")
     assert zentren["bewertung"] == "nicht_pruefbar"
@@ -682,14 +682,19 @@ def test_image_mit_leerem_tag_ist_nicht_pruefbar(
     assert punkt["ist"] == {"w1": None}
 
 
-def test_leere_rechenzentrumsliste_ist_nicht_pruefbar(
+def test_leere_rechenzentrumsliste_ist_eine_abweichung(
     _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
 ) -> None:
-    """Eine leere Liste ist keine Aussage — „alle liegen in der Liste" waere
-    ueber nichts trivial wahr."""
+    """In v2 ist `dataCenterIds` ein Pflichtfeld, und eine leere Liste heisst
+    beim Anlegen: Der Scheduler waehlt jede Region. Ob GET dann `[]` liefert,
+    ist nicht belegt; wenn ja, ist der Endpoint nicht auf den EWR beschraenkt.
+    Das ist eine Abweichung, kein „nicht pruefbar", an dem `strict` vorbeiliesse."""
     _worker_am_leben(db_conn)
     runpod.serverless = {"id": "testendpoint", "dataCenterIds": []}
-    assert _befund(_pruefen(_test_datenbank), "datacenters")["bewertung"] == "nicht_pruefbar"
+    zentren = _befund(_pruefen(_test_datenbank), "datacenters")
+    assert (zentren["bewertung"], zentren["ist"]) == ("abweichung", [])
+    with pytest.raises(ConfigDriftError):
+        _pruefen(_test_datenbank, strict=True)
 
 
 def test_flashboot_wird_berichtet(

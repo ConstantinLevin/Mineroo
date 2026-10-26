@@ -613,7 +613,12 @@ class OCRClient:
                 )
             else:
                 rechenzentren = v2.get("dataCenterIds")
-                if isinstance(rechenzentren, list) and rechenzentren:
+                if rechenzentren == []:
+                    # In v2 ist das Feld Pflicht, und leer heisst beim Anlegen:
+                    # Der Scheduler waehlt jede Region. Nicht auf den EWR
+                    # beschraenkt — eine Abweichung, kein „nicht pruefbar".
+                    bewertung = "abweichung"
+                elif isinstance(rechenzentren, list):
                     bewertung = (
                         "in_ordnung"
                         if all(name in zulaessig for name in rechenzentren)

@@ -83,7 +83,7 @@ V2_BASE: Final = "https://api.runpod.io/v2"
 Am echten Endpoint gelesen (26.10.2026, #31): Die Antwort traegt
 `dataCenterIds` mit den gesetzten Rechenzentren, die v1-Antwort traegt sie nicht.
 Daher kommen sie hier her und nur sie; Sollwerte und Worker bleiben bei
-`REST_BASE`, weil v2 die Worker nicht auflistet. Wieder ein Wirtsname, der sich
+`REST_BASE`, weil diese v2-Antwort keine Worker samt Umgebung fuehrt. Wieder ein Wirtsname, der sich
 von `API_BASE` (`api.runpod.ai/v2`, Jobs) nur in der Endung unterscheidet."""
 
 GRAPHQL_URL: Final = "https://api.runpod.io/graphql"
