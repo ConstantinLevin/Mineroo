@@ -216,6 +216,16 @@ async def process_document(
            `assembly.unpack_response` die Antwort, und es sieht ausschliesslich
            erfolgreiche.
 
+       2c. VOLLSTAENDIGKEIT PRUEFEN. Nach jedem ausgepackten Teilstueck
+           (`vollstaendigkeit.teilstueck_pruefen`, Mineroo#12): Fehlt eine
+           Datei, die das Paket braucht, oder nennt `degraded` sie verloren,
+           oder hat MinerU bei einer PDF oder einem Bild nicht genau die
+           geschickten Seiten verarbeitet, endet das Dokument `failed`; die
+           Antwort steht zusammengesetzt in `raw`, und die folgenden
+           Teilstuecke werden nicht mehr bezahlt. Ein `degraded` zu einer
+           anderen Datei wird vermerkt. Ohne diese Pruefung endete ein solches
+           Dokument still `done`.
+
        Nacheinander und nicht gleichzeitig, weil die Parallelitaet an einer
        anderen Stelle wohnt: Der Daemon betreut vierundzwanzig DOKUMENTE
        gleichzeitig, und die eigentliche Nebenlaeufigkeit liegt ohnehin

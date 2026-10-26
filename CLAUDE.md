@@ -653,6 +653,22 @@ Summenprüfung ist entfallen, weil sie von den drei Strukturprüfungen implizier
 wird und, zuerst geprüft, die unbrauchbarste Fehlermeldung erzeugte („falsche
 Summe" statt „Lücke zwischen Stück 2 und 3").
 
+**Nach jedem Teilstück wird geprüft, ob seine Antwort vollständig ist**
+(`vollstaendigkeit.teilstueck_pruefen`, Mineroo#12), denn der Worker meldet
+`COMPLETED` auch, wenn etwas fehlt. Terminal (`MissingArtifactError`,
+`MissingPagesError`, beide `TerminalRunPodError`, also über `classify_failure`)
+und damit `failed` mit der Antwort zusammengesetzt in `raw` ist: eine Datei aus
+`vollstaendigkeit.BENOETIGTE_DATEIEN` fehlt oder steht in `degraded`, und bei PDF
+und Bild (`seiten_zaehlen`; ein Bild ist eine Seite) sind die `page_idx` des
+Middle-JSON nicht genau die geschickten Seiten. Die folgenden Teilstücke werden
+dann nicht mehr bezahlt. Ein `degraded` zu einer anderen Datei geht als Vermerk
+`unvollstaendige_antwort` nach `notes`. `BENOETIGTE_DATEIEN` ist die eine Liste
+der Dateien, die der Darstellungscode liest; wer Code schreibt, der eine weitere
+Datei des gespeicherten Ergebnisses braucht, trägt sie dort ein. Das Format von
+`degraded` legt der Job-Vertrag fest („Incomplete responses"); die echten
+Antworten tragen keins, die Tests leiten es aus ihnen ab
+(`ersatz_antworten.abgeleitete_antwort`).
+
 ### Die Abruf-Regel ist als Bauweise umgesetzt, nicht als Vorsatz
 
 **Alles holen, alles persistieren, nie filtern.** Die Ergebnisse liegen auf der
