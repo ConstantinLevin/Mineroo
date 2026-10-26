@@ -266,7 +266,7 @@ class RunPodError(MineruOcrError):
 class TransientRunPodError(RunPodError):
     """Vorruebergehend — derselbe Aufruf kann spaeter gelingen.
 
-    Faelle: Transportfehler (Verbindung, Zeitueberschreitung), HTTP 5xx, und der
+    Faelle: Transportfehler (Verbindung, Zeitueberschreitung), HTTP 429/5xx und der
     Job-Endzustand `TIMED_OUT`. Fuehrt zu einem Retry nach der Strategie in
     `tasks.py`; nach Erschoepfung der Versuche wird daraus `failed`.
     """
@@ -278,7 +278,7 @@ class TerminalRunPodError(RunPodError):
     Faelle: Job-Endzustand `FAILED` oder `CANCELLED`, Antworten, die nicht der
     erwarteten Form entsprechen (Schema-/Validierungsfehler), HTTP 4xx ausser den
     eigens behandelten (401/403 sind Konfiguration, 402 ist Guthaben, 404 auf
-    /status ist Retention).
+    /status ist Retention, 429 ist ein voruebergehendes Rate-Limit).
     """
 
 
