@@ -860,6 +860,40 @@ async def test_ausfall_beim_letzten_abruf_verliert_keine_bezahlte_antwort(
     assert not any("/cancel/" in str(a.url) for a in transport.anfragen)
 
 
+async def test_nach_zeitbudget_endet_die_erste_wieder_erfolgreiche_abfrage(
+    echte_settings: Settings, uhr: _Uhr
+) -> None:
+    """Ab Laufzeitablauf wechseln 503 und IN_PROGRESS: Die erste wieder
+    lesbare Antwort beendet das Warten, statt eine neue Ausfallfrist zu erlauben."""
+    einstellung = dataclasses.replace(
+        echte_settings,
+        job_timeout_seconds=300.0,
+        poll_failure_timeout_seconds=1500.0,
+        poll_interval_seconds=10.0,
+    )
+    anfragen: list[httpx.Request] = []
+    wechsel = 0
+
+    def antwort(anfrage: httpx.Request) -> httpx.Response:
+        nonlocal wechsel
+        anfragen.append(anfrage)
+        if "/cancel/" in anfrage.url.path:
+            return _antwort({"status": "CANCELLED"})
+        if uhr.jetzt >= 300:
+            wechsel += 1
+            if wechsel % 2:
+                return _antwort({"error": "voruebergehend"}, code=503)
+        return _antwort({"status": "IN_PROGRESS"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(antwort)) as http:
+        client = RunPodClient(einstellung, http=http)
+        with pytest.raises(JobAufgegebenError):
+            await client.await_result("j")
+
+    assert uhr.jetzt == 320.0
+    assert sum("/cancel/" in a.url.path for a in anfragen) == 1
+
+
 async def test_ein_gelungenes_abfragen_setzt_die_fehlerfrist_zurueck(
     echte_settings: Settings, uhr: _Uhr
 ) -> None:
