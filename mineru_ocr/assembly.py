@@ -39,7 +39,6 @@ from __future__ import annotations
 import base64
 import binascii
 import copy
-import html
 import io
 import json
 import re
@@ -858,6 +857,15 @@ _MASKIERT: Final = re.compile(r"\\([*_`~$])")
 `*`, `_`, `` ` ``, `~`, `$`)."""
 
 
+_DOCVORTEX_ENTITY: Final = re.compile(r"&(amp|lt|gt);")
+"""Die Entities, die DocVortex 0.5.16 beim Maskieren von Text schreibt
+(`render/_internal/markdown/inline.py`: `html.escape(…, quote=False)` fuer Text,
+der wie ein HTML-Tag aussieht, `_escape_entity_like_text` fuer Text, der wie
+eine Entity aussieht). Andere Entities im Markdown hat DocVortex nicht
+geschrieben, etwa im Inline-Code, den es roh ausgibt; sie bleiben, wie man sie
+liest."""
+
+
 def _ohne_backslash(text: str) -> str:
     """Der Text ohne einen Backslash vor `*`, `_`, `` ` ``, `~` und `$`.
 
@@ -875,11 +883,13 @@ def _ohne_maskierung(markdown: str) -> str:
 
     Nur fuer den Vergleich mit dem Rohtext eines Randblocks (`_ohne_backslash`):
     Text, der wie ein HTML-Tag oder eine Entity aussieht, steht im Markdown
-    zudem als Entity (`&lt;Az 12/34&gt;`; DocVortex 0.5.16,
-    `render/_internal/markdown/inline.py`, `_escape_plain_markdown_text`).
-    Ausgegeben wird das Markdown immer unveraendert.
+    zudem als Entity (`&lt;Az 12/34&gt;`, `_DOCVORTEX_ENTITY`). Ausgegeben wird
+    das Markdown immer unveraendert.
     """
-    return html.unescape(_ohne_backslash(markdown))
+    zeichen = {"amp": "&", "lt": "<", "gt": ">"}
+    return _DOCVORTEX_ENTITY.sub(
+        lambda treffer: zeichen[treffer.group(1)], _ohne_backslash(markdown)
+    )
 
 
 def rendered_markdown(result: dict[str, Any]) -> str:

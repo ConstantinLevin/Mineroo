@@ -704,11 +704,31 @@ def test_eine_fussnote_mit_schon_maskiertem_rohtext_wird_nicht_doppelt_angehaeng
     assert rendered_markdown(ergebnis) == ergebnis["markdown"]
 
 
-def test_eine_fussnote_mit_text_wie_ein_html_tag_wird_nicht_doppelt_angehaengt() -> None:
-    """Text, der wie ein HTML-Tag aussieht, schreibt DocVortex als Entities
-    (`inline.py`, `_escape_plain_markdown_text`: `html.escape`), damit ihn kein
-    Markdown-Leser als Tag nimmt."""
-    ergebnis = _fussnote_im_markdown("Aktenzeichen <Az 12/34>", "Aktenzeichen &lt;Az 12/34&gt;")
+def test_eine_entity_die_docvortex_nicht_geschrieben_hat_verdeckt_keinen_randblock() -> None:
+    """Inline-Code gibt DocVortex roh aus (`inline.py`, `_render_inline_code`); ein
+    `&sect; 15` darin liest man wortwoertlich. Eine Kopfzeile „§ 15" steht dann
+    nicht im Markdown und wird angehaengt."""
+    kopf = {"type": "header", "index": 0, "content": [{"type": "text", "content": "§ 15"}]}
+    ergebnis = _mit_bloecken([kopf])
+    ergebnis["markdown"] = "Siehe `&sect; 15` im Code."
+    assert rendered_markdown(ergebnis) == "Siehe `&sect; 15` im Code.\n\n§ 15"
+
+
+@pytest.mark.parametrize(
+    ("text", "wie_im_markdown"),
+    [
+        ("Aktenzeichen <Az 12/34>", "Aktenzeichen &lt;Az 12/34&gt;"),
+        ("Zeichen &sect; im Text", "Zeichen &amp;sect; im Text"),
+    ],
+)
+def test_eine_fussnote_mit_text_wie_ein_html_tag_wird_nicht_doppelt_angehaengt(
+    text: str, wie_im_markdown: str
+) -> None:
+    """Text, der wie ein HTML-Tag oder eine Entity aussieht, schreibt DocVortex
+    als Entities (`inline.py`, `_escape_plain_markdown_text`: `html.escape` und
+    `_escape_entity_like_text`), damit ihn kein Markdown-Leser als Tag oder
+    Zeichen nimmt."""
+    ergebnis = _fussnote_im_markdown(text, wie_im_markdown)
     assert rendered_markdown(ergebnis) == ergebnis["markdown"]
 
 
