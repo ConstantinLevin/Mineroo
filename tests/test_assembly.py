@@ -501,6 +501,9 @@ def test_ein_span_der_kein_objekt_ist_bleibt_sichtbar() -> None:
         {"middle_json": [None]},
         {"middle_json": [{"pages": "keine Liste"}]},
         {"middle_json": [{"pages": [{"page_idx": 0, "blocks": "keine Liste"}]}]},
+        # Ein Block, der kein Objekt ist: Er kann der Randblock mit dem
+        # Aktenzeichen sein und darf nicht still wegfallen.
+        {"middle_json": [{"pages": [{"page_idx": 0, "blocks": ["Aktenzeichen 123/456"]}]}]},
     ],
 )
 def test_beschaedigtes_ergebnis_wirft_statt_weniger_zu_liefern(

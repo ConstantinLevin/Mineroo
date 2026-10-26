@@ -809,11 +809,20 @@ def _randbloecke(middles: list[Any]) -> list[str]:
     """Die Texte der Randbloecke aller Seiten, in Dokumentreihenfolge.
 
     Raises:
-        IncompleteResultError: siehe `_bloecke_aller_seiten`.
+        IncompleteResultError: siehe `_bloecke_aller_seiten`; dazu ein Block, der
+            kein Objekt ist. Uebersprungen wird er NICHT: Ob er ein Randblock
+            war, laesst sich nicht sagen, und er kann das Aktenzeichen tragen.
     """
     texte: list[str] = []
     for block in _bloecke_aller_seiten(middles):
-        if isinstance(block, dict) and block.get("type") in FURNITURE_TYPES:
+        if not isinstance(block, dict):
+            raise IncompleteResultError(
+                f"Ein Block in `middle_json` ist {type(block).__name__} statt "
+                f"eines Objekts. Uebersprungen wird er NICHT: Er kann der "
+                f"Randblock mit dem Aktenzeichen sein, und die Ausgabe saehe dann "
+                f"vollstaendig aus. Was da ist, steht unveraendert in `raw`."
+            )
+        if block.get("type") in FURNITURE_TYPES:
             texte.append(_blocktext(block).strip())
     return texte
 
@@ -858,8 +867,8 @@ def rendered_markdown(result: dict[str, Any]) -> str:
         IncompleteResultError: Das gespeicherte Ergebnis ist beschaedigt — ein
             fehlendes Feld, ein Feld mit falschem Typ, ein Eintrag von
             `middle_json` ohne Seiten (auch einer, den der Worker nicht liefern
-            konnte), oder gar kein Ergebnis. Nichts davon ist verloren; es steht
-            unveraendert in `raw`.
+            konnte), ein Block, der kein Objekt ist, oder gar kein Ergebnis.
+            Nichts davon ist verloren; es steht unveraendert in `raw`.
 
     Kosten: keine.
     """
