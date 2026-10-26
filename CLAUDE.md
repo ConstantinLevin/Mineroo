@@ -179,7 +179,13 @@ auch für Aufrufer aus Python. Der Preflight beim Öffnen eines `OCRClient` läu
 wenn Schlüssel und Endpoint eingestellt sind; ohne einen davon entfällt er still. Die Sollwerte des Preflights (`expected_image_tag`, `workers_min`,
 `workers_max`, `idle_timeout`, `execution_timeout_ms`, `allowed_data_centers`, die
 Tabelle `[endpoint_env]`) sind Felder von `Settings` mit den Voreinstellungen aus
-Mineroo#3 (0, 10, 60, 600000). Ein unbekannter Schlüssel in der Datei, eine
+Mineroo#3 und den Werten am Endpoint (0, 10, 60, 300000). Ebenso eingestellte
+Werte sind die Grenzen eines Teilstücks (Mineroo#20): `max_pages_per_chunk`
+(10 Seiten), `max_payload_bytes` (7,4 MB roh) und `job_timeout_seconds` (300 s);
+die Herleitung aus Antwort-, Anfrage- und Zeitgrenze steht an den Feldern in
+`config.py` und unter „Teilstücke sind vor Postgres vollständig abstrahiert“.
+Die Seitenzahl wirkt im Daemon, der zerlegt: Ein neuer Wert gilt nach dessen
+Neustart. Ein unbekannter Schlüssel in der Datei, eine
 ausdrücklich genannte, aber fehlende Datei und ein Wert vom falschen Typ sind
 Fehler: ein Tippfehler im Namen wäre sonst ein Wert, der da steht und nirgends
 wirkt. Der RunPod-Schlüssel bleibt in `~/.runpod/config.toml` und gehört nie in
@@ -656,10 +662,27 @@ Ergebnisse gibt es nicht zu bedienen (Mineroo#1, „Nur noch MinerU 4").
 ### Teilstücke sind vor Postgres vollständig abstrahiert
 
 Hinein geht das ganze Dokument, heraus kommt das ganze Dokument. Dass ein PDF
-unterwegs in Stücke zu 20 Seiten zerfällt (`chunking.plan_chunks`), sieht die
-Datenbank nie: Der Exekutor setzt die Teilergebnisse **vor** dem Schreiben mit
-`assembly.assemble` zusammen, und `raw` ist **ein** Objekt auf Dokumentebene. Es
-gibt keine Chunk-Tabelle und keine Teil-Zeilen.
+unterwegs in Stücke von höchstens `max_pages_per_chunk` Seiten zerfällt
+(`chunking.plan_chunks`), sieht die Datenbank nie: Der Exekutor setzt die
+Teilergebnisse **vor** dem Schreiben mit `assembly.assemble` zusammen, und `raw`
+ist **ein** Objekt auf Dokumentebene. Es gibt keine Chunk-Tabelle und keine
+Teil-Zeilen.
+
+**Die Größe eines Teilstücks begrenzt die Antwort, nicht die Anfrage**
+(Mineroo#20). RunPod gibt auf `/run` höchstens 10 MB Antwort zurück; der Worker
+weist eine Antwort über 19,4 MB selbst ab (`ResponseTooLargeError`), und eine
+zwischen 10 und 19,4 MB verwirft laut Worker das Gateway, der Job meldet dann
+`COMPLETED` ohne Ausgabe. Beides endet `failed`, nie still `done`, und ein
+`retry` mit denselben Werten scheitert wieder. Die dichtesten echten Scans
+brachten 729 KB Antwort je Seite; mit 25 % Abstand zu 10 MB sind das **10 Seiten**
+(`max_pages_per_chunk`). Die Rohbytes eines Teilstücks begrenzt
+`max_payload_bytes` (**7,4 MB**, kodiert 9,87 MB unter der Anfragegrenze von
+`/run`, `config.RUN_ANFRAGEGRENZE_BYTES`; ein größerer Wert wirft beim Bilden der
+Einstellung). Das Wartebudget je Teilstück, `job_timeout_seconds` (**300 s**),
+folgt derselben Rechnung wie `executionTimeout` des Endpoints (langsamste Seite
+5,0 s × 20 × 3) und ist ihm gleich. Belegt mit einem Live-Job am 27.10.2026
+(24 erfundene dichte Scan-Seiten, 26,7 MB Antwort, abgewiesen); die Messwerte
+stehen in `docs/MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md`, Abschnitt 8.
 
 Jede Datei der Antwort hat in `raw` ihren eigenen Schlüssel: `markdown` und
 `markdown_full` als Text über alle Teilstücke (`markdown_full` ist `None`, wenn

@@ -227,7 +227,7 @@ class RunPodClient:
             `timeout=httpx.Timeout(connect=…, read=…, write=…, pool=…)` aus den
             vier Feldern in `settings`. NICHT die Voreinstellung: Die ist EINE
             Schranke von fuenf Sekunden fuer alle vier Phasen zusammen, und
-            dagegen ist ein Hochladen von 9,3 MB nicht zu schaffen. Begruendung in
+            dagegen ist ein Hochladen von 9,9 MB nicht zu schaffen. Begruendung in
             voller Laenge an `Settings.http_write_timeout`.
 
             `limits=httpx.Limits(max_keepalive_connections=settings.http_max_keepalive)`,

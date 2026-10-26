@@ -267,14 +267,15 @@ def test_leerer_apikey_wirft(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
 
 
 def test_sollwerte_haben_die_festgelegten_voreinstellungen() -> None:
-    """Vorerst gelten die Werte, wie sie am Endpoint gesetzt sind (Mineroo#3):
-    `workersMin` 0, `workersMax` 10, `idleTimeout` 60, `executionTimeoutMs`
-    600000. Den Image-Tag kennt erst der Betreiber; ohne Angabe gibt es keinen."""
+    """Es gelten die Werte, wie sie am Endpoint gesetzt sind: `workersMin` 0,
+    `workersMax` 10 (Mineroo#3), `idleTimeout` 60 und `executionTimeoutMs`
+    300000 (seit dem 26.10.2026, Mineroo#19 und #20). Den Image-Tag kennt erst
+    der Betreiber; ohne Angabe gibt es keinen."""
     einstellung = _einstellung()
     assert einstellung.workers_min == 0
     assert einstellung.workers_max == 10
     assert einstellung.idle_timeout == 60
-    assert einstellung.execution_timeout_ms == 600000
+    assert einstellung.execution_timeout_ms == 300000
     assert einstellung.expected_image_tag is None
 
 
@@ -386,6 +387,84 @@ def test_wahrheitswert_ist_keine_zahl(tmp_path: Path) -> None:
     datei = tmp_path / "config.toml"
     datei.write_text("idle_timeout = true\n")
     with pytest.raises(ConfigurationError, match="idle_timeout"):
+        _einstellung(config_path=datei)
+
+
+# --- Die Grenzen eines Teilstuecks (Mineroo#20) ----------------------------
+
+
+def test_teilstueck_grenzen_haben_die_voreinstellungen_aus_der_messung() -> None:
+    """Zehn Seiten, 7,4 MB roh und 300 Sekunden Wartebudget. Das Budget folgt
+    derselben Rechnung wie `executionTimeout` des Endpoints und ist ihm gleich."""
+    e = _einstellung()
+    assert e.max_pages_per_chunk == 10
+    assert e.max_payload_bytes == 7_400_000
+    assert e.job_timeout_seconds == 300.0
+    assert e.job_timeout_seconds * 1000 == e.execution_timeout_ms
+
+
+def test_teilstueck_grenzen_kommen_aus_datei_und_umgebung(tmp_path: Path) -> None:
+    """Die Grenzen sind eingestellte Werte: Datei, Umgebung schlaegt Datei."""
+    datei = tmp_path / "config.toml"
+    datei.write_text(
+        "max_pages_per_chunk = 7\n"
+        "max_payload_bytes = 5000000\n"
+        "job_timeout_seconds = 240\n"
+    )
+    e = _einstellung(config_path=datei)
+    assert (e.max_pages_per_chunk, e.max_payload_bytes, e.job_timeout_seconds) == (
+        7, 5_000_000, 240.0
+    )
+
+    e = _einstellung(
+        config_path=datei,
+        environ={
+            "MINERU_OCR_MAX_PAGES_PER_CHUNK": "12",
+            "MINERU_OCR_JOB_TIMEOUT_SECONDS": "450.5",
+        },
+    )
+    assert (e.max_pages_per_chunk, e.max_payload_bytes, e.job_timeout_seconds) == (
+        12, 5_000_000, 450.5
+    )
+
+
+@pytest.mark.parametrize(
+    ("zeile", "name"),
+    [
+        ("max_pages_per_chunk = 0", "max_pages_per_chunk"),
+        ("max_pages_per_chunk = 2.5", "max_pages_per_chunk"),
+        ("max_payload_bytes = 0", "max_payload_bytes"),
+        ("job_timeout_seconds = 0", "job_timeout_seconds"),
+        ("job_timeout_seconds = -5.0", "job_timeout_seconds"),
+        ("job_timeout_seconds = nan", "job_timeout_seconds"),
+        ("job_timeout_seconds = inf", "job_timeout_seconds"),
+        ('job_timeout_seconds = "lang"', "job_timeout_seconds"),
+        ("job_timeout_seconds = true", "job_timeout_seconds"),
+    ],
+)
+def test_unsinnige_teilstueck_grenze_wirft(tmp_path: Path, zeile: str, name: str) -> None:
+    """Null Seiten liessen die Planung nie fertig werden, ein Budget von null
+    oder `nan` gaebe jeden Job sofort auf, `inf` nie."""
+    datei = tmp_path / "config.toml"
+    datei.write_text(zeile + "\n")
+    with pytest.raises(ConfigurationError, match=name):
+        _einstellung(config_path=datei)
+
+
+def test_unsinnige_teilstueck_grenze_aus_der_umgebung_wirft() -> None:
+    with pytest.raises(ConfigurationError, match="MINERU_OCR_JOB_TIMEOUT_SECONDS"):
+        _einstellung(environ={"MINERU_OCR_JOB_TIMEOUT_SECONDS": "lang"})
+    with pytest.raises(ConfigurationError, match="job_timeout_seconds"):
+        _einstellung(environ={"MINERU_OCR_JOB_TIMEOUT_SECONDS": "nan"})
+
+
+def test_teilstueck_ueber_der_anfragegrenze_von_run_wirft(tmp_path: Path) -> None:
+    """`/run` nimmt hoechstens 10 MB JSON an. 7,5 MB roh sind kodiert 10 MB und
+    liessen keinen Platz fuer den Umschlag; jeder grosse Job scheiterte erst am
+    Gateway."""
+    datei = tmp_path / "config.toml"
+    datei.write_text("max_payload_bytes = 7500000\n")
+    with pytest.raises(ConfigurationError, match="10.000.000|10000000"):
         _einstellung(config_path=datei)
 
 
@@ -507,7 +586,7 @@ def test_http_zeitschranken_sind_gesetzt() -> None:
     """Alle vier HTTP-Zeitschranken haben einen Wert, und die Schreibgrenze ist
     deutlich groesser als httpx' Voreinstellung von fuenf Sekunden.
 
-    Der Test gegen den Befund, an dem Geld haengt: Ein Upload von 9,3 MB gegen
+    Der Test gegen den Befund, an dem Geld haengt: Ein Upload von 9,9 MB gegen
     fuenf Sekunden reisst, der Chunk geht erneut raus, und der erste Job ist
     womoeglich schon abgerechnet.
     """

@@ -8,6 +8,7 @@ genuegt. Genau dafuer ist sie ein Parameter und kein Import.
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 import pytest
 
@@ -183,6 +184,28 @@ def test_letzter_block_ist_kuerzer(settings: Settings) -> None:
     chunks = plan_chunks(41, eng)
     assert [(s.first_page, s.last_page) for s in chunks] == [(0, 19), (20, 39), (40, 40)]
     assert [s.page_count for s in chunks] == [20, 20, 1]
+
+
+def test_plan_folgt_der_voreinstellung(settings: Settings) -> None:
+    """25 Seiten bei der voreingestellten Schwelle von 10 ergeben 10 + 10 + 5."""
+    assert [s.page_count for s in plan_chunks(25, settings)] == [10, 10, 5]
+
+
+def test_plan_folgt_dem_eingestellten_wert(tmp_path: Path) -> None:
+    """Die Seitenzahl je Teilstueck ist ein eingestellter Wert: aus der Datei,
+    und die Umgebung schlaegt die Datei."""
+    datei = tmp_path / "config.toml"
+    datei.write_text("max_pages_per_chunk = 7\n")
+    aus_datei = Settings.load(db_dsn="ungenutzt", environ={}, config_path=datei)
+    assert [(s.first_page, s.last_page) for s in plan_chunks(15, aus_datei)] == [
+        (0, 6), (7, 13), (14, 14)
+    ]
+    aus_umgebung = Settings.load(
+        db_dsn="ungenutzt",
+        environ={"MINERU_OCR_MAX_PAGES_PER_CHUNK": "15"},
+        config_path=datei,
+    )
+    assert len(plan_chunks(15, aus_umgebung)) == 1
 
 
 def test_plan_braucht_mindestens_eine_seite(settings: Settings) -> None:

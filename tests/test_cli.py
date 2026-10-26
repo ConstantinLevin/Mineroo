@@ -47,7 +47,7 @@ class Zugang:
             "workersMin": 0,
             "workersMax": 10,
             "idleTimeout": 60,
-            "executionTimeoutMs": 600000,
+            "executionTimeoutMs": 300000,
             "workers": [],
         }
 

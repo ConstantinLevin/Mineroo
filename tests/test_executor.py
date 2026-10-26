@@ -2973,8 +2973,8 @@ async def test_keine_verbindung_waehrend_des_wartens(
 ) -> None:
     """Waehrend der Abfrageschleife haelt der Ablauf keine Datenbankverbindung.
 
-    Sonst blockierten vierundzwanzig gleichzeitig betreute Dokumente den Pool bis
-    zu fuenfundzwanzig Minuten, waehrend keines von ihnen ihn benutzt.
+    Sonst blockierten vierundzwanzig gleichzeitig betreute Dokumente den Pool,
+    solange sie warten, waehrend keines von ihnen ihn benutzt.
 
     Geprueft mit einem Pool der Groesse EINS: Waehrend das Dokument auf RunPod
     wartet, muss eine ZWEITE Abfrage durch denselben Pool gehen koennen. Haelt
