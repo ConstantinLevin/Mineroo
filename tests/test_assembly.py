@@ -267,13 +267,14 @@ def test_bilder_bekommen_je_teilstueck_einen_eigenen_namensraum() -> None:
     assert re.findall(r"!\[\]\(([^)]+)\)", ergebnis["markdown_full"]) == verweise
 
 
-@pytest.mark.parametrize("src", ['src="{}"', "src='{}'", "src={}"])
+@pytest.mark.parametrize("src", ['src="{}"', "src='{}'", "src={}", "SRC={}", "src = {}"])
 def test_verweise_im_html_einer_tabelle_werden_mit_umbenannt(src: str) -> None:
     """Bilder in visuellem HTML (eine Tabelle mit eingebettetem Bild) stehen als
     `<img src="images/…">` im `content` des `table_body` (DocVortex
     `_materialize_markup`, Namen `page_{p}_table_image_{index}_{ordinal}`).
-    DocVortex behaelt dabei die Anfuehrungszeichen des HTML, das das Modell
-    geschrieben hat; jede dieser Formen ist ein Verweis."""
+    DocVortex behaelt dabei die Schreibweise des HTML, das das Modell geschrieben
+    hat (Anfuehrungszeichen, Gross- und Kleinschreibung, Leerraum um `=`); jede
+    dieser Formen ist ein Verweis."""
     attribut = src.format("images/page_0_table_image_0_1.png")
     tabelle = {
         "type": "table",
@@ -294,7 +295,7 @@ def test_verweise_im_html_einer_tabelle_werden_mit_umbenannt(src: str) -> None:
 
     for nummer, erwartet in enumerate([b"a", b"b"]):
         html = ergebnis["middle_json"][nummer]["pages"][0]["blocks"][0]["content"][0]["content"]
-        (verweis,) = re.findall(r"""src=["']?([^"'\s>]+)""", html)
+        (verweis,) = re.findall(r"""(?i)src\s*=\s*["']?([^"'\s>]+)""", html)
         assert verweis in ergebnis["images"]
         assert _bild_unter(ergebnis, verweis) == erwartet
 
@@ -626,16 +627,26 @@ def test_ein_fremder_verweis_mit_demselben_pfadende_bleibt_stehen() -> None:
     assert html == f'<img src="{fremd}">'
 
 
-def test_ein_bildpfad_als_parameter_einer_fremden_url_bleibt_stehen() -> None:
+@pytest.mark.parametrize(
+    "vorlage",
+    [
+        '<img src="https://example.org/render?path={bild}">',
+        '<img src="https://example.org/render?src={bild}">',
+        "<img src=\"https://example.org/render?img='{bild}'\">",
+        "![](https://example.org/render?src={bild})",
+    ],
+)
+def test_ein_bildpfad_als_parameter_einer_fremden_url_bleibt_stehen(vorlage: str) -> None:
     """Umbenannt wird nur ein ganzes lokales Bildziel. Eine externe URL, die den
     Pfad eines eigenen Bildes als Parameter traegt, ist kein Verweis auf dieses
     Bild und geht unveraendert weiter; sonst fragte ihr Server nach einem
-    anderen Pfad."""
-    fremd = f"https://example.org/render?path={ersatz.bild_pfad(0, 1)}"
+    anderen Pfad. Das gilt auch, wenn der Parameter selbst `src` heisst oder den
+    Pfad in Anfuehrungszeichen setzt."""
+    inhalt = vorlage.format(bild=ersatz.bild_pfad(0, 1))
     tabelle = {
         "type": "table",
         "index": 0,
-        "content": [{"type": "table_body", "index": 0, "content": f'<img src="{fremd}">'}],
+        "content": [{"type": "table_body", "index": 0, "content": inhalt}],
     }
     teil = _teil_aus(
         Chunk(0, 0),
@@ -644,7 +655,7 @@ def test_ein_bildpfad_als_parameter_einer_fremden_url_bleibt_stehen() -> None:
     )
     ergebnis = assemble([teil])
     html = ergebnis["middle_json"][0]["pages"][0]["blocks"][0]["content"][0]["content"]
-    assert html == f'<img src="{fremd}">'
+    assert html == inhalt
 
 
 def test_nur_randbloecke_werden_angehaengt() -> None:

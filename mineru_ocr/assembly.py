@@ -569,21 +569,31 @@ def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
 T = TypeVar("T")
 
 
+_HTML_BILDQUELLE: Final = re.compile(
+    r"(?P<vor><img\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*?\s+src\s*=\s*)"
+    r"(?:(?P<zeichen>[\"'])(?P<gequotet>.*?)(?P=zeichen)|(?P<ungequotet>[^\s>]+))",
+    re.IGNORECASE | re.DOTALL,
+)
+"""Die Quelle eines HTML-Bildes, genau wie DocVortex 0.5.16 sie findet, wenn es
+die Bilder visuellen HTMLs ablegt (`export/_images.py`, `_HTML_IMAGE_SOURCE_RE`):
+`<img … src=…>` in jeder Schreibweise, mit oder ohne Anfuehrungszeichen.
+DocVortex ersetzt nur den Wert und behaelt den Rest, wie das Modell ihn schrieb."""
+
+
 def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:
     """Eine Kopie von `wert`, in deren Zeichenketten jeder Bildverweis umbenannt ist.
 
-    Ein Verweis ist ein Schluessel von `umbenannt` (`images/{name}`), mit dem ein
-    lokales Bildziel BEGINNT, in den Formen, in denen MinerU 4 ein Bild nennt:
-    am Anfang eines Feldes (`image_path` im Middle-JSON, `image_source` im
-    strukturierten Inhalt), nach der Klammer eines Markdown-Bildes
-    (`![…](images/…)`, DocVortex `build_markdown_image`) und am Anfang eines
-    HTML-Attributs, in Anfuehrungszeichen oder ohne (`<img src="images/…">`;
-    DocVortex `_materialize_markup` behaelt die Form, die das Modell schrieb).
-    Die echten Antworten des Endpoints tragen nur die ersten beiden Formen.
+    Ein Verweis ist ein Schluessel von `umbenannt` (`images/{name}`) in den
+    Formen, in denen MinerU 4 ein Bild nennt: am Anfang eines Feldes
+    (`image_path` im Middle-JSON, `image_source` im strukturierten Inhalt), nach
+    der Klammer eines Markdown-Bildes (`![…](images/…)`, DocVortex
+    `build_markdown_image`) und als GANZE Quelle eines HTML-Bildes
+    (`<img src="images/…">` in jeder Schreibweise, `_HTML_BILDQUELLE`). Die
+    echten Antworten des Endpoints tragen nur die ersten beiden Formen.
 
     Alles andere bleibt stehen, auch wenn es den Pfad enthaelt: Eine externe
     URL, die auf denselben Pfad endet oder ihn als Parameter traegt
-    (`https://example.org/render?path=images/…`; DocVortex laesst externe Bilder
+    (`https://example.org/render?src=images/…`; DocVortex laesst externe Bilder
     in visuellem HTML unveraendert), ist kein Verweis auf das eigene Bild. Da
     jeder Name auf seine Endung schliesst, ist keiner der Anfang eines anderen
     (`page_0_image_1.jpg`, `page_0_image_10.jpg`). MinerU schreibt die Verweise
@@ -593,13 +603,18 @@ def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:
     if not umbenannt:
         return wert
     muster = re.compile(
-        r"(?:^|(?<=[(\"'])|(?<=src=))("
-        + "|".join(re.escape(alt) for alt in umbenannt)
-        + r")"
+        r"(?:^|(?<=\())(" + "|".join(re.escape(alt) for alt in umbenannt) + r")"
     )
+
+    def html_quelle(treffer: re.Match[str]) -> str:
+        zeichen = treffer.group("zeichen") or ""
+        quelle = treffer.group("gequotet") if zeichen else treffer.group("ungequotet")
+        neu = umbenannt.get(quelle, quelle)
+        return f"{treffer.group('vor')}{zeichen}{neu}{zeichen}"
 
     def ersetzen(teil: Any) -> Any:
         if isinstance(teil, str):
+            teil = _HTML_BILDQUELLE.sub(html_quelle, teil)
             return muster.sub(lambda treffer: umbenannt[treffer.group(1)], teil)
         if isinstance(teil, dict):
             return {schluessel: ersetzen(inhalt) for schluessel, inhalt in teil.items()}
