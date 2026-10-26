@@ -450,16 +450,23 @@ async def process_document(
             with PdfReader(rohbytes) as leser:
                 seiten = leser.page_count
                 seitenzahl = seiten
-                image_tag = await _image_tag_lesen(runpod, vermerke)
-                # Vorsorglich, VOR dem ersten bezahlten Aufruf. Bei leerem Konto
-                # liefe man sonst in eine Wand aus 402-Antworten.
-                await wait_for_balance(runpod, settings)
-                if chunking.needs_chunking(
+                geteilt = chunking.needs_chunking(
                     size_bytes=len(rohbytes),
                     page_count=seiten,
                     doc_type=typ,
                     settings=settings,
-                ):
+                )
+                if not geteilt:
+                    # Ungeteilt wird nichts geschnitten, also laedt hier keine
+                    # Seite, bevor der Worker sie laedt. Eine kaputte Seite endete
+                    # dort `failed`, bezahlt; hier endet sie `input_error`, ohne
+                    # RunPod-Kontakt, wie geschnitten in `extract`.
+                    leser.check_pages()
+                image_tag = await _image_tag_lesen(runpod, vermerke)
+                # Vorsorglich, VOR dem ersten bezahlten Aufruf. Bei leerem Konto
+                # liefe man sonst in eine Wand aus 402-Antworten.
+                await wait_for_balance(runpod, settings)
+                if geteilt:
                     stuecke: Any = chunking.iter_chunks(
                         chunking.plan_chunks(seiten, settings),
                         leser.extract,

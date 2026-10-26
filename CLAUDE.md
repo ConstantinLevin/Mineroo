@@ -699,12 +699,19 @@ des Originals (`assembly._seiten_verschoben`). **Bilder bekommen je Teilstück
 einen eigenen Namensraum**, `images/teilstueck_{n}/…`
 (`assembly.BILD_NAMENSRAUM`): MinerU 4 zählt die Bildnamen in jedem Teilstück
 ab Seite 0, ohne Namensraum überschrieben sie einander. Jeder Verweis in jeder
-Datei des Teilstücks (Markdown, `image_path`, `<img src>`, `image_source`) wird
-mit umbenannt, und `raw["images"]` trägt jedes Bild unter genau diesem Verweis.
+Datei des Teilstücks (das Ziel eines Markdown-Bildes, das ganze Feld `image_path`
+oder `image_source`, die ganze Quelle eines `<img src>`) wird mit umbenannt, und
+`raw["images"]` trägt jedes Bild unter genau diesem Verweis. Text des Dokuments,
+der einen solchen Pfad nennt, bleibt stehen.
 Leer (`assembly.is_empty`) ist ein Dokument ohne Text in beiden Markdowns, ohne
 Block im Middle-JSON und ohne Bild. Eine Seite ohne Bloecke traegt **keinen**
 `blocks`-Schluessel (`{"page_idx": 0}`, MinerU schreibt Voreinstellungen nicht),
 gemessen am Endpoint in der Stufe `advanced` mit OCR, als Bild wie als PDF.
+
+Eine PDF, die ungeteilt hinausgeht, lädt der Job vorher Seite für Seite
+(`PdfReader.check_pages`): Eine Seite, die sich nicht laden lässt, endet
+`input_error` ohne RunPod-Kontakt, wie geschnitten in `PdfReader.extract`;
+sonst schiede sie erst im Worker aus, bezahlt, als `failed`.
 
 **Der Text für Abnehmer ist `markdown_full`, unverändert** (Mineroo#13):
 `assembly.rendered_markdown`, dahinter `OCRWrapper.rendered_markdown` und

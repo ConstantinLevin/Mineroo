@@ -578,26 +578,28 @@ def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:
     """Eine Kopie von `wert`, in deren Zeichenketten jeder Bildverweis umbenannt ist.
 
     Ein Verweis ist ein Schluessel von `umbenannt` (`images/{name}`) in den
-    Formen, in denen MinerU 4 ein Bild nennt: am Anfang eines Feldes
-    (`image_path` im Middle-JSON, `image_source` im strukturierten Inhalt), nach
-    der Klammer eines Markdown-Bildes (`![…](images/…)`, DocVortex
-    `build_markdown_image`) und als GANZE Quelle eines HTML-Bildes
-    (`<img src="images/…">` in jeder Schreibweise, `_HTML_BILDQUELLE`). Die
-    echten Antworten des Endpoints tragen nur die ersten beiden Formen.
+    Formen, in denen MinerU 4 ein Bild nennt: als GANZES Feld (`image_path` im
+    Middle-JSON, `image_source` im strukturierten Inhalt), als Ziel eines
+    Markdown-Bildes (`![…](images/…)`, DocVortex `build_markdown_image`) und als
+    GANZE Quelle eines HTML-Bildes (`<img src="images/…">` in jeder
+    Schreibweise, `_HTML_BILDQUELLE`). Die echten Antworten des Endpoints tragen
+    nur die ersten beiden Formen.
 
-    Alles andere bleibt stehen, auch wenn es den Pfad enthaelt: Eine externe
-    URL, die auf denselben Pfad endet oder ihn als Parameter traegt
-    (`https://example.org/render?src=images/…`; DocVortex laesst externe Bilder
-    in visuellem HTML unveraendert), ist kein Verweis auf das eigene Bild. Da
-    jeder Name auf seine Endung schliesst, ist keiner der Anfang eines anderen
-    (`page_0_image_1.jpg`, `page_0_image_10.jpg`). MinerU schreibt die Verweise
-    unmaskiert (DocVortex `normalize_image_source` laesst die Zeichen der Namen
-    stehen), deshalb genuegt der woertliche Vergleich.
+    Alles andere bleibt stehen, auch wenn es den Pfad enthaelt. Nennt der Text
+    des Dokuments den Pfad, in Klammern oder am Anfang eines Absatzes, ist das
+    Inhalt, und ihn zu aendern verfaelschte das Dokument (Code-Review zur Spec
+    #1). Eine externe URL, die auf denselben Pfad endet oder ihn als Parameter
+    traegt (`https://example.org/render?src=images/…`; DocVortex laesst externe
+    Bilder in visuellem HTML unveraendert), ist kein Verweis auf das eigene
+    Bild. Da jeder Name auf seine Endung schliesst, ist keiner der Anfang eines
+    anderen (`page_0_image_1.jpg`, `page_0_image_10.jpg`). MinerU schreibt die
+    Verweise unmaskiert (DocVortex `normalize_image_source` laesst die Zeichen
+    der Namen stehen), deshalb genuegt der woertliche Vergleich.
     """
     if not umbenannt:
         return wert
     muster = re.compile(
-        r"(?:^|(?<=\())(" + "|".join(re.escape(alt) for alt in umbenannt) + r")"
+        r"(?<=\]\()(" + "|".join(re.escape(alt) for alt in umbenannt) + r")"
     )
 
     def html_quelle(treffer: re.Match[str]) -> str:
@@ -608,6 +610,8 @@ def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:
 
     def ersetzen(teil: Any) -> Any:
         if isinstance(teil, str):
+            if teil in umbenannt:
+                return umbenannt[teil]
             teil = _HTML_BILDQUELLE.sub(html_quelle, teil)
             return muster.sub(lambda treffer: umbenannt[treffer.group(1)], teil)
         if isinstance(teil, dict):

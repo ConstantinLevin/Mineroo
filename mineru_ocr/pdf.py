@@ -124,6 +124,30 @@ class PdfReader:
         nicht oeffnen und ist bereits im Konstruktor gescheitert."""
         return len(self._doc)
 
+    def check_pages(self) -> None:
+        """Laedt jede Seite einmal, ohne sie zu rendern, und schliesst sie wieder.
+
+        Fuer eine PDF, die ungeteilt hinausgeht: Sie wird nicht geschnitten, also
+        faellt eine Seite, die sich nicht laden laesst, sonst erst im Worker auf
+        (`PdfiumError: Failed to load page.`), nach der Bezahlung, und endet
+        `failed` statt `input_error`. Geschnitten faellt dieselbe Seite schon in
+        `extract` auf.
+
+        Raises:
+            CorruptDocumentError: Eine Seite laesst sich nicht laden; die Meldung
+                nennt sie null-basiert.
+
+        Kosten: keine. Reine lokale Rechenarbeit.
+        """
+        for nummer in range(self.page_count):
+            try:
+                seite = self._doc[nummer]
+            except pypdfium2.PdfiumError as fehler:
+                raise CorruptDocumentError(
+                    f"Seite {nummer} (null-basiert) laesst sich nicht laden: {fehler}"
+                ) from fehler
+            seite.close()
+
     def extract(self, first_page: int, last_page: int) -> bytes:
         """Schneidet einen Seitenbereich als eigenstaendiges PDF heraus.
 

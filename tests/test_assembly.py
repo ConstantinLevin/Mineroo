@@ -370,6 +370,19 @@ def test_verweise_im_html_einer_tabelle_werden_mit_umbenannt(src: str) -> None:
         assert _bild_unter(ergebnis, verweis) == erwartet
 
 
+def _schnellste_laufzeit(aufruf: Any, laeufe: int = 3) -> float:
+    """Die kuerzeste von `laeufe` gemessenen Laufzeiten von `aufruf()`, in Sekunden.
+
+    Die kuerzeste und nicht der Schnitt: Last auf der Maschine verlaengert
+    einzelne Laeufe, verkuerzt aber keinen."""
+    zeiten = []
+    for _ in range(laeufe):
+        beginn = time.perf_counter()
+        aufruf()
+        zeiten.append(time.perf_counter() - beginn)
+    return min(zeiten)
+
+
 def _html_nach_zusammensetzen(inhalt: str) -> str:
     """Das HTML eines Tabellenblocks nach dem Zusammensetzen. Die Seite traegt
     dazu ein eigenes Bild (`images/page_0_image_1.jpg`), damit die Verweise
@@ -400,11 +413,16 @@ def test_ein_entgleistes_img_haelt_das_zusammensetzen_nicht_auf(inhalt: str) -> 
     """Ein `<img` mit sehr viel Leerraum oder viele `<img` ohne schliessendes `>`
     (entgleiste Modellausgabe, OCR-Text) setzt sich in linearer Zeit zusammen.
     Das Zusammensetzen laeuft im Daemon synchron; eine Rueckwaertssuche in
-    quadratischer Zeit hielte alle Jobs und den Herzschlag sekundenlang an."""
-    beginn = time.perf_counter()
-    html = _html_nach_zusammensetzen(inhalt)
-    assert time.perf_counter() - beginn < 1.0
-    assert html == inhalt
+    quadratischer Zeit hielte alle Jobs und den Herzschlag sekundenlang an.
+
+    Gemessen wird gegen einen gleich langen harmlosen Text auf derselben
+    Maschine, je die schnellste von drei Laeufen: Eine feste Sekundengrenze hinge
+    an Maschine und Last. Linear liegen beide nah beieinander; quadratische Zeit
+    wuechse mit der Laenge der Eingabe weit darueber hinaus."""
+    assert _html_nach_zusammensetzen(inhalt) == inhalt
+    entgleist = _schnellste_laufzeit(lambda: _html_nach_zusammensetzen(inhalt))
+    harmlos = _schnellste_laufzeit(lambda: _html_nach_zusammensetzen("x" * len(inhalt)))
+    assert entgleist < 20 * harmlos
 
 
 def test_eine_html_quelle_wird_nur_als_ganzes_umbenannt() -> None:
@@ -502,6 +520,40 @@ def test_ein_name_ist_kein_praefix_eines_anderen() -> None:
 
     verweise = re.findall(r"!\[\]\(([^)]+)\)", ergebnis["markdown"])
     assert [_bild_unter(ergebnis, v) for v in verweise] == [b"eins", b"zehn"]
+
+
+def test_ein_bildpfad_im_text_des_dokuments_bleibt_stehen() -> None:
+    """Nennt der Text des Dokuments den Pfad eines eigenen Bildes, in Klammern
+    oder am Anfang eines Absatzes, ist das Inhalt und kein Verweis: Er bleibt
+    stehen, in beiden Markdowns und im Middle-JSON (Code-Review zur Spec #1).
+    Umbenannt werden nur das Ziel des Markdown-Bildes und das Feld, das ganz
+    der Pfad ist (`image_path`)."""
+    pfad = ersatz.bild_pfad(0, 1)
+    prosa = [f"Schreibe ({pfad}) in die Konfiguration.", f"{pfad} ist der Pfad."]
+    teil = _teil_aus(
+        Chunk(0, 0),
+        [
+            ersatz.seite(
+                0,
+                [
+                    ersatz.text_block(0, prosa[0]),
+                    ersatz.text_block(1, prosa[1]),
+                    ersatz.bild_block(1, 0),
+                ],
+            )
+        ],
+        {pfad: b"bild"},
+    )
+    ergebnis = assemble([teil])
+
+    neu = f"images/teilstueck_0/{pfad.removeprefix('images/')}"
+    for text in (ergebnis["markdown"], ergebnis["markdown_full"]):
+        assert prosa[0] in text and prosa[1] in text
+        assert f"]({neu})" in text
+    middle = json.dumps(ergebnis["middle_json"], ensure_ascii=False)
+    assert prosa[0] in middle and prosa[1] in middle
+    (bild,) = [b for b in ergebnis["middle_json"][0]["pages"][0]["blocks"] if b["type"] == "image"]
+    assert bild["content"][0]["image_path"] == neu
 
 
 def test_markdown_in_dokumentreihenfolge_und_vollfassung_nur_ganz() -> None:

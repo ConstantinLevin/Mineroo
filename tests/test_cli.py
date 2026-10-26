@@ -27,6 +27,7 @@ from mineru_ocr.config import Settings as _Settings
 from mineru_ocr.config import ReadSettings, Settings
 from mineru_ocr.db import DocumentStatus, write_terminal_async
 from mineru_ocr.errors import DatabaseError
+from mineru_ocr.mime import DocumentType
 from mineru_ocr.wrapper import OCRWrapper
 
 pytestmark = pytest.mark.db
@@ -819,7 +820,17 @@ async def test_show_zeigt_was_document_sagt_und_raw_die_vollstaendige_antwort(
         error="abgewiesen", endpoint_id="testendpoint", mineru_version="4.0.12",
     )
     text = cli.invoke(app, ["show", gemeldet])
-    assert "Gelesen:   MinerU 4.0.12, Einstellungen unbekannt" in text.stdout
+    assert "Gelesen:   MinerU 4.0.12, ohne gespeicherte Einstellungen" in text.stdout
+    # Ein Ganzdokument-Format traegt keine, weil sie bei ihm nicht wirken
+    # (Mineroo#17); das sagt die Ausgabe, statt sie unbekannt zu nennen.
+    docx = "f" * 64
+    await write_terminal_async(
+        async_conn, sha256=docx, status=DocumentStatus.DONE, raw={},
+        endpoint_id="testendpoint", mime=DocumentType.DOCX.mime,
+        mineru_version="4.0.12", store_read_settings=False,
+    )
+    text = cli.invoke(app, ["show", docx])
+    assert "Gelesen:   MinerU 4.0.12, Einstellungen wirken bei diesem Format nicht" in text.stdout
 
     ergebnis = cli.invoke(app, ["show", huelle.sha256, "--raw"])
     assert ergebnis.exit_code == 0, ergebnis.output

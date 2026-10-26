@@ -425,8 +425,19 @@ def _ocr_ausgeben(
     )
 
 
+_GANZDOKUMENT_MIMES: Final = frozenset(
+    typ.mime for typ in mime.DocumentType if typ.is_whole_document
+)
+"""Die Typen, bei denen die Lese-Einstellungen nicht wirken (Mineroo#17)."""
+
+
 def _lesung_zeigen(angaben: dict[str, Any]) -> str:
-    """Version und bestellte Lese-Einstellungen, lesbar: fuer `show` und `status`."""
+    """Version und bestellte Lese-Einstellungen, lesbar: fuer `show` und `status`.
+
+    Traegt die Zeile keine Einstellungen, sagt die Ausgabe warum, soweit sie es
+    weiss: Bei einem Ganzdokument-Format wirken sie nicht und werden deshalb nicht
+    gespeichert (Mineroo#17); sonst gab es keine Eingabe, an der sie standen.
+    `status` kennt den Typ nicht und sagt nur, dass keine gespeichert sind."""
     teile = [f"MinerU {angaben['mineru_version'] or 'unbekannt'}"]
     if angaben["tier"]:
         teile += [
@@ -434,8 +445,10 @@ def _lesung_zeigen(angaben: dict[str, Any]) -> str:
             angaben["ocr_mode"],
             f"Bildanalyse {'an' if angaben['image_analysis'] else 'aus'}",
         ]
+    elif angaben.get("mime") in _GANZDOKUMENT_MIMES:
+        teile.append("Einstellungen wirken bei diesem Format nicht")
     else:
-        teile.append("Einstellungen unbekannt")
+        teile.append("ohne gespeicherte Einstellungen")
     return ", ".join(teile)
 
 
