@@ -77,7 +77,7 @@ db_dsn = "host=localhost port=5437 dbname=mineru_ocr user=<benutzer>"
 expected_image_tag = "<Tag des gebauten Images>"   # (keiner: dann "nicht prüfbar")
 workers_min = 0                                      # (0)
 workers_max = 10                                     # (10, die Kontogrenze)
-idle_timeout = 60                                    # (60, Sekunden)
+idle_timeout = 5                                     # (5, Sekunden; Eigentümerentscheidung #19)
 execution_timeout_ms = 300000                        # (300000)
 allowed_data_centers = ["EU-RO-1", "EU-CZ-1", "EUR-IS-1", "EUR-IS-2", "EUR-NO-1"]
                                                      # (alle EWR-Rechenzentren)

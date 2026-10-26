@@ -184,8 +184,11 @@ auch für Aufrufer aus Python. Der Preflight beim Öffnen eines `OCRClient` läu
 wenn Schlüssel und Endpoint eingestellt sind; ohne einen davon entfällt er still. Die Sollwerte des Preflights (`expected_image_tag`, `workers_min`,
 `workers_max`, `idle_timeout`, `execution_timeout_ms`, `allowed_data_centers`, die
 Tabelle `[endpoint_env]`) sind Felder von `Settings` mit den Voreinstellungen aus
-Mineroo#3 und den Werten am Endpoint (0, 10, 60, 300000). Ebenso eingestellte
-Werte sind die Grenzen eines Teilstücks (Mineroo#20): `max_pages_per_chunk`
+Mineroo#3 und den Werten am Endpoint (0, 10, 5, 300000). Die Leerlaufzeit von
+5 s hat der Eigentümer festgelegt (Mineroo#19): FlashBoot holte den
+herunterskalierten Worker nach 4,5 min in 1,3 s zurück; längeres Warmhalten
+kostet nur Geld. Nach 15 min Pause gab es ohnehin rund 2 min Kaltstart.
+Ebenso eingestellte Werte sind die Grenzen eines Teilstücks (Mineroo#20): `max_pages_per_chunk`
 (20 Seiten), `max_payload_bytes` (7,4 MB roh) und `job_timeout_seconds` (300 s);
 die Herleitung aus Antwort-, Anfrage- und Zeitgrenze steht an den Feldern in
 `config.py` und unter „Teilstücke sind vor Postgres vollständig abstrahiert“.

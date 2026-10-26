@@ -268,13 +268,13 @@ def test_leerer_apikey_wirft(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
 
 def test_sollwerte_haben_die_festgelegten_voreinstellungen() -> None:
     """Es gelten die Werte, wie sie am Endpoint gesetzt sind: `workersMin` 0,
-    `workersMax` 10 (Mineroo#3), `idleTimeout` 60 und `executionTimeoutMs`
-    300000 (seit dem 26.10.2026, Mineroo#19 und #20). Den Image-Tag kennt erst
-    der Betreiber; ohne Angabe gibt es keinen."""
+    `workersMax` 10 (Mineroo#3), `idleTimeout` 5 (Eigentuemerentscheidung,
+    Mineroo#19) und `executionTimeoutMs` 300000 (Mineroo#19 und #20).
+    Den Image-Tag kennt erst der Betreiber; ohne Angabe gibt es keinen."""
     einstellung = _einstellung()
     assert einstellung.workers_min == 0
     assert einstellung.workers_max == 10
-    assert einstellung.idle_timeout == 60
+    assert einstellung.idle_timeout == 5
     assert einstellung.execution_timeout_ms == 300000
     assert einstellung.expected_image_tag is None
 

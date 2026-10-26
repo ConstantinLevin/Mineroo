@@ -839,10 +839,12 @@ class Settings:
     """`workersMax`: die Kontogrenze. Steht es darunter, laeuft der Lauf langsamer,
     als er koennte; darueber akzeptiert RunPod den Wert nicht."""
 
-    idle_timeout: int = 60
+    idle_timeout: int = 5
     """`idleTimeout` in Sekunden: wie lange ein Worker nach seinem letzten Job warm
-    bleibt und bezahlt wird. 60, wie am Endpoint gesetzt; den endgueltigen Wert
-    setzt der Eigentuemer aus den gemessenen Kaltstartzeiten (Mineroo#19)."""
+    bleibt und bezahlt wird. 5, vom Eigentuemer festgelegt und am Endpoint gesetzt
+    (Mineroo#19): FlashBoot holte den herunterskalierten Worker nach 4,5 min in
+    1,3 s zurueck; laengeres Warmhalten kostet nur Geld. Nach 15 min Pause gab
+    es ohnehin einen Kaltstart von rund 2 min."""
 
     execution_timeout_ms: int = 300000
     """`executionTimeoutMs`: wie lange ein Job laufen darf. 300000, wie am
