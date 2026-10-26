@@ -132,7 +132,11 @@ läuft: das Image von Template und Workern gegen den erwarteten Tag, die
 Endpoint-Variablen nach Wert an der Umgebung aller zuletzt gelaufenen Worker (auch
 der beendeten), dass alle Rechenzentren in der zulässigen Liste liegen, und die
 Sollwerte des Endpoints; FlashBoot wird berichtet. Was sich nicht feststellen lässt,
-heißt „nicht prüfbar“, nie „in Ordnung“. Die Exit-Codes sind belegt (0/1/2/3/4,
+heißt „nicht prüfbar“, nie „in Ordnung“. Zwei Quellen, nicht eine: Sollwerte und
+Worker liest er aus der REST-API v1 (`RunPodClient.endpoint`), die Rechenzentren
+aus v2 (`RunPodClient.serverless`), denn nur v2 trägt am echten Endpoint
+`dataCenterIds` (#31). Die gemeldete Worker-Umgebung zeigt keine Variablen des
+Images; deshalb ist `MINERU_MODEL_SOURCE`, das das Image setzt, kein Sollwert. Die Exit-Codes sind belegt (0/1/2/3/4,
 dazu 130 bei Strg-C) und werden von `cli.py` bewusst gesetzt.
 
 `wait ZIEL… [--timeout S] [--json]` wartet auf viele (`OCRClient.as_completed`)

@@ -78,14 +78,18 @@ Rechenzentren hinzufuegt. Deshalb ist sie ein Sollwert der Konfiguration
 zulaesst, tut das in seiner Konfiguration."""
 
 DEFAULT_ENDPOINT_ENV: Final[Mapping[str, str | None]] = {
-    "MINERU_MODEL_SOURCE": "local",
     "MINERU_MAX_CONCURRENCY": "1",
     "MINERU_VIRTUAL_VRAM_SIZE": None,
 }
 """Die Endpoint-Variablen, auf die es ankommt, mit ihrem Sollwert.
 
-`MINERU_MODEL_SOURCE=local`: Der Worker laedt seine Modelle offline aus dem Image
-und holt nichts von Dritten. `MINERU_MAX_CONCURRENCY=1`: ein Teilstueck je Worker
+Geprueft wird an der Umgebung, die RunPod fuer die Worker meldet, und die
+traegt nur Endpoint- und Template-Variablen und `RUNPOD_*`, keine des Images.
+`MINERU_MODEL_SOURCE=local` (der Worker laedt seine Modelle offline aus dem
+Image) setzt das Image des Forks selbst (`ENV` im `Dockerfile`); als Sollwert
+hier waere es an jedem echten Worker eine Abweichung, die es nicht gibt (#31).
+Wer es trotzdem am Endpoint setzt und geprueft haben will, nennt es in
+`[endpoint_env]`. `MINERU_MAX_CONCURRENCY=1`: ein Teilstueck je Worker
 zugleich, siehe `ocr_concurrency`. `MINERU_VIRTUAL_VRAM_SIZE` ist MinerUs Weg, den
 GPU-Speicheranteil von vLLM einzustellen; ihr Wert kommt aus der Messung, die
 noch aussteht. `None` heisst: Sollwert noch offen — der Preflight berichtet dann

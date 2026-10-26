@@ -82,9 +82,9 @@ execution_timeout_ms = 600000                        # (600000)
 allowed_data_centers = ["EU-RO-1", "EUR-IS-1"]       # (alle EWR-Rechenzentren)
 
 # Endpoint-Variablen, die der Preflight nach Wert prüft; was die Tabelle nicht
-# nennt, behält seinen Sollwert:
+# nennt, behält seinen Sollwert. Variablen, die das Image setzt (etwa
+# MINERU_MODEL_SOURCE), zeigt RunPods Worker-Umgebung nicht; sie gehören nicht hierher:
 [endpoint_env]
-MINERU_MODEL_SOURCE = "local"                        # (local)
 MINERU_MAX_CONCURRENCY = "1"                         # (1)
 MINERU_VIRTUAL_VRAM_SIZE = "<Wert aus der Messung>"  # (offen: nur berichtet)
 ```

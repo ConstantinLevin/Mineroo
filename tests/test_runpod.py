@@ -174,6 +174,33 @@ async def test_ohne_endpoint_geht_keine_endpoint_anfrage_hinaus(
     assert aufzeichnung.anfragen == []
 
 
+async def test_serverless_liest_die_rest_api_v2(echte_settings: Settings) -> None:
+    """Die Rechenzentren traegt am echten Endpoint nur die REST-API v2 (#31).
+    Gelesen wird `GET https://api.runpod.io/v2/serverless/<id>`, der Schluessel
+    reist nur im Kopf, und die Antwort kommt roh zurueck."""
+    antwort = {"id": "x", "dataCenterIds": ["EU-RO-1", "EUR-NO-1"]}
+    client, aufzeichnung = _client(echte_settings, Aufzeichnung(_antwort(antwort)))
+    assert await client.serverless() == antwort
+
+    (anfrage,) = aufzeichnung.anfragen
+    assert anfrage.method == "GET"
+    endpoint = echte_settings.require_endpoint_id()
+    assert str(anfrage.url) == f"https://api.runpod.io/v2/serverless/{endpoint}"
+    schluessel = echte_settings.require_api_key()
+    assert anfrage.headers["Authorization"] == f"Bearer {schluessel}"
+    assert schluessel not in str(anfrage.url)
+
+
+async def test_ohne_endpoint_geht_keine_v2_anfrage_hinaus(
+    echte_settings: Settings,
+) -> None:
+    ohne = dataclasses.replace(echte_settings, endpoint_id=None)
+    client, aufzeichnung = _client(ohne, Aufzeichnung([]))
+    with pytest.raises(ConfigurationError, match="endpoint_id"):
+        await client.serverless()
+    assert aufzeichnung.anfragen == []
+
+
 async def test_nutzlast_traegt_die_lese_einstellungen_statt_backend(
     echte_settings: Settings,
 ) -> None:
@@ -1068,6 +1095,7 @@ def test_kein_kommando_veraendert_bezahlte_ressourcen() -> None:
         "cancel",
         "endpoint",
         "image_tag",
+        "serverless",
         "status",
         "submit",
         "workers",
