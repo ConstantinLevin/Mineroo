@@ -1771,6 +1771,10 @@ async def test_markdown_meldet_eine_beschaedigte_zeile_statt_sie_auszugeben(
     assert not ziel.exists()
     assert "IncompleteResultError" in ergebnis.output
     assert "markdown_full" in ergebnis.output
+    # Die Meldung nennt den Weg zum Bezahlten und spricht nicht von einer
+    # beschaedigten Zeile; beides unterscheidet sie von `_pflichtfeld`.
+    assert "--raw" in ergebnis.output
+    assert "beschaedigt" not in ergebnis.output
 
 
 async def test_markdown_meldet_auch_ein_FEHLENDES_pflichtfeld(
