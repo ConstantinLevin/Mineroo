@@ -52,45 +52,7 @@ from .errors import IncompleteResultError, TerminalRunPodError
 
 W = TypeVar("W")
 """Der erwartete Typ eines Feldes des gespeicherten Ergebnisses in `_pflichtfeld` —
-`str` fuer `markdown`, `list` fuer `middle_json`."""
-
-FURNITURE_TYPES: Final = frozenset(
-    {"header", "footer", "aside_text", "page_number", "page_footnote"}
-)
-"""Die Blockklassen, die MinerU aus seinem Markdown HERAUSFILTERT.
-
-Gemessen, nicht vermutet: Die Kalibrierung hat am 03.08.2026 ueber alle 15
-content_list-Dateien gegen ihr jeweiliges Markdown gezaehlt — `header` 219 von
-271 Bloecken nicht im Markdown, `footer` 186 von 205, `aside_text` 94 von 102,
-`page_number` 29 von 57, `page_footnote` 5 von 5. Die Klasse `text` ist
-vollstaendig wiederzufinden. An den sechs konservierten Antworten vom 05.08.2026
-nachgeprueft: dort enthaelt kein Markdown einen einzigen dieser Bloecke (die zwei
-scheinbaren Treffer waren Zeichenketten, die als gewoehnlicher Inhaltstext ein
-zweites Mal vorkamen).
-
-WARUM DAS HIER STEHT UND NICHT IRGENDWO AM RAND: In genau diesen Bloecken liegt
-das AKTENZEICHEN. Die Kalibrierung hat den Weg an den Layout-Daten desselben
-Dokuments nachgezeichnet — `model.json` fuehrt es als
-`{"type": "header", "content": "Aktenzeichen 123/456/7890/012/345/6"}`,
-`middle.json` legt denselben Text unter `discarded_blocks[6]` ab, `content_list`
-fuehrt ihn als `{"type": "header", "text": "Aktenzeichen …"}` — und das Markdown
-hat ihn nicht mehr. „Der Filter trifft nicht die Kennung, sondern die Zone."
-Daraus folgt der Satz, aus dem `rendered_markdown` diese Bloecke OHNE Schalter
-anhaengt — woertlich aus `docs/MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md`,
-Abschnitt 5.4, Befund (1): „Fuer den Bescheid-Korpus ist ein Write-back aus dem
-nackten Markdown damit nachweislich schlechter als das, was heute schon auf den
-Records liegt."
-
-Die Liste ist damit keine Stilfrage, sondern die Stelle, an der ueber die
-Auffindbarkeit der Kennungen in Kopf- und Fusszeilen entschieden wird.
-
-Gemessen ist das an MinerU 3.4. Unter MinerU 4 sind es Blocktypen des Middle-JSON
-mit denselben Namen (DocVortex 0.5.16, `BlockType`: `header`, `footer`,
-`page_number`, `aside_text`, `page_footnote`). Gemessen am Endpoint (Stufe
-`advanced`, OCR, `artifacts/2026-10-26-mineru-4.0.12-endpoint/`): `markdown.md`
-laesst Kopfzeile, Fusszeile, Seitenzahl und Randtext weg und behaelt die
-Seitenfussnote; `markdown_full.md` traegt alle fuenf."""
-
+`str` fuer `markdown_full`."""
 
 DATEI_MARKDOWN: Final = "markdown.md"
 DATEI_MARKDOWN_FULL: Final = "markdown_full.md"
@@ -447,6 +409,18 @@ Ohne eigenen Namensraum ueberschriebe das Bild des einen Teilstuecks das des
 anderen, und ein Verweis zeigte auf ein fremdes Bild (Mineroo#11, Story 24)."""
 
 
+SEITENTRENNER_VOLLFASSUNG: Final = "\n\n---\n\n"
+"""Was die Vollfassung zwischen zwei Seiten setzt, und womit `assemble` deshalb die
+Vollfassungen der Teilstuecke verbindet.
+
+MinerU 4.0.12 (`docs/next/middle-json/rendering.md`, `RenderMode.FULL`) setzt
+zwischen je zwei benachbarte Seiten eine Trennlinie und verbindet nichts ueber
+eine Seitengrenze; die echten Teilstuecke tragen sie als `\\n\\n---\\n\\n`. Mit
+der Leerzeile verbunden fehlte sie genau an der Schnittkante, und der Text
+verriete, wo das Paket geschnitten hat. `markdown.md` (`RenderMode.DEFAULT`)
+setzt keine Trennlinie und bleibt bei der Leerzeile."""
+
+
 def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
     """Macht aus den Teilstuecken EIN Dokument. Das Ergebnis ist, was gespeichert wird.
 
@@ -463,7 +437,9 @@ def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
         Auswertungs-Entscheidung, die im Ergebnis nicht mehr von einem Fehler
         der Engine zu unterscheiden ist.
 
-        `markdown_full`: ebenso aus `markdown_full.md`. Fehlt die Datei in
+        `markdown_full`: ebenso aus `markdown_full.md`, aber verbunden mit
+        `SEITENTRENNER_VOLLFASSUNG` statt der Leerzeile, damit die Schnittkante
+        aussieht wie jede andere Seitengrenze. Fehlt die Datei in
         EINEM Teilstueck, ist der Wert None: Ein Text, dem ein Teilstueck fehlt,
         saehe vollstaendig aus und waere es nicht. Die Vollfassungen der
         anderen Teilstuecke sind dann trotzdem bezahlt und gehen nicht verloren
@@ -549,7 +525,7 @@ def assemble(parts: Sequence[ChunkArtifacts]) -> dict[str, Any]:
 
     voll: str | None = None
     if all(text is not None for text in volle):
-        voll = "\n\n".join(text for text in volle if text is not None)
+        voll = SEITENTRENNER_VOLLFASSUNG.join(text for text in volle if text is not None)
     ergebnis: dict[str, Any] = {
         "markdown": "\n\n".join(markdowns),
         "markdown_full": voll,
@@ -681,34 +657,6 @@ def _seiten_verschoben(datei: dict[str, Any] | None, chunk: Chunk) -> dict[str, 
     return kopie
 
 
-def _blocktext(block: Mapping[str, Any]) -> str:
-    """Der Text eines Randblocks des Middle-JSON.
-
-    Ein Randblock (`FURNITURE_TYPES`) traegt seinen Text als Liste von Spans
-    (DocVortex 0.5.16, `schema.py`: `PageAuxTextBlock` und `PageFootnoteBlock`
-    sind `InlineContentBlock`, ihr `content` ist eine Liste von `InlineSpan`), und
-    jeder Span seinen Text als Zeichenkette im eigenen `content`. Die Spans werden
-    aneinandergefuegt. Ein Block ohne Text liefert die leere Zeichenkette.
-
-    Eine Inline-Formel (`equation_inline`) steht in `$` wie im Markdown der
-    Engine (`$^{1}$`). Ohne sie fand `rendered_markdown` eine Seitenfussnote mit
-    Fussnotenzeichen nicht im Markdown wieder und haengte sie ein zweites Mal
-    an, gemessen an der echten normalen Seite des Endpoints.
-    """
-    inhalt = block.get("content")
-    if block.get("type") == "equation_inline" and isinstance(inhalt, str):
-        return f"${inhalt}$"
-    if isinstance(inhalt, str):
-        return inhalt
-    if not isinstance(inhalt, list):
-        return ""
-    # Ein Eintrag, der wider Erwarten kein Objekt ist, bleibt sichtbar, statt
-    # still zu verschwinden.
-    return "".join(
-        _blocktext(teil) if isinstance(teil, Mapping) else str(teil) for teil in inhalt
-    )
-
-
 def _bloecke(seite: Any) -> list[Any] | None:
     """Die Bloecke einer Seite des Middle-JSON, oder None bei fremder Form.
 
@@ -732,7 +680,8 @@ def _bloecke_aller_seiten(middles: list[Any]) -> list[Any]:
     Raises:
         IncompleteResultError: Ein Eintrag oder eine seiner Seiten hat nicht die
             Form des Schemas. Uebersprungen wird nichts: Ein uebersprungener
-            Eintrag kann der Randblock mit dem Aktenzeichen sein.
+            Eintrag kann einen Block tragen, und das Dokument galt dann
+            faelschlich als leer.
     """
     bloecke: list[Any] = []
     for nummer, middle in enumerate(middles):
@@ -740,9 +689,7 @@ def _bloecke_aller_seiten(middles: list[Any]) -> list[Any]:
         if not isinstance(seiten, list):
             raise IncompleteResultError(
                 f"Eintrag {nummer} von `middle_json` traegt keine Seitenliste "
-                f"({type(middle).__name__}). Uebersprungen wird er NICHT: Er kann "
-                f"den Randblock mit dem Aktenzeichen tragen, und die Ausgabe saehe "
-                f"dann vollstaendig aus. Was da ist, steht unveraendert in `raw`."
+                f"({type(middle).__name__}). Was da ist, steht unveraendert in `raw`."
             )
         for seite in seiten:
             auf_der_seite = _bloecke(seite)
@@ -765,14 +712,17 @@ def is_empty(result: dict[str, Any]) -> bool:
     Endzustand (Story 25).
 
     DIE REGEL: Leer ist ein Dokument genau dann, wenn sein `markdown` und sein
-    `markdown_full` nach dem Entfernen von Leerraum leer sind, keine Seite seines
+    `markdown_full` nach dem Entfernen von Leerraum und Seitentrennern
+    (`SEITENTRENNER_VOLLFASSUNG`: die Vollfassung verbindet auch leere Seiten
+    mit ihm, DocVortex 0.5.16, `render/_internal/markdown/renderer.py`) leer
+    sind, keine Seite seines
     Middle-JSON einen einzigen Block traegt und es kein Bild hat. Im Zweifel gilt
     es als NICHT leer — ein faelschlich als fertig verbuchtes leeres Dokument
     faellt beim Ansehen auf, ein faelschlich als leer verbuchtes volles nie:
 
         Jeder Block zaehlt, auch einer ohne Text und auch ein Randblock. Ein
         Bescheid, von dem nur der Briefkopf mit dem Aktenzeichen erkannt wurde,
-        ist alles andere als leer (siehe `FURNITURE_TYPES`).
+        ist alles andere als leer (siehe `rendered_markdown`).
 
         Ein Bild zaehlt, auch eines, auf das nichts verweist: bezahlter Inhalt.
 
@@ -792,7 +742,7 @@ def is_empty(result: dict[str, Any]) -> bool:
     """
     for feld in ("markdown", "markdown_full"):
         text = result.get(feld)
-        if isinstance(text, str) and text.strip():
+        if isinstance(text, str) and text.replace(SEITENTRENNER_VOLLFASSUNG, "").strip():
             return False
     bilder = result.get("images")
     if not isinstance(bilder, dict) or bilder:
@@ -815,12 +765,10 @@ def _pflichtfeld(result: dict[str, Any], name: str, typ: type[W]) -> W:
     Aufheben, sondern ein Verlust mit freundlichem Gesicht.
 
     Ein fehlendes Feld ist dabei genauso eine Beschaedigung wie ein falscher Typ:
-    `assemble` schreibt `markdown` und `middle_json` immer, und es gibt keine
-    gespeicherten Ergebnisse aus der Zeit vor MinerU 4, die anders aussaehen
-    (Mineroo#1, „Nur noch MinerU 4"). Fehlt `markdown`, kaemen nur die
-    Randbloecke heraus und der Fliesstext waere lautlos weg; fehlt
-    `middle_json`, fehlte das Aktenzeichen. Beides saehe nach einem kurzen
-    Dokument aus und nicht nach einem Fehler.
+    `assemble` schreibt `markdown_full` immer, und es gibt keine gespeicherten
+    Ergebnisse aus der Zeit vor MinerU 4, die anders aussaehen (Mineroo#1, „Nur
+    noch MinerU 4"). Ein leerer Ersatz saehe nach einem leeren Dokument aus und
+    nicht nach einem Fehler.
 
     Raises:
         IncompleteResultError: Das Feld fehlt, oder es ist da und hat einen
@@ -848,136 +796,71 @@ def _pflichtfeld(result: dict[str, Any], name: str, typ: type[W]) -> W:
     )
 
 
-def _randbloecke(middles: list[Any]) -> list[str]:
-    """Die Texte der Randbloecke aller Seiten, in Dokumentreihenfolge.
-
-    Raises:
-        IncompleteResultError: siehe `_bloecke_aller_seiten`; dazu ein Block, der
-            kein Objekt ist. Uebersprungen wird er NICHT: Ob er ein Randblock
-            war, laesst sich nicht sagen, und er kann das Aktenzeichen tragen.
-    """
-    texte: list[str] = []
-    for block in _bloecke_aller_seiten(middles):
-        if not isinstance(block, dict):
-            raise IncompleteResultError(
-                f"Ein Block in `middle_json` ist {type(block).__name__} statt "
-                f"eines Objekts. Uebersprungen wird er NICHT: Er kann der "
-                f"Randblock mit dem Aktenzeichen sein, und die Ausgabe saehe dann "
-                f"vollstaendig aus. Was da ist, steht unveraendert in `raw`."
-            )
-        if block.get("type") in FURNITURE_TYPES:
-            texte.append(_blocktext(block).strip())
-    return texte
-
-
 def middle_json_lesbar(middle: Any) -> None:
-    """Prueft, ob die Darstellung das Middle-JSON eines Teilstuecks lesen kann.
+    """Prueft, ob das Middle-JSON eines Teilstuecks die Form des Schemas hat.
 
-    Dieselben Leser wie `rendered_markdown` (`_randbloecke`), damit die
+    Derselbe Leser wie `is_empty` (`_bloecke_aller_seiten`), damit die
     Vollstaendigkeitspruefung (`vollstaendigkeit.teilstueck_pruefen`) kein
-    Teilstueck durchlaesst, dessen Darstellung danach dauerhaft scheitert.
+    Teilstueck durchlaesst, dessen Bloecke sich danach nicht lesen lassen.
 
     Raises:
-        IncompleteResultError: siehe `_randbloecke`.
+        IncompleteResultError: siehe `_bloecke_aller_seiten`.
 
     Kosten: keine.
     """
-    _randbloecke([middle])
-
-
-_MASKIERT: Final = re.compile(r"\\([*_`~$])")
-"""Ein Zeichen, das DocVortex 0.5.16 im Markdown mit einem Backslash maskiert
-(`render/_internal/markdown/escaping.py`, `escape_conservative_markdown_text`:
-`*`, `_`, `` ` ``, `~`, `$`)."""
-
-
-_DOCVORTEX_ENTITY: Final = re.compile(r"&(amp|lt|gt);")
-"""Die Entities, die DocVortex 0.5.16 beim Maskieren von Text schreibt
-(`render/_internal/markdown/inline.py`: `html.escape(…, quote=False)` fuer Text,
-der wie ein HTML-Tag aussieht, `_escape_entity_like_text` fuer Text, der wie
-eine Entity aussieht). Andere Entities im Markdown hat DocVortex nicht
-geschrieben, etwa im Inline-Code, den es roh ausgibt; sie bleiben, wie man sie
-liest.
-
-Die Grenze: Code wird dabei nicht ausgenommen. Steht `&lt;`, `&gt;` oder
-`&amp;` woertlich in Code, wird es fuer den Vergleich trotzdem zum Zeichen, und
-ein Randblock mit genau diesem Text gilt als vorhanden (`&lt;Az 12/34&gt;` im
-Code verdeckt eine Kopfzeile „<Az 12/34>“). Ausgegeben wird das Markdown
-unveraendert; die Darstellung fuer Abnehmer entscheidet Mineroo#13."""
-
-_ENTITY_ZEICHEN: Final = {"amp": "&", "lt": "<", "gt": ">"}
-"""Das Zeichen zu jeder Entity von `_DOCVORTEX_ENTITY`."""
-
-
-def _ohne_backslash(text: str) -> str:
-    """Der Text ohne einen Backslash vor `*`, `_`, `` ` ``, `~` und `$`.
-
-    Fuer beide Seiten des Vergleichs eines Randblocks mit dem Markdown: Im
-    Markdown setzt DocVortex den Backslash (`2025\\_17`), und im Rohtext steht
-    er manchmal schon, weil MinerU ein `$` wie in LaTeX als `\\$` liefert (am
-    Endpoint gemessen, QA zu Mineroo#11); DocVortex maskiert ein Zeichen hinter
-    einem Backslash dann nicht noch einmal. Ohne Backslash lauten beide gleich.
-    """
-    return _MASKIERT.sub(r"\1", text)
-
-
-def _ohne_maskierung(markdown: str) -> str:
-    """Das Markdown, wie es ohne DocVortex' Maskierung lautete.
-
-    Nur fuer den Vergleich mit dem Rohtext eines Randblocks (`_ohne_backslash`):
-    Text, der wie ein HTML-Tag oder eine Entity aussieht, steht im Markdown
-    zudem als Entity (`&lt;Az 12/34&gt;`, `_DOCVORTEX_ENTITY`). Ausgegeben wird
-    das Markdown immer unveraendert.
-    """
-    return _DOCVORTEX_ENTITY.sub(
-        lambda treffer: _ENTITY_ZEICHEN[treffer.group(1)], _ohne_backslash(markdown)
-    )
+    _bloecke_aller_seiten([middle])
 
 
 def rendered_markdown(result: dict[str, Any]) -> str:
-    """Das GANZE Dokument in Markdown-Form. Leseseite, aendert nichts am Gespeicherten.
+    """Das GANZE Dokument in Markdown-Form, der Text fuer Abnehmer. Leseseite.
 
-    Alles, was auf dem Dokument steht, in einer Darstellung: das Markdown der
-    Engine und dahinter die Randbloecke (`FURNITURE_TYPES`), die es nicht
-    enthaelt. KEINE SCHALTER: Was davon unerwuenscht ist, weiss nur der
-    Abnehmer; er hat die Bausteine (`markdown`, `markdown_full` und je Block
-    `middle_json`).
+    Der Text ist die Vollmodus-Fassung des Markdowns (`markdown_full`, je
+    Teilstueck `markdown_full.md` des Workers, MinerU 4 `RenderMode.FULL`),
+    unveraendert. Das Paket setzt nichts selbst zusammen, es formatiert nur, was
+    in `raw` steht (Mineroo#13).
 
-    Die Randbloecke kommen aus dem Middle-JSON, der massgeblichen Datei unter
-    MinerU 4 (Mineroo#11). Die Aufnahmen des Endpoints zeigen, dass der
-    Vollmodus-Markdown des Workers (`markdown_full.md`) alle fuenf Randklassen
-    traegt (`FURNITURE_TYPES`); ob er damit an die Stelle dieser Ergaenzung
-    tritt, entscheidet das Ticket „Text fuer Abnehmer" (Mineroo#13). Bis dahin
-    gilt die Regel aus der Zeit von MinerU 3.4, auf das neue Format uebertragen.
+    WARUM DIE VOLLFASSUNG UND NICHT `markdown`: `markdown.md` laesst Kopfzeile,
+    Fusszeile, Seitenzahl und Randtext weg, und in genau diesen Zonen stehen
+    oft Kennungen, etwa Aktenzeichen, Rechnungs-, Vertrags- oder Steuernummern.
+    „Der Filter trifft nicht die Kennung, sondern die Zone." Gemessen schon an
+    MinerU 3.4 (Kalibrierung vom 03.08.2026, 15 Dokumente): `header` fehlte in
+    219 von 271 Bloecken im Markdown, `footer` in 186 von 205, `aside_text` in
+    94 von 102, `page_number` in 29 von 57, `page_footnote` in 5 von 5; ein
+    Aktenzeichen stand nur in der Kopfzeile und nicht mehr im Markdown
+    (`docs/MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md`, Abschnitt 5.4).
+    Unter MinerU 4 heissen die Blocktypen des Middle-JSON gleich (DocVortex
+    0.5.16, `BlockType`). Gemessen am Endpoint
+    (`artifacts/2026-10-26-mineru-4.0.12-endpoint/`, normale Seite in
+    `advanced` mit OCR): Die Vollfassung traegt alle fuenf Randklassen
+    (Kopfzeile, Fusszeile, Seitenzahl, Randtext, Seitenfussnote) je einmal,
+    an ihrer Stelle in MinerUs Lesereihenfolge (die `index` der Bloecke im
+    Middle-JSON): die Kopfzeile vor dem Fliesstext, die Seitenfussnote hinter
+    ihm, den Rest am Ende der Seite. Die Seitenfussnote, die schon
+    `markdown.md` traegt, steht darin ebenfalls nur einmal. Eine Ergaenzung aus
+    dem Middle-JSON braucht es deshalb nicht.
 
-    WARUM DIE RANDBLOECKE ZAEHLEN: In ihnen liegt das Aktenzeichen. „Der Filter
-    trifft nicht die Kennung, sondern die Zone." Die volle Rechnung steht bei
-    `FURNITURE_TYPES`.
+    Die Bild-Deutungen stehen darin, wenn die Bildanalyse an war: MinerU
+    schreibt sie hinter das Bild, ein Diagramm als eingeklappte Tabelle
+    (`<details>`), gemessen an denselben Aufnahmen.
+
+    KEINE SCHALTER: Was davon unerwuenscht ist, weiss nur der Abnehmer; er hat
+    die Bausteine (`markdown`, `markdown_full` und je Block `middle_json`).
 
     Args:
         result: Das zusammengesetzte Ergebnis.
 
     Zusicherung:
-        Das Ergebnis BEGINNT mit dem Markdown der Engine, zeichengleich; alles
-        Weitere ist angehaengt. Es wird nie etwas entfernt, nur ergaenzt.
-
-        Angehaengt wird ein Randblock nur, wenn sein Text im Markdown FEHLT.
-        Verglichen wird ohne Maskierung, auf beiden Seiten
-        (`_ohne_maskierung`, `_ohne_backslash`): Im Markdown steht `2025_17` als
-        `2025\\_17`, im Rohtext ein `$` manchmal schon als `\\$`, und das ist
-        jeweils derselbe Text. Verglichen wird gegen das Markdown und nicht gegen die bereits
-        angehaengten: Elf Seiten mit derselben Fusszeile sind elfmal dieselbe
-        Fusszeile, kein Duplikat. Die Randbloecke kommen in Dokumentreihenfolge,
-        ohne eingefuegte Marker.
-
-        UND: Es kommt entweder das ganze Dokument heraus oder eine Ausnahme.
-        Niemals eine Zeichenkette, die weniger ist, als der Name verspricht.
+        Es kommt entweder das ganze Dokument heraus oder eine Ausnahme. Niemals
+        eine Zeichenkette, die weniger ist, als der Name verspricht.
 
     Raises:
-        IncompleteResultError: Das gespeicherte Ergebnis ist beschaedigt — ein
-            fehlendes Feld, ein Feld mit falschem Typ, ein Eintrag von
-            `middle_json` ohne Seiten (auch einer, den der Worker nicht liefern
-            konnte), ein Block, der kein Objekt ist, oder gar kein Ergebnis.
+        IncompleteResultError: Es gibt keine ganze Vollfassung — `markdown_full`
+            fehlt oder ist kein Text. Das ist der Fall, wenn sie einem
+            Teilstueck fehlte (der Worker meldet das in `degraded`, die
+            Vollfassungen der uebrigen stehen dann unter
+            `markdown_full_je_teilstueck`), oder die Zeile ist beschaedigt
+            oder traegt gar kein Ergebnis. Aus `markdown` ergaenzt wird
+            nicht: Dieser Text saehe vollstaendig aus und waere es nicht.
             Nichts davon ist verloren; es steht unveraendert in `raw`.
 
     Kosten: keine.
@@ -988,9 +871,10 @@ def rendered_markdown(result: dict[str, Any]) -> str:
             "`raw` ist leer oder NULL. Es gibt nichts darzustellen. Was der "
             "Lauf gemacht hat, steht in `notes` und `error`."
         )
-    if "markdown" not in result and "middle_json" not in result:
+    if not {"markdown_full", "markdown", "middle_json"} & result.keys():
         raise IncompleteResultError(
-            "Dieses Ergebnis traegt weder `markdown` noch `middle_json` und ist "
+            "Dieses Ergebnis traegt weder `markdown_full` noch `markdown` noch "
+            "`middle_json` und ist "
             "damit gar kein zusammengesetztes Ergebnis. Die eine bekannte Form "
             "dieser Art ist die Notfassung aus dem Fehlerpfad "
             "(`_rohfassung_der_teile`, erkennbar an `chunks` und "
@@ -998,17 +882,32 @@ def rendered_markdown(result: dict[str, Any]) -> str:
             "die Darstellung im Betrieb nie erreichen. Was da ist, steht "
             "unveraendert in `raw`."
         )
-    markdown = _pflichtfeld(result, "markdown", str)
-    middles = _pflichtfeld(result, "middle_json", list)
+    if "markdown_full" in result and result["markdown_full"] is None and "markdown" in result:
+        raise IncompleteResultError(_ohne_vollfassung(result))
+    return _pflichtfeld(result, "markdown_full", str)
 
-    vergleich = _ohne_maskierung(markdown)
-    angehaengt = [
-        text
-        for text in _randbloecke(middles)
-        if text and _ohne_backslash(text) not in vergleich
-    ]
-    if not angehaengt:
-        return markdown
-    if not markdown:
-        return "\n\n".join(angehaengt)
-    return markdown + "\n\n" + "\n\n".join(angehaengt)
+
+def _ohne_vollfassung(result: dict[str, Any]) -> str:
+    """Die Meldung, wenn `assemble` keine ganze Vollfassung bilden konnte.
+
+    Das Ergebnis ist dann nicht beschaedigt, sondern so zusammengesetzt
+    (`markdown_full` ist None, `markdown` steht da, denn `assemble` schreibt es
+    immer); die Meldung nennt den Grund und wo das Bezahlte liegt, statt
+    `_pflichtfeld` von einer beschaedigten Zeile sprechen zu lassen. Auf
+    `markdown_full_je_teilstueck` verweist sie nur, wenn es den Schluessel
+    gibt."""
+    uebrige = (
+        "die Vollfassungen der uebrigen Teilstuecke unter "
+        "`markdown_full_je_teilstueck`, "
+        if "markdown_full_je_teilstueck" in result
+        else ""
+    )
+    return (
+        "Es gibt keinen ganzen Text fuer Abnehmer: Der Antwort des Workers "
+        "fehlte die Vollfassung `markdown_full.md`, ganz oder fuer ein "
+        "Teilstueck des Dokuments (der Worker meldet das in `degraded`), und aus "
+        "Teilen wird kein Text zusammengesetzt, der vollstaendig aussaehe. Was "
+        f"bezahlt ist, steht in `raw` (`mineru-ocr show ZIEL --raw`): {uebrige}"
+        "der Text ohne Kopf- und Fusszeilen, Seitenzahlen und Randtexte unter "
+        "`markdown`."
+    )

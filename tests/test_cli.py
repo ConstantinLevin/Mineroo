@@ -212,7 +212,7 @@ async def test_fertiges_dokument_gibt_null(
             async_conn,
             sha256=huelle.sha256,
             status=zustand,
-            raw={"markdown": "Text", "middle_json": [], "images": {}},
+            raw={"markdown": "Text", "markdown_full": "Text", "middle_json": [], "images": {}},
             endpoint_id="testendpoint",
         )
         assert cli.invoke(app, ["wait", huelle.sha256]).exit_code == 0, zustand
@@ -696,7 +696,7 @@ async def test_hash_und_pfad_werden_gleich_aufgeloest(
         async_conn,
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
-        raw={"markdown": "derselbe Text", "middle_json": [], "images": {}},
+        raw={"markdown": "derselbe Text", "markdown_full": "derselbe Text", "middle_json": [], "images": {}},
         endpoint_id="testendpoint",
     )
 
@@ -1693,7 +1693,7 @@ async def test_markdown_schreibt_in_eine_datei(
         async_conn,
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
-        raw={"markdown": "Der ganze Text", "middle_json": [], "images": {}},
+        raw={"markdown": "Der ganze Text", "markdown_full": "Der ganze Text", "middle_json": [], "images": {}},
         endpoint_id="testendpoint",
     )
 
@@ -1715,19 +1715,19 @@ async def test_markdown_meldet_eine_beschaedigte_zeile_statt_sie_auszugeben(
 
     DER GEFAEHRLICHE FALL, und deshalb steht er hier: Der Wachposten des
     Kommandos ist `huelle.success`, und der liest die STATUS-Spalte. Ueber `raw`
-    sagt er gar nichts. Eine Zeile, die `done` ist und deren `markdown` als
+    sagt er gar nichts. Eine Zeile, die `done` ist und deren `markdown_full` als
     JSON-`null` dasteht, kommt also bis zur Darstellung durch.
 
     GEMESSEN, bevor es diesen Test gab (10.08.2026, durch genau diesen Weg):
-    Exit-Code 0, und in der Datei stand „Aktenzeichen 123/456/7890" — der eine
-    Randblock. Der Fliesstext des Bescheids, der im echten Betrieb aus
-    `markdown` kaeme, fehlte vollstaendig, und nichts sagte es. Die Datei sah
-    aus wie ein kurzes Dokument.
+    Exit-Code 0, und die Datei sah aus wie ein kurzes Dokument, weil ein Teil
+    des Textes lautlos fehlte.
 
-    Der Fliesstext steht hier als Block vom Typ `text` im Middle-JSON und
-    NICHT in `markdown`, und das ist der Kern des Tests: Ein Typ, den
-    `rendered_markdown` nicht anhaengt, weil er normalerweise schon im Markdown
-    steht. Faellt das Markdown weg, faellt er lautlos mit weg.
+    Hier steht der Fliesstext noch in `markdown`, das Aktenzeichen nur in der
+    Kopfzeile, die `markdown` weglaesst. Ein Ersatz aus `markdown` saehe
+    vollstaendig aus, und das Aktenzeichen fehlte (Mineroo#13). Seit Mineroo#13
+    ist das auch die Form, die `assemble` schreibt, wenn einem Teilstueck
+    `markdown_full.md` fehlte; beschaedigt ist die Zeile dann nicht, der Weg
+    endet aber ebenso.
     """
     huelle = _anlegen(db_conn, tmp_path, "beschaedigt.png", _test_datenbank)
     await write_terminal_async(
@@ -1735,7 +1735,8 @@ async def test_markdown_meldet_eine_beschaedigte_zeile_statt_sie_auszugeben(
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
         raw={
-            "markdown": None,
+            "markdown": "Der ganze Fliesstext.",
+            "markdown_full": None,
             "middle_json": [
                 {
                     "pages": [
@@ -1769,7 +1770,11 @@ async def test_markdown_meldet_eine_beschaedigte_zeile_statt_sie_auszugeben(
     assert ergebnis.exit_code == 1
     assert not ziel.exists()
     assert "IncompleteResultError" in ergebnis.output
-    assert "markdown" in ergebnis.output
+    assert "markdown_full" in ergebnis.output
+    # Die Meldung nennt den Weg zum Bezahlten und spricht nicht von einer
+    # beschaedigten Zeile; beides unterscheidet sie von `_pflichtfeld`.
+    assert "--raw" in ergebnis.output
+    assert "beschaedigt" not in ergebnis.output
 
 
 async def test_markdown_meldet_auch_ein_FEHLENDES_pflichtfeld(
@@ -1789,8 +1794,8 @@ async def test_markdown_meldet_auch_ein_FEHLENDES_pflichtfeld(
     Der Fall ist real und nicht konstruiert: Er entstand daraus, dass die erste
     Fassung der Pruefung ein einzeln fehlendes Feld DULDETE — mit einer
     Begruendung („aeltere Fassung"), die nie geprueft war und sich als falsch
-    erwiesen hat. Ohne `middle_json` fehlt das Aktenzeichen, und die Ausgabe
-    saehe vollstaendig aus.
+    erwiesen hat. Ohne `markdown_full` fehlt das Aktenzeichen, und eine Ausgabe
+    aus `markdown` saehe vollstaendig aus.
     """
     huelle = _anlegen(db_conn, tmp_path, "ohne_liste.png", _test_datenbank)
     await write_terminal_async(
@@ -1805,4 +1810,4 @@ async def test_markdown_meldet_auch_ein_FEHLENDES_pflichtfeld(
     ergebnis = cli.invoke(app, ["markdown", huelle.sha256, "--out", str(ziel)])
     assert ergebnis.exit_code == 1
     assert not ziel.exists()
-    assert "middle_json" in ergebnis.output
+    assert "markdown_full" in ergebnis.output

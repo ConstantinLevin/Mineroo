@@ -460,7 +460,7 @@ class IncompleteResultError(MineruOcrError):
     einmal vorbeigelaufen sind. Wer Teile sehen will, greift auf die Rohantworten
     zu; die stehen offen.
 
-    ZWEI ANLAESSE, und der zweite stand hier lange nicht, obwohl der Code ihn
+    DREI ANLAESSE, und der zweite stand hier lange nicht, obwohl der Code ihn
     schon warf:
 
         Die Zeile ist noch nicht so weit — abgefragt, bevor alle Chunks
@@ -469,11 +469,17 @@ class IncompleteResultError(MineruOcrError):
         Die Zeile ist BESCHAEDIGT — ein Feld des gespeicherten Ergebnisses hat
         einen anderen Typ als zugesichert (der haeufigste Fall ist JSON-`null`),
         ein Eintrag von `middle_json` traegt keine Seiten, oder das Ergebnis
-        traegt weder `markdown` noch `middle_json` und ist damit gar kein
-        zusammengesetztes Ergebnis. Geworfen wird auch hier, statt einen leeren
-        Wert zu liefern: Ein leeres Feld sieht aus wie ein leeres Dokument, und
-        genau daran ist die Beschaedigung sonst nicht mehr zu erkennen.
-        Zustaendig sind `OCRWrapper._feld` und `assembly._pflichtfeld`.
+        traegt weder `markdown_full` noch `markdown` noch `middle_json` und ist
+        damit gar kein zusammengesetztes Ergebnis. Geworfen wird auch hier,
+        statt einen leeren Wert zu liefern: Ein leeres Feld sieht aus wie ein
+        leeres Dokument, und genau daran ist die Beschaedigung sonst nicht mehr
+        zu erkennen. Zustaendig sind `OCRWrapper._feld` und
+        `assembly._pflichtfeld`.
+
+        Es gibt KEINE GANZE VOLLFASSUNG — einem Teilstueck fehlte
+        `markdown_full.md`, `assemble` hat `markdown_full` deshalb auf None
+        gesetzt, und `assembly.rendered_markdown` liefert keinen Text aus Teilen.
+        Beschaedigt ist dabei nichts; die Meldung nennt, wo das Bezahlte liegt.
     """
 
 

@@ -301,10 +301,11 @@ class OCRWrapper:
     def rendered_markdown(self) -> str:
         """Das GANZE Dokument in Markdown-Form. Siehe `assembly.rendered_markdown`.
 
-        Alles, was auf dem Dokument steht, in einer Darstellung. `self["markdown"]`
-        — das Markdown der Engine — ist davon der grosse Bestandteil, aber nicht
-        das Ganze: Die Engine filtert beim Erzeugen ihres Markdowns Blockklassen
-        heraus, und in genau ihnen liegt das Aktenzeichen.
+        Alles, was auf dem Dokument steht, in einer Darstellung: die
+        Vollmodus-Fassung `self["markdown_full"]`, unveraendert. Nicht
+        `self["markdown"]`: Die Engine filtert beim Erzeugen dieses Markdowns
+        Kopf- und Fusszeilen, Seitenzahlen und Randtexte heraus, und in genau
+        ihnen liegt das Aktenzeichen.
 
         OHNE SCHALTER, und das ist Absicht. Diese Methode hiess `rendered_text`
         und hatte zwei Parameter, `furniture` und `foreign_filter`. Beide
@@ -316,12 +317,11 @@ class OCRWrapper:
         `self["middle_json"]` — an der Stelle, an der er weiss, wofuer.
 
         Raises:
-            IncompleteResultError: Die Zeile hat noch kein Ergebnis — oder das
-                gespeicherte Ergebnis ist beschaedigt und laesst sich nicht ganz
-                darstellen (`markdown` mit falschem Typ, `middle_json` keine
-                Liste oder mit einem Eintrag ohne Seiten, oder beide Felder
-                fehlen). Eine halbe Ausgabe gibt es nicht: Sie saehe
-                vollstaendig aus. Was da ist, steht unveraendert in `raw`.
+            IncompleteResultError: Die Zeile hat noch kein Ergebnis — oder es
+                gibt keine ganze Vollfassung (`markdown_full` fehlt oder ist
+                kein Text, etwa weil sie einem Teilstueck fehlte). Eine halbe
+                Ausgabe gibt es nicht: Sie saehe vollstaendig aus. Was da ist,
+                steht unveraendert in `raw`.
         """
         return assembly.rendered_markdown(self._ergebnis())
 

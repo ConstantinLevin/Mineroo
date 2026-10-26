@@ -633,7 +633,9 @@ gibt keine Chunk-Tabelle und keine Teil-Zeilen.
 Jede Datei der Antwort hat in `raw` ihren eigenen Schlüssel: `markdown` und
 `markdown_full` als Text über alle Teilstücke (`markdown_full` ist `None`, wenn
 es einem Teilstück fehlt; die bezahlten Vollfassungen der übrigen stehen dann
-unter `markdown_full_je_teilstueck`), `middle_json`, `structured_content` und
+unter `markdown_full_je_teilstueck`; verbunden werden die Vollfassungen mit
+MinerUs Trennlinie zwischen zwei Seiten, `assembly.SEITENTRENNER_VOLLFASSUNG`,
+sonst verriete der Text die Schnittkante), `middle_json`, `structured_content` und
 `model_output` als Liste mit einem Eintrag je Teilstück, als JSON-Struktur. In
 `middle_json` und `structured_content` zählt jedes Seiten-`page_idx` die Seite
 des Originals (`assembly._seiten_verschoben`). **Bilder bekommen je Teilstück
@@ -646,6 +648,17 @@ Leer (`assembly.is_empty`) ist ein Dokument ohne Text in beiden Markdowns, ohne
 Block im Middle-JSON und ohne Bild. Eine Seite ohne Bloecke traegt **keinen**
 `blocks`-Schluessel (`{"page_idx": 0}`, MinerU schreibt Voreinstellungen nicht),
 gemessen am Endpoint in der Stufe `advanced` mit OCR, als Bild wie als PDF.
+
+**Der Text für Abnehmer ist `markdown_full`, unverändert** (Mineroo#13):
+`assembly.rendered_markdown`, dahinter `OCRWrapper.rendered_markdown` und
+`mineru-ocr markdown`. Die Aufnahmen zeigen, dass die Vollmodus-Fassung alle
+fünf Randklassen (Kopfzeile, Fußzeile, Seitenzahl, Randtext, Seitenfußnote) je
+einmal an ihrer Stelle in MinerUs Lesereihenfolge trägt und die Bild-Deutungen
+als eingeklappte Blöcke hinter dem Bild; `markdown` lässt vier der fünf Klassen
+weg, und dort stehen oft die Kennungen. Das Paket setzt deshalb nichts selbst
+zusammen. Ist `markdown_full` `None` (einem Teilstück fehlte die Datei), wirft
+die Darstellung `IncompleteResultError`; ein Ersatz aus `markdown` sähe
+vollständig aus und ließe die Randklassen weg.
 
 `chunking.verify_page_coverage` prüft dabei strukturell und in dieser Reihenfolge:
 Beginn bei 0 → lückenlose Nachbarschaft → Ende bei `page_count - 1`. Die frühere
@@ -663,7 +676,7 @@ und damit `failed` mit der Antwort zusammengesetzt in `raw` ist: eine Datei aus
 bei PDF und Bild (`seiten_zaehlen`; ein Bild ist eine Seite) sind die `page_idx`
 des Middle-JSON nicht genau die geschickten Seiten, und bei jedem Typ hat das
 Middle-JSON nicht die Form, die die Darstellung liest
-(`assembly.middle_json_lesbar`, dieselben Leser wie `rendered_markdown`). Die
+(`assembly.middle_json_lesbar`, derselbe Leser wie `assembly.is_empty`). Die
 folgenden Teilstücke werden
 dann nicht mehr bezahlt. Ein `degraded` zu einer anderen Datei geht als Vermerk
 `unvollstaendige_antwort` nach `notes`. `BENOETIGTE_DATEIEN` ist die eine Liste
@@ -775,6 +788,12 @@ Bildnamen der Teilstücke kollidieren wirklich, eine leere Seite trägt keinen
 `blocks`-Schlüssel, und DOCX und HTML liest der Worker unabhängig von der
 Bestellung als `flash` mit `txt`. Neu erzeugen lassen sie sich mit den Skripten
 unter `erzeugung/` dort; das kostet Geld.
+
+Daneben liegt unter `artifacts/2026-10-26-mineru-4.0.12-bildanalyse/` auf
+demselben Weg eine Seite mit zwei Bildern, die keine Diagramme sind (Mineroo#13,
+`ersatz_antworten.ECHT_BILDANALYSE`). Sie zeigt, wo die Bild-Deutungen stehen:
+in beiden Markdowns hinter dem Bild als `<details>`, eine Szene als
+Beschreibung, ein Organigramm als Mermaid-Graph.
 
 **Wo es keine echte Ausgabe gibt, spielen die Tests Ersatz-Antworten aus
 `tests/ersatz_antworten.py`.**

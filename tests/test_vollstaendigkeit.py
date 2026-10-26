@@ -50,13 +50,14 @@ def _eintrag(artefakt: str | None, datei: str) -> dict[str, Any]:
 # --- Die Liste der benoetigten Dateien -----------------------------------------
 
 
-def test_das_paket_braucht_markdown_und_middle_json() -> None:
+def test_das_paket_braucht_markdown_vollfassung_und_middle_json() -> None:
     """Die Liste steht an EINER Stelle und nennt, was der Code liest, der ein
-    gespeichertes Ergebnis darstellt: `markdown.md` (der Text) und
-    `middle_json.json` (Randbloecke, Leere, Seitenzaehlung). Die Vollmodus-Fassung
-    kommt mit Mineroo#13 dazu, wenn `rendered_markdown` sie liest."""
+    gespeichertes Ergebnis darstellt: `markdown.md` (der Text),
+    `markdown_full.md` (der Text fuer Abnehmer, `rendered_markdown`, Mineroo#13)
+    und `middle_json.json` (Leere, Seitenzaehlung)."""
     assert BENOETIGTE_DATEIEN == {
         assembly.DATEI_MARKDOWN: "markdown",
+        assembly.DATEI_MARKDOWN_FULL: "markdown_full",
         assembly.DATEI_MIDDLE_JSON: "middle_json",
     }
 
@@ -208,15 +209,16 @@ def test_degraded_andere_datei_wird_vermerkt_nicht_terminal() -> None:
     assert teilstueck_pruefen(_teil(antwort), seiten_geschickt=1) == degraded
 
 
-def test_markdown_full_ist_vorerst_keine_benoetigte_datei() -> None:
-    """`markdown_full.md` liest bis Mineroo#13 kein Darstellungscode; ein
-    `degraded`-Eintrag dazu (der eine, den der Worker selbst schreibt, wenn er
-    die Vollfassung nicht rendern kann) wird vermerkt."""
+def test_markdown_full_ist_eine_benoetigte_datei() -> None:
+    """`markdown_full.md` ist seit Mineroo#13 der Text fuer Abnehmer
+    (`rendered_markdown`); ein `degraded`-Eintrag dazu (der eine, den der Worker
+    selbst schreibt, wenn er die Vollfassung nicht rendern kann) ist terminal."""
     degraded = _degraded(_eintrag("markdown_full", "markdown_full.md"))
     antwort = ersatz.abgeleitete_antwort(
         "normale_seite", ohne=("markdown_full.md",), degraded=degraded
     )
-    assert teilstueck_pruefen(_teil(antwort), seiten_geschickt=1) == degraded
+    with pytest.raises(MissingArtifactError, match="markdown_full.md"):
+        teilstueck_pruefen(_teil(antwort), seiten_geschickt=1)
 
 
 def test_gekuerztes_degraded_wird_mit_seiner_zahl_vermerkt() -> None:

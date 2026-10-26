@@ -252,8 +252,9 @@ async def test_rendered_markdown_ist_das_ganze_dokument(
     async_conn: psycopg.AsyncConnection[Any],
     settings: Settings,
 ) -> None:
-    """Die Voreinstellung haengt die Randbloecke an; `furniture=False` liefert
-    das nackte Markdown der Engine.
+    """`rendered_markdown` ist die Vollmodus-Fassung (`markdown_full`) und
+    traegt damit die Kopfzeile, die das Markdown der Engine weglaesst
+    (Mineroo#13).
 
     KORREKTUR EINER ZUSICHERUNG AUS PHASE A: Hier stand urspruenglich, das
     Ergebnis sei mit den Voreinstellungen zeichengleich mit `markdown`. Das ist
@@ -267,6 +268,7 @@ async def test_rendered_markdown_ist_das_ganze_dokument(
         status=DocumentStatus.DONE,
         raw={
             "markdown": "Fliesstext.",
+            "markdown_full": "Aktenzeichen 123/456\n\nFliesstext.",
             "middle_json": [
                 {
                     "pages": [
@@ -287,7 +289,7 @@ async def test_rendered_markdown_ist_das_ganze_dokument(
     huelle.refresh()
 
     assert huelle["markdown"] == "Fliesstext."
-    assert "Aktenzeichen 123/456" in huelle.rendered_markdown
+    assert huelle.rendered_markdown == "Aktenzeichen 123/456\n\nFliesstext."
 
 
 def test_to_dict_traegt_kein_raw(
