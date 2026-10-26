@@ -66,8 +66,9 @@ ECHT_ENDPOINT = (
 """ECHTE Antworten des MinerU-4-Endpoints (Herkunft: `README.md` dort).
 
 Abgeschickt mit dem Client des Pakets (`RunPodClient.submit`, `await_result`) an
-den Endpoint aus dem Fork `ConstantinLevin/mineru-runpod`, Image `516786ccf`,
-MinerU 4.0.12, in `advanced` mit OCR und Bildanalyse — dem Produktionsweg. Unter
+den Endpoint aus dem Fork `ConstantinLevin/mineru-runpod`, Image `516786ccf`
+(`kaputte_pixel`: `46dd9e71c`), MinerU 4.0.12, in `advanced` mit OCR und
+Bildanalyse — dem Produktionsweg. Unter
 `antworten/` die volle `/status`-Antwort je Job, `plan.json` nennt die Seiten der
 Teilstuecke."""
 

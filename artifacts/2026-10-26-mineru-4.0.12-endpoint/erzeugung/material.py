@@ -7,10 +7,16 @@ Aufruf: material.py ZIELORDNER. Erzeugt:
   mehrteilig.pdf      zwoelf Seiten mit Kopf-/Fusszeile, Text und je einem Bild
   dokument.docx       ein Word-Dokument mit Ueberschrift, Text und Tabelle
   seite.html          eine HTML-Seite mit Ueberschrift, Text, Liste und Tabelle
+  kaputte_pixel.png   ein PNG mit intaktem Kopf und kaputten Pixeldaten: der
+                      zlib-Strom im IDAT nach seinem Kopf mit 0xFF ueberschrieben,
+                      die Pruefsumme des Abschnitts neu gerechnet; Pillow oeffnet
+                      es und scheitert erst beim Dekodieren der Pixel
 """
 import io
 import pathlib
+import struct
 import sys
+import zlib
 
 from docx import Document
 from PIL import Image, ImageDraw
@@ -143,4 +149,23 @@ dokument.save(ziel / "dokument.docx")
 """,
     encoding="utf-8",
 )
+# 6. Ein PNG, dessen Kopf stimmt und dessen Pixeldaten kaputt sind.
+bild = Image.new("RGB", (800, 500), "white")
+zeichner = ImageDraw.Draw(bild)
+for i in range(20):
+    zeichner.text((40, 20 + i * 22), f"Zeile {i + 1}: Prueftext fuer die Bilddekodierung", fill="black")
+puffer = io.BytesIO()
+bild.save(puffer, format="PNG")
+daten = bytearray(puffer.getvalue())
+pos = 8
+while pos < len(daten):
+    laenge = struct.unpack(">I", daten[pos : pos + 4])[0]
+    if daten[pos + 4 : pos + 8] == b"IDAT":
+        anfang = pos + 8
+        daten[anfang + 2 : anfang + laenge] = b"\xff" * (laenge - 2)
+        crc = zlib.crc32(bytes(daten[pos + 4 : anfang + laenge])) & 0xFFFFFFFF
+        daten[anfang + laenge : anfang + laenge + 4] = struct.pack(">I", crc)
+    pos += 12 + laenge
+(ziel / "kaputte_pixel.png").write_bytes(bytes(daten))
+
 print("geschrieben:", sorted(p.name for p in ziel.iterdir()))

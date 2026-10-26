@@ -694,7 +694,8 @@ erzeugt (Stufe `advanced`, OCR, Bildanalyse an), abgeschickt und abgeholt mit
 `runpod.RunPodClient`. Das Material ist erfunden und ohne personenbezogene Daten:
 normale PDF-Seite mit allen fünf Randklassen, leere Seite als Bild und als PDF,
 zwölfseitiges Dokument in drei Teilstücken mit dem Schnitt des Pakets, DOCX,
-HTML und eine erzwungene Fehlerantwort. Die Tests spielen sie über
+HTML, eine erzwungene Fehlerantwort und ein PNG mit kaputten Pixeldaten, das
+der Worker abweist. Die Tests spielen sie über
 `ersatz_antworten.echte_antwort`, `echte_teilstuecke` und `ECHT_ENDPOINT` ab,
 auch am Exekutor (`test_echte_mineru4_antworten_ergeben_ein_dokument`; die
 Fehlerantwort über die Vorrichtung `echte_fehlerantwort`). Sie haben gezeigt: Die

@@ -43,5 +43,6 @@ with PdfReader(daten) as leser:
 job("dokument_docx", (material / "dokument.docx").read_bytes())
 job("seite_html", (material / "seite.html").read_bytes())
 job("fehlerantwort", (material / "normale_seite.pdf").read_bytes(), tier="gibt-es-nicht")
+job("kaputte_pixel", (material / "kaputte_pixel.png").read_bytes())
 (ziel / "plan.json").write_text(json.dumps(plan, indent=1))
 print(json.dumps(plan, indent=1))

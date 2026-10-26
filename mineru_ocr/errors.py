@@ -141,6 +141,7 @@ DATEIABWEISUNG_KENNUNGEN: Final = (
     "UnidentifiedImageError: cannot identify image file",
     "OSError: Truncated File Read",
     "OSError: image file is truncated",
+    "OSError: broken data stream when reading image file",
 )
 """Die Anfaenge des `error` einer `FAILED`-Antwort, an denen der Worker eine Datei
 als nicht lesbar abweist.
@@ -159,13 +160,17 @@ von MinerU 4.0.12, nicht geraten:
     Seitenbereich schickt das Paket nicht.
 
     `UnidentifiedImageError: cannot identify image file …`,
-    `OSError: Truncated File Read` und `OSError: image file is truncated …` sind
-    die Meldungen von Pillow fuer Bilddaten, die sich nicht dekodieren lassen
-    (Pillow `Image.open` und `ImageFile`); MinerU 4.0.12 laesst sie aus
-    `_prepare_input` durch, und der Worker behaelt den Fehlertyp. Am Endpoint
-    beobachtet fuer eine PNG-, GIF- und JPEG-Signatur vor Muell: Der Typ wird
-    erkannt, gelesen werden kann die Datei nicht, und jeder weitere Lauf kaufte
-    dieselbe Meldung. Gelistet sind nur diese Meldungen, nicht `OSError`
+    `OSError: Truncated File Read`, `OSError: image file is truncated …` und
+    `OSError: broken data stream when reading image file` sind die Meldungen
+    von Pillow fuer Bilddaten, die sich nicht dekodieren lassen (Pillow
+    `Image.open` und `ImageFile`; die letzte ist der Dekoderstatus -2, „broken
+    data stream"); MinerU 4.0.12 laesst sie aus `_prepare_input` durch, und der
+    Worker behaelt den Fehlertyp. Am Endpoint beobachtet fuer eine PNG-, GIF-
+    und JPEG-Signatur vor Muell, fuer ein in der Mitte abgeschnittenes PNG und
+    JPEG und fuer ein PNG mit intaktem Kopf und kaputten Pixeldaten
+    (`artifacts/2026-10-26-mineru-4.0.12-endpoint/`, `kaputte_pixel`): Der Typ
+    wird erkannt, gelesen werden kann die Datei nicht, und jeder weitere Lauf
+    kaufte dieselbe Meldung. Gelistet sind nur diese Meldungen, nicht `OSError`
     allgemein: Ein voller Datentraeger ist auch ein `OSError` und sagt nichts
     ueber die Datei.
 

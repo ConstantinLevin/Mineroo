@@ -14,11 +14,17 @@ sind die Aufnahmen aus Mineroo#10, die die Tests abspielen
 - Rechenzentren laut Endpoint: `EU-RO-1`, `EU-CZ-1`, `EUR-IS-1`, `EUR-IS-2`,
   `EUR-NO-1` (EWR). GPU-Pools `ADA_24`, `AMPERE_24`, `AMPERE_48`, CUDA ab 13.0,
   `MINERU_MAX_CONCURRENCY=1`.
-- Alle neun Jobs liefen auf demselben Worker (`9cl8cq4gycxlil`, NVIDIA GeForce
-  RTX 4090, 24 GB). Jede Antwort nennt `mineru_version` `4.0.12` und das Modell
-  `opendatalab/MinerU2.5-Pro-2605-1.2B`.
+- Die ersten neun Jobs liefen auf demselben Worker (`9cl8cq4gycxlil`, NVIDIA
+  GeForce RTX 4090, 24 GB). Jede Antwort nennt `mineru_version` `4.0.12` und das
+  Modell `opendatalab/MinerU2.5-Pro-2605-1.2B`.
+- Nachgeholt am selben Tag: `kaputte_pixel` (Code-Review zu Mineroo#11), auf
+  Image `registry.runpod.net/constantinlevin-mineru-runpod-main-dockerfile:46dd9e71c`
+  (Fork-Commit `46dd9e7`, der nur die erlaubten CUDA-Versionen des Build-Tests
+  erweitert), Worker `gxal4z5xt7p6ap` (NVIDIA GeForce RTX 4090, 24 GB), ebenso
+  MinerU `4.0.12`.
 - Harness `runpod-doc-worker` 0.9.1, Transport `tarball_b64`.
-- Kosten laut RunPod-Abrechnung des Endpoints: rund 0,05 USD.
+- Kosten laut RunPod-Abrechnung des Endpoints: rund 0,05 USD; `kaputte_pixel`
+  dazu rund 0,007 USD (Guthaben vorher und nachher).
 
 ## Was
 
@@ -38,11 +44,18 @@ eine leere A4-Seite aus pypdfium2.
 | `dokument_docx` | `dokument.docx` | `543551b5-bdc7-49bd-ab3c-a0711c2f21aa-e1` | 179 s | 0,9 s |
 | `seite_html` | `seite.html` | `0a0a0016-d650-4d65-bba5-a0820e200cb9-e1` | 181 s | 0,6 s |
 | `fehlerantwort` | `normale_seite.pdf`, `tier` `gibt-es-nicht` | `07d59f33-bb11-4f9b-b1d0-c0684b216b49-e1` | 166 s | 0,3 s |
+| `kaputte_pixel` | `kaputte_pixel.png` | `72821a6c-26e0-4458-ab11-95a1687d2f46-e1` | 124 s | 0,9 s |
 
 Die drei Teilstücke schneidet das Paket selbst (`chunking.plan_chunks`,
 `pdf.PdfReader.extract`) bei fünf Seiten je Teilstück; `plan.json` nennt Felder
-und Seiten je Job. Die Zeiten der Warteschlange enthalten den Kaltstart des
-ersten Workers, auf den alle neun gemeinsam warteten.
+und Seiten je Job, so wie `runpod.job_eingabe` sie sendet. Die Zeiten der
+Warteschlange enthalten den Kaltstart des ersten Workers, auf den die ersten
+neun gemeinsam warteten; `kaputte_pixel` wartete allein auf einen eigenen.
+
+`kaputte_pixel.png` ist ein PNG mit intaktem Kopf und kaputten Pixeldaten: Der
+zlib-Strom im `IDAT` ist nach seinem Kopf mit `0xFF` überschrieben, die
+Prüfsumme des Abschnitts neu gerechnet. Pillow öffnet es und scheitert erst
+beim Dekodieren der Pixel.
 
 ## Befunde
 
@@ -67,10 +80,16 @@ ersten Workers, auf den alle neun gemeinsam warteten.
 - **Die Fehlerantwort**: `status` `FAILED`, `error` auf oberster Ebene
   (`ValueError: input validation failed: tier must be one of [...]`), unter
   `output` `ok` `false` und der `traceback`.
+- **Ein Bild mit kaputten Pixeldaten** (`kaputte_pixel`): `status` `FAILED`,
+  `error` `OSError: broken data stream when reading image file`, entstanden in
+  MinerUs `_prepare_input` (`mineru_parser.py`, laut `traceback`). Der Worker
+  behält Pillows Fehlertyp; das Paket führt die Meldung deshalb als Abweisung
+  der Datei (`errors.DATEIABWEISUNG_KENNUNGEN`), und das Dokument endet
+  `input_error`.
 
 ## Wie neu erzeugen
 
-Kostet Geld (ein Kaltstart und neun kurze Jobs). Mit diesem Repository auf dem
+Kostet Geld (ein Kaltstart und zehn kurze Jobs). Mit diesem Repository auf dem
 `PYTHONPATH`, dem RunPod-Schlüssel in `~/.runpod/config.toml` und einem
 Arbeitsordner `ARBEIT` außerhalb des Repositorys:
 

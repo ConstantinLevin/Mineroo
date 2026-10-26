@@ -91,5 +91,14 @@
    "image_analysis": false,
    "transport": "tarball_b64"
   }
+ },
+ {
+  "name": "kaputte_pixel",
+  "felder": {
+   "tier": "advanced",
+   "ocr_mode": "ocr",
+   "image_analysis": true,
+   "transport": "tarball_b64"
+  }
  }
 ]

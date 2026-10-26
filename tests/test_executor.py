@@ -1736,6 +1736,34 @@ async def test_vom_worker_abgewiesene_datei_endet_input_error_mit_seinem_grund(
     assert zeile.raw["unverwertbare_antworten"][0]["antwort"] == antwort
 
 
+async def test_echte_abweisung_eines_bildes_mit_kaputten_pixeln_endet_input_error(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Die ECHTE Antwort des Endpoints auf ein PNG, dessen Kopf stimmt und dessen
+    Pixeldaten kaputt sind (`material/kaputte_pixel.png`): MinerU erkennt das
+    Bild und scheitert erst beim Dekodieren, mit Pillows `OSError: broken data
+    stream when reading image file`. Das ist eine Aussage ueber die Datei, also
+    `input_error` mit diesem Grund; ein weiterer Lauf kaufte dieselbe Meldung."""
+    png = (ersatz.ECHT_ENDPOINT / "material" / "kaputte_pixel.png").read_bytes()
+    sha, _ = _anlegen(db_conn, tmp_path, png, name="a.png", typ=DocumentType.PNG)
+    antwort = ersatz.echte_antwort("kaputte_pixel")
+    runpod = FalscherRunPod([antwort])
+
+    with pytest.raises(InputError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.error is not None
+    assert "OSError: broken data stream when reading image file" in zeile.error
+    assert zeile.raw is not None
+    assert zeile.raw["unverwertbare_antworten"][0]["antwort"] == antwort
+
+
 async def test_ein_anderer_fehler_des_workers_bleibt_failed(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
