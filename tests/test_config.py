@@ -451,20 +451,17 @@ def test_load_fragt_weder_datenbank_noch_endpoint() -> None:
     assert einstellung.endpoint_id == "gibtesnicht"
 
 
-# --- Die drei nachgetragenen Parameter ------------------------------------
+# --- Die nachgetragenen Parameter -----------------------------------------
 
 
-def test_backend_und_grenzen_kommen_an() -> None:
-    """`backend`, `min_balance_start_usd` und `ocr_concurrency` landen wirklich in
-    der Einstellung.
+def test_grenzen_kommen_an() -> None:
+    """`min_balance_start_usd` und `ocr_concurrency` landen wirklich in der
+    Einstellung.
 
     Der Test gegen den stillen Nichts-Tuer: Ein oeffentlicher Parameter ohne Weg
     in die Einstellung meldet keinen Fehler und wirkt trotzdem nicht.
     """
-    einstellung = _einstellung(
-        backend="pipeline", min_balance_start_usd=2.5, ocr_concurrency=8
-    )
-    assert einstellung.backend == "pipeline"
+    einstellung = _einstellung(min_balance_start_usd=2.5, ocr_concurrency=8)
     assert einstellung.min_balance_start_usd == 2.5
     assert einstellung.ocr_concurrency == 8
 
@@ -472,7 +469,9 @@ def test_backend_und_grenzen_kommen_an() -> None:
 def test_nicht_angegeben_heisst_voreinstellung() -> None:
     """Ohne Angabe gelten die Feld-Voreinstellungen."""
     einstellung = _einstellung()
-    assert einstellung.backend == "vlm-auto-engine"
+    assert einstellung.tier == "advanced"
+    assert einstellung.ocr_mode == "ocr"
+    assert einstellung.image_analysis is True
     assert einstellung.transport == "tarball_b64"
     assert einstellung.min_balance_start_usd == 1.0
     assert einstellung.ocr_concurrency == 24

@@ -12,6 +12,7 @@ import base64
 import dataclasses
 import hashlib
 import io
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -22,12 +23,14 @@ import pytest
 from PIL import Image
 from psycopg_pool import AsyncConnectionPool
 
+import ersatz_antworten as ersatz
 from mineru_ocr import db as db_modul
 from mineru_ocr.config import Settings
 from mineru_ocr.db import DocumentStatus, get_document, insert_input, write_terminal_async
 from mineru_ocr.errors import (
     ConfigurationError,
     CorruptDocumentError,
+    InputError,
     InsufficientBalanceError,
     JobAufgegebenError,
     MultiImageError,
@@ -75,14 +78,25 @@ class FalscherRunPod:
         # JEDER Aufruf, auch die lesenden (Kontostand, Herkunft des Images): wer
         # „vor jedem RunPod-Kontakt" prueft, darf keinen davon uebersehen.
         self.kontakte: list[str] = []
+        # Je Absenden die Lese-Einstellungen (`tier`, `ocr_mode`,
+        # `image_analysis`), mit denen der Executor RunPod gerufen hat.
+        self.lese_einstellungen: list[tuple[str, str, bool]] = []
         self._nummer = 0
 
     async def submit(
-        self, *, file_b64: str, backend: str, transport: str, **_: Any
+        self,
+        *,
+        file_b64: str,
+        tier: str,
+        ocr_mode: str,
+        image_analysis: bool,
+        transport: str,
+        **_: Any,
     ) -> str:
         job = f"job-{len(self.abgesendet)}"
         self.kontakte.append("submit")
         self.abgesendet.append(file_b64)
+        self.lese_einstellungen.append((tier, ocr_mode, image_analysis))
         self.verlauf.append(f"submit:{job}")
         return job
 
@@ -107,33 +121,6 @@ class FalscherRunPod:
     async def balance(self) -> float:
         self.kontakte.append("balance")
         return self.kontostand
-
-
-def _fertige_antwort(
-    markdown: str = "Text", content_list: list[dict[str, Any]] | None = None
-) -> dict[str, Any]:
-    """Eine COMPLETED-Antwort in der Form der echten Antworten."""
-    return {
-        "id": "erfunden",
-        "status": "COMPLETED",
-        "workerId": "wrk",
-        "delayTime": 1,
-        "executionTime": 2,
-        "output": {
-            "ok": True,
-            "results": [
-                {
-                    "basename": "doc",
-                    "markdown": markdown,
-                    "content_list": content_list
-                    if content_list is not None
-                    else [{"type": "text", "text": markdown, "page_idx": 0}],
-                    "images": {},
-                    "middle": {"_backend": "vlm"},
-                }
-            ],
-        },
-    }
 
 
 def _pdf(seiten: int) -> bytes:
@@ -254,7 +241,7 @@ async def test_guard_haelt_fertige_dokumente_an(
         )
         insert_input(db_conn, sha256=sha, content=b"wieder abgelegt")
 
-        runpod = FalscherRunPod([_fertige_antwort()])
+        runpod = FalscherRunPod([ersatz.fertige_antwort()])
         await process_document(
             sha, settings=exec_settings, runpod=runpod, pool=pool
         )
@@ -291,7 +278,7 @@ async def test_guard_laesst_failed_durch(
         endpoint_id="testendpoint",
     )
 
-    runpod = FalscherRunPod([_fertige_antwort("Jetzt geklappt")])
+    runpod = FalscherRunPod([ersatz.fertige_antwort("Jetzt geklappt")])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     assert len(runpod.abgesendet) == 1
@@ -300,6 +287,25 @@ async def test_guard_laesst_failed_durch(
     assert zeile.status is DocumentStatus.DONE
     assert zeile.raw is not None
     assert zeile.raw["markdown"] == "Jetzt geklappt"
+
+
+async def test_lese_einstellungen_der_einstellung_gehen_an_runpod(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Der Job schickt die Stufe, den OCR-Modus und die Bildanalyse aus den
+    Einstellungen, nicht feste Werte (Mineroo#11; je Dokument erst Mineroo#14)."""
+    sha, _ = _anlegen(db_conn, tmp_path, b"ein bild", name="a.png", typ=DocumentType.PNG)
+    eingestellt = dataclasses.replace(
+        exec_settings, tier="basic", ocr_mode="txt", image_analysis=False
+    )
+
+    runpod = FalscherRunPod([ersatz.fertige_antwort("Text")])
+    await process_document(sha, settings=eingestellt, runpod=runpod, pool=pool)
+
+    assert runpod.lese_einstellungen == [("basic", "txt", False)]
 
 
 # --- Eingang --------------------------------------------------------------
@@ -318,7 +324,7 @@ async def test_eingabe_kommt_aus_inputs_nicht_von_einem_pfad(
     )
     assert not pfad.exists()
 
-    runpod = FalscherRunPod([_fertige_antwort()])
+    runpod = FalscherRunPod([ersatz.fertige_antwort()])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     assert [base64.b64decode(b) for b in runpod.abgesendet] == [
@@ -347,7 +353,7 @@ async def test_eingabe_mit_falschem_hash_wird_erkannt(
         (b"inzwischen etwas ganz anderes", sha),
     )
 
-    runpod = FalscherRunPod([_fertige_antwort()])
+    runpod = FalscherRunPod([ersatz.fertige_antwort()])
     with pytest.raises(CorruptDocumentError):
         await process_document(
             sha, settings=exec_settings, runpod=runpod, pool=pool
@@ -376,7 +382,7 @@ async def test_kaputte_pdf_endet_input_error_auch_bei_leerem_konto(
     """
     sha, _ = _anlegen(db_conn, tmp_path, b"%PDF-1.7\nkeine PDF, nur ein Kopf")
 
-    runpod = FalscherRunPod([_fertige_antwort()], kontostand=0.0)
+    runpod = FalscherRunPod([ersatz.fertige_antwort()], kontostand=0.0)
     with pytest.raises(CorruptDocumentError):
         await asyncio.wait_for(
             process_document(sha, settings=exec_settings, runpod=runpod, pool=pool),
@@ -432,7 +438,7 @@ async def test_verschluesselte_pdf_endet_input_error_ohne_runpod_kontakt(
     RunPod hoert nichts davon."""
     sha, _ = _anlegen(db_conn, tmp_path, _passwortgeschuetzte_pdf())
 
-    runpod = FalscherRunPod([_fertige_antwort()], kontostand=0.0)
+    runpod = FalscherRunPod([ersatz.fertige_antwort()], kontostand=0.0)
     with pytest.raises(CorruptDocumentError, match="PDF"):
         await asyncio.wait_for(
             process_document(sha, settings=exec_settings, runpod=runpod, pool=pool),
@@ -492,7 +498,7 @@ async def test_mehrbildige_bilddatei_endet_input_error_vor_jedem_runpod_kontakt(
     """
     sha, _ = _anlegen(db_conn, tmp_path, _bild(dateiformat, 3), typ=typ)
 
-    runpod = FalscherRunPod([_fertige_antwort()], kontostand=0.0)
+    runpod = FalscherRunPod([ersatz.fertige_antwort()], kontostand=0.0)
     with pytest.raises(MultiImageError, match="PDF"):
         await asyncio.wait_for(
             process_document(sha, settings=exec_settings, runpod=runpod, pool=pool),
@@ -528,7 +534,7 @@ async def test_einbildige_bilddatei_geht_unveraendert_hinaus(
     inhalt = _bild(dateiformat, 1)
     sha, _ = _anlegen(db_conn, tmp_path, inhalt, typ=typ)
 
-    runpod = FalscherRunPod([_fertige_antwort()])
+    runpod = FalscherRunPod([ersatz.fertige_antwort()])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     assert [base64.b64decode(b) for b in runpod.abgesendet] == [inhalt]
@@ -550,7 +556,7 @@ async def test_jpeg_mit_zweitem_bild_geht_hinaus_denn_es_ist_keine_seitenfolge(
     inhalt = _bild("MPO", 2)
     sha, _ = _anlegen(db_conn, tmp_path, inhalt, typ=DocumentType.JPEG)
 
-    runpod = FalscherRunPod([_fertige_antwort()])
+    runpod = FalscherRunPod([ersatz.fertige_antwort()])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     assert [base64.b64decode(b) for b in runpod.abgesendet] == [inhalt]
@@ -572,7 +578,7 @@ async def test_bild_das_pillow_nicht_lesen_kann_geht_trotzdem_hinaus(
         db_conn, tmp_path, PNG_KOPF + b"abgeschnitten", typ=DocumentType.PNG
     )
 
-    runpod = FalscherRunPod([_fertige_antwort()])
+    runpod = FalscherRunPod([ersatz.fertige_antwort()])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     assert len(runpod.abgesendet) == 1
@@ -593,7 +599,7 @@ async def test_job_bestimmt_die_seitenzahl_und_schreibt_sie_mit_dem_ergebnis(
     await process_document(
         sha,
         settings=exec_settings,
-        runpod=FalscherRunPod([_fertige_antwort()]),
+        runpod=FalscherRunPod([ersatz.fertige_antwort()]),
         pool=pool,
     )
 
@@ -628,8 +634,8 @@ async def test_seitenzahl_steht_auch_bei_failed(
 @pytest.mark.parametrize(
     "antwort, erwartet",
     [
-        (_fertige_antwort("Text"), DocumentStatus.DONE),
-        (_fertige_antwort("", content_list=[]), DocumentStatus.EMPTY),
+        (ersatz.fertige_antwort("Text"), DocumentStatus.DONE),
+        (ersatz.fertige_antwort(""), DocumentStatus.EMPTY),
     ],
 )
 async def test_eingabe_wird_mit_dem_ergebnis_geloescht(
@@ -671,7 +677,7 @@ async def test_eingabe_ist_nach_input_error_geloescht(
         await process_document(
             sha,
             settings=exec_settings,
-            runpod=FalscherRunPod([_fertige_antwort()]),
+            runpod=FalscherRunPod([ersatz.fertige_antwort()]),
             pool=pool,
         )
 
@@ -738,7 +744,7 @@ async def test_nicht_pdf_laeuft_als_ein_teilstueck(
     sha, _ = _anlegen(
         db_conn, tmp_path, b"bilddaten", name="a.png", typ=DocumentType.PNG
     )
-    runpod = FalscherRunPod([_fertige_antwort("Bildtext")])
+    runpod = FalscherRunPod([ersatz.fertige_antwort("Bildtext")])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     assert len(runpod.abgesendet) == 1
@@ -762,7 +768,7 @@ async def test_kleines_pdf_geht_ungeschnitten_hinaus(
     """
     inhalt = _pdf(3)
     sha, _ = _anlegen(db_conn, tmp_path, inhalt)
-    runpod = FalscherRunPod([_fertige_antwort()])
+    runpod = FalscherRunPod([ersatz.fertige_antwort()])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     assert len(runpod.abgesendet) == 1
@@ -780,7 +786,7 @@ async def test_grosses_pdf_wird_geschnitten(
     eng = dataclasses.replace(exec_settings, max_pages_per_chunk=2)
     inhalt = _pdf(5)
     sha, _ = _anlegen(db_conn, tmp_path, inhalt)
-    runpod = FalscherRunPod([_fertige_antwort("Stueck")])
+    runpod = FalscherRunPod([ersatz.fertige_antwort("Stueck")])
     await process_document(sha, settings=eng, runpod=runpod, pool=pool)
 
     # 5 Seiten bei Schwelle 2 → 2 + 2 + 1.
@@ -810,7 +816,7 @@ async def test_hoechstens_ein_ergebnis_offen(
     """
     eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
     sha, _ = _anlegen(db_conn, tmp_path, _pdf(4))
-    runpod = FalscherRunPod([_fertige_antwort()])
+    runpod = FalscherRunPod([ersatz.fertige_antwort()])
     await process_document(sha, settings=eng, runpod=runpod, pool=pool)
 
     assert runpod.verlauf == [
@@ -926,7 +932,7 @@ async def test_genau_ein_schreibvorgang(
     )
     db_conn.commit()
     try:
-        runpod = FalscherRunPod([_fertige_antwort()])
+        runpod = FalscherRunPod([ersatz.fertige_antwort()])
         await process_document(sha, settings=eng, runpod=runpod, pool=pool)
 
         zeile = db_conn.execute(
@@ -950,18 +956,17 @@ async def test_ergebnis_ist_zusammengesetzt(
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    """Was geschrieben wird, ist EIN Dokument: Text in Reihenfolge, Seitenzahlen
-    des Originals, Bilder vereinigt. Am Ergebnis ist nicht ablesbar, ob
-    geschnitten wurde."""
+    """Was geschrieben wird, ist EIN Dokument: Text in Reihenfolge, die Seiten
+    des Middle-JSON mit den Seitenzahlen des Originals."""
     eng = dataclasses.replace(exec_settings, max_pages_per_chunk=1)
     sha, _ = _anlegen(db_conn, tmp_path, _pdf(3))
 
     # Drei Teilstuecke, jedes mit teilstueck-lokalem page_idx 0.
     runpod = FalscherRunPod(
         [
-            _fertige_antwort("Seite A", [{"type": "text", "text": "A", "page_idx": 0}]),
-            _fertige_antwort("Seite B", [{"type": "text", "text": "B", "page_idx": 0}]),
-            _fertige_antwort("Seite C", [{"type": "text", "text": "C", "page_idx": 0}]),
+            ersatz.fertige_antwort("Seite A"),
+            ersatz.fertige_antwort("Seite B"),
+            ersatz.fertige_antwort("Seite C"),
         ]
     )
     await process_document(sha, settings=eng, runpod=runpod, pool=pool)
@@ -971,10 +976,41 @@ async def test_ergebnis_ist_zusammengesetzt(
     assert zeile.raw is not None
     assert zeile.raw["markdown"] == "Seite A\n\nSeite B\n\nSeite C"
     # DIE Korrektur, um die es geht: aus dreimal „Seite 0" werden 0, 1, 2.
-    assert [e["page_idx"] for e in zeile.raw["content_list"]] == [0, 1, 2]
+    assert [
+        [s["page_idx"] for s in middle["pages"]] for middle in zeile.raw["middle_json"]
+    ] == [[0], [1], [2]]
     # Und es gibt kein Feld, das die Teilung noch verriete.
     assert "chunks" not in zeile.raw
     assert "chunk_plan" not in zeile.raw
+
+
+async def test_echte_mineru4_antworten_ergeben_ein_dokument(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Der zwoelfseitige Bericht geht als PDF hinein, der Job schneidet ihn in
+    drei Teilstuecke (0-4, 5-9, 10-11), und RunPod antwortet mit den drei ECHTEN
+    Antworten des MinerU-4-Endpoints genau dieser Teilstuecke, in `advanced` mit
+    OCR (`artifacts/2026-10-26-mineru-4.0.12-endpoint/`). Heraus kommt EIN
+    Dokument: zwoelf Seiten mit den Seitenzahlen des Originals und alle zwoelf
+    Bilder, obwohl zwei Teilstuecke je fuenf gleich benannte tragen."""
+    pdf = (ersatz.ECHT_ENDPOINT / "material" / "mehrteilig.pdf").read_bytes()
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=5)
+    sha, _ = _anlegen(db_conn, tmp_path, pdf)
+    runpod = FalscherRunPod([ersatz.echte_antwort(name) for name, _ in ersatz.echte_teilstuecke()])
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.DONE
+    assert zeile.raw is not None
+    assert len(runpod.abgesendet) == 3
+    assert [s["page_idx"] for m in zeile.raw["middle_json"] for s in m["pages"]] == list(range(12))
+    assert len(zeile.raw["images"]) == 12
+    for verweis in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", zeile.raw["markdown"]):
+        assert verweis in zeile.raw["images"]
 
 
 async def test_leeres_ergebnis_wird_empty(
@@ -993,7 +1029,7 @@ async def test_leeres_ergebnis_wird_empty(
     sha, _ = _anlegen(
         db_conn, tmp_path, b"leerbild", name="a.png", typ=DocumentType.PNG
     )
-    runpod = FalscherRunPod([_fertige_antwort("", [])])
+    runpod = FalscherRunPod([ersatz.fertige_antwort("")])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     zeile = get_document(db_conn, sha)
@@ -1015,7 +1051,7 @@ async def test_image_tag_wird_mitgeschrieben(
     sha, _ = _anlegen(
         db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
     )
-    runpod = FalscherRunPod([_fertige_antwort()], marke=":abc12345")
+    runpod = FalscherRunPod([ersatz.fertige_antwort()], marke=":abc12345")
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     zeile = get_document(db_conn, sha)
@@ -1032,7 +1068,7 @@ async def test_image_tag_wird_auch_bei_einer_pdf_mitgeschrieben(
     """Die PDF-Strecke liest die Herkunft des Images an ihrer eigenen Stelle; ohne
     diesen Test liesse sich der Aufruf dort loeschen, ohne dass einer scheitert."""
     sha, _ = _anlegen(db_conn, tmp_path, _pdf(1))
-    runpod = FalscherRunPod([_fertige_antwort()], marke=":pdf12345")
+    runpod = FalscherRunPod([ersatz.fertige_antwort()], marke=":pdf12345")
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     zeile = get_document(db_conn, sha)
@@ -1064,7 +1100,7 @@ async def test_die_bildfrage_laeuft_nicht_auf_dem_thread_der_ereignisschleife(
     monkeypatch.setattr(images, "has_several_images", _merken)
     sha, _ = _anlegen(db_conn, tmp_path, _bild("TIFF", 1), typ=DocumentType.TIFF)
 
-    runpod = FalscherRunPod([_fertige_antwort()])
+    runpod = FalscherRunPod([ersatz.fertige_antwort()])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     assert len(threads) == 1
@@ -1092,7 +1128,7 @@ async def test_zu_grosses_bild_wird_abgelehnt_bevor_pillow_es_liest(
         db_conn, tmp_path, zu_gross, name="riesig.gif", typ=DocumentType.GIF
     )
 
-    runpod = FalscherRunPod([_fertige_antwort()])
+    runpod = FalscherRunPod([ersatz.fertige_antwort()])
     with pytest.raises(TooLargeError):
         await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
@@ -1119,7 +1155,7 @@ async def test_unlesbarer_image_tag_kostet_kein_dokument(
     sha, _ = _anlegen(
         db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
     )
-    runpod = OhneMarke([_fertige_antwort()])
+    runpod = OhneMarke([ersatz.fertige_antwort()])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     zeile = get_document(db_conn, sha)
@@ -1168,7 +1204,7 @@ async def test_endgueltiger_fehler_schreibt_vor_dem_werfen(
 
     runpod = FalscherRunPod(
         [
-            _fertige_antwort("Erstes Stueck kam an"),
+            ersatz.fertige_antwort("Erstes Stueck kam an"),
             {"id": "j", "status": "FAILED", "error": "Modellfehler"},
         ]
     )
@@ -1208,7 +1244,7 @@ async def test_nicht_speicherbares_ergebnis_endet_failed_im_ersten_versuch(
     sha, _ = _anlegen(
         db_conn, tmp_path, b"nul im text", name="n.png", typ=DocumentType.PNG
     )
-    runpod = FalscherRunPod([_fertige_antwort("vor\x00nach")])
+    runpod = FalscherRunPod([ersatz.fertige_antwort("vor\x00nach")])
 
     with pytest.raises(UnstorableResultError):
         await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
@@ -1243,7 +1279,7 @@ async def test_zu_grosses_ergebnis_endet_failed_im_ersten_versuch(
     sha, _ = _anlegen(
         db_conn, tmp_path, b"gross", name="g.png", typ=DocumentType.PNG
     )
-    runpod = FalscherRunPod([_fertige_antwort("x" * 5000)])
+    runpod = FalscherRunPod([ersatz.fertige_antwort("x" * 5000)])
 
     with pytest.raises(UnstorableResultError):
         await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
@@ -1276,7 +1312,7 @@ async def test_nicht_speicherbare_teilstuecke_im_fehlerpfad_verhindern_das_faile
     sha, _ = _anlegen(db_conn, tmp_path, _pdf(2))
     runpod = FalscherRunPod(
         [
-            _fertige_antwort("erstes\x00stueck"),
+            ersatz.fertige_antwort("erstes\x00stueck"),
             {"id": "j", "status": "FAILED", "error": "Modellfehler"},
         ]
     )
@@ -1397,23 +1433,19 @@ async def test_402_beim_absenden_pausiert_statt_zu_werfen(
         def __init__(self) -> None:
             super().__init__(
                 [
-                    _fertige_antwort("Erstes Stueck"),
-                    _fertige_antwort("Zweites Stueck"),
+                    ersatz.fertige_antwort("Erstes Stueck"),
+                    ersatz.fertige_antwort("Zweites Stueck"),
                 ]
             )
             self.leer = True
 
-        async def submit(
-            self, *, file_b64: str, backend: str, transport: str, **_: Any
-        ) -> str:
+        async def submit(self, *, file_b64: str, **rest: Any) -> str:
             if len(self.abgesendet) == 1 and self.leer:
                 # Beim ZWEITEN Absenden ist das Konto leer. Danach ist es
                 # aufgeladen — genau so, wie eine Nachzahlung wirkt.
                 self.leer = False
                 raise InsufficientBalanceError("HTTP 402: Konto leer")
-            return await super().submit(
-                file_b64=file_b64, backend=backend, transport=transport
-            )
+            return await super().submit(file_b64=file_b64, **rest)
 
     runpod = KontoLeertSich()
     await process_document(sha, settings=eng, runpod=runpod, pool=pool)
@@ -1450,7 +1482,7 @@ async def test_402_beim_abholen_sendet_den_job_nicht_neu_ab(
 
     class LeerBeimAbholen(FalscherRunPod):
         def __init__(self) -> None:
-            super().__init__([_fertige_antwort("Fertig geworden")])
+            super().__init__([ersatz.fertige_antwort("Fertig geworden")])
             self.versuche = 0
 
         async def await_result(self, job_id: str) -> dict[str, Any]:
@@ -1493,9 +1525,7 @@ async def test_402_trotz_gedecktem_konto_wird_als_widerspruch_benannt(
     class ImmerLeer(FalscherRunPod):
         """Konto meldet 5,00 USD, der Endpoint lehnt trotzdem jedes Mal ab."""
 
-        async def submit(
-            self, *, file_b64: str, backend: str, transport: str, **_: Any
-        ) -> str:
+        async def submit(self, *, file_b64: str, **_: Any) -> str:
             raise InsufficientBalanceError("HTTP 402: Konto leer")
 
     runpod = ImmerLeer()
@@ -1538,10 +1568,7 @@ async def test_fehlerpfad_schreibt_auch_wenn_das_zusammensetzen_scheitert(
 
     runpod = FalscherRunPod(
         [
-            _fertige_antwort(
-                "Bezahlt und angekommen",
-                content_list=[{"type": "text", "text": "x", "page_idx": 1.5}],
-            )
+            ersatz.fertige_antwort("Bezahlt und angekommen", page_idx=1.5)
         ]
     )
     with pytest.raises(TerminalRunPodError):
@@ -1555,7 +1582,7 @@ async def test_fehlerpfad_schreibt_auch_wenn_das_zusammensetzen_scheitert(
     # Das Bezahlte ist in der Notfassung erhalten, unbearbeitet.
     assert "assembly_failed" in zeile.raw
     assert zeile.raw["chunks"][0]["markdown"] == "Bezahlt und angekommen"
-    assert zeile.raw["chunks"][0]["content_list"][0]["page_idx"] == 1.5
+    assert zeile.raw["chunks"][0]["middle_json"]["pages"][0]["page_idx"] == 1.5
     # Und der Leser sieht, dass er die Notfassung vor sich hat.
     assert any(v["kind"] == "zusammensetzen_gescheitert" for v in zeile.notes)
 
@@ -1593,8 +1620,8 @@ async def test_bezahlte_antwort_mit_formfehler_wird_aufgehoben(
         "output": {
             "ok": True,
             "results": [
-                {"markdown": "Erstes Ergebnis", "content_list": []},
-                {"markdown": "Zweites Ergebnis", "content_list": []},
+                {"markdown": "Erstes Ergebnis"},
+                {"markdown": "Zweites Ergebnis"},
             ],
         },
     }
@@ -1627,16 +1654,17 @@ async def test_echte_fehlerantwort_landet_vollstaendig_in_raw(
     tmp_path: Path,
     echte_fehlerantwort: dict[str, Any],
 ) -> None:
-    """Eine ECHTE `FAILED`-Antwort steht danach als abfragbares JSON in `raw`.
+    """Die ECHTE Fehlerantwort des MinerU-4-Endpoints auf eine unbekannte Stufe
+    (`input validation failed: tier must be one of …`) ist eine Pruefung der
+    Anfrage, keine Abweisung der Datei: `failed`, und die Antwort steht danach
+    als abfragbares JSON in `raw`.
 
-    Erzwungen am 09.08.2026 gegen den echten Endpoint (gueltiges PDF,
-    ungueltiger Backend-Name) und als Fixture konserviert. Sie zeigt, dass eine
-    Fehlerantwort weit mehr traegt als „es ging schief": `error` auf oberster
-    Ebene, ein volles `output` mit `ok: false`, den `debug`-Block mit GPU,
+    Sie traegt weit mehr als „es ging schief": `error` auf oberster Ebene, ein
+    volles `output` mit `ok: false`, den `debug`-Block mit GPU,
     Modellverzeichnis und Phasenzeiten — und einen kompletten `traceback` aus
-    dem Worker.
+    dem Worker (Herkunft bei der Vorrichtung `echte_fehlerantwort`).
 
-    Vorher stand `_endzustand_uebersetzen` VOR dem Schutzblock, der bezahlte
+    Frueher stand `_endzustand_uebersetzen` VOR dem Schutzblock, der bezahlte
     Antworten aufhebt. Der Traceback ueberlebte damit nur als Python-
     Textdarstellung, eingebettet in die Fehlermeldung — vorhanden, aber weder
     abfragbar noch zuverlaessig lesbar. Fuer die beste Diagnose, die es zu einem
@@ -1664,6 +1692,98 @@ async def test_echte_fehlerantwort_landet_vollstaendig_in_raw(
     assert ausgabe["ok"] is False
     assert "Traceback" in ausgabe["traceback"]
     assert ausgabe["debug"]["gpu"]["name"].startswith("NVIDIA")
+
+
+@pytest.mark.parametrize(
+    "fehler",
+    [
+        # Worker, `worker/parse.py` (`run_mineru`): die Meldung fuer einen Typ,
+        # den MinerU nicht liest.
+        "ValueError: input is not a file type MinerU 4.0.12 reads (detected "
+        "'txt'). It reads PDF, images, Office, OpenDocument, RTF, EPUB, OFD, "
+        "HTML and MHTML files.",
+        # Job-Vertrag (`api.mdx`, „Validation behaviour", Punkt 10): MinerUs
+        # eigene Abweisung einer PDF ohne Seite, mit MinerUs Fehlertyp.
+        "InvalidRequestError: Invalid page range '': document has no available pages",
+        # Am Endpoint beobachtet (QA zu Mineroo#11): PNG- und GIF-Signatur vor
+        # Muell. MinerU erkennt den Typ und scheitert am Dekodieren.
+        "OSError: Truncated File Read",
+        "UnidentifiedImageError: cannot identify image file <_io.BytesIO object at 0x741910c9c900>",
+    ],
+)
+async def test_vom_worker_abgewiesene_datei_endet_input_error_mit_seinem_grund(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    fehler: str,
+) -> None:
+    """Weist der Worker eine Datei als nicht lesbar ab, endet sie als
+    `input_error`, und der Grund ist der aus seiner Antwort (Mineroo#11). Die
+    bezahlte Antwort bleibt ganz in `raw`."""
+    sha, _ = _anlegen(db_conn, tmp_path, b"nicht lesbar", name="a.png", typ=DocumentType.PNG)
+    antwort = ersatz.fehlerantwort(fehler)
+    runpod = FalscherRunPod([antwort])
+
+    with pytest.raises(InputError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.error is not None and fehler in zeile.error
+    assert zeile.raw is not None
+    assert zeile.raw["unverwertbare_antworten"][0]["antwort"] == antwort
+
+
+async def test_echte_abweisung_eines_bildes_mit_kaputten_pixeln_endet_input_error(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Die ECHTE Antwort des Endpoints auf ein PNG, dessen Kopf stimmt und dessen
+    Pixeldaten kaputt sind (`material/kaputte_pixel.png`): MinerU erkennt das
+    Bild und scheitert erst beim Dekodieren, mit Pillows `OSError: broken data
+    stream when reading image file`. Das ist eine Aussage ueber die Datei, also
+    `input_error` mit diesem Grund; ein weiterer Lauf kaufte dieselbe Meldung."""
+    png = (ersatz.ECHT_ENDPOINT / "material" / "kaputte_pixel.png").read_bytes()
+    sha, _ = _anlegen(db_conn, tmp_path, png, name="a.png", typ=DocumentType.PNG)
+    antwort = ersatz.echte_antwort("kaputte_pixel")
+    runpod = FalscherRunPod([antwort])
+
+    with pytest.raises(InputError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.error is not None
+    assert "OSError: broken data stream when reading image file" in zeile.error
+    assert zeile.raw is not None
+    assert zeile.raw["unverwertbare_antworten"][0]["antwort"] == antwort
+
+
+async def test_ein_anderer_fehler_des_workers_bleibt_failed(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Scheitert der Worker an etwas anderem als der Datei — eine abgewiesene
+    Anfrage (`ValueError: input validation failed: …`), die Engine selbst —,
+    ist das `failed`: Die Datei kann nichts dafuer."""
+    sha, _ = _anlegen(db_conn, tmp_path, b"engine scheitert", name="a.png", typ=DocumentType.PNG)
+    runpod = FalscherRunPod(
+        [ersatz.fehlerantwort("RuntimeError: CUDA error: out of memory")]
+    )
+
+    with pytest.raises(TerminalRunPodError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
 
 
 async def test_eingabeprobleme_enden_input_error_nicht_failed(
@@ -1694,7 +1814,7 @@ async def test_eingabeprobleme_enden_input_error_nicht_failed(
     unbekannt = b"kein bekannter dateikopf"
     sha_mime = hashlib.sha256(unbekannt).hexdigest()
     insert_input(db_conn, sha256=sha_mime, content=unbekannt)
-    runpod = FalscherRunPod([_fertige_antwort()])
+    runpod = FalscherRunPod([ersatz.fertige_antwort()])
     with pytest.raises(UnsupportedTypeError):
         await process_document(
             sha_mime, settings=exec_settings, runpod=runpod, pool=pool
@@ -1712,7 +1832,7 @@ async def test_eingabeprobleme_enden_input_error_nicht_failed(
         db_conn, tmp_path, b"gleich weg", name="w.png", typ=DocumentType.PNG
     )
     db_conn.execute("DELETE FROM inputs WHERE sha256 = %s", (sha_weg,))
-    runpod2 = FalscherRunPod([_fertige_antwort()])
+    runpod2 = FalscherRunPod([ersatz.fertige_antwort()])
     with pytest.raises(CorruptDocumentError):
         await process_document(
             sha_weg, settings=exec_settings, runpod=runpod2, pool=pool
@@ -1752,7 +1872,7 @@ async def test_zu_grosses_bild_wird_abgelehnt_ohne_zu_bezahlen(
         db_conn, tmp_path, zu_gross, name="riesig.png", typ=DocumentType.PNG
     )
     # Leeres Konto: Die Ablehnung darf nicht erst nach dem Warten auf Geld kommen.
-    runpod = FalscherRunPod([_fertige_antwort()], kontostand=0.0)
+    runpod = FalscherRunPod([ersatz.fertige_antwort()], kontostand=0.0)
 
     with pytest.raises(TooLargeError) as gefangen:
         await asyncio.wait_for(
@@ -1771,30 +1891,38 @@ async def test_zu_grosses_bild_wird_abgelehnt_ohne_zu_bezahlen(
     assert zeile.error is not None and "AUFRUESTBAR" in zeile.error
 
 
-def test_ungueltiges_backend_faellt_lokal_auf(settings: Settings) -> None:
-    """Ein Tippfehler im Backend-Namen kostet keinen Kaltstart mehr.
+def test_ungueltige_lese_einstellung_faellt_lokal_auf(settings: Settings) -> None:
+    """Ein Tippfehler in Stufe oder OCR-Modus kostet keinen Kaltstart.
 
-    Die gueltigen Namen sind von der Gegenseite ABGELESEN: Am 09.08.2026 wurde
-    absichtlich ein ungueltiger geschickt, und die Fehlerantwort nannte die
-    Liste selbst. Bis dahin war ein Tippfehler nur zu erfahren, indem man dafuer
-    bezahlte — im gemessenen Fall 177 Sekunden Wartezeit bis zur Meldung, und
-    das je Dokument. Ueber einen Bestandslauf waere es derselbe Fehler 30 000
-    Mal.
+    Die gueltigen Werte stehen im Job-Vertrag des Forks (`api.mdx`,
+    „Reading settings"): `tier` ist eines von `flash`, `basic`, `standard`,
+    `advanced`, `ocr_mode` eines von `auto`, `txt`, `ocr`. Der Worker prueft
+    sie erst, wenn ein Worker hochgefahren ist; ein Tippfehler waere also nur
+    gegen einen bezahlten Kaltstart je Dokument zu erfahren.
     """
     import dataclasses
 
-    from mineru_ocr.config import GUELTIGE_BACKENDS
+    from mineru_ocr.config import GUELTIGE_OCR_MODI, GUELTIGE_STUFEN
     from mineru_ocr.errors import ConfigurationError
 
-    # Die Voreinstellung ist gueltig.
-    assert settings.backend in GUELTIGE_BACKENDS
+    # Die Voreinstellungen sind die des Vertrags.
+    assert (settings.tier, settings.ocr_mode, settings.image_analysis) == (
+        "advanced",
+        "ocr",
+        True,
+    )
 
     with pytest.raises(ConfigurationError, match="kennt der Worker nicht"):
-        dataclasses.replace(settings, backend="vlm-auto-engien")
+        dataclasses.replace(settings, tier="advance")
+    with pytest.raises(ConfigurationError, match="kennt der Worker nicht"):
+        dataclasses.replace(settings, ocr_mode="ocr ")
 
-    # Und jeder von der Gegenseite genannte Name geht durch.
-    for name in GUELTIGE_BACKENDS:
-        assert dataclasses.replace(settings, backend=name).backend == name
+    for stufe in ("flash", "basic", "standard", "advanced"):
+        assert dataclasses.replace(settings, tier=stufe).tier == stufe
+    for modus in ("auto", "txt", "ocr"):
+        assert dataclasses.replace(settings, ocr_mode=modus).ocr_mode == modus
+    assert set(GUELTIGE_STUFEN) == {"flash", "basic", "standard", "advanced"}
+    assert set(GUELTIGE_OCR_MODI) == {"auto", "txt", "ocr"}
 
 
 # --- Verbindungen und Abbruch ---------------------------------------------
@@ -1835,7 +1963,7 @@ async def test_keine_verbindung_waehrend_des_wartens(
                 durchgekommen.set()
                 return await super().await_result(job_id)
 
-        runpod = Wartend([_fertige_antwort()])
+        runpod = Wartend([ersatz.fertige_antwort()])
         await process_document(
             sha, settings=exec_settings, runpod=runpod, pool=kleiner
         )
@@ -1866,7 +1994,7 @@ async def test_abbruch_wird_durchgereicht(
         async def await_result(self, job_id: str) -> dict[str, Any]:
             raise asyncio.CancelledError()
 
-    runpod = Abbrechend([_fertige_antwort()])
+    runpod = Abbrechend([ersatz.fertige_antwort()])
     with pytest.raises(asyncio.CancelledError):
         await process_document(
             sha, settings=exec_settings, runpod=runpod, pool=pool
@@ -1900,7 +2028,7 @@ async def test_abbruch_im_letzten_versuch_schreibt_failed_und_wirft_weiter(
         async def await_result(self, job_id: str) -> dict[str, Any]:
             raise asyncio.CancelledError()
 
-    runpod = Abbrechend([_fertige_antwort()])
+    runpod = Abbrechend([ersatz.fertige_antwort()])
     with pytest.raises(asyncio.CancelledError):
         await process_document(
             sha,
@@ -1957,7 +2085,7 @@ async def test_abbruch_waehrend_des_failed_schreibens_unterbricht_es_nicht(
             async def await_result(self, job_id: str) -> dict[str, Any]:
                 raise TerminalRunPodError("FAILED")
 
-        runpod: FalscherRunPod = Endgueltig([_fertige_antwort()])
+        runpod: FalscherRunPod = Endgueltig([ersatz.fertige_antwort()])
         erwartet = TerminalRunPodError
     else:
 
@@ -1965,7 +2093,7 @@ async def test_abbruch_waehrend_des_failed_schreibens_unterbricht_es_nicht(
             raise psycopg.OperationalError("Postgres kurz weg")
 
         monkeypatch.setattr(db_modul, "get_status_async", aussetzer)
-        runpod = FalscherRunPod([_fertige_antwort()])
+        runpod = FalscherRunPod([ersatz.fertige_antwort()])
         erwartet = psycopg.OperationalError
 
     echtes_schreiben = db_modul.write_terminal_async
@@ -2032,7 +2160,7 @@ async def test_zweiter_abbruch_waehrend_des_failed_schreibens_gewinnt(
         process_document(
             sha,
             settings=exec_settings,
-            runpod=Endgueltig([_fertige_antwort()]),
+            runpod=Endgueltig([ersatz.fertige_antwort()]),
             pool=pool,
         )
     )
@@ -2081,7 +2209,7 @@ async def test_abbruch_waehrend_des_done_schreibens_behaelt_das_bezahlte_ergebni
         process_document(
             sha,
             settings=exec_settings,
-            runpod=FalscherRunPod([_fertige_antwort()]),
+            runpod=FalscherRunPod([ersatz.fertige_antwort()]),
             pool=pool,
             letzter_versuch=letzter_versuch,
         )
@@ -2123,7 +2251,7 @@ async def test_zweiter_abbruch_waehrend_des_done_schreibens_gewinnt(
         process_document(
             sha,
             settings=exec_settings,
-            runpod=FalscherRunPod([_fertige_antwort()]),
+            runpod=FalscherRunPod([ersatz.fertige_antwort()]),
             pool=pool,
         )
     )
@@ -2163,7 +2291,7 @@ async def test_datenbankfehler_vor_dem_lesen_im_letzten_versuch_schreibt_failed(
         raise psycopg.OperationalError("Postgres kurz weg")
 
     monkeypatch.setattr(db_modul, schritt, aussetzer)
-    runpod = FalscherRunPod([_fertige_antwort()])
+    runpod = FalscherRunPod([ersatz.fertige_antwort()])
     with pytest.raises(psycopg.OperationalError):
         await process_document(
             sha,
@@ -2205,7 +2333,7 @@ async def test_datenbankfehler_vor_dem_lesen_mit_restbudget_schreibt_nichts(
         await process_document(
             sha,
             settings=exec_settings,
-            runpod=FalscherRunPod([_fertige_antwort()]),
+            runpod=FalscherRunPod([ersatz.fertige_antwort()]),
             pool=pool,
         )
 
@@ -2279,7 +2407,7 @@ async def test_abbruch_beim_warten_bricht_den_runpod_job_ab(
         async def await_result(self, job_id: str) -> dict[str, Any]:
             raise asyncio.CancelledError()
 
-    runpod = Abbrechend([_fertige_antwort()])
+    runpod = Abbrechend([ersatz.fertige_antwort()])
     with pytest.raises(asyncio.CancelledError):
         await process_document(
             sha, settings=exec_settings, runpod=runpod, pool=pool
@@ -2319,7 +2447,7 @@ async def test_misslungener_abbruch_verdeckt_das_herunterfahren_nicht(
         await process_document(
             sha,
             settings=exec_settings,
-            runpod=Kaputt([_fertige_antwort()]),
+            runpod=Kaputt([ersatz.fertige_antwort()]),
             pool=pool,
         )
 
@@ -2336,7 +2464,7 @@ async def test_erfolgreicher_job_wird_nicht_abgebrochen(
     sha, _ = _anlegen(
         db_conn, tmp_path, b"x", name="a.png", typ=DocumentType.PNG
     )
-    runpod = FalscherRunPod([_fertige_antwort()])
+    runpod = FalscherRunPod([ersatz.fertige_antwort()])
     await process_document(
         sha, settings=exec_settings, runpod=runpod, pool=pool
     )

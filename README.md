@@ -12,9 +12,11 @@ Dieses Repository enthält die **lokale Seite**: Dateien hinein, Text und Strukt
 heraus. Der Worker, der MinerU auf RunPod ausführt, lebt in seinem eigenen Fork,
 `ConstantinLevin/mineru-runpod`.
 
-**Stand:** Das Paket ist gebaut und getestet gegen den bisherigen Endpoint und
-MinerU 3.4. Der Umbau auf MinerU 4, einen neuen Worker und einen neuen Endpoint
-und die Behebung der bekannten Fehler sind in der Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1)
+**Stand:** Das Paket spricht den Job-Vertrag des MinerU-4-Workers aus dem Fork
+(Mineroo#11) und ist gegen echte Antworten des neuen Endpoints geprüft, im
+Betriebsweg (Stufe `advanced` mit OCR) über RunPod aufgenommen und offline
+abgespielt (`artifacts/2026-10-26-mineru-4.0.12-endpoint/`). Der Umbau auf MinerU 4, einen neuen Worker und einen
+neuen Endpoint und die Behebung der bekannten Fehler sind in der Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1)
 beschrieben und werden in Tickets umgesetzt. **Wo dieses README und die Spec
 auseinandergehen, gilt die Spec.** Der große Lauf über viele Dokumente hat noch
 nicht stattgefunden; er kostet Geld und ist eine Entscheidung des Eigentümers.
@@ -171,7 +173,7 @@ with OCRClient() as client:
     # fertig; eine Frist (`timeout=`) nennt im Fehler die noch offenen Hashes.
     print(fertig.rendered_markdown)  # das GANZE Dokument als Markdown
     print(fertig["markdown"])        # das nackte Markdown der Engine
-    print(fertig["content_list"])    # jeder Block einzeln, mit type und page_idx
+    print(fertig["middle_json"])     # je Teilstueck MinerUs Seiten mit ihren Bloecken
     print(fertig.raw)                # die vollstaendige Antwort, ungefiltert
 
     antwort = client.ocr(b"...")     # Abschicken und Warten in einem Zug

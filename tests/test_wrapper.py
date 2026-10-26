@@ -65,7 +65,7 @@ async def test_success_gilt_auch_fuer_leer(
         async_conn,
         sha256=huelle.sha256,
         status=DocumentStatus.EMPTY,
-        raw={"markdown": "", "content_list": [], "images": {}},
+        raw={"markdown": "", "middle_json": [], "images": {}},
         endpoint_id="testendpoint",
     )
     huelle.refresh()
@@ -78,7 +78,7 @@ async def test_getter_liefern_das_fertige(
     async_conn: psycopg.AsyncConnection[Any],
     settings: Settings,
 ) -> None:
-    """`markdown`, `content_list` und `images` kommen aus dem gespeicherten
+    """`markdown`, `middle_json` und `images` kommen aus dem gespeicherten
     Gesamtergebnis — hier wird nichts mehr zusammengesetzt."""
     import base64
 
@@ -89,21 +89,24 @@ async def test_getter_liefern_das_fertige(
         status=DocumentStatus.DONE,
         raw={
             "markdown": "Seite A\n\nSeite B",
-            "content_list": [
-                {"type": "text", "text": "A", "page_idx": 0},
-                {"type": "text", "text": "B", "page_idx": 1},
+            "middle_json": [
+                {"pages": [{"page_idx": 0, "blocks": []}, {"page_idx": 1, "blocks": []}]}
             ],
-            "images": {"bild.jpg": base64.b64encode(b"\xff\xd8\xff").decode("ascii")},
+            "images": {
+                "images/teilstueck_0/bild.jpg": base64.b64encode(b"\xff\xd8\xff").decode(
+                    "ascii"
+                )
+            },
         },
         endpoint_id="testendpoint",
     )
     huelle.refresh()
 
     assert huelle["markdown"] == "Seite A\n\nSeite B"
-    assert [e["page_idx"] for e in huelle["content_list"]] == [0, 1]
+    assert [s["page_idx"] for s in huelle["middle_json"][0]["pages"]] == [0, 1]
     # Die Bilder kommen als BYTES heraus, nicht als Base64 — in der Datenbank
     # liegen sie als Zeichenketten, weil jsonb keine Bytes kennt.
-    assert huelle.images == {"bild.jpg": b"\xff\xd8\xff"}
+    assert huelle.images == {"images/teilstueck_0/bild.jpg": b"\xff\xd8\xff"}
 
 
 async def test_fehlendes_images_wird_gemeldet_statt_leer_zu_liefern(
@@ -130,7 +133,7 @@ async def test_fehlendes_images_wird_gemeldet_statt_leer_zu_liefern(
         async_conn,
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
-        raw={"markdown": "Text.", "content_list": []},
+        raw={"markdown": "Text.", "middle_json": []},
         endpoint_id="testendpoint",
     )
     huelle.refresh()
@@ -152,7 +155,7 @@ async def test_getter_werfen_ohne_ergebnis(
     with pytest.raises(IncompleteResultError):
         huelle["markdown"]
     with pytest.raises(IncompleteResultError):
-        huelle["content_list"]
+        huelle["middle_json"]
 
 
 async def test_gelistete_zeile_laedt_raw_nach(
@@ -172,7 +175,7 @@ async def test_gelistete_zeile_laedt_raw_nach(
         async_conn,
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
-        raw={"markdown": "steht in raw", "content_list": [], "images": {}},
+        raw={"markdown": "steht in raw", "middle_json": [], "images": {}},
         endpoint_id="testendpoint",
     )
 
@@ -232,7 +235,7 @@ async def test_refresh_verwirft_die_zwischenspeicherung(
         async_conn,
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
-        raw={"markdown": "zweiter Stand", "content_list": [], "images": {}},
+        raw={"markdown": "zweiter Stand", "middle_json": [], "images": {}},
         endpoint_id="testendpoint",
     )
     # OHNE refresh: der alte Stand. Die Huelle fragt die Datenbank nicht
@@ -264,9 +267,18 @@ async def test_rendered_markdown_ist_das_ganze_dokument(
         status=DocumentStatus.DONE,
         raw={
             "markdown": "Fliesstext.",
-            "content_list": [
-                {"type": "text", "text": "Fliesstext.", "page_idx": 0},
-                {"type": "header", "text": "Aktenzeichen 123/456", "page_idx": 0},
+            "middle_json": [
+                {
+                    "pages": [
+                        {
+                            "page_idx": 0,
+                            "blocks": [
+                                {"type": "text", "index": 0, "content": [{"type": "text", "content": "Fliesstext."}]},
+                                {"type": "header", "index": 1, "content": [{"type": "text", "content": "Aktenzeichen 123/456"}]},
+                            ],
+                        }
+                    ]
+                }
             ],
             "images": {},
         },
@@ -301,7 +313,7 @@ async def test_to_dict_mit_raw_traegt_das_vollstaendige_ergebnis(
     """`to_dict(raw=True)` nimmt die vollstaendige Antwort mit — und laedt sie
     dafuer nach, wenn die Huelle sie noch nicht hat."""
     huelle = _huelle(db_conn, settings, PNG_KOPF + b"mit raw")
-    raw = {"markdown": "Text.", "content_list": [], "images": {}, "extras": {"a": 1}}
+    raw = {"markdown": "Text.", "middle_json": [], "images": {}, "extras": {"a": 1}}
     await write_terminal_async(
         async_conn, sha256=huelle.sha256, status=DocumentStatus.DONE, raw=raw, endpoint_id="testendpoint"
     )
@@ -329,7 +341,7 @@ async def test_to_dict_mit_raw_beschreibt_dieselbe_zeile_wie_das_raw(
     der auch `raw` stammt: nicht `status` `failed` und `success` False neben
     einer fertigen Antwort."""
     huelle = _huelle(db_conn, settings, PNG_KOPF + b"fertig dazwischen")
-    raw = {"markdown": "Text.", "content_list": [], "images": {}}
+    raw = {"markdown": "Text.", "middle_json": [], "images": {}}
     await write_terminal_async(
         async_conn, sha256=huelle.sha256, status=DocumentStatus.DONE, raw=raw, endpoint_id="testendpoint"
     )
@@ -383,7 +395,7 @@ async def test_huellen_des_async_clients_tragen_raw_geladen(
         async_conn,
         sha256=huelle.sha256,
         status=DocumentStatus.DONE,
-        raw={"markdown": "geladen", "content_list": [], "images": {}},
+        raw={"markdown": "geladen", "middle_json": [], "images": {}},
         endpoint_id="testendpoint",
     )
 

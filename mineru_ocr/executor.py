@@ -52,6 +52,8 @@ from .errors import (
     TerminalRunPodError,
     TransientRunPodError,
     UnstorableResultError,
+    WorkerRejectedError,
+    ist_dateiabweisung,
     should_run_again,
 )
 from .mime import sniff_bytes
@@ -229,10 +231,10 @@ async def process_document(
        feststeht, was wirklich geliefert wurde — `iter_chunks` darf unterwegs
        halbieren.
 
-       Dann `assembly.assemble`: Text in Dokumentreihenfolge, Strukturliste mit
-       den Seitenzahlen DES ORIGINALS, Bilder vereinigt, alles Uebrige mit. Das
-       Ergebnis ist EIN Dokument — am Ergebnis ist nicht mehr ablesbar, ob und wo
-       geschnitten wurde, und genau so ist es gewollt: Rein geht das ganze
+       Dann `assembly.assemble`: Text in Dokumentreihenfolge, die Seiten des
+       Middle-JSON mit den Seitenzahlen DES ORIGINALS, die Bilder jedes
+       Teilstuecks in seinem eigenen Namensraum samt ihren Verweisen, alles
+       Uebrige mit. Das Ergebnis ist EIN Dokument: Rein geht das ganze
        Dokument, raus kommt das ganze Dokument.
 
        Dass hier zusammengesetzt wird und nicht spaeter beim Lesen, ist keine
@@ -750,9 +752,8 @@ def _ergebnis_fuer_endzustand(
 
     Warum es diese Funktion gibt: Der Fehlerpfad rief frueher unmittelbar
     `assembly.assemble(teile)`. Das ist genau der Aufruf, der im Erfolgspfad
-    geworfen haben kann — ein `content_list`-Eintrag mit nicht ganzzahligem
-    `page_idx`, ein Eintrag, der kein Dict ist, ein `markdown`, das als JSON-null
-    ankam. War der urspruengliche Fehler dieser Wurf, warf derselbe Aufruf im
+    geworfen haben kann — eine Seite mit nicht ganzzahligem `page_idx`, ein
+    Eintrag in unerwarteter Form. War der urspruengliche Fehler dieser Wurf, warf derselbe Aufruf im
     Fehlerpfad sofort wieder, die Ausnahme verliess den Handler, und
     `write_terminal_async` lief NIE.
 
@@ -826,7 +827,7 @@ def _rohfassung_der_teile(
     `_ergebnis_fuer_endzustand` sagt es dem Leser.
 
     Die Form ist bewusst eine ANDERE als die des Erfolgspfads — `chunks` statt
-    `markdown`/`content_list` auf oberster Ebene. Wer diese Zeile spaeter liest,
+    `markdown`/`middle_json` auf oberster Ebene. Wer diese Zeile spaeter liest,
     soll nicht auf den ersten Blick ein gewoehnliches Ergebnis sehen, das nur
     seltsam aussieht.
 
@@ -844,11 +845,13 @@ def _rohfassung_der_teile(
                     "last_page": _json_faehig(getattr(teil.chunk, "last_page", None)),
                 },
                 "markdown": _json_faehig(getattr(teil, "markdown", None)),
-                "content_list": _json_faehig(getattr(teil, "content_list", None)),
+                "markdown_full": _json_faehig(getattr(teil, "markdown_full", None)),
+                "middle_json": _json_faehig(getattr(teil, "middle_json", None)),
+                "structured_content": _json_faehig(
+                    getattr(teil, "structured_content", None)
+                ),
+                "model_output": _json_faehig(getattr(teil, "model_output", None)),
                 "images": _json_faehig(getattr(teil, "images", None)),
-                "middle": _json_faehig(getattr(teil, "middle", None)),
-                "layout_pdf": _json_faehig(getattr(teil, "layout_pdf", None)),
-                "span_pdf": _json_faehig(getattr(teil, "span_pdf", None)),
                 "envelope": _json_faehig(getattr(teil, "envelope", None)),
                 "extras": _json_faehig(getattr(teil, "extras", None)),
                 "nummer": nummer,
@@ -969,7 +972,9 @@ async def _stuecke_verarbeiten(
         async def absenden(kodiert: str = kodiert) -> str:
             return await runpod.submit(
                 file_b64=kodiert,
-                backend=settings.backend,
+                tier=settings.tier,
+                ocr_mode=settings.ocr_mode,
+                image_analysis=settings.image_analysis,
                 transport=settings.transport,
             )
 
@@ -1188,7 +1193,10 @@ def _endzustand_uebersetzen(antwort: dict[str, Any], job_id: str) -> None:
     erfolgreiche.
 
     `TIMED_OUT` ist wiederholbar (es kann an der Warteschlange gelegen haben),
-    `FAILED` und `CANCELLED` sind endgueltig.
+    `FAILED` und `CANCELLED` sind endgueltig. Ein `FAILED`, mit dem der Worker
+    die Datei als nicht lesbar abweist (`errors.ist_dateiabweisung`), wird zur
+    `WorkerRejectedError` und endet als `input_error`, mit dem Grund aus der
+    Antwort.
     """
     zustand = antwort.get("status")
     if zustand == "COMPLETED":
@@ -1197,6 +1205,15 @@ def _endzustand_uebersetzen(antwort: dict[str, Any], job_id: str) -> None:
         raise TransientRunPodError(
             f"Job {job_id} endete auf TIMED_OUT. Wiederholbar: Es kann an der "
             f"Warteschlange gelegen haben. Volle Antwort: {antwort}"
+        )
+    # Das `error` traegt nur eine Antwort, die der Handler des Workers selbst
+    # zurueckgegeben hat, also ein `FAILED` (RunPod hebt es auf die oberste
+    # Ebene); ein `CANCELLED` kommt ohne.
+    fehlertext = antwort.get("error")
+    if isinstance(fehlertext, str) and ist_dateiabweisung(fehlertext):
+        raise WorkerRejectedError(
+            f"Der Worker hat die Datei als nicht lesbar abgewiesen (Job {job_id}): "
+            f"{fehlertext}"
         )
     raise TerminalRunPodError(
         f"Job {job_id} endete auf {zustand!r}. Endgueltig. Volle Antwort: "

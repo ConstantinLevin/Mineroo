@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+from typing import Final
 
 import httpx
 import psycopg
@@ -119,6 +120,75 @@ class MultiImageError(InputError):
     PDF einzureichen. Mehrseitige Bilder selbst in eine PDF umzuwandeln ist
     ausdruecklich nicht Aufgabe des Pakets (Mineroo#1, Out of Scope).
     """
+
+
+class WorkerRejectedError(InputError):
+    """Der Worker hat die Datei als nicht lesbar abgewiesen; der Grund steht in seiner Antwort.
+
+    Die Ausnahme von der Regel der Oberklasse, „RunPod wird gar nicht erst
+    gefragt": Hier hat RunPod geantwortet, und zwar, dass MinerU mit dieser
+    Datei nichts anfangen kann. Das ist eine Aussage ueber die Eingabe, nicht
+    ueber die Engine, und endet deshalb wie die anderen Eingabefehler als
+    `input_error` (Mineroo#11); ein weiterer Versuch kaufte dieselbe Abweisung.
+    Ob eine `FAILED`-Antwort eine solche Abweisung ist, entscheidet
+    `ist_dateiabweisung`. Die Meldung traegt den Grund aus der Antwort.
+    """
+
+
+DATEIABWEISUNG_KENNUNGEN: Final = (
+    "ValueError: input is not a file type MinerU",
+    "InvalidRequestError:",
+    "UnidentifiedImageError: cannot identify image file",
+    "OSError: Truncated File Read",
+    "OSError: image file is truncated",
+    "OSError: broken data stream when reading image file",
+)
+"""Die Anfaenge des `error` einer `FAILED`-Antwort, an denen der Worker eine Datei
+als nicht lesbar abweist.
+
+AUS DEN QUELLEN des MinerU-4-Workers (Fork `ConstantinLevin/mineru-runpod`) und
+von MinerU 4.0.12, nicht geraten:
+
+    `ValueError: input is not a file type MinerU …` ist die eigene Meldung des
+    Workers fuer eine Datei, deren Typ MinerU nicht liest (`worker/parse.py`,
+    `run_mineru`).
+
+    `InvalidRequestError: …` ist MinerUs eigene Abweisung; der Worker behaelt
+    MinerUs Fehlertyp (Job-Vertrag `api.mdx`, „Validation behaviour", letzter
+    Absatz). Im Lesepfad von MinerU 4.0.12 entsteht sie an der Seitenauswahl,
+    etwa bei einer PDF ohne Seite („document has no available pages"); einen
+    Seitenbereich schickt das Paket nicht.
+
+    `UnidentifiedImageError: cannot identify image file …`,
+    `OSError: Truncated File Read`, `OSError: image file is truncated …` und
+    `OSError: broken data stream when reading image file` sind die Meldungen
+    von Pillow fuer Bilddaten, die sich nicht dekodieren lassen (Pillow
+    `Image.open` und `ImageFile`; die letzte ist der Dekoderstatus -2, „broken
+    data stream"); MinerU 4.0.12 laesst sie aus `_prepare_input` durch, und der
+    Worker behaelt den Fehlertyp. Am Endpoint beobachtet fuer eine PNG-, GIF-
+    und JPEG-Signatur vor Muell, fuer ein in der Mitte abgeschnittenes PNG und
+    JPEG und fuer ein PNG mit intaktem Kopf und kaputten Pixeldaten
+    (`artifacts/2026-10-26-mineru-4.0.12-endpoint/`, `kaputte_pixel`): Der Typ
+    wird erkannt, gelesen werden kann die Datei nicht, und jeder weitere Lauf
+    kaufte dieselbe Meldung. Gelistet sind nur diese Meldungen, nicht `OSError`
+    allgemein: Ein voller Datentraeger ist auch ein `OSError` und sagt nichts
+    ueber die Datei.
+
+Was NICHT darunter faellt und `failed` bleibt: die Pruefungen der Anfrage durch
+den Worker (`ValueError: input validation failed: …` und die uebrigen
+`ValueError` seiner Schema-Pruefung) und jeder andere Fehler der Engine. Weitere
+Abweisungen, die die Ganzdokument-Formate mitbringen (Office, HTML), gehoeren mit
+deren Ticket (Mineroo#17) und den Aufnahmen (Mineroo#10) hierher."""
+
+
+def ist_dateiabweisung(fehlertext: str) -> bool:
+    """Ob das `error` einer `FAILED`-Antwort eine Abweisung der Datei ist.
+
+    Die eine Stelle, an der das entschieden wird; der Executor uebersetzt eine
+    solche Antwort in `WorkerRejectedError`, und `classify_failure` stuft die wie
+    jede `InputError` als endgueltig ein. Kosten: keine.
+    """
+    return fehlertext.startswith(DATEIABWEISUNG_KENNUNGEN)
 
 
 class TooLargeError(InputError):
@@ -352,8 +422,8 @@ class IncompleteResultError(MineruOcrError):
 
         Die Zeile ist BESCHAEDIGT — ein Feld des gespeicherten Ergebnisses hat
         einen anderen Typ als zugesichert (der haeufigste Fall ist JSON-`null`),
-        ein `content_list`-Eintrag ist kein Dict, oder das Ergebnis traegt
-        weder `markdown` noch `content_list` und ist damit gar kein
+        ein Eintrag von `middle_json` traegt keine Seiten, oder das Ergebnis
+        traegt weder `markdown` noch `middle_json` und ist damit gar kein
         zusammengesetztes Ergebnis. Geworfen wird auch hier, statt einen leeren
         Wert zu liefern: Ein leeres Feld sieht aus wie ein leeres Dokument, und
         genau daran ist die Beschaedigung sonst nicht mehr zu erkennen.

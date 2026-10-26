@@ -840,7 +840,7 @@ async def test_endschreiben_legt_die_zeile_in_einem_schreibvorgang_an(
     try:
         await _schreiben(
             async_conn,
-            raw={"markdown": "Text", "content_list": []},
+            raw={"markdown": "Text", "middle_json": []},
             mime="application/pdf",
             size_bytes=5,
             page_count=2,
@@ -854,7 +854,7 @@ async def test_endschreiben_legt_die_zeile_in_einem_schreibvorgang_an(
     zeile = get_document(db_conn, HASH)
     assert zeile is not None
     assert zeile.status is DocumentStatus.DONE
-    assert zeile.raw == {"markdown": "Text", "content_list": []}
+    assert zeile.raw == {"markdown": "Text", "middle_json": []}
     assert (zeile.mime, zeile.size_bytes, zeile.page_count) == ("application/pdf", 5, 2)
     assert zeile.endpoint_id == "testendpoint"
     assert zeile.image_tag_at_submit == ":17d4955b2"

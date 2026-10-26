@@ -99,6 +99,52 @@ nennt — ein unbekannter Zustand wuerde sonst als Fehler behandelt und ein
 laufender Job abgebrochen."""
 
 
+def job_eingabe(
+    *,
+    file_b64: str,
+    tier: str,
+    ocr_mode: str,
+    image_analysis: bool,
+    transport: str,
+    start_page: int | None = None,
+    end_page: int | None = None,
+) -> dict[str, Any]:
+    """Das `input` eines Jobs, wie `RunPodClient.submit` es abschickt.
+
+    Die eine Stelle, an der die Nutzlast entsteht; die Skripte der Aufnahmen
+    (`artifacts/…/erzeugung/jobs_bauen.py`) bauen ihre Jobs hiermit, damit sie
+    festhalten, was der Betriebsweg tatsaechlich sendet. Was die Felder heissen,
+    steht bei `submit`.
+
+    Die Bildanalyse wirkt laut Job-Vertrag nur in der Stufe `advanced`;
+    ausserhalb davon wird sie hier als aus bestellt, gleich was uebergeben
+    wurde. So steht in der Nutzlast, was tatsaechlich wirkt, und der Vergleich
+    mit den gemeldeten Einstellungen der Antwort geht auf.
+
+    Zusicherung:
+        Kein `formats`-Feld und kein `null`-Wert. Ein Seitenbereich, der None
+        ist, wird weggelassen. Feld fuer Feld aufgebaut, nicht aus einer
+        Abbildung gefiltert: Wer eine Abbildung baut und dann `None`
+        herausfiltert, hat den `null`-Wert bereits einmal gehabt — und die
+        naechste Aenderung vergisst den Filter. Hier kann kein `null` entstehen.
+
+    Kosten: keine.
+    """
+    eingabe: dict[str, Any] = {
+        "file_b64": file_b64,
+        "tier": tier,
+        "ocr_mode": ocr_mode,
+        "image_analysis": image_analysis and tier == "advanced",
+        "transport": transport,
+    }
+    if start_page is not None:
+        eingabe["start_page"] = start_page
+    if end_page is not None:
+        eingabe["end_page"] = end_page
+    # Ein `formats`-Feld steht hier NICHT und kann hier nicht entstehen.
+    return eingabe
+
+
 class RunPodAccess(Protocol):
     """Was der Executor von RunPod braucht — und mehr nicht.
 
@@ -123,7 +169,9 @@ class RunPodAccess(Protocol):
         self,
         *,
         file_b64: str,
-        backend: str,
+        tier: str,
+        ocr_mode: str,
+        image_analysis: bool,
         transport: str,
         start_page: int | None = None,
         end_page: int | None = None,
@@ -384,7 +432,9 @@ class RunPodClient:
         self,
         *,
         file_b64: str,
-        backend: str,
+        tier: str,
+        ocr_mode: str,
+        image_analysis: bool,
         transport: str,
         start_page: int | None = None,
         end_page: int | None = None,
@@ -393,12 +443,23 @@ class RunPodClient:
 
         Baut den kanonischen Aufruf des Job-Contracts:
         `POST {API_BASE}/{endpoint_id}/run` mit
-        `{"input": {"file_b64": ..., "backend": ..., "transport": ...}}`.
+        `{"input": {"file_b64": ..., "tier": ..., "ocr_mode": ...,
+        "image_analysis": ..., "transport": ...}}`.
+
+        Massgeblich ist der Job-Vertrag des Forks in seiner MinerU-4-Fassung
+        (`docs/content/docs/reference/api.mdx` in `ConstantinLevin/mineru-runpod`).
+        Ein `backend` steht nicht mehr darin: Der Worker weist es ab und nennt,
+        was an seine Stelle tritt.
 
         Args:
             file_b64: Die Datei oder der Ausschnitt, Base64-kodiert.
-            backend: Aus den Einstellungen durchgereicht, nicht hier gewaehlt.
-            transport: Ebenso. Im Betrieb immer `tarball_b64`.
+            tier: Die Stufe, wie tief MinerU 4 liest (`config.GUELTIGE_STUFEN`).
+                Aus den Einstellungen durchgereicht, nicht hier gewaehlt.
+            ocr_mode: Woher der Text kommt (`config.GUELTIGE_OCR_MODI`). Ebenso.
+            image_analysis: Ob das Modell Bilder und Diagramme beschreibt. Wirkt
+                laut Vertrag nur in der Stufe `advanced`; ausserhalb davon wird
+                sie als aus bestellt (`job_eingabe`).
+            transport: Aus den Einstellungen. Im Betrieb immer `tarball_b64`.
             start_page: Erste Seite, null-basiert und einschliessend — laesst die
                 Engine SELBST schneiden, statt dass wir vorher zerlegen. Der
                 Normalweg benutzt das NICHT (wir schneiden lokal, siehe Vorspann
@@ -437,20 +498,15 @@ class RunPodClient:
         Kosten: JA. Ab der Annahme laeuft die Abrechnung, sobald ein Worker den
         Job aufnimmt.
         """
-        # Feld fuer Feld aufgebaut, nicht aus einer Abbildung gefiltert. Der
-        # Unterschied ist die Regel: Wer eine Abbildung baut und dann `None`
-        # herausfiltert, hat den `null`-Wert bereits einmal gehabt — und die
-        # naechste Aenderung vergisst den Filter. Hier kann kein `null` entstehen.
-        eingabe: dict[str, Any] = {
-            "file_b64": file_b64,
-            "backend": backend,
-            "transport": transport,
-        }
-        if start_page is not None:
-            eingabe["start_page"] = start_page
-        if end_page is not None:
-            eingabe["end_page"] = end_page
-        # Ein `formats`-Feld steht hier NICHT und kann hier nicht entstehen.
+        eingabe = job_eingabe(
+            file_b64=file_b64,
+            tier=tier,
+            ocr_mode=ocr_mode,
+            image_analysis=image_analysis,
+            transport=transport,
+            start_page=start_page,
+            end_page=end_page,
+        )
 
         antwort = await self._anfragen(
             "POST",

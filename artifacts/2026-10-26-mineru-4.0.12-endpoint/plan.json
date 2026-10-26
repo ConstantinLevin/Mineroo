@@ -1,0 +1,104 @@
+[
+ {
+  "name": "normale_seite",
+  "felder": {
+   "tier": "advanced",
+   "ocr_mode": "ocr",
+   "image_analysis": true,
+   "transport": "tarball_b64"
+  }
+ },
+ {
+  "name": "leere_seite_bild",
+  "felder": {
+   "tier": "advanced",
+   "ocr_mode": "ocr",
+   "image_analysis": true,
+   "transport": "tarball_b64"
+  }
+ },
+ {
+  "name": "leere_seite_pdf",
+  "felder": {
+   "tier": "advanced",
+   "ocr_mode": "ocr",
+   "image_analysis": true,
+   "transport": "tarball_b64"
+  }
+ },
+ {
+  "name": "mehrteilig_0_seiten_0-4",
+  "felder": {
+   "tier": "advanced",
+   "ocr_mode": "ocr",
+   "image_analysis": true,
+   "transport": "tarball_b64"
+  },
+  "seiten": [
+   0,
+   4
+  ]
+ },
+ {
+  "name": "mehrteilig_1_seiten_5-9",
+  "felder": {
+   "tier": "advanced",
+   "ocr_mode": "ocr",
+   "image_analysis": true,
+   "transport": "tarball_b64"
+  },
+  "seiten": [
+   5,
+   9
+  ]
+ },
+ {
+  "name": "mehrteilig_2_seiten_10-11",
+  "felder": {
+   "tier": "advanced",
+   "ocr_mode": "ocr",
+   "image_analysis": true,
+   "transport": "tarball_b64"
+  },
+  "seiten": [
+   10,
+   11
+  ]
+ },
+ {
+  "name": "dokument_docx",
+  "felder": {
+   "tier": "advanced",
+   "ocr_mode": "ocr",
+   "image_analysis": true,
+   "transport": "tarball_b64"
+  }
+ },
+ {
+  "name": "seite_html",
+  "felder": {
+   "tier": "advanced",
+   "ocr_mode": "ocr",
+   "image_analysis": true,
+   "transport": "tarball_b64"
+  }
+ },
+ {
+  "name": "fehlerantwort",
+  "felder": {
+   "tier": "gibt-es-nicht",
+   "ocr_mode": "ocr",
+   "image_analysis": false,
+   "transport": "tarball_b64"
+  }
+ },
+ {
+  "name": "kaputte_pixel",
+  "felder": {
+   "tier": "advanced",
+   "ocr_mode": "ocr",
+   "image_analysis": true,
+   "transport": "tarball_b64"
+  }
+ }
+]

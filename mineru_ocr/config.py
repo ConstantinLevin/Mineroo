@@ -381,36 +381,29 @@ Herzschlaege ausfallen, bevor der Daemon als tot gilt, und ein einzelner
 verspaeteter macht ihn nicht tot. Die Zahl steht hier einmal, weil `status`,
 `preflight` und das Abschicken dieselbe Frage stellen."""
 
-GUELTIGE_BACKENDS: Final = frozenset(
-    {
-        "hybrid-auto-engine",
-        "hybrid-http-client",
-        "pipeline",
-        "vlm-auto-engine",
-        "vlm-http-client",
-    }
-)
-"""Die Backend-Namen, die der Worker annimmt.
+GUELTIGE_STUFEN: Final = frozenset({"flash", "basic", "standard", "advanced"})
+"""Die Stufen, die der MinerU-4-Worker annimmt: wie tief MinerU ein PDF oder Bild liest.
 
-VON DER GEGENSEITE ABGELESEN, nicht ausgedacht. Am 09.08.2026 wurde absichtlich
-ein ungueltiger Name geschickt; die Fehlerantwort nannte die Liste selbst:
+AUS DEM JOB-VERTRAG DES FORKS, nicht ausgedacht: `docs/content/docs/reference/api.mdx`
+in `ConstantinLevin/mineru-runpod`, Abschnitt „Validation behaviour", Punkt 9
+(„`tier` must be one of `flash`, `basic`, `standard`, `advanced`"). Sie loest die
+Liste der Backends ab, die der Worker unter MinerU 3.4 nannte; `backend` weist er
+jetzt ab und nennt, was an seine Stelle tritt.
 
-    „input validation failed: backend must be one of ['hybrid-auto-engine',
-    'hybrid-http-client', 'pipeline', 'vlm-auto-engine', 'vlm-http-client'];
-    got 'gibt-es-nicht'"
+WOZU DIE PRUEFUNG HIER STEHT UND NICHT ERST DORT: Ein Tippfehler waere sonst nur
+zu erfahren, indem man dafuer bezahlt. Der Job wird eingereiht, ein Worker faehrt
+hoch — im gemessenen Fall des alten Endpoints 177 Sekunden Wartezeit —, und erst
+dann kommt `FAILED` mit der Meldung zurueck, bei einem Bestandslauf fuer jedes
+Dokument einzeln. Die Liste kann veralten, wenn der Worker neue Stufen bekommt;
+ein hier faelschlich abgelehnter Wert kostet eine Zeile in dieser Datei, ein nicht
+abgelehnter einen Kaltstart je Dokument."""
 
-WOZU DIE PRUEFUNG HIER STEHT UND NICHT ERST DORT: Ein Tippfehler im Backend-
-Namen war bis dahin nur zu erfahren, indem man dafuer bezahlte. Der Job wird
-eingereiht, ein Worker faehrt hoch — im gemessenen Fall 177 Sekunden Wartezeit —,
-und erst dann kommt `FAILED` mit der Meldung zurueck. Bei einem Bestandslauf
-ueber 30 000 Dokumente traefe das JEDES Dokument einzeln, und es waere jedes Mal
-derselbe Fehler.
+GUELTIGE_OCR_MODI: Final = frozenset({"auto", "txt", "ocr"})
+"""Die OCR-Modi, die der MinerU-4-Worker annimmt: woher der Text einer Seite kommt.
 
-Die Liste kann veralten, wenn der Worker neue Backends bekommt. Das ist der
-bewusst in Kauf genommene Preis: Ein hier faelschlich abgelehnter Name kostet
-eine Zeile in dieser Datei, ein nicht abgelehnter kostet einen Kaltstart je
-Dokument. Der Nachpruef-Ort steht in der Fehlermeldung selbst — der Worker
-nennt seine Liste, wenn man ihn falsch fragt."""
+Aus derselben Stelle des Job-Vertrags („`ocr_mode` one of `auto`, `txt`, `ocr`").
+`ocr` liest das Modell, `txt` nimmt die Textebene der PDF, `auto` laesst MinerU je
+Datei waehlen. Geprueft aus demselben Grund wie `GUELTIGE_STUFEN`."""
 """Queue des Waechters. Eigene Queue, weil periodische Tasks sonst um dieselben
 Concurrency-Slots konkurrieren wie die OCR-Jobs und bei vollem Pool verhungern —
 die Procrastinate-Doku empfiehlt fuer genau dieses Problem die Queue-Trennung
@@ -465,23 +458,34 @@ class Settings:
 
     # -- Job-Contract ------------------------------------------------------
 
-    backend: str = "vlm-auto-engine"
-    """Das gemessene Backend. `hybrid-auto-engine` liess bei der Messung 13 von
-    41 Formeln fallen und verlor stillschweigend Indizes, bei 2,2-facher Laufzeit.
-    Der Wert ist ein Parameter und kein festverdrahteter Wert, weil die
-    Vergleichsmessung fuer andere Materialarten aussteht — aber die Voreinstellung
-    ist das Gemessene, nicht das Bequeme (Plan 11).
+    tier: str = "advanced"
+    """Die Stufe, mit der MinerU 4 liest. `advanced` ist die Voreinstellung des
+    Job-Vertrags und dieses Pakets (Mineroo#1, Story 6: jedes PDF und Bild ohne
+    weitere Angabe in `advanced`). Geprueft gegen `GUELTIGE_STUFEN`.
 
-    Geprueft wird er gegen `GUELTIGE_BACKENDS`, siehe dort."""
+    Die Lese-Einstellungen gelten bis zum Ticket „Lese-Einstellungen und
+    MinerU-Version je Dokument" (Mineroo#14) fuer jedes Dokument gleich; sie
+    kommen aus den Einstellungen des Daemons, der die Jobs ausfuehrt."""
+
+    ocr_mode: str = "ocr"
+    """Woher der Text kommt. `ocr` ist die Voreinstellung, weil die Textebene einer
+    beschaedigten PDF der Schaden selbst ist: Im Textmodus liest das Modell
+    Fliesstext, Titel, Kopf- und Fusszeilen, Seitenzahlen und Seitenfussnoten
+    nicht selbst (Job-Vertrag, `ocr_mode`; Mineroo#1, Worker). Geprueft gegen
+    `GUELTIGE_OCR_MODI`."""
+
+    image_analysis: bool = True
+    """Ob das Modell Bilder und Diagramme beschreibt. Wirkt nur in der Stufe
+    `advanced`; ausserhalb davon bestellt `runpod.RunPodClient.submit` sie als
+    aus, so dass die Nutzlast sagt, was tatsaechlich wirkt."""
 
     transport: str = "tarball_b64"
     """Fest. Bei diesem Transport ist ein `formats`-Feld wirkungslos: es kommt
     immer alles zurueck. Damit ist die Abruf-Regel („alles holen, alles
     persistieren, nie filtern") Mechanik statt Disziplin — an Disziplin ist sie
-    schon einmal gescheitert. Zusaetzlich traegt der Tarball das Layout-PDF und
-    die Bilder, die der Inline-Transport gar nicht liefert (Plan 6). Das
-    Span-PDF gehoerte frueher in diese Aufzaehlung; es entsteht mit unserem
-    Backend gar nicht erst (Begruendung an `assembly.ChunkArtifacts.span_pdf`)."""
+    schon einmal gescheitert. Der Tarball traegt jede Datei, die der Worker ins
+    Ausgabeverzeichnis legt, auch eine, die das Paket noch nicht kennt
+    (Job-Vertrag des Forks: „`formats` … No-op for `tarball_b64`")."""
 
     # -- Zerlegung grosser Dokumente --------------------------------------
 
@@ -515,8 +519,12 @@ class Settings:
     Seiten, also knapp unter das Cap. Gemessen sind es 0,81 MB. Der Fehler lag
     in der Zutat, nicht in der Rechnung — angenommen war, der Tarball trage
     zusaetzlich zu den Inline-Formaten noch Layout- UND Span-PDF; das Span-PDF
-    gibt es gar nicht (siehe `assembly.ChunkArtifacts.span_pdf`), und das
-    Layout-PDF ist mit rund 40 KB klein.
+    gab es mit dem damaligen Backend gar nicht, und das Layout-PDF war mit rund
+    40 KB klein.
+
+    Gemessen ist das an MinerU 3.4. Die Antworten des MinerU-4-Workers tragen
+    andere Dateien (Mineroo#11); ihre Groesse misst der Qualitaets- und
+    Messlauf (Mineroo#19), aus dem die Teilstueck-Grenzen kommen (Mineroo#20).
 
     Die Schwelle BLEIBT trotzdem bei 20, und das ist eine Entscheidung und kein
     Versaeumnis: Die Antwortgroesse ist nicht die einzige Grenze. Ein groesseres
@@ -761,24 +769,27 @@ class Settings:
         entscheidbar ist. Alles Weitere — laeuft der Endpoint, reicht das Konto,
         stimmt die Image-Fassung — gehoert in den Preflight, der fragen darf.
 
-        Warum der Backend-Name dazugehoert: Er ist von hier aus vollstaendig
-        pruefbar (die Gegenseite hat ihre Liste selbst genannt, siehe
-        `GUELTIGE_BACKENDS`), und ein Tippfehler darin war bis dahin nur zu
-        erfahren, indem man dafuer bezahlte — 177 Sekunden Kaltstart bis zur
-        Fehlermeldung, und das je Dokument.
+        Warum Stufe und OCR-Modus dazugehoeren: Sie sind von hier aus
+        vollstaendig pruefbar (der Job-Vertrag nennt die Listen, siehe
+        `GUELTIGE_STUFEN` und `GUELTIGE_OCR_MODI`), und ein Tippfehler darin
+        waere sonst nur zu erfahren, indem man dafuer bezahlt — ein Kaltstart bis
+        zur Fehlermeldung, und das je Dokument.
 
         Raises:
-            ConfigurationError: Der Backend-Name steht nicht in
-                `GUELTIGE_BACKENDS`.
+            ConfigurationError: Stufe oder OCR-Modus steht nicht in seiner Liste.
         """
-        if self.backend not in GUELTIGE_BACKENDS:
-            raise ConfigurationError(
-                f"backend={self.backend!r} kennt der Worker nicht. Gueltig sind: "
-                f"{sorted(GUELTIGE_BACKENDS)}. Die Liste stammt aus der "
-                f"Fehlerantwort des Workers selbst (09.08.2026) — sie kann "
-                f"veralten, wenn er neue Backends bekommt; dann gehoert sie in "
-                f"config.GUELTIGE_BACKENDS nachgetragen."
-            )
+        for name, wert, gueltig in (
+            ("tier", self.tier, GUELTIGE_STUFEN),
+            ("ocr_mode", self.ocr_mode, GUELTIGE_OCR_MODI),
+        ):
+            if wert not in gueltig:
+                raise ConfigurationError(
+                    f"{name}={wert!r} kennt der Worker nicht. Gueltig sind: "
+                    f"{sorted(gueltig)}. Die Liste stammt aus dem Job-Vertrag "
+                    f"des Forks (api.mdx, „Validation behaviour“) — sie kann "
+                    f"veralten, wenn der Worker neue Werte bekommt; dann gehoert "
+                    f"sie in config nachgetragen."
+                )
 
     def __repr__(self) -> str:
         """Wie die Voreinstellung, aber mit maskiertem API-Schluessel.
@@ -823,7 +834,6 @@ class Settings:
         endpoint_id: str | None = None,
         api_key: str | None = None,
         strict: bool = True,
-        backend: str | None = None,
         min_balance_start_usd: float | None = None,
         ocr_concurrency: int | None = None,
         environ: Mapping[str, str] | None = None,
@@ -860,12 +870,10 @@ class Settings:
             endpoint_id: Kennung des RunPod-Endpoints.
             api_key: Voreinstellung siehe oben.
             strict: Ob Konfigurations-Abweichungen im Preflight abbrechen.
-            backend: Voreinstellung `vlm-auto-engine`. Steht hier, weil
-                `OCRClient` es als Konstruktor-Parameter anbietet — ein
+            min_balance_start_usd: Untergrenze im Preflight. Steht hier, weil
+                `OCRClient` sie als Konstruktor-Parameter anbietet — ein
                 oeffentlicher Parameter, der keinen Weg in die Einstellung hat,
-                ist ein stiller Nichts-Tuer: Wer `backend="pipeline"` schreibt,
-                bekaeme keinen Fehler und trotzdem das alte Backend.
-            min_balance_start_usd: Untergrenze im Preflight, aus demselben Grund.
+                ist ein stiller Nichts-Tuer.
             ocr_concurrency: Gleichzeitig betreute Dokumente, aus demselben Grund
                 (`mineru-ocr daemon --concurrency`).
             environ: Die Umgebung, aus der gelesen wird. Voreinstellung
@@ -920,7 +928,7 @@ class Settings:
             **_sollwerte(umgebung, datei, config_path),
         )
 
-        # Die drei uebrigen ueberschreiben ihre Feld-Voreinstellung nur, wenn sie
+        # Die zwei uebrigen ueberschreiben ihre Feld-Voreinstellung nur, wenn sie
         # ausdruecklich angegeben wurden. Nacheinander mit `replace` statt in
         # einem Bruehwerk aus Schluesselwort-Argumenten: So bleibt jeder Schritt
         # getippt, und es braucht kein `type: ignore` — das eine, was in einer
@@ -930,8 +938,6 @@ class Settings:
         # `is not None` und nicht Wahrheitswert-Pruefung: `0` und `0.0` sind
         # gueltige Angaben, und eine Null als „nicht gesetzt" zu lesen waere
         # genau die Art stiller Fehler, gegen die dieses Modul steht.
-        if backend is not None:
-            einstellung = dataclasses.replace(einstellung, backend=backend)
         if min_balance_start_usd is not None:
             einstellung = dataclasses.replace(
                 einstellung, min_balance_start_usd=min_balance_start_usd

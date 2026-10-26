@@ -78,6 +78,19 @@ def _antwort(daten: dict[str, Any], code: int = 200) -> httpx.Response:
     return httpx.Response(code, json=daten)
 
 
+async def _absenden(client: RunPodClient, **abweichend: Any) -> str:
+    """`client.submit` mit den Lese-Einstellungen der Voreinstellung, fuer die
+    Tests, die nach etwas anderem fragen als nach diesen Einstellungen."""
+    angaben: dict[str, Any] = {
+        "file_b64": "A",
+        "tier": "advanced",
+        "ocr_mode": "ocr",
+        "image_analysis": True,
+        "transport": "t",
+    }
+    return await client.submit(**{**angaben, **abweichend})
+
+
 class _Uhr:
     """Eine Uhr, die nur der Schlaf der Warteschleife vorstellt.
 
@@ -161,6 +174,43 @@ async def test_ohne_endpoint_geht_keine_endpoint_anfrage_hinaus(
     assert aufzeichnung.anfragen == []
 
 
+async def test_nutzlast_traegt_die_lese_einstellungen_statt_backend(
+    echte_settings: Settings,
+) -> None:
+    """Der MinerU-4-Worker liest `tier`, `ocr_mode` und `image_analysis`; ein
+    `backend` weist er ab und nennt, was an seine Stelle tritt (Job-Vertrag des
+    Forks, `docs/content/docs/reference/api.mdx`, „Fields MinerU 4 removed")."""
+    client, transport = _client(
+        echte_settings, Aufzeichnung(_antwort({"id": "job-1", "status": "IN_QUEUE"}))
+    )
+    await client.submit(
+        file_b64="AAAA",
+        tier="advanced",
+        ocr_mode="txt",
+        image_analysis=True,
+        transport="tarball_b64",
+    )
+
+    eingabe = transport.nutzlast["input"]
+    assert eingabe["tier"] == "advanced"
+    assert eingabe["ocr_mode"] == "txt"
+    assert eingabe["image_analysis"] is True
+    assert "backend" not in eingabe
+
+
+@pytest.mark.parametrize("stufe", ["flash", "basic", "standard"])
+async def test_bildanalyse_wird_ausserhalb_von_advanced_als_aus_bestellt(
+    echte_settings: Settings, stufe: str
+) -> None:
+    """Die Bildanalyse wirkt nur in `advanced` (Job-Vertrag: „Acts only in tier
+    `advanced` and is reported as off elsewhere"). Bestellt wird, was wirkt."""
+    client, transport = _client(echte_settings, Aufzeichnung(_antwort({"id": "a"})))
+    await client.submit(
+        file_b64="A", tier=stufe, ocr_mode="ocr", image_analysis=True, transport="t"
+    )
+    assert transport.nutzlast["input"]["image_analysis"] is False
+
+
 async def test_nutzlast_hat_kein_formats_feld(echte_settings: Settings) -> None:
     """Die gesendete Nutzlast enthaelt unter keinen Umstaenden `formats`.
 
@@ -171,7 +221,7 @@ async def test_nutzlast_hat_kein_formats_feld(echte_settings: Settings) -> None:
     client, transport = _client(
         echte_settings, Aufzeichnung(_antwort({"id": "job-1", "status": "IN_QUEUE"}))
     )
-    await client.submit(file_b64="AAAA", backend="vlm-auto-engine", transport="tarball_b64")
+    await _absenden(client, file_b64="AAAA", transport="tarball_b64")
 
     nutzlast = transport.nutzlast
     assert "formats" not in nutzlast
@@ -189,7 +239,7 @@ async def test_nutzlast_hat_keine_null_werte(echte_settings: Settings) -> None:
     client, transport = _client(
         echte_settings, Aufzeichnung(_antwort({"id": "job-1"}))
     )
-    await client.submit(file_b64="AAAA", backend="vlm-auto-engine", transport="tarball_b64")
+    await _absenden(client, file_b64="AAAA", transport="tarball_b64")
 
     def enthaelt_null(wert: Any) -> bool:
         if wert is None:
@@ -210,14 +260,12 @@ async def test_seitenbereich_wird_nur_gesendet_wenn_gesetzt(
     """Ohne Angabe stehen `start_page` und `end_page` nicht in der Nutzlast —
     insbesondere wird keine `-1` gesendet."""
     client, ohne = _client(echte_settings, Aufzeichnung(_antwort({"id": "a"})))
-    await client.submit(file_b64="A", backend="b", transport="t")
+    await _absenden(client)
     assert "start_page" not in ohne.nutzlast["input"]
     assert "end_page" not in ohne.nutzlast["input"]
 
     client2, mit = _client(echte_settings, Aufzeichnung(_antwort({"id": "b"})))
-    await client2.submit(
-        file_b64="A", backend="b", transport="t", start_page=0, end_page=19
-    )
+    await _absenden(client2, start_page=0, end_page=19)
     assert mit.nutzlast["input"]["start_page"] == 0
     assert mit.nutzlast["input"]["end_page"] == 19
 
@@ -230,7 +278,7 @@ async def test_schluessel_steht_nur_im_header(echte_settings: Settings) -> None:
         Aufzeichnung(httpx.Response(400, text="Payload too large")),
     )
     with pytest.raises(TerminalRunPodError) as fehler:
-        await client.submit(file_b64="A", backend="b", transport="t")
+        await _absenden(client)
 
     anfrage = transport.anfragen[0]
     assert anfrage.headers["Authorization"] == f"Bearer {SCHLUESSEL}"
@@ -325,7 +373,7 @@ async def test_402_ergibt_kontostands_ausnahme(echte_settings: Settings) -> None
         echte_settings, Aufzeichnung(httpx.Response(402, text="Insufficient Balance"))
     )
     with pytest.raises(InsufficientBalanceError):
-        await client.submit(file_b64="A", backend="b", transport="t")
+        await _absenden(client)
 
 
 async def test_401_und_403_sind_konfigurationsfehler(
@@ -343,7 +391,7 @@ async def test_401_und_403_sind_konfigurationsfehler(
             echte_settings, Aufzeichnung(httpx.Response(code, text="invalid api key"))
         )
         with pytest.raises(ConfigurationError) as fehler:
-            await client.submit(file_b64="A", backend="b", transport="t")
+            await _absenden(client)
         assert "testendpoint" in str(fehler.value)
 
 
@@ -354,7 +402,7 @@ async def test_5xx_ist_wiederholbar(echte_settings: Settings) -> None:
             echte_settings, Aufzeichnung(httpx.Response(code, text="boom"))
         )
         with pytest.raises(TransientRunPodError):
-            await client.submit(file_b64="A", backend="b", transport="t")
+            await _absenden(client)
 
 
 async def test_transportfehler_ist_wiederholbar(echte_settings: Settings) -> None:
@@ -366,7 +414,7 @@ async def test_transportfehler_ist_wiederholbar(echte_settings: Settings) -> Non
     http = httpx.AsyncClient(transport=httpx.MockTransport(wirft))
     client = RunPodClient(echte_settings, http=http)
     with pytest.raises(TransientRunPodError):
-        await client.submit(file_b64="A", backend="b", transport="t")
+        await _absenden(client)
 
 
 async def test_antwort_ohne_kennung_wirft_mit_voller_antwort(
@@ -382,7 +430,7 @@ async def test_antwort_ohne_kennung_wirft_mit_voller_antwort(
         echte_settings, Aufzeichnung(_antwort({"status": "IN_QUEUE", "irgendwas": 7}))
     )
     with pytest.raises(TerminalRunPodError) as fehler:
-        await client.submit(file_b64="A", backend="b", transport="t")
+        await _absenden(client)
     assert "irgendwas" in str(fehler.value)
     assert "bezahlt" in str(fehler.value)
 

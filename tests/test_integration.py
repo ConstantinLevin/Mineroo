@@ -30,6 +30,7 @@ from procrastinate.jobs import Job
 from procrastinate.manager import JobManager
 from psycopg_pool import NullConnectionPool
 
+import ersatz_antworten as ersatz
 from mineru_ocr import config, daemon, db, tasks
 from mineru_ocr.client import OCRClient
 from mineru_ocr.config import Settings
@@ -108,7 +109,7 @@ class ProtokollRunPod:
     """RunPod-Doppel mit steuerbarem Verhalten je Aufruf."""
 
     def __init__(self, verhalten: Any = None) -> None:
-        self.verhalten = verhalten or (lambda nr: _fertig())
+        self.verhalten = verhalten or (lambda nr: ersatz.fertige_antwort())
         self.aufrufe = 0
         self.dateien: list[bytes] = []
         self.gestartet = asyncio.Event()
@@ -138,25 +139,6 @@ class ProtokollRunPod:
 
     async def aclose(self) -> None:
         return None
-
-
-def _fertig(markdown: str = "Text") -> dict[str, Any]:
-    return {
-        "id": "erfunden",
-        "status": "COMPLETED",
-        "workerId": "wrk",
-        "output": {
-            "ok": True,
-            "results": [
-                {
-                    "markdown": markdown,
-                    "content_list": [{"type": "text", "text": markdown, "page_idx": 0}],
-                    "images": {},
-                    "middle": {},
-                }
-            ],
-        },
-    }
 
 
 PNG_KOPF = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
@@ -595,7 +577,7 @@ async def test_retry_von_hand_verarbeitet_wirklich_neu(
     assert danach[0] >= ereignisse_vorher[0]
 
     # Zweiter Durchlauf: er muss WIRKLICH neu verarbeiten.
-    gelingend = ProtokollRunPod(lambda nr: _fertig("Beim zweiten Mal geklappt"))
+    gelingend = ProtokollRunPod(lambda nr: ersatz.fertige_antwort("Beim zweiten Mal geklappt"))
 
     async def gelungen() -> bool:
         zeile = get_document(db_conn, sha)
@@ -719,7 +701,7 @@ async def test_abbruch_beim_herunterfahren_wird_neu_eingereiht(
     # einreiht, und das Dokument laeuft durch. Er behaelt erfolgreiche Jobs
     # (`delete_jobs="never"`), sonst loeschte er ihn (Mineroo#26), und es liesse
     # sich nicht mehr sehen, welcher Job das Ergebnis schrieb.
-    gelingend = ProtokollRunPod(lambda nr: _fertig("Nach dem Neustart"))
+    gelingend = ProtokollRunPod(lambda nr: ersatz.fertige_antwort("Nach dem Neustart"))
 
     async def fertig() -> bool:
         z = get_document(db_conn, sha)
@@ -1909,7 +1891,7 @@ async def test_lange_in_der_warteschlange_ist_kein_grund_aufzugeben(
     def status(job: str, nr: int, sekunden: float) -> dict[str, Any]:
         if sekunden < 0.9:
             return {"id": job, "status": "IN_QUEUE"}
-        return {**_fertig(), "id": job}
+        return {**ersatz.fertige_antwort(), "id": job}
 
     gegenstelle = ErsatzRunPodHttp(status)
     runpod = _runpod_ueber_http(knapp, gegenstelle)
@@ -2040,7 +2022,7 @@ async def test_retry_setzt_einen_gescheiterten_job_zurueck_und_ein_warten_anders
 
     warter = threading.Thread(target=anderswo_warten)
     warter.start()
-    gelingend = ProtokollRunPod(lambda nr: _fertig("Beim zweiten Mal"))
+    gelingend = ProtokollRunPod(lambda nr: ersatz.fertige_antwort("Beim zweiten Mal"))
 
     async def fertig() -> bool:
         return not warter.is_alive()

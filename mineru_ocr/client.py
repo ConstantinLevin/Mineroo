@@ -339,7 +339,6 @@ class OCRClient:
         preflight: bool = True,
         strict: bool = True,
         min_balance: float = 1.0,
-        backend: str = "vlm-auto-engine",
         schema_check: bool = True,
     ) -> None:
         """Baut den Client. Die Angaben gehen an `Settings.load`.
@@ -360,7 +359,6 @@ class OCRClient:
                 beides weiter.
             strict: Ob eine Abweichung der Endpoint-Konfiguration abbricht.
             min_balance: Untergrenze fuer den Preflight.
-            backend: Wird beim Einreihen als Task-Angabe mitgegeben.
             schema_check: Ob beim Betreten das Schema geprueft wird
                 (`db.check_schema`). Aus nur fuer den, der weder `documents` noch
                 `inputs` liest: das Kommando `preflight`, das jederzeit laufen
@@ -373,7 +371,6 @@ class OCRClient:
             endpoint_id=endpoint_id,
             api_key=api_key,
             strict=strict,
-            backend=backend,
             min_balance_start_usd=min_balance,
         )
         self._preflight_gewuenscht = preflight
