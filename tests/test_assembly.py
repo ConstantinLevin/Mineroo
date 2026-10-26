@@ -15,6 +15,7 @@ import copy
 import dataclasses
 import io
 import json
+import random
 import re
 import tarfile
 import time
@@ -356,6 +357,38 @@ def test_ein_kleiner_als_vor_src_beendet_das_tag_nicht(alt: str) -> None:
         _html_nach_zusammensetzen(inhalt)
         == f'<img alt={alt} src="images/teilstueck_0/page_0_image_1.jpg">'
     )
+
+
+_DOCVORTEX_HTML_BILDQUELLE = re.compile(
+    r"(?P<prefix><img\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*?\s+src\s*=\s*)"
+    r"(?:(?P<quote>[\"'])(?P<quoted>.*?)(?P=quote)|(?P<unquoted>[^\s>]+))",
+    re.IGNORECASE | re.DOTALL,
+)
+"""`_HTML_IMAGE_SOURCE_RE` aus DocVortex 0.5.16 (`export/_images.py`), woertlich."""
+
+
+def test_html_quellen_werden_umbenannt_wie_docvortex_sie_findet() -> None:
+    """Auf zufaelligen Bruchstuecken aus `<img`, `src=`, `<`, `>` und Leerraum
+    (ohne Anfuehrungszeichen, ohne `(` und nie mit dem Pfad am Anfang, damit nur
+    die HTML-Regel greift) wird genau die Quelle umbenannt, die DocVortex als
+    Bild ablegt. Die Saat ist fest; die Grenze mit Anfuehrungszeichen nennt der
+    Docstring von `_HTML_BILDQUELLE`."""
+    alt = ersatz.bild_pfad(0, 1)
+    neu = "images/teilstueck_0/page_0_image_1.jpg"
+    bausteine = [
+        "<img", "<IMG", "<imgx", "<im", " ", "  ", "\n", "src", "SRC", "src=", "src =",
+        "=", ">", "<", "<b", "a", alt, "alt=", "<img src=", "<IMG SRC=",
+    ]
+
+    def wie_docvortex(treffer: re.Match[str]) -> str:
+        quelle = treffer.group("unquoted")
+        return f"{treffer.group('prefix')}{neu if quelle == alt else quelle}"
+
+    zufall = random.Random(11)
+    for _ in range(2_000):
+        inhalt = "x" + "".join(zufall.choice(bausteine) for _ in range(zufall.randint(1, 30)))
+        erwartet = _DOCVORTEX_HTML_BILDQUELLE.sub(wie_docvortex, inhalt)
+        assert _html_nach_zusammensetzen(inhalt) == erwartet, inhalt
 
 
 def test_ein_name_ist_kein_praefix_eines_anderen() -> None:
