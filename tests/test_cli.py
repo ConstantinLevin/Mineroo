@@ -47,7 +47,7 @@ class Zugang:
             "id": "testendpoint",
             "workersMin": 0,
             "workersMax": 10,
-            "idleTimeout": 60,
+            "idleTimeout": 5,
             "executionTimeoutMs": 300000,
             "workers": [],
         }

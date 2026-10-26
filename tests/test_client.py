@@ -118,7 +118,7 @@ def _guter_endpoint(**abweichungen: Any) -> dict[str, Any]:
         "name": "mineru-runpod",
         "workersMin": 0,
         "workersMax": 10,
-        "idleTimeout": 60,
+        "idleTimeout": 5,
         "executionTimeoutMs": 300000,
         "templateId": "5wv9rko6zv",
         "gpuTypeIds": ["NVIDIA GeForce RTX 4090"],
@@ -744,19 +744,22 @@ def test_sollwerte_des_endpoints_kommen_aus_der_konfiguration(
 def test_preflight_erwartet_die_zeitgrenzen_die_am_endpoint_stehen(
     _test_datenbank: str, db_conn: psycopg.Connection[Any], runpod: RunPodAntworten
 ) -> None:
-    """Mineroo#20: Ohne Einstellung erwartet der Preflight `executionTimeoutMs`
-    300000 und `idleTimeout` 60, die Werte am Endpoint seit dem 26.10.2026. Der
-    alte Wert 600000 ist eine Abweichung."""
+    """Mineroo#19 und #20: Ohne Einstellung erwartet der Preflight
+    `executionTimeoutMs` 300000 und `idleTimeout` 5, die Werte am Endpoint.
+    Die alten Werte 600000 und 60 sind Abweichungen."""
     _worker_am_leben(db_conn)
     befund = _pruefen(_test_datenbank)
     ausfuehrung = _befund(befund, "executionTimeoutMs")
     assert (ausfuehrung["soll"], ausfuehrung["bewertung"]) == (300000, "in_ordnung")
     leerlauf = _befund(befund, "idleTimeout")
-    assert (leerlauf["soll"], leerlauf["bewertung"]) == (60, "in_ordnung")
+    assert (leerlauf["soll"], leerlauf["bewertung"]) == (5, "in_ordnung")
 
-    runpod.endpoint = _guter_endpoint(executionTimeoutMs=600000)
-    ausfuehrung = _befund(_pruefen(_test_datenbank), "executionTimeoutMs")
+    runpod.endpoint = _guter_endpoint(executionTimeoutMs=600000, idleTimeout=60)
+    befund = _pruefen(_test_datenbank)
+    ausfuehrung = _befund(befund, "executionTimeoutMs")
     assert (ausfuehrung["ist"], ausfuehrung["bewertung"]) == (600000, "abweichung")
+    leerlauf = _befund(befund, "idleTimeout")
+    assert (leerlauf["ist"], leerlauf["bewertung"]) == (60, "abweichung")
 
 
 def test_workers_max_wird_auf_den_sollwert_geprueft(

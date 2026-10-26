@@ -155,6 +155,13 @@ Abschnitt 8.2). Keine Rechenzeit kosten ein
 Treffer, das Warten und das Abholen (`wait`, `get`, `show`, `markdown`). `retry`
 lässt ein Dokument ohne gültiges Ergebnis neu lesen und bezahlt es neu.
 
+Der Eigentümer hat die Leerlaufzeit auf **5 s** festgelegt; am Endpoint
+`csfbvej3d4cna5` ist `idleTimeout` so gesetzt, und der Preflight erwartet diesen
+Wert als Voreinstellung (`idle_timeout`). FlashBoot holte einen
+herunterskalierten Worker nach 4,5 min Leerlauf in 1,3 s zurück; längeres
+Warmhalten kostet nur Geld. Nach 15 min Pause gab es ohnehin einen Kaltstart
+von rund 2 min (Mineroo#19).
+
 Schick ab, was der Nutzer genannt hat. Willst du darüber hinaus weitere Dokumente
 lesen lassen oder ein `retry` auslösen, fragst du ihn vorher.
 

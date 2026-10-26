@@ -326,4 +326,4 @@ Alle Zeiten stammen aus dem Rohergebnis (`raw.envelopes[*]`: `delayTime`, `execu
 
 **`executionTimeout`** steht seit dem 26.10.2026 auf **300 s** (vorher 600 s). Das längste Teilstück lief 17,8 s, die langsamste Seite 5,0 s. 20 Seiten × 5 s ergeben 100 s, dazu ein dreifacher Puffer. Der Sollwert des Preflights (`execution_timeout_ms`, Voreinstellung 600000) muss folgen.
 
-**Leerlaufzeit:** bleibt Entscheidung des Eigentümers. Die Grundlage sind die drei Kaltstart-Zeilen oben. Bis 4,5 min Leerlauf kostet ein neuer Job 1,3 s, nach 15 min wieder rund 2 min. Wo die Grenze dazwischen liegt, ist nicht gemessen.
+**Leerlaufzeit:** Der Eigentümer hat **5 s** festgelegt (Mineroo#19); am Endpoint `csfbvej3d4cna5` steht `idleTimeout` bereits auf 5 (vorher 60). Der Preflight folgt mit der Voreinstellung `idle_timeout = 5`. Begründung: FlashBoot holte einen herunterskalierten Worker nach 4,5 min Leerlauf in 1,3 s zurück; längeres Warmhalten kostet nur Geld. Nach langer Pause (15 min) gab es ohnehin einen Kaltstart von rund 2 min. Wo die Grenze dazwischen liegt, ist nicht gemessen.
