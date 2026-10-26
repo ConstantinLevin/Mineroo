@@ -139,8 +139,14 @@ Betreiber ein.
 
 Bezahlt wird die Rechenzeit der Worker bei RunPod: für jedes Dokument, das neu
 gelesen wird, dazu der Kaltstart eines Workers und seine Leerlaufzeit nach dem
-letzten Job. Was eine Seite kostet, ist noch nicht gemessen (Mineroo#19); fragt
-der Nutzer nach dem Preis, sagst du ihm genau das. Keine Rechenzeit kosten ein
+letzten Job. Gemessen ist das einmal (Mineroo#19; MinerU 4.0.12, Stufe
+`advanced` mit OCR und Bildanalyse, eine RTX 4090): Die Rechenzeit kostet rund
+0,0006 USD je Seite. Ein Lauf von 20 Dokumenten mit 102 Seiten kostete mit
+Kaltstarts und Leerlauf rund 0,003 USD je Seite; je kleiner der Lauf, desto mehr
+fallen Kaltstart und Leerlauf je Seite ins Gewicht. Fragt der Nutzer nach dem
+Preis, nennst du ihm diese Messung als Größenordnung, nicht als Zusage
+(Einzelheiten in `docs/MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md`,
+Abschnitt 8.2). Keine Rechenzeit kosten ein
 Treffer, das Warten und das Abholen (`wait`, `get`, `show`, `markdown`). `retry`
 lässt ein Dokument ohne gültiges Ergebnis neu lesen und bezahlt es neu.
 
