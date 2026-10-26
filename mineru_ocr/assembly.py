@@ -583,9 +583,10 @@ ohne Leerraum, Leerraum, auf den kein `src=` folgt, und Werte in
 Anfuehrungszeichen, die ersten beiden possessiv (sie werden nie anders
 aufgeteilt), und ein `<` ausserhalb von Anfuehrungszeichen beendet das Tag. So
 braucht er lineare Zeit und findet auf allen Zeichenketten der echten Antworten
-und den bekannten HTML-Formen dieselben Quellen wie DocVortex. DocVortex' Ausdruck brauchte fuer ein `<img` ohne
-`>` oder mit viel Leerraum quadratische Zeit, und das Zusammensetzen laeuft im
-Daemon synchron: Ein entgleistes Dokument hielte alle Jobs an."""
+und den bekannten HTML-Formen dieselben Quellen wie DocVortex. DocVortex'
+Ausdruck brauchte fuer ein `<img` ohne `>` oder mit viel Leerraum quadratische
+Zeit, und das Zusammensetzen laeuft im Daemon synchron: Ein entgleistes
+Dokument hielte alle Jobs an."""
 
 
 def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:
