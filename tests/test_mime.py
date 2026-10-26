@@ -56,6 +56,118 @@ def _gewoehnliches_zip() -> bytes:
     return puffer.getvalue()
 
 
+def _zip(eintraege: dict[str, str]) -> bytes:
+    """Ein ZIP mit genau diesen Eintraegen, in dieser Reihenfolge."""
+    puffer = io.BytesIO()
+    with zipfile.ZipFile(puffer, "w", zipfile.ZIP_DEFLATED) as archiv:
+        for name, inhalt in eintraege.items():
+            archiv.writestr(name, inhalt)
+    return puffer.getvalue()
+
+
+def _opendocument(mimetype: str) -> bytes:
+    """Ein OpenDocument-Paket, wie die Spezifikation (ODF 1.2, Teil 3, 3.3) es
+    verlangt: `mimetype` als erster Eintrag, ungepackt."""
+    puffer = io.BytesIO()
+    with zipfile.ZipFile(puffer, "w") as archiv:
+        archiv.writestr("mimetype", mimetype, compress_type=zipfile.ZIP_STORED)
+        archiv.writestr("content.xml", "<office:document-content/>")
+        archiv.writestr("META-INF/manifest.xml", "<manifest:manifest/>")
+    return puffer.getvalue()
+
+
+_MANIFEST = (
+    '<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:'
+    'manifest:1.0"><manifest:file-entry manifest:full-path="/" '
+    'manifest:media-type="{typ}"/></manifest:manifest>'
+)
+
+_CONTAINER = (
+    '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" '
+    'version="1.0"><rootfiles><rootfile full-path="OEBPS/inhalt.opf" '
+    'media-type="application/oebps-package+xml"/></rootfiles></container>'
+)
+
+OLE2_KOPF = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504
+"""Der Kopfsektor eines OLE2-Containers (Compound File Binary, MS-CFB 2.2): die
+acht Kennbytes, der Rest leer. Mehr braucht die Vorerkennung nicht."""
+
+MHTML = (
+    b"From: <Gespeichert von einem Browser>\r\n"
+    b"Snapshot-Content-Location: https://beispiel.invalid/hausmitteilung\r\n"
+    b"Subject: Hausmitteilung\r\n"
+    b"MIME-Version: 1.0\r\n"
+    b'Content-Type: multipart/related;\r\n\ttype="text/html";\r\n'
+    b'\tboundary="----Grenze-1234"\r\n\r\n'
+    b"------Grenze-1234\r\nContent-Type: text/html\r\n\r\n"
+    b"<html><body><p>Heizzeiten</p></body></html>\r\n"
+    b"------Grenze-1234--\r\n"
+)
+"""Eine MHTML-Datei, wie ein Browser sie speichert (RFC 2557): ein Kopf nach
+RFC 5322 mit `multipart/related` und einer Grenze."""
+
+GANZDOKUMENTE: dict[str, tuple[bytes, DocumentType]] = {
+    "ole2": (OLE2_KOPF, DocumentType.OLE2),
+    "odt": (_opendocument("application/vnd.oasis.opendocument.text"), DocumentType.ODT),
+    "ods": (
+        _opendocument("application/vnd.oasis.opendocument.spreadsheet"),
+        DocumentType.ODS,
+    ),
+    "odp": (
+        _opendocument("application/vnd.oasis.opendocument.presentation"),
+        DocumentType.ODP,
+    ),
+    "odt-nur-manifest": (
+        _zip(
+            {
+                "content.xml": "<office:document-content/>",
+                "META-INF/manifest.xml": _MANIFEST.format(
+                    typ="application/vnd.oasis.opendocument.text"
+                ),
+            }
+        ),
+        DocumentType.ODT,
+    ),
+    "epub": (
+        _zip(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": _CONTAINER,
+                "OEBPS/inhalt.opf": "<package/>",
+            }
+        ),
+        DocumentType.EPUB,
+    ),
+    "epub-nur-container": (
+        _zip({"META-INF/container.xml": _CONTAINER, "OEBPS/inhalt.opf": "<package/>"}),
+        DocumentType.EPUB,
+    ),
+    "ofd": (
+        _zip({"OFD.xml": '<ofd:OFD xmlns:ofd="http://www.ofdspec.org/2016"/>'}),
+        DocumentType.OFD,
+    ),
+    "rtf": (b"{\\rtf1\\ansi\\deff0 {\\fonttbl{\\f0 Arial;}}Heizzeiten\\par}", DocumentType.RTF),
+    "rtf-mit-bom-und-leerraum": (
+        b"\xef\xbb\xbf" + b" \r\n" * 21 + b"\t{\\rtf1 Heizzeiten}",
+        DocumentType.RTF,
+    ),
+    "mhtml": (MHTML, DocumentType.MHTML),
+    "html-doctype": (
+        b'<!DOCTYPE html>\n<html lang="de"><body>Heizzeiten</body></html>',
+        DocumentType.HTML,
+    ),
+    "html-doctype-klein": (b"<!doctype HTML><p>Heizzeiten</p>", DocumentType.HTML),
+    "html-ohne-doctype": (b"<html><body>Heizzeiten</body></html>", DocumentType.HTML),
+    "html-mit-bom-und-leerraum": (
+        b"\xef\xbb\xbf\n\n  <HTML lang=de><body>Heizzeiten</body></HTML>",
+        DocumentType.HTML,
+    ),
+}
+"""Je Ganzdokument-Format ein erfundenes Muster, so klein, wie die Vorerkennung es
+braucht. Woran MinerU sie erkennt, steht in DocVortex 0.5.16,
+`document/detection.py` und `document/filetypes.py`."""
+
+
 # --- Erkennung ------------------------------------------------------------
 
 
@@ -87,6 +199,123 @@ def test_office_archive_werden_unterschieden(
     datei = tmp_path / "probe.zip"
     datei.write_bytes(daten)
     assert sniff_path(datei) is erwartet
+
+
+@pytest.mark.parametrize("name", list(GANZDOKUMENTE))
+def test_ganzdokument_formate_werden_am_inhalt_erkannt(name: str, tmp_path: Path) -> None:
+    """Die Ganzdokument-Formate, die MinerU 4 liest, laesst die Vorerkennung durch
+    (Mineroo#17): jeden OLE2-Container, ZIP-Container mit dem Aufbau von
+    OpenDocument, EPUB oder OFD, RTF und MHTML an ihrem Kopf, HTML an seinem
+    Anfang — aus Bytes und von der Platte."""
+    daten, erwartet = GANZDOKUMENTE[name]
+    assert sniff_bytes(daten) is erwartet
+
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    assert sniff_path(datei) is erwartet
+
+
+@pytest.mark.parametrize(
+    "daten",
+    [
+        # Text und Daten ohne Kennung: CSV und TSV liest das Paket nicht (Mineroo#1,
+        # Out of Scope).
+        b"Gebaeude;Heizbeginn;Heizende\nHalle 1;06:00;18:00\n",
+        b"Gebaeude\tHeizbeginn\nHalle 1\t06:00\n",
+        b'{"gebaeude": "Halle 1", "heizbeginn": "06:00"}',
+        b'<?xml version="1.0"?><heizplan><halle>1</halle></heizplan>',
+        b"# Heizzeiten\n\nAb dem 1. November gelten neue Zeiten.\n",
+        # HTML nicht an seinem Anfang, sondern irgendwo im Text.
+        b"Notiz zur Seite: <html> fehlt noch\n",
+        # Ein Tag, der nur mit `html` beginnt.
+        b"<htmlish>Heizzeiten</htmlish>",
+        # RTF nicht an seinem Kopf, oder ohne Versionsnummer.
+        b"Hallo {\\rtf1 Heizzeiten}",
+        b"{\\rtf Heizzeiten}",
+        b" " * 65 + b"{\\rtf1 Heizzeiten}",
+        # Eine E-Mail ohne `multipart/related` ist kein MHTML.
+        b"From: hausverwaltung@beispiel.invalid\r\nMIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/mixed; boundary="x"\r\n\r\n--x\r\n\r\nText\r\n--x--\r\n',
+        # `multipart/related` ohne Grenze traegt keine Teile.
+        b"MIME-Version: 1.0\r\nContent-Type: multipart/related\r\n\r\n<html></html>",
+        # Die acht Kennbytes von OLE2, abgeschnitten.
+        OLE2_KOPF[:7],
+    ],
+    ids=[
+        "csv", "tsv", "json", "xml", "markdown", "html-mitten-im-text", "htmlish",
+        "rtf-nicht-am-kopf", "rtf-ohne-version", "rtf-nach-zu-viel-leerraum",
+        "mail-multipart-mixed", "mhtml-ohne-grenze", "ole2-abgeschnitten",
+    ],
+)
+def test_offensichtlich_fremdes_wird_zurueckgehalten(daten: bytes, tmp_path: Path) -> None:
+    """Was keine Kennung eines Formats traegt, das MinerU liest, geht nicht an
+    RunPod (Mineroo#17)."""
+    with pytest.raises(UnsupportedTypeError):
+        sniff_bytes(daten)
+
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    with pytest.raises(UnsupportedTypeError):
+        sniff_path(datei)
+
+
+@pytest.mark.parametrize(
+    "eintraege",
+    [
+        # OpenDocument-Zeichnung und -Formel: Aufbau von OpenDocument, aber kein
+        # Typ, den MinerU liest (DocVortex 0.5.16 kennt nur ODT, ODS und ODP).
+        {"mimetype": "application/vnd.oasis.opendocument.graphics"},
+        {"mimetype": "application/vnd.oasis.opendocument.formula"},
+        # Eine Datei namens `mimetype` mit fremdem Inhalt.
+        {"mimetype": "text/plain"},
+        # Verwaltungsdateien, die nur so heissen wie die eines Formats.
+        {"META-INF/manifest.xml": "<kein-manifest/>"},
+        {"daten/OFD.xml": "<OFD/>"},
+    ],
+    ids=["odg", "odf-formel", "mimetype-fremd", "manifest-ohne-wurzel", "ofd-nicht-an-der-wurzel"],
+)
+def test_zip_ohne_den_aufbau_eines_formats_wird_zurueckgehalten(
+    eintraege: dict[str, str],
+) -> None:
+    """Ein ZIP geht nur durch, wenn es den Aufbau von OOXML, OpenDocument, EPUB
+    oder OFD hat. Ein Teil davon genuegt nicht."""
+    with pytest.raises(UnsupportedTypeError):
+        sniff_bytes(_zip(eintraege))
+
+
+def test_ganzdokument_formate_werden_nicht_am_namen_erkannt(tmp_path: Path) -> None:
+    """Der Name einer Datei sagt nichts (Mineroo#17): Ein DOCX namens `.txt` ist
+    ein DOCX, ein Text namens `.rtf`, `.html` oder `.odt` ist kein Dokument."""
+    datei = tmp_path / "notiz.txt"
+    datei.write_bytes(_office_zip("word/"))
+    assert sniff_path(datei) is DocumentType.DOCX
+
+    for name in ("bericht.rtf", "seite.html", "seite.mhtml", "text.odt", "alt.doc"):
+        datei = tmp_path / name
+        datei.write_bytes(b"Sehr geehrte Damen und Herren,\n")
+        with pytest.raises(UnsupportedTypeError):
+            sniff_path(datei)
+
+
+def test_die_vorerkennung_liest_so_viel_wie_die_kennungen_brauchen(tmp_path: Path) -> None:
+    """Statt der frueheren 16 Bytes liest `sniff_file` so viel vom Anfang, wie die
+    Kennungen brauchen: Der MHTML-Kopf nennt `multipart/related` oft erst nach
+    hunderten Bytes (DocVortex liest bis 64 KiB), und RTF darf nach bis zu 64
+    Leerzeichen beginnen (DocVortex prueft 128 Bytes)."""
+    kopfzeilen = b"".join(
+        b"X-Kopfzeile-%d: %s\r\n" % (n, b"w" * 900) for n in range(60)
+    )
+    weit = kopfzeilen + MHTML
+    assert len(weit.split(b"multipart/related")[0]) > 50_000
+    datei = tmp_path / "weit.mhtml"
+    datei.write_bytes(weit)
+    assert sniff_path(datei) is DocumentType.MHTML
+    assert sniff_bytes(weit) is DocumentType.MHTML
+
+    rtf = b"\xef\xbb\xbf" + b" " * 64 + b"{\\rtf1 Heizzeiten}"
+    datei = tmp_path / "weit.rtf"
+    datei.write_bytes(rtf)
+    assert sniff_path(datei) is DocumentType.RTF
 
 
 def test_endung_wird_ignoriert(tmp_path: Path) -> None:
@@ -153,6 +382,23 @@ def test_meldung_traegt_die_vollen_kopfbytes() -> None:
     assert repr(daten) in str(fehler.value)
 
 
+def test_meldung_nennt_die_kennbytes_nicht_den_ganzen_gelesenen_kopf(tmp_path: Path) -> None:
+    """Gelesen werden bis zu 64 KiB; die Meldung nennt davon die ersten 16 Bytes
+    ungekuerzt, die Kennbytes, an denen man den Typ von Hand nachschlaegt. Der
+    ganze Kopf stuende sonst in `error` und auf stderr."""
+    daten = b"Sehr geehrte Damen und Herren, " * 4000
+    datei = tmp_path / "brief"
+    datei.write_bytes(daten)
+    for von_der_platte in (False, True):
+        with pytest.raises(UnsupportedTypeError) as fehler:
+            if von_der_platte:
+                sniff_path(datei)
+            else:
+                sniff_bytes(daten)
+        assert repr(daten[:16]) in str(fehler.value)
+        assert len(str(fehler.value)) < 500
+
+
 def test_sniff_bytes_braucht_die_ganzen_bytes_beim_zip() -> None:
     """Ein abgeschnittener DOCX-Puffer ergibt UnsupportedTypeError statt eines
     falschen Treffers — das Archivverzeichnis steht am ENDE der Datei.
@@ -200,6 +446,28 @@ def test_bilder_sind_genau_die_bildtypen() -> None:
         assert typ.is_image is (typ in bilder), typ
 
 
+def test_ganzdokument_formate_sind_alles_ausser_pdf_und_bildern() -> None:
+    """MinerU 4 liest alles ausser PDF und Bildern als ganzes Dokument, ohne
+    Seiten (Mineroo#1, Worker, „Dateitypen"): Office, OpenDocument, RTF, EPUB,
+    OFD, HTML und MHTML."""
+    for typ in DocumentType:
+        assert typ.is_whole_document is not (typ.is_pdf or typ.is_image), typ
+    assert {typ for typ in DocumentType if typ.is_whole_document} == {
+        DocumentType.DOCX,
+        DocumentType.PPTX,
+        DocumentType.XLSX,
+        DocumentType.OLE2,
+        DocumentType.ODT,
+        DocumentType.ODS,
+        DocumentType.ODP,
+        DocumentType.RTF,
+        DocumentType.EPUB,
+        DocumentType.OFD,
+        DocumentType.HTML,
+        DocumentType.MHTML,
+    }
+
+
 def test_jeder_typ_hat_mime_und_endung() -> None:
     """Die Tabelle ist vollstaendig — ein Typ ohne Eintrag flaege erst beim
     Anlegen einer Zeile auf."""
@@ -226,6 +494,36 @@ def test_die_tabelle_ist_festgeschrieben() -> None:
     assert DocumentType.DOCX.suffix == ".docx"
     assert DocumentType.XLSX.suffix == ".xlsx"
     assert DocumentType.PPTX.suffix == ".pptx"
+    # Die Ganzdokument-Formate aus Mineroo#17; die Zeichenketten sind die von
+    # DocVortex 0.5.16 (`document/filetypes.py`, `MIME_TYPE_BY_EXTENSION`), ausser
+    # fuer OLE2, das das Paket nicht weiter unterscheidet.
+    assert (DocumentType.OLE2.mime, DocumentType.OLE2.suffix) == (
+        "application/x-ole-storage",
+        ".cfb",
+    )
+    assert (DocumentType.ODT.mime, DocumentType.ODT.suffix) == (
+        "application/vnd.oasis.opendocument.text",
+        ".odt",
+    )
+    assert (DocumentType.ODS.mime, DocumentType.ODS.suffix) == (
+        "application/vnd.oasis.opendocument.spreadsheet",
+        ".ods",
+    )
+    assert (DocumentType.ODP.mime, DocumentType.ODP.suffix) == (
+        "application/vnd.oasis.opendocument.presentation",
+        ".odp",
+    )
+    assert (DocumentType.RTF.mime, DocumentType.RTF.suffix) == ("application/rtf", ".rtf")
+    assert (DocumentType.EPUB.mime, DocumentType.EPUB.suffix) == (
+        "application/epub+zip",
+        ".epub",
+    )
+    assert (DocumentType.OFD.mime, DocumentType.OFD.suffix) == ("application/ofd", ".ofd")
+    assert (DocumentType.HTML.mime, DocumentType.HTML.suffix) == ("text/html", ".html")
+    assert (DocumentType.MHTML.mime, DocumentType.MHTML.suffix) == (
+        "multipart/related",
+        ".mhtml",
+    )
 
 
 def test_endungen_sind_eindeutig() -> None:
