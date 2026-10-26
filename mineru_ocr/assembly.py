@@ -569,7 +569,8 @@ T = TypeVar("T")
 
 
 _HTML_BILDQUELLE: Final = re.compile(
-    r"(?P<vor><img\b(?:[^<>\"'\s]++|\s++(?!src\s*=)|\"[^\"]*\"|'[^']*')*\s+src\s*=\s*)"
+    r"(?P<vor><img\b(?:[^<>\"'\s]++|\s++(?!src\s*=)|<(?!img\b)|\"[^\"]*\"|'[^']*')*"
+    r"\s+src\s*=\s*)"
     r"(?:(?P<anfuehrung>[\"'])(?P<gequotet>.*?)(?P=anfuehrung)|(?P<ungequotet>[^\s>]+))",
     re.IGNORECASE | re.DOTALL,
 )
@@ -579,14 +580,22 @@ Bilder visuellen HTMLs ablegt (`export/_images.py`, `_HTML_IMAGE_SOURCE_RE`):
 DocVortex ersetzt nur den Wert und behaelt den Rest, wie das Modell ihn schrieb.
 
 Anders als bei DocVortex liest der Ausdruck die Attribute vor `src` als Folgen
-ohne Leerraum, Leerraum, auf den kein `src=` folgt, und Werte in
-Anfuehrungszeichen, die ersten beiden possessiv (sie werden nie anders
-aufgeteilt), und ein `<` ausserhalb von Anfuehrungszeichen beendet das Tag. So
-braucht er lineare Zeit und findet auf allen Zeichenketten der echten Antworten
-und den bekannten HTML-Formen dieselben Quellen wie DocVortex. DocVortex'
+ohne Leerraum, Leerraum, auf den kein `src=` folgt, ein `<`, das kein neues
+`<img` beginnt, und Werte in Anfuehrungszeichen, die ersten beiden possessiv
+(sie werden nie anders aufgeteilt). Ein `<img` ausserhalb von
+Anfuehrungszeichen beendet das Tag. So braucht er lineare Zeit. DocVortex'
 Ausdruck brauchte fuer ein `<img` ohne `>` oder mit viel Leerraum quadratische
 Zeit, und das Zusammensetzen laeuft im Daemon synchron: Ein entgleistes
-Dokument hielte alle Jobs an."""
+Dokument hielte alle Jobs an.
+
+Die echten Antworten tragen kein `<img`, sagen also nichts ueber die
+Gleichwertigkeit. Gemessen ist sie an zufaelligen Bruchstuecken aus `<img`,
+`src=`, `<`, `>`, Leerraum und Anfuehrungszeichen: Ohne Anfuehrungszeichen
+findet der Ausdruck dieselben Quellen wie DocVortex. Abweichen kann er nur,
+wenn ein `<img` ohne `>` einen Wert in Anfuehrungszeichen verschluckt, in dem
+ein weiteres `<img … src=…>` steht, und danach ueber ein `<img` ausserhalb
+der Anfuehrungszeichen weiterlaeuft: DocVortex legt dann das Bild hinter dem
+verschluckten Wert ab, der Ausdruck benennt die Quelle darin um."""
 
 
 def _verweise_umbenannt(wert: T, umbenannt: Mapping[str, str]) -> T:

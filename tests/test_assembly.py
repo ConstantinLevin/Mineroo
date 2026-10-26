@@ -346,6 +346,18 @@ def test_eine_html_quelle_wird_nur_als_ganzes_umbenannt() -> None:
     assert _html_nach_zusammensetzen(inhalt) == inhalt
 
 
+@pytest.mark.parametrize("alt", ["a<b", "a<imgx"])
+def test_ein_kleiner_als_vor_src_beendet_das_tag_nicht(alt: str) -> None:
+    """Ein `<` ausserhalb von Anfuehrungszeichen, das kein neues `<img` beginnt
+    (`alt=a<b`, auch `alt=a<imgx`), gehoert noch zum Tag. DocVortex legt das
+    Bild dieses Tags ab, also ist seine Quelle ein Verweis und wird umbenannt."""
+    inhalt = f'<img alt={alt} src="{ersatz.bild_pfad(0, 1)}">'
+    assert (
+        _html_nach_zusammensetzen(inhalt)
+        == f'<img alt={alt} src="images/teilstueck_0/page_0_image_1.jpg">'
+    )
+
+
 def test_ein_name_ist_kein_praefix_eines_anderen() -> None:
     """`images/page_0_image_1.jpg` und `images/page_0_image_10.jpg` sind zwei
     Bilder; das Umbenennen des einen trifft den Verweis auf das andere nicht."""
