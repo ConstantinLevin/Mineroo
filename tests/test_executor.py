@@ -998,22 +998,16 @@ async def test_echte_mineru4_antworten_ergeben_ein_dokument(
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    """Der Musterbericht geht als PDF hinein, der Job schneidet ihn in drei
-    Teilstuecke zu vier Seiten, und RunPod antwortet mit den drei ECHTEN
-    MinerU-4.0.12-Ausgaben genau dieser Teilstuecke
-    (`artifacts/2026-10-26-mineru-4.0.12-lokal/musterbericht_teile/`). Heraus
-    kommt EIN Dokument: neun Seiten mit den Seitenzahlen des Originals, alle
-    zwoelf Bilder, obwohl die Teilstuecke vier gleich benannte tragen."""
-    ordner = ersatz.ECHT_LOKAL / "musterbericht_teile"
-    pdf = (ersatz.ECHT_LOKAL / "musterbericht.pdf").read_bytes()
-    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=4)
+    """Der zwoelfseitige Bericht geht als PDF hinein, der Job schneidet ihn in
+    drei Teilstuecke (0-4, 5-9, 10-11), und RunPod antwortet mit den drei ECHTEN
+    Antworten des MinerU-4-Endpoints genau dieser Teilstuecke, in `advanced` mit
+    OCR (`artifacts/2026-10-26-mineru-4.0.12-endpoint/`). Heraus kommt EIN
+    Dokument: zwoelf Seiten mit den Seitenzahlen des Originals und alle zwoelf
+    Bilder, obwohl zwei Teilstuecke je fuenf gleich benannte tragen."""
+    pdf = (ersatz.ECHT_ENDPOINT / "material" / "mehrteilig.pdf").read_bytes()
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=5)
     sha, _ = _anlegen(db_conn, tmp_path, pdf)
-    runpod = FalscherRunPod(
-        [
-            ersatz.tarball_antwort(ersatz.echte_dateien(ordner / f"teil_{nummer}"))
-            for nummer in range(3)
-        ]
-    )
+    runpod = FalscherRunPod([ersatz.echte_antwort(name) for name, _ in ersatz.echte_teilstuecke()])
     await process_document(sha, settings=eng, runpod=runpod, pool=pool)
 
     zeile = get_document(db_conn, sha)
@@ -1021,7 +1015,7 @@ async def test_echte_mineru4_antworten_ergeben_ein_dokument(
     assert zeile.status is DocumentStatus.DONE
     assert zeile.raw is not None
     assert len(runpod.abgesendet) == 3
-    assert [s["page_idx"] for m in zeile.raw["middle_json"] for s in m["pages"]] == list(range(9))
+    assert [s["page_idx"] for m in zeile.raw["middle_json"] for s in m["pages"]] == list(range(12))
     assert len(zeile.raw["images"]) == 12
     for verweis in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", zeile.raw["markdown"]):
         assert verweis in zeile.raw["images"]
@@ -1659,6 +1653,30 @@ async def test_bezahlte_antwort_mit_formfehler_wird_aufgehoben(
     # Und der Grund steht daneben, sonst saehe die Zeile aus wie ein
     # unvollstaendiges Ergebnis ohne Anlass.
     assert "TerminalRunPodError" in aufgehoben[0]["fehler"]
+
+
+async def test_echte_mineru4_fehlerantwort_endet_failed(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Die ECHTE Fehlerantwort des MinerU-4-Endpoints auf eine unbekannte Stufe
+    (`input validation failed: tier must be one of …`) ist eine Pruefung der
+    Anfrage, keine Abweisung der Datei: `failed`, und die Antwort steht ganz in
+    `raw`."""
+    sha, _ = _anlegen(db_conn, tmp_path, b"bild", name="a.png", typ=DocumentType.PNG)
+    antwort = ersatz.echte_antwort("fehlerantwort")
+    runpod = FalscherRunPod([antwort])
+
+    with pytest.raises(TerminalRunPodError):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None
+    assert zeile.status is DocumentStatus.FAILED
+    assert zeile.raw is not None
+    assert zeile.raw["unverwertbare_antworten"][0]["antwort"] == antwort
 
 
 async def test_echte_fehlerantwort_landet_vollstaendig_in_raw(

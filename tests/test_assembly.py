@@ -1,11 +1,11 @@
 """Auspacken und Zusammensetzen der Antworten des MinerU-4-Workers.
 
-Gespielt werden Ersatz-Antworten aus `ersatz_antworten`, gebaut nach den Quellen,
-die die Antwortform festlegen (Job-Vertrag des Forks, Code des Workers und des
-Harness, MinerU 4.0.12, DocVortex 0.5.16; die Verweise stehen dort an jeder
-Bauform). Die echten Aufnahmen dieser Version kommen mit Mineroo#10; bis dahin
-sind das empty-Kriterium an der echten leeren Seite und das Abspielen echter
-Antworten offen.
+Gespielt werden die ECHTEN Antworten des MinerU-4-Endpoints
+(`artifacts/2026-10-26-mineru-4.0.12-endpoint/`, `advanced` mit OCR) und, fuer
+Lagen, die sich nicht gezielt hervorrufen lassen, Ersatz-Antworten aus
+`ersatz_antworten`, gebaut nach den Quellen, die die Antwortform festlegen
+(Job-Vertrag des Forks, Code des Workers und des Harness, MinerU 4.0.12,
+DocVortex 0.5.16; die Verweise stehen dort an jeder Bauform).
 """
 
 from __future__ import annotations
@@ -377,9 +377,9 @@ def test_leere_seite_ist_empty() -> None:
     """Eine Seite ohne einen einzigen Block, ein leeres Markdown, keine Bilder:
     `empty`, ein gueltiges Ergebnis (Story 25).
 
-    OFFEN bis Mineroo#10: Wie MinerU 4 eine echte leere Seite beschreibt, zeigt
-    erst ihre Aufnahme; diese Ersatz-Seite nimmt die Form an, die das Schema
-    fuer eine Seite ohne Inhalt zulaesst (DocVortex `PageInfo.blocks`, leer)."""
+    Die echte leere Seite traegt keinen `blocks`-Schluessel (siehe
+    `test_die_echte_leere_seite_ist_empty`); diese Ersatz-Seite nimmt dieselbe
+    Form an."""
     assert is_empty(_ergebnis([ersatz.seite(0, [])]))
 
 
@@ -410,16 +410,17 @@ def test_im_zweifel_nicht_leer() -> None:
     assert not is_empty({**leer, "markdown_full": "Fusszeile"})
 
 
-def test_die_echte_leere_mineru4_seite_ist_empty() -> None:
-    """Die ECHTE Ausgabe von MinerU 4.0.12 fuer eine leere A4-Seite
-    (`artifacts/2026-10-26-mineru-4.0.12-lokal/leere_seite/`): leeres Markdown,
-    keine Bilder, und im Middle-JSON eine Seite OHNE `blocks`-Schluessel —
-    `{"page_idx": 0}`, weil MinerU Voreinstellungen nicht schreibt. Das ist
-    `empty`, und die Darstellung ist der leere Text, kein Fehler."""
-    dateien = ersatz.echte_dateien(ersatz.ECHT_LOKAL / "leere_seite")
-    ergebnis = assemble([unpack_response(ersatz.tarball_antwort(dateien), Chunk(0, 0))])
+@pytest.mark.parametrize("aufnahme", ["leere_seite_bild", "leere_seite_pdf"])
+def test_die_echte_leere_seite_ist_empty(aufnahme: str) -> None:
+    """Die ECHTE Antwort des Endpoints fuer eine leere A4-Seite, als PNG und als
+    PDF, in `advanced` mit OCR (`artifacts/2026-10-26-mineru-4.0.12-endpoint/`):
+    leeres Markdown, keine Bilder, und im Middle-JSON die Seite
+    `{"page_idx": 0}` OHNE `blocks`-Schluessel. Das ist `empty` (Story 25), und
+    die Darstellung ist der leere Text, kein Fehler."""
+    ergebnis = assemble([unpack_response(ersatz.echte_antwort(aufnahme), Chunk(0, 0))])
 
     assert ergebnis["middle_json"][0]["pages"] == [{"page_idx": 0}]
+    assert ergebnis["middle_json"][0]["extensions"]["mineru"] == {"tier": "advanced", "parse_mode": "ocr"}
     assert is_empty(ergebnis)
     assert rendered_markdown(ergebnis) == ""
 
@@ -561,20 +562,16 @@ def test_nur_randbloecke_werden_angehaengt() -> None:
     assert text.startswith("Kurzfassung.")
 
 
-# --- Echte MinerU-4-Ausgaben ----------------------------------------------
+# --- Echte Antworten des Endpoints --------------------------------------
 
 
 def _echte_teilstuecke() -> list[ChunkArtifacts]:
-    """Die drei echten Teilstueck-Ausgaben des Musterberichts, ausgepackt wie
-    eine Antwort des Workers (`artifacts/2026-10-26-mineru-4.0.12-lokal/`)."""
-    ordner = ersatz.ECHT_LOKAL / "musterbericht_teile"
-    plan = json.loads((ordner / "plan.json").read_text())
+    """Die drei echten Teilstueck-Antworten des zwoelfseitigen Berichts, so wie der
+    Endpoint sie geliefert hat (`artifacts/2026-10-26-mineru-4.0.12-endpoint/`,
+    `plan.json`: Seiten 0-4, 5-9, 10-11)."""
     return [
-        unpack_response(
-            ersatz.tarball_antwort(ersatz.echte_dateien(ordner / f"teil_{nummer}")),
-            Chunk(erste, letzte),
-        )
-        for nummer, (erste, letzte) in enumerate(plan)
+        unpack_response(ersatz.echte_antwort(name), Chunk(erste, letzte))
+        for name, (erste, letzte) in ersatz.echte_teilstuecke()
     ]
 
 
@@ -591,10 +588,11 @@ def _image_paths(middle: dict[str, Any]) -> list[str]:
 
 
 def test_echte_teilstuecke_kollidieren_und_jeder_verweis_zeigt_auf_sein_bild() -> None:
-    """An echter MinerU-4-Ausgabe: Die Teilstuecke 0 und 1 tragen gleich
-    benannte Bilder mit verschiedenem Inhalt. Nach dem Zusammensetzen steht jedes
-    Bild einzeln da, und jeder Verweis — `image_path`, Markdown, `image_source` —
-    zeigt auf das Bild aus seinem eigenen Teilstueck."""
+    """An den echten Antworten: Die Teilstuecke 0 und 1 tragen gleich benannte
+    Bilder (`page_0_chart_5.jpg` bis `page_4_chart_5.jpg`) mit verschiedenem
+    Inhalt. Nach dem Zusammensetzen steht jedes Bild einzeln da, und jeder
+    Verweis — `image_path`, Markdown, `image_source` — zeigt auf das Bild aus
+    seinem eigenen Teilstueck (Story 24)."""
     teile = _echte_teilstuecke()
     gleich = set(teile[0].images) & set(teile[1].images)
     assert gleich, "Die Aufnahme zeigt die Kollision nicht mehr"
@@ -602,14 +600,16 @@ def test_echte_teilstuecke_kollidieren_und_jeder_verweis_zeigt_auf_sein_bild() -
 
     ergebnis = assemble(teile)
 
-    assert len(ergebnis["images"]) == sum(len(teil.images) for teil in teile)
+    assert len(ergebnis["images"]) == sum(len(teil.images) for teil in teile) == 12
     for nummer, (teil, middle) in enumerate(zip(teile, ergebnis["middle_json"])):
         pfade = _image_paths(middle)
         assert pfade
         for pfad in pfade:
             name = pfad.removeprefix(f"images/teilstueck_{nummer}/")
             assert _bild_unter(ergebnis, pfad) == teil.images[name]
-    for verweis in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", ergebnis["markdown"]):
+    verweise = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", ergebnis["markdown"])
+    assert len(verweise) == 12
+    for verweis in verweise:
         assert verweis in ergebnis["images"]
     for struktur in ergebnis["structured_content"]:
         for seite in struktur["pages"]:
@@ -620,15 +620,15 @@ def test_echte_teilstuecke_kollidieren_und_jeder_verweis_zeigt_auf_sein_bild() -
 
 def test_echte_teilstuecke_zaehlen_danach_die_seiten_des_originals() -> None:
     """Jedes echte Teilstueck zaehlt ab Seite 0; zusammengesetzt zaehlen Seiten,
-    `docvortex_layout` und strukturierter Inhalt 0 bis 8."""
+    `docvortex_layout` und strukturierter Inhalt 0 bis 11."""
     teile = _echte_teilstuecke()
     assert [[s["page_idx"] for s in teil.middle_json["pages"]] for teil in teile if teil.middle_json] == [
-        [0, 1, 2, 3],
-        [0, 1, 2, 3],
-        [0],
+        [0, 1, 2, 3, 4],
+        [0, 1, 2, 3, 4],
+        [0, 1],
     ]
     ergebnis = assemble(teile)
-    erwartet = list(range(9))
+    erwartet = list(range(12))
     assert [s["page_idx"] for m in ergebnis["middle_json"] for s in m["pages"]] == erwartet
     assert [
         s["page_idx"] for m in ergebnis["middle_json"] for s in m["extensions"]["docvortex_layout"]["pages"]
@@ -636,19 +636,35 @@ def test_echte_teilstuecke_zaehlen_danach_die_seiten_des_originals() -> None:
     assert [s["page_idx"] for sc in ergebnis["structured_content"] for s in sc["pages"]] == erwartet
 
 
-def test_echte_randbloecke_kommen_in_die_darstellung() -> None:
-    """MinerU 4 stuft in der echten Ausgabe Seitenzahl und Kopfzeile als
-    `footer`/`header` ein und laesst sie aus `markdown.md` weg; die Darstellung
-    traegt sie trotzdem (`FURNITURE_TYPES`). Gemessen: In den vierseitigen
-    Teilstuecken fehlen „Seite 1 von 9" und „Seite 5 von 9" im Markdown; das
-    einseitige letzte Teilstueck stuft dieselbe Fusszeile als Text ein — eine
-    Seite wird nicht in jedem Schnitt gleich gelesen."""
-    ergebnis = assemble(_echte_teilstuecke())
-    fehlend = ["Seite 1 von 9", "Seite 5 von 9"]
-    for text in fehlend:
-        assert text not in ergebnis["markdown"]
+def test_echte_normale_seite_traegt_alle_fuenf_randklassen() -> None:
+    """Die echte normale Seite (`advanced`, OCR) liefert alle fuenf Randklassen als
+    eigene Bloecke. `markdown.md` laesst Kopfzeile, Fusszeile, Seitenzahl und
+    Randtext weg; `markdown_full.md` und die Darstellung tragen sie."""
+    ergebnis = assemble([unpack_response(ersatz.echte_antwort("normale_seite"), Chunk(0, 0))])
+    typen = {block["type"] for block in ergebnis["middle_json"][0]["pages"][0]["blocks"]}
+    assert FURNITURE_TYPES <= typen
+
     dargestellt = rendered_markdown(ergebnis)
     assert dargestellt.startswith(ergebnis["markdown"])
-    for text in fehlend:
+    # Kopfzeile, Fusszeile, Seitenzahl, Randtext.
+    for text in ["Jahresbericht 2025 | Lagebericht", "Musterstrasse 1", "Seite 14", "Revisionsgesellschaft"]:
+        assert text not in ergebnis["markdown"]
+        assert text in ergebnis["markdown_full"]
         assert text in dargestellt
+    # Die Seitenfussnote traegt schon `markdown.md`.
+    assert "Rahmenvertraegen" in ergebnis["markdown"]
+    assert not is_empty(ergebnis)
+
+
+@pytest.mark.parametrize(
+    ("aufnahme", "text"),
+    [("dokument_docx", "Druckluftanlage"), ("seite_html", "Heizzeiten")],
+)
+def test_echte_ganzdokumente_werden_ausgepackt(aufnahme: str, text: str) -> None:
+    """DOCX und HTML liest der Worker ganz, ohne Modelle, und meldet die Stufe so,
+    wie MinerU sie vermerkt hat: `flash`, `txt`, Bildanalyse aus."""
+    antwort = ersatz.echte_antwort(aufnahme)
+    assert (antwort["output"]["tier"], antwort["output"]["ocr_mode"]) == ("flash", "txt")
+    ergebnis = assemble([unpack_response(antwort, Chunk(0, 0))])
+    assert text in ergebnis["markdown"]
     assert not is_empty(ergebnis)

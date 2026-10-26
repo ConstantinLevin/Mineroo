@@ -564,8 +564,11 @@ Ergebnisse gibt es nicht zu bedienen (Mineroo#1, „Nur noch MinerU 4").
   GitHub-Integration gebaut und rechnet nur in EWR-Rechenzentren (Spec,
   „Endpoint"). Seine Kennung steht wie jede in der Konfiguration
   (`endpoint_id`), nie im Code; der alte Endpoint `l79lebhinxaqjz` wird nicht
-  repariert. Solange er fehlt, gibt es keine echten MinerU-4-Antworten
-  (Mineroo#10).
+  repariert. Seine echten Antworten im Betriebsweg liegen als Aufnahmen unter
+  `artifacts/2026-10-26-mineru-4.0.12-endpoint/` (siehe „Das Testmaterial").
+  Der Build-Test des Forks (`.runpod/tests.json`) erlaubt nur CUDA 13.0; auf
+  Hosts mit neuerer CUDA scheitert er, und RunPod gibt das gebaute Image dann
+  nicht frei.
 
 ### Teilstücke sind vor Postgres vollständig abstrahiert
 
@@ -590,8 +593,7 @@ mit umbenannt, und `raw["images"]` trägt jedes Bild unter genau diesem Verweis.
 Leer (`assembly.is_empty`) ist ein Dokument ohne Text in beiden Markdowns, ohne
 Block im Middle-JSON und ohne Bild. Eine Seite ohne Bloecke traegt **keinen**
 `blocks`-Schluessel (`{"page_idx": 0}`, MinerU schreibt Voreinstellungen nicht),
-gemessen an echter MinerU-4.0.12-Ausgabe; die Bestaetigung an der Stufe
-`advanced` mit OCR auf dem Endpoint steht mit Mineroo#10 aus.
+gemessen am Endpoint in der Stufe `advanced` mit OCR, als Bild wie als PDF.
 
 `chunking.verify_page_coverage` prüft dabei strukturell und in dieser Reihenfolge:
 Beginn bei 0 → lückenlose Nachbarschaft → Ende bei `page_count - 1`. Die frühere
@@ -685,23 +687,21 @@ Jede steht wegen eines bezahlten Fehlers, nicht wegen einer Vorliebe.
 
 ## Das Testmaterial — was echt ist und was nicht
 
-**Echte MinerU-4-Antworten von RunPod gibt es noch nicht.** Sie kommen mit Mineroo#10
-(sechs Aufnahmen auf dem neuen Endpoint: normale PDF-Seite, leere Seite als
-Bilddatei, zwölfseitiges Dokument in drei Teilstücken, DOCX, HTML, erzwungene
-Fehlerantwort), und erst dann ist das Paket so geprüft, wie die Spec es verlangt:
-durch Abspielen echter Antworten.
-
-**Echte MinerU-4.0.12-Ausgaben, lokal erzeugt**, liegen unter
-`artifacts/2026-10-26-mineru-4.0.12-lokal/` (Herkunft im `README.md` dort): eine
-leere Seite und ein erfundener neunseitiger Musterbericht ohne personenbezogene
-Daten, ganz und in drei Teilstücken mit dem Schnitt des Pakets, geschrieben von
-MinerUs eigenem `ParseResult.save` in der Stufe `flash` mit OCR-Modus `txt`
-(DocVortex nativ, ohne Modelle, ohne RunPod). Die Tests spielen sie über
-`ersatz_antworten.echte_dateien` und `ECHT_LOKAL` ab, auch am Exekutor
-(`test_echte_mineru4_antworten_ergeben_ein_dokument`). Sie haben gezeigt: Die
-Bildnamen zweier Teilstücke kollidieren wirklich, und eine leere Seite trägt
-keinen `blocks`-Schlüssel. Neu erzeugen lassen sie sich mit den Skripten unter
-`erzeugung/` dort.
+**Echte MinerU-4-Antworten des neuen Endpoints** liegen unter
+`artifacts/2026-10-26-mineru-4.0.12-endpoint/` (Herkunft, Job-Kennungen, Zeiten
+und Kosten im `README.md` dort): die Aufnahmen aus Mineroo#10, im Betriebsweg
+erzeugt (Stufe `advanced`, OCR, Bildanalyse an), abgeschickt und abgeholt mit
+`runpod.RunPodClient`. Das Material ist erfunden und ohne personenbezogene Daten:
+normale PDF-Seite mit allen fünf Randklassen, leere Seite als Bild und als PDF,
+zwölfseitiges Dokument in drei Teilstücken mit dem Schnitt des Pakets, DOCX,
+HTML und eine erzwungene Fehlerantwort. Die Tests spielen sie über
+`ersatz_antworten.echte_antwort`, `echte_teilstuecke` und `ECHT_ENDPOINT` ab,
+auch am Exekutor (`test_echte_mineru4_antworten_ergeben_ein_dokument`,
+`test_echte_mineru4_fehlerantwort_endet_failed`). Sie haben gezeigt: Die
+Bildnamen der Teilstücke kollidieren wirklich, eine leere Seite trägt keinen
+`blocks`-Schlüssel, und DOCX und HTML liest der Worker unabhängig von der
+Bestellung als `flash` mit `txt`. Neu erzeugen lassen sie sich mit den Skripten
+unter `erzeugung/` dort; das kostet Geld.
 
 **Wo es keine echte Ausgabe gibt, spielen die Tests Ersatz-Antworten aus
 `tests/ersatz_antworten.py`.**
@@ -711,16 +711,16 @@ festlegen, und jede Bauform nennt ihre Quelle: der Job-Vertrag des Forks
 `worker/harness.py`), die Harness-Bibliothek `runpod-doc-worker` 0.9.1 (Archiv
 und Inline-Bilder), MinerU 4.0.12 (Tag `mineru-4.0.12-released`,
 `ParseResult.save`, Schema des Middle-JSON) und DocVortex 0.5.16 (Blocktypen,
-Bildnamen und ihre Verweise). Was diese Bauformen **nicht** wissen: wie MinerU 4
-eine leere Seite beschreibt, welche Randklassen der Vollmodus-Markdown trägt und
-wie groß die Dateien sind. Wo die Aufnahmen abweichen, gilt die Aufnahme.
+Bildnamen und ihre Verweise). Sie decken ab, was die Aufnahmen nicht zeigen
+(Grenzfälle, Inline-Bilder, fehlende Dateien). Wo sie von den Aufnahmen
+abweichen, gilt die Aufnahme.
 
 **Die 3.4-Aufnahmen unter `artifacts/` werden nicht mehr abgespielt** — bis auf
 eine. `2026-08-05-doku-verifikationstest/` (sechs Inline-Antworten) und
 `2026-08-08-erster-tarball-lauf/leere_seite.tarball.response.json` tragen
 MinerU-3.4-Dateien (`content_list`, `doc.md`, `doc_middle.json`), die es unter
-MinerU 4 nicht gibt; sie sind Geschichte und werden durch die Aufnahmen aus
-Mineroo#10 ersetzt. Die zwei personenbezogenen Aufnahmen (`gute_nacht`,
+MinerU 4 nicht gibt; sie sind Geschichte, ersetzt durch die Aufnahmen des
+Endpoints. Die zwei personenbezogenen Aufnahmen (`gute_nacht`,
 `mehrteilig_*`) sind vor dem ersten Push entfernt worden (Mineroo#2), und die
 Tests, die sie lasen, gibt es mit dem Umbau auf MinerU 4 nicht mehr.
 Abgespielt wird nur noch `fehlerantwort.response.json` (Vorrichtung

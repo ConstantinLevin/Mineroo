@@ -13,9 +13,9 @@ heraus. Der Worker, der MinerU auf RunPod ausführt, lebt in seinem eigenen Fork
 `ConstantinLevin/mineru-runpod`.
 
 **Stand:** Das Paket spricht den Job-Vertrag des MinerU-4-Workers aus dem Fork
-(Mineroo#11) und ist gegen echte Ausgaben von MinerU 4.0.12 geprüft, lokal
-erzeugt in der Stufe `flash`; echte Antworten des Workers über RunPod gibt es
-erst mit dem neuen Endpoint (Mineroo#10). Der Umbau auf MinerU 4, einen neuen Worker und einen
+(Mineroo#11) und ist gegen echte Antworten des neuen Endpoints geprüft, im
+Betriebsweg (Stufe `advanced` mit OCR) über RunPod aufgenommen und offline
+abgespielt (`artifacts/2026-10-26-mineru-4.0.12-endpoint/`). Der Umbau auf MinerU 4, einen neuen Worker und einen
 neuen Endpoint und die Behebung der bekannten Fehler sind in der Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1)
 beschrieben und werden in Tickets umgesetzt. **Wo dieses README und die Spec
 auseinandergehen, gilt die Spec.** Der große Lauf über viele Dokumente hat noch

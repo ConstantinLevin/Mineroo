@@ -31,9 +31,10 @@ DIESE LISTE BESCHREIBT DEN STAND VON MINERU 3.4. Seit Mineroo#11 spricht das
 Paket den MinerU-4-Worker; die Antworten dieser Läufe (unter
 `artifacts/2026-08-08-erster-tarball-lauf/`) tragen Dateien, die es unter MinerU
 4 nicht gibt, und werden offline nicht mehr abgespielt, bis auf die Form einer
-echten Fehlerantwort. Bis die sechs MinerU-4-Aufnahmen aus Mineroo#10 liegen,
-laufen Auspacken, Zusammensetzen und das `empty`-Kriterium offline gegen
-Ersatz-Antworten, gebaut nach den Quellen des Vertrags (`tests/ersatz_antworten.py`).
+echten Fehlerantwort. Auspacken, Zusammensetzen und das `empty`-Kriterium laufen
+offline gegen die MinerU-4-Aufnahmen des Endpoints
+(`artifacts/2026-10-26-mineru-4.0.12-endpoint/`) und gegen Ersatz-Antworten nach
+den Quellen des Vertrags (`tests/ersatz_antworten.py`).
 """
 
 from __future__ import annotations
@@ -159,7 +160,8 @@ def test_leeres_ergebnis_am_echten_verhalten() -> None:
     `failed` statt `empty`, mit Wiedervorlage und erneutem Bezahlen.
 
     Antwort konserviert als `leere_seite.tarball.response.json`. Unter MinerU 4
-    ist das Kriterium neu festzustellen (Mineroo#10, #11).
+    ist das Kriterium neu festgestellt, an den Aufnahmen `leere_seite_bild` und
+    `leere_seite_pdf` des Endpoints.
     """
 
 

@@ -86,9 +86,10 @@ Auffindbarkeit der Kennungen in Kopf- und Fusszeilen entschieden wird.
 
 Gemessen ist das an MinerU 3.4. Unter MinerU 4 sind es Blocktypen des Middle-JSON
 mit denselben Namen (DocVortex 0.5.16, `BlockType`: `header`, `footer`,
-`page_number`, `aside_text`, `page_footnote`); welche davon das Markdown
-weglaesst und ob der Vollmodus sie alle traegt, zeigen die Aufnahmen
-(Mineroo#10, #13)."""
+`page_number`, `aside_text`, `page_footnote`). Gemessen am Endpoint (Stufe
+`advanced`, OCR, `artifacts/2026-10-26-mineru-4.0.12-endpoint/`): `markdown.md`
+laesst Kopfzeile, Fusszeile, Seitenzahl und Randtext weg und behaelt die
+Seitenfussnote; `markdown_full.md` traegt alle fuenf."""
 
 
 DATEI_MARKDOWN: Final = "markdown.md"
@@ -141,8 +142,7 @@ class ChunkArtifacts:
     """`markdown_full.md`: derselbe Text im Vollmodus (`RenderMode.FULL`), der
     Kopf- und Fusszeilen, Seitenzahlen, Randtext und Seitenfussnoten behalten
     soll. Die Datei des Workers, nicht MinerUs; kann er sie nicht rendern, fehlt
-    sie (None). Welche Randklassen sie wirklich traegt, zeigen erst die
-    Aufnahmen (Mineroo#10, #13)."""
+    sie (None). Am Endpoint gemessen traegt sie alle fuenf Randklassen."""
 
     middle_json: dict[str, Any] | None
     """`middle_json.json`: MinerUs Zwischenformat, massgeblich fuer die
@@ -685,10 +685,10 @@ def _bloecke(seite: Any) -> list[Any] | None:
 
     EIN FEHLENDER `blocks`-SCHLUESSEL HEISST: KEINE BLOECKE. MinerU 4 schreibt
     Voreinstellungen nicht mit, und `PageInfo.blocks` hat die Voreinstellung
-    `[]` (DocVortex 0.5.16, `schema.py`). Gemessen an der echten Ausgabe von
-    MinerU 4.0.12 fuer eine leere A4-Seite
-    (`artifacts/2026-10-26-mineru-4.0.12-lokal/leere_seite/`): Die Seite steht
-    dort als `{"page_idx": 0}`. Die Ersatz-Antworten hatten `"blocks": []`
+    `[]` (DocVortex 0.5.16, `schema.py`). Gemessen an den echten Antworten des
+    MinerU-4-Endpoints fuer eine leere A4-Seite, als PNG und als PDF, in
+    `advanced` mit OCR (`artifacts/2026-10-26-mineru-4.0.12-endpoint/`): Die
+    Seite steht dort als `{"page_idx": 0}`. Die Ersatz-Antworten hatten `"blocks": []`
     angenommen, und so galt die echte leere Seite nicht als leer.
     """
     if not isinstance(seite, dict):
@@ -721,13 +721,11 @@ def is_empty(result: dict[str, Any]) -> bool:
         Ein fehlendes oder unlesbares Middle-JSON zaehlt als Inhalt, denn ueber
         seine Bloecke laesst sich dann nichts sagen.
 
-    AN ECHTER MINERU-4-AUSGABE FESTGESTELLT: MinerU 4.0.12 liefert fuer eine
-    leere A4-Seite leeres `markdown.md` und `markdown_full.md`, keine Bilder und
-    im Middle-JSON die Seite `{"page_idx": 0}` ohne `blocks`
-    (`artifacts/2026-10-26-mineru-4.0.12-lokal/leere_seite/`, lokal erzeugt mit
-    MinerUs eigenem Code in der Stufe `flash`, OCR-Modus `txt`; siehe
-    `_bloecke`). Offen bleibt die Bestaetigung an der Aufnahme der Stufe
-    `advanced` mit OCR auf dem Endpoint (Mineroo#10).
+    AN DEN ECHTEN ANTWORTEN DES ENDPOINTS FESTGESTELLT: Der MinerU-4-Endpoint
+    liefert fuer eine leere A4-Seite, als PNG und als PDF, in `advanced` mit OCR
+    `COMPLETED`, leeres `markdown.md` und `markdown_full.md`, keine Bilder und im
+    Middle-JSON die Seite `{"page_idx": 0}` ohne `blocks`
+    (`artifacts/2026-10-26-mineru-4.0.12-endpoint/`; siehe `_bloecke`).
 
     Args:
         result: Das zusammengesetzte Ergebnis aus `assemble`.

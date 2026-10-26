@@ -25,19 +25,17 @@ import pytest
 
 from mineru_ocr.config import Settings
 
-# Die echten Aufnahmen unter `artifacts/` stammen von MinerU 3.4.
+# Die aelteren echten Aufnahmen unter `artifacts/` stammen von MinerU 3.4.
 #
 # Mineroo#11 hat das Paket auf den MinerU-4-Vertrag umgestellt. Die 3.4-Antworten
 # (`2026-08-05-doku-verifikationstest/`, `2026-08-08-erster-tarball-lauf/`) tragen
 # Dateien, die es unter MinerU 4 nicht mehr gibt (`content_list`, `doc.md`,
-# `doc_middle.json`), und werden deshalb nicht mehr abgespielt; an ihrer Stelle
-# spielen die Tests Ersatz-Antworten aus `ersatz_antworten`, gebaut nach den
-# Quellen, die die MinerU-4-Antwort festlegen, und echte MinerU-4.0.12-Ausgaben,
-# lokal erzeugt (`artifacts/2026-10-26-mineru-4.0.12-lokal/`,
-# `ersatz_antworten.ECHT_LOKAL`). Ersetzt werden sie durch die sechs echten
-# MinerU-4-Aufnahmen auf dem Endpoint aus Mineroo#10. Abgespielt wird nur noch die echte
-# Fehlerantwort (`FEHLERANTWORT_FIXTURE`): Wie RunPod eine `FAILED`-Antwort
-# umschlaegt, haengt nicht an der MinerU-Version.
+# `doc_middle.json`), und werden deshalb nicht mehr abgespielt. An ihrer Stelle
+# spielen die Tests die ECHTEN Antworten des MinerU-4-Endpoints
+# (`artifacts/2026-10-26-mineru-4.0.12-endpoint/`, `ersatz_antworten.ECHT_ENDPOINT`,
+# aufgenommen in `advanced` mit OCR) und, fuer Lagen, die sich nicht gezielt
+# hervorrufen lassen, Ersatz-Antworten aus `ersatz_antworten`, gebaut nach den
+# Quellen, die die MinerU-4-Antwort festlegen.
 
 TEST_DSN = "host=localhost port=5437 dbname=mineru_ocr_test user=jurgen"
 """Eigene Datenbank auf der laufenden Instanz. NICHT `mineru_ocr` und schon gar

@@ -1,11 +1,12 @@
 """Ersatz-Antworten des MinerU-4-Workers, gebaut nach den Quellen, die ihre Form festlegen.
 
-WARUM ES DIESE DATEI GIBT: Das Paket spricht den MinerU-4-Vertrag (Mineroo#11),
-aber die sechs echten Aufnahmen dieser Version (Mineroo#10) gibt es noch nicht,
-weil der neue Endpoint fehlt. Bis sie liegen, spielen die Tests Antworten ab, die
-hier nach den Quellen gebaut sind, die die Antwortform bestimmen — nicht nach einer
-geratenen Form. Jede Bauform nennt ihre Quelle. Sobald die Aufnahmen aus #10
-liegen, pruefen sie diese Bauformen; wo sie abweichen, gilt die Aufnahme.
+WARUM ES DIESE DATEI GIBT: Die echten Antworten des MinerU-4-Endpoints
+(`ECHT_ENDPOINT`, unten) decken die gewoehnlichen Lagen ab. Was sich am Endpoint
+nicht gezielt hervorrufen laesst — eine fehlende Datei, `degraded`, ein unbekanntes
+Archivmitglied, ein Inline-Feld mit falschem Typ —, spielen die Tests mit
+Antworten, die hier nach den Quellen gebaut sind, die die Antwortform bestimmen,
+nicht nach einer geratenen Form. Jede Bauform nennt ihre Quelle; wo sie von einer
+echten Antwort abweicht, gilt die echte.
 
 Die Quellen, auf die sich die Verweise beziehen:
 
@@ -38,14 +39,13 @@ Die Quellen, auf die sich die Verweise beziehen:
     `render/_internal/markdown/assets.py` (Markdown-Bild `![](images/…)`,
     `image_source` im strukturierten Inhalt).
 
-GEGEN ECHTE AUSGABE GEPRUEFT: Unter `ECHT_LOKAL` liegen echte Ausgaben von
-MinerU 4.0.12 (lokal, Stufe `flash`, OCR-Modus `txt`). Sie bestaetigen die
-Dateinamen, das Schema, die Bildnamen und alle vier Verweisformen; die eine
-Abweichung (eine Seite ohne Bloecke traegt keinen `blocks`-Schluessel) ist in
-`seite` nachgezogen. Wo es echte Ausgabe gibt, spielen die Tests sie; diese
-Bauformen bleiben fuer Lagen, die sich lokal nicht erzeugen lassen. Was erst die
-Aufnahmen aus Mineroo#10 zeigen: die Stufe `advanced` mit OCR, Bilder als
-Eingabe, die Antwortgroessen.
+GEGEN ECHTE ANTWORTEN GEPRUEFT: Unter `ECHT_ENDPOINT` liegen echte Antworten des
+MinerU-4-Endpoints in `advanced` mit OCR. Sie bestaetigen die Dateinamen, das
+Schema, die Bildnamen und die Verweisformen; die eine Abweichung (eine Seite ohne
+Bloecke traegt keinen `blocks`-Schluessel) ist in `seite` nachgezogen. Wo es eine
+echte Antwort gibt, spielen die Tests sie; diese Bauformen bleiben fuer Lagen, die
+sich nicht gezielt hervorrufen lassen (ein fehlendes `markdown_full.md`,
+`degraded`, ein unbekanntes Archivmitglied).
 """
 
 from __future__ import annotations
@@ -60,24 +60,30 @@ from typing import Any
 
 MINERU_VERSION = "4.0.12"
 
-ECHT_LOKAL = Path(__file__).resolve().parent.parent / "artifacts" / "2026-10-26-mineru-4.0.12-lokal"
-"""ECHTE MinerU-4.0.12-Ausgaben, lokal erzeugt (Herkunft: `README.md` dort).
+ECHT_ENDPOINT = (
+    Path(__file__).resolve().parent.parent / "artifacts" / "2026-10-26-mineru-4.0.12-endpoint"
+)
+"""ECHTE Antworten des MinerU-4-Endpoints (Herkunft: `README.md` dort).
 
-Jeder Unterordner ist ein Ausgabeverzeichnis, wie `ParseResult.save` es schreibt,
-samt `markdown_full.md`, das der Worker im Vollmodus rendert. Erzeugt mit MinerUs
-eigenem Code in der Stufe `flash` und dem OCR-Modus `txt` (DocVortex nativ, ohne
-Modelle); die Stufe `advanced` mit OCR braucht die GPU-Modelle und kommt erst mit
-den Aufnahmen aus Mineroo#10. Das Dateiformat ist dasselbe."""
+Abgeschickt mit dem Client des Pakets (`RunPodClient.submit`, `await_result`) an
+den Endpoint aus dem Fork `ConstantinLevin/mineru-runpod`, Image `516786ccf`,
+MinerU 4.0.12, in `advanced` mit OCR und Bildanalyse — dem Produktionsweg. Unter
+`antworten/` die volle `/status`-Antwort je Job, `plan.json` nennt die Seiten der
+Teilstuecke."""
 
 
-def echte_dateien(ordner: Path) -> dict[str, bytes]:
-    """Die Dateien eines echten Ausgabeverzeichnisses unter ihrem Pfad relativ zu
-    ihm, so wie der Harness sie ins Archiv legt (HARNESS `_archive_members`)."""
-    return {
-        datei.relative_to(ordner).as_posix(): datei.read_bytes()
-        for datei in sorted(ordner.rglob("*"))
-        if datei.is_file()
-    }
+def echte_antwort(name: str) -> dict[str, Any]:
+    """Die volle `/status`-Antwort eines aufgenommenen Jobs."""
+    geladen: dict[str, Any] = json.loads(
+        (ECHT_ENDPOINT / "antworten" / f"{name}.response.json").read_text()
+    )
+    return geladen
+
+
+def echte_teilstuecke() -> list[tuple[str, tuple[int, int]]]:
+    """Name und Seitenbereich der Teilstueck-Aufnahmen, in Dokumentreihenfolge."""
+    plan = json.loads((ECHT_ENDPOINT / "plan.json").read_text())
+    return [(job["name"], (job["seiten"][0], job["seiten"][1])) for job in plan if "seiten" in job]
 
 
 def text_block(index: int, text: str, typ: str = "text") -> dict[str, Any]:
@@ -124,7 +130,7 @@ def seite(page_idx: int, bloecke: list[dict[str, Any]]) -> dict[str, Any]:
     """Eine Seite des Middle-JSON (DOCVORTEX `PageInfo`: `page_idx`, `blocks`).
 
     Ohne Bloecke OHNE `blocks`-Schluessel: MinerU schreibt die Voreinstellung
-    `[]` nicht mit, gemessen an der echten leeren Seite unter `ECHT_LOKAL`."""
+    `[]` nicht mit, gemessen an der echten leeren Seite unter `ECHT_ENDPOINT`."""
     if not bloecke:
         return {"page_idx": page_idx}
     return {"page_idx": page_idx, "blocks": bloecke}
