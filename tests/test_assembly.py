@@ -561,6 +561,43 @@ def test_ein_inline_feld_mit_falschem_typ_geht_nach_extras() -> None:
     assert teil.extras == {"middle_json": None}
 
 
+def test_ein_inline_bild_mit_ungueltigem_base64_wirft_endgueltig() -> None:
+    """Ein Bild, dessen Wert nicht reines Base64 ist (hier mit einem fremden
+    Zeichen), wird nicht still zu anderen Bytes dekodiert; ohne die strenge
+    Pruefung wuerde `*` einfach uebergangen. Die Antwort ist unverwertbar, ein
+    zweiter Versuch kaufte dieselbe."""
+    _, dateien = _ein_dokument()
+    eintrag: dict[str, Any] = {
+        "markdown": dateien["markdown.md"].decode(),
+        "images": {"page_0_image_2.jpg": "QUJD*"},
+    }
+    with pytest.raises(TerminalRunPodError, match="page_0_image_2.jpg"):
+        unpack_response(ersatz.antwort(eintrag), Chunk(0, 0))
+
+
+def test_ein_unlesbarer_text_im_archiv_geht_nach_extras() -> None:
+    """Eine Textdatei, die kein UTF-8 ist, wird nicht mit Ersatzzeichen
+    gelesen: Sie fehlt in ihrem Feld (None) und steht Byte fuer Byte in
+    `extras`."""
+    _, dateien = _ein_dokument()
+    kaputt = b"Fu\xdfzeile \xff\xfe"
+    teil = unpack_response(
+        ersatz.tarball_antwort({**dateien, "markdown_full.md": kaputt}), Chunk(0, 0)
+    )
+    assert teil.markdown_full is None
+    assert base64.b64decode(teil.extras["markdown_full.md"]) == kaputt
+
+
+def test_ein_page_idx_vom_typ_bool_wirft() -> None:
+    """`True` ist in Python eine ganze Zahl, aber keine Seitenangabe: Der Versatz
+    ergaebe Seite 1 statt eines Fehlers."""
+    teil = _teil_aus(Chunk(3, 3), [ersatz.seite(0, [])])
+    assert teil.middle_json is not None
+    teil.middle_json["pages"][0]["page_idx"] = True
+    with pytest.raises(TerminalRunPodError, match="page_idx"):
+        assemble([teil])
+
+
 def test_ein_fremder_verweis_mit_demselben_pfadende_bleibt_stehen() -> None:
     """Externe Bilder in visuellem HTML behalten ihre URL (DocVortex
     `_materialize_markup`); endet eine solche URL zufaellig auf den Pfad eines
