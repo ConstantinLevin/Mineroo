@@ -638,24 +638,14 @@ def _seiten_verschoben(datei: dict[str, Any] | None, chunk: Chunk) -> dict[str, 
     return kopie
 
 
-SPAN_TYPEN: Final = frozenset({"text", "equation_inline", "code_inline", "hyperlink"})
-"""Die Typen der Spans im Inhalt eines Blocks des Middle-JSON (DocVortex 0.5.16,
-`schema.py`: `TextSpan`, `EquationInlineSpan`, `CodeInlineSpan`, `HyperlinkSpan`).
-Spans eines Blocks bilden zusammen eine Zeile Text; was sonst in einer
-Inhaltsliste steht, ist ein Unterblock (der `image_body` eines Bildes, die
-Eintraege einer Liste)."""
-
-
 def _blocktext(block: Mapping[str, Any]) -> str:
-    """Sammelt ALLEN lesbaren Text eines Blocks des Middle-JSON.
+    """Der Text eines Randblocks des Middle-JSON.
 
-    Der Inhalt eines Blocks ist je nach Typ eine Zeichenkette (der `content` eines
-    `table_body` als HTML, eines `image_body` als Deutung der Bildanalyse, einer
-    Formel) oder eine Liste von Spans und Unterbloecken (DocVortex `schema.py`:
-    `StringContentBlock`, `InlineContentBlock`, die visuellen Elternbloecke).
-    Spans werden aneinandergefuegt, Unterbloecke durch einen Zeilenumbruch
-    getrennt. Gesammelt wird, nicht ausgewaehlt: Ein Bild traegt seine Deutung
-    UND seine Unterschrift. Ein Block ohne Text liefert die leere Zeichenkette.
+    Ein Randblock (`FURNITURE_TYPES`) traegt seinen Text als Liste von Spans
+    (DocVortex 0.5.16, `schema.py`: `PageAuxTextBlock` und `PageFootnoteBlock`
+    sind `InlineContentBlock`, ihr `content` ist eine Liste von `InlineSpan`), und
+    jeder Span seinen Text als Zeichenkette im eigenen `content`. Die Spans werden
+    aneinandergefuegt. Ein Block ohne Text liefert die leere Zeichenkette.
 
     Eine Inline-Formel (`equation_inline`) steht in `$` wie im Markdown der
     Engine (`$^{1}$`). Ohne sie fand `rendered_markdown` eine Seitenfussnote mit
@@ -669,22 +659,11 @@ def _blocktext(block: Mapping[str, Any]) -> str:
         return inhalt
     if not isinstance(inhalt, list):
         return ""
-    zeilen: list[str] = []
-    spans: list[str] = []
-    for teil in inhalt:
-        if not isinstance(teil, Mapping):
-            # Wider Erwarten kein Objekt: sichtbar lassen statt still verlieren.
-            spans.append(str(teil))
-        elif teil.get("type") in SPAN_TYPEN:
-            spans.append(_blocktext(teil))
-        else:
-            if spans:
-                zeilen.append("".join(spans))
-                spans = []
-            zeilen.append(_blocktext(teil))
-    if spans:
-        zeilen.append("".join(spans))
-    return "\n".join(zeile for zeile in zeilen if zeile)
+    # Ein Eintrag, der wider Erwarten kein Objekt ist, bleibt sichtbar, statt
+    # still zu verschwinden.
+    return "".join(
+        _blocktext(teil) if isinstance(teil, Mapping) else str(teil) for teil in inhalt
+    )
 
 
 def _bloecke(seite: Any) -> list[Any] | None:

@@ -467,6 +467,25 @@ def test_alle_fuenf_randklassen_werden_erfasst() -> None:
     assert rendered_markdown(ergebnis).split("\n\n") == [f"Rand {typ}" for typ in sorted(FURNITURE_TYPES)]
 
 
+def _mit_bloecken(bloecke: list[Any]) -> dict[str, Any]:
+    """Ein Ergebnis mit dem Markdown „Der Fliesstext.", dessen einzige Seite die
+    gegebenen Bloecke traegt, auch solche, die das Schema nicht vorsieht."""
+    ergebnis = _mit_rand("Der Fliesstext.")
+    ergebnis["middle_json"][0]["pages"][0]["blocks"] = bloecke
+    return ergebnis
+
+
+def test_ein_randblock_ohne_text_haengt_nichts_an() -> None:
+    assert rendered_markdown(_mit_bloecken([{"type": "header", "index": 0}])) == "Der Fliesstext."
+
+
+def test_ein_span_der_kein_objekt_ist_bleibt_sichtbar() -> None:
+    """Steht im Inhalt eines Randblocks wider Erwarten eine nackte Zeichenkette
+    statt eines Spans, erscheint sie trotzdem: Sie kann das Aktenzeichen sein."""
+    kopf = {"type": "header", "index": 0, "content": ["Az. ", {"type": "text", "content": "7/8"}]}
+    assert rendered_markdown(_mit_bloecken([kopf])) == "Der Fliesstext.\n\nAz. 7/8"
+
+
 @pytest.mark.parametrize(
     "aenderung",
     [
