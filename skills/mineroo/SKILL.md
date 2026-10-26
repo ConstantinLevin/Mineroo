@@ -74,7 +74,10 @@ seinen Sollwerten ab; die Meldung gibst du dem Nutzer weiter.
   wartet (`wait`, `wait_all`, `as_completed`, `ocr`), gibst du `timeout=` mit:
   Ohne Daemon kehrt er sonst nie zurück.
 - Zurück kommt eine **Hülle**: `rendered_markdown` ist das ganze Dokument als
-  Markdown, `raw` die vollständige Antwort.
+  Markdown, `raw` die vollständige Antwort. Der Text trägt auch Kopf- und
+  Fußzeilen, Seitenzahlen, Randtexte und Seitenfußnoten an ihrer Stelle, und
+  hinter jedem Bild die Deutung des Modells als eingeklappten Block
+  (`<details>`); eine Deutung kann falsch sein.
 
 Jeder Endzustand kommt als Hülle zurück, auch `failed` und `input_error`. Prüf
 `.success`, bevor du `rendered_markdown` liest; `empty` heißt, das Dokument war

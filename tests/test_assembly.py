@@ -25,7 +25,6 @@ import pytest
 
 import ersatz_antworten as ersatz
 from mineru_ocr.assembly import (
-    FURNITURE_TYPES,
     ChunkArtifacts,
     assemble,
     is_empty,
@@ -579,7 +578,7 @@ def test_leere_seite_ist_empty() -> None:
 
 def test_ein_randblock_allein_ist_nicht_leer() -> None:
     """Ein Dokument, von dem nur die Kopfzeile erkannt wurde, traegt womoeglich
-    die wertvollste Kennung des Ganzen (`FURNITURE_TYPES`); als `empty`
+    die wertvollste Kennung des Ganzen (`rendered_markdown`); als `empty`
     verbucht wuerde es nie wieder angesehen."""
     ergebnis = _ergebnis([ersatz.seite(0, [ersatz.text_block(0, "Az. 12/34", typ="header")])])
     ergebnis["markdown"] = ""
@@ -622,175 +621,34 @@ def test_die_echte_leere_seite_ist_empty(aufnahme: str) -> None:
 # --- Die Leseseite --------------------------------------------------------
 
 
-def _mit_rand(markdown: str) -> dict[str, Any]:
-    ergebnis = _ergebnis(
-        [
-            ersatz.seite(
-                0,
-                [
-                    ersatz.text_block(0, "Az. 123/456", typ="header"),
-                    ersatz.text_block(1, "Der Fliesstext."),
-                    ersatz.text_block(2, "Seite 1 von 1", typ="footer"),
-                ],
-            )
-        ]
-    )
-    ergebnis["markdown"] = markdown
-    return ergebnis
+def test_ohne_vollfassung_eines_teilstuecks_wirft_die_darstellung() -> None:
+    """Fehlt einem Teilstueck `markdown_full.md` (der Worker meldet sie dann in
+    `degraded`), gibt es den Text fuer Abnehmer nicht: Das Paket setzt ihn nicht
+    selbst aus `markdown` und Middle-JSON zusammen, sondern wirft. Ein Text, dem
+    die Randklassen eines Teilstuecks fehlen, saehe vollstaendig aus."""
+    erster = _teil_aus(Chunk(0, 0), [ersatz.seite(0, [ersatz.text_block(0, "Az. 12/34", typ="header")])])
+    zweiter = _teil_aus(Chunk(1, 1), [ersatz.seite(0, [ersatz.text_block(0, "Seite 2")])])
+    ergebnis = assemble([erster, dataclasses.replace(zweiter, markdown_full=None)])
+    assert ergebnis["markdown_full"] is None
+
+    with pytest.raises(IncompleteResultError, match="markdown_full"):
+        rendered_markdown(ergebnis)
 
 
-def test_randbloecke_aus_dem_middle_json_werden_angehaengt() -> None:
-    """Das Ergebnis beginnt mit dem Markdown der Engine, zeichengleich; dahinter
-    die Randbloecke aus dem Middle-JSON, deren Text im Markdown fehlt."""
-    text = rendered_markdown(_mit_rand("Der Fliesstext.\n"))
-    assert text == "Der Fliesstext.\n\n\nAz. 123/456\n\nSeite 1 von 1"
-
-
-def test_randbloecke_im_markdown_werden_nicht_doppelt_angehaengt() -> None:
-    text = rendered_markdown(_mit_rand("Az. 123/456\n\nDer Fliesstext.\n"))
-    assert text == "Az. 123/456\n\nDer Fliesstext.\n\n\nSeite 1 von 1"
-
-
-def test_alle_fuenf_randklassen_werden_erfasst() -> None:
-    """Die fuenf Klassen sind hier unabhaengig von `FURNITURE_TYPES` aufgezaehlt,
-    aus DocVortex' Blocktypen und der echten normalen Seite: Fehlte eine in der
-    Konstante, fehlte ihr Text in der Darstellung."""
-    klassen = ["header", "footer", "page_number", "aside_text", "page_footnote"]
-    bloecke = [ersatz.text_block(nummer, f"Rand {typ}", typ=typ) for nummer, typ in enumerate(klassen)]
-    ergebnis = _ergebnis([ersatz.seite(0, bloecke)])
-    ergebnis["markdown"] = ""
-    assert rendered_markdown(ergebnis).split("\n\n") == [
-        "Rand header",
-        "Rand footer",
-        "Rand page_number",
-        "Rand aside_text",
-        "Rand page_footnote",
-    ]
-
-
-def _mit_bloecken(bloecke: list[Any]) -> dict[str, Any]:
-    """Ein Ergebnis mit dem Markdown „Der Fliesstext.", dessen einzige Seite die
-    gegebenen Bloecke traegt, auch solche, die das Schema nicht vorsieht."""
-    ergebnis = _mit_rand("Der Fliesstext.")
-    ergebnis["middle_json"][0]["pages"][0]["blocks"] = bloecke
-    return ergebnis
-
-
-def test_ein_randblock_ohne_text_haengt_nichts_an() -> None:
-    assert rendered_markdown(_mit_bloecken([{"type": "header", "index": 0}])) == "Der Fliesstext."
-
-
-def test_ein_span_der_kein_objekt_ist_bleibt_sichtbar() -> None:
-    """Steht im Inhalt eines Randblocks wider Erwarten eine nackte Zeichenkette
-    statt eines Spans, erscheint sie trotzdem: Sie kann das Aktenzeichen sein."""
-    kopf = {"type": "header", "index": 0, "content": ["Az. ", {"type": "text", "content": "7/8"}]}
-    assert rendered_markdown(_mit_bloecken([kopf])) == "Der Fliesstext.\n\nAz. 7/8"
-
-
-@pytest.mark.parametrize(
-    "aenderung",
-    [
-        {"markdown": None},
-        {"middle_json": None},
-        {"middle_json": [None]},
-        {"middle_json": [{"pages": "keine Liste"}]},
-        {"middle_json": [{"pages": [{"page_idx": 0, "blocks": "keine Liste"}]}]},
-        # Ein Block, der kein Objekt ist: Er kann der Randblock mit dem
-        # Aktenzeichen sein und darf nicht still wegfallen.
-        {"middle_json": [{"pages": [{"page_idx": 0, "blocks": ["Aktenzeichen 123/456"]}]}]},
-    ],
-)
-def test_beschaedigtes_ergebnis_wirft_statt_weniger_zu_liefern(
-    aenderung: dict[str, Any],
-) -> None:
-    """Entweder das ganze Dokument oder eine Ausnahme: Ein fehlendes Markdown
-    liesse nur die Randbloecke uebrig, ein fehlendes Middle-JSON die
-    Randbloecke weg — beides saehe nach einem kurzen Dokument aus."""
-    with pytest.raises(IncompleteResultError):
-        rendered_markdown({**_mit_rand("Der Fliesstext.\n"), **aenderung})
-
-
-def test_ein_fehlendes_feld_wird_gemeldet() -> None:
-    ergebnis = _mit_rand("Der Fliesstext.\n")
-    del ergebnis["middle_json"]
-    with pytest.raises(IncompleteResultError, match="middle_json"):
+@pytest.mark.parametrize("vollfassung", [None, 5, "fehlt"])
+def test_eine_beschaedigte_vollfassung_wirft_statt_weniger_zu_liefern(vollfassung: Any) -> None:
+    """Entweder das ganze Dokument oder eine Ausnahme: Ein Ersatz aus `markdown`
+    liesse die Randklassen weg und saehe nach einem vollstaendigen Dokument
+    aus, ein leerer Ersatz nach einem leeren."""
+    ergebnis = _ergebnis([ersatz.seite(0, [ersatz.text_block(0, "Az. 12/34", typ="header")])])
+    if vollfassung == "fehlt":
+        del ergebnis["markdown_full"]
+    else:
+        ergebnis["markdown_full"] = vollfassung
+    with pytest.raises(IncompleteResultError, match="markdown_full"):
         rendered_markdown(ergebnis)
     with pytest.raises(IncompleteResultError):
         rendered_markdown({})
-
-
-def test_nur_randbloecke_werden_angehaengt() -> None:
-    """Gewoehnlicher Text, der im Markdown fehlt, wird nicht angehaengt: Die
-    Ergaenzung gilt den Randklassen, die MinerU aus dem Markdown weglaesst."""
-    text = rendered_markdown(_mit_rand("Kurzfassung."))
-    assert "Der Fliesstext." not in text
-    assert text.startswith("Kurzfassung.")
-
-
-def _fussnote_im_markdown(text: str, wie_im_markdown: str) -> dict[str, Any]:
-    """Ein Ergebnis, dessen einzige Seite eine Seitenfussnote mit `text` traegt und
-    dessen `markdown.md` sie so enthaelt, wie DocVortex 0.5.16 sie rendert:
-    `wie_im_markdown` ist die Fussnote nach DocVortex' Maskierung
-    (`render/_internal/markdown/blocks.py`, `_render_page_footnote`), in der
-    Huelle, die die echte normale Seite des Endpoints zeigt."""
-    fussnote = {"type": "page_footnote", "index": 0, "content": [{"type": "text", "content": text}]}
-    ergebnis = _mit_bloecken([fussnote])
-    ergebnis["markdown"] = (
-        "Der Fliesstext.\n\n"
-        '<small><span class="docvortex-page-footnote" data-block-type="page_footnote" '
-        f'style="color:#6b7280">{wie_im_markdown}</span></small>'
-    )
-    return ergebnis
-
-
-def test_eine_fussnote_mit_maskierten_zeichen_wird_nicht_doppelt_angehaengt() -> None:
-    """DocVortex maskiert im Markdown `*`, `_`, `` ` ``, `~` und `$` mit einem
-    Backslash (`escaping.py`, `escape_conservative_markdown_text`). Die Fussnote
-    steht also im Markdown, nur nicht zeichengleich mit ihrem Rohtext."""
-    ergebnis = _fussnote_im_markdown(
-        "Vertrag Nr. 2025_17_B, Betrag in US-$ zu Kurs 2*3, Kennung `K1`, ca. ~5 %",
-        r"Vertrag Nr. 2025\_17\_B, Betrag in US-\$ zu Kurs 2\*3, Kennung \`K1\`, ca. \~5 %",
-    )
-    assert rendered_markdown(ergebnis) == ergebnis["markdown"]
-
-
-def test_eine_fussnote_mit_schon_maskiertem_rohtext_wird_nicht_doppelt_angehaengt() -> None:
-    """Am Endpoint liefert MinerU ein `$` im Text schon als `\\$` (QA zu
-    Mineroo#11, eine Fussnote „12 US-$ netto"). DocVortex maskiert ein Zeichen
-    hinter einem Backslash nicht noch einmal, im Markdown steht also ebenfalls
-    `US-\\$`."""
-    ergebnis = _fussnote_im_markdown(
-        r"Preis je Einheit 12 US-\$ netto", r"Preis je Einheit 12 US-\$ netto"
-    )
-    assert rendered_markdown(ergebnis) == ergebnis["markdown"]
-
-
-def test_eine_entity_die_docvortex_nicht_geschrieben_hat_verdeckt_keinen_randblock() -> None:
-    """Inline-Code gibt DocVortex roh aus (`inline.py`, `_render_inline_code`); ein
-    `&sect; 15` darin liest man wortwoertlich. Eine Kopfzeile „§ 15" steht dann
-    nicht im Markdown und wird angehaengt."""
-    kopf = {"type": "header", "index": 0, "content": [{"type": "text", "content": "§ 15"}]}
-    ergebnis = _mit_bloecken([kopf])
-    ergebnis["markdown"] = "Siehe `&sect; 15` im Code."
-    assert rendered_markdown(ergebnis) == "Siehe `&sect; 15` im Code.\n\n§ 15"
-
-
-@pytest.mark.parametrize(
-    ("text", "wie_im_markdown"),
-    [
-        ("Aktenzeichen <Az 12/34>", "Aktenzeichen &lt;Az 12/34&gt;"),
-        ("Zeichen &sect; im Text", "Zeichen &amp;sect; im Text"),
-    ],
-)
-def test_eine_fussnote_mit_text_wie_ein_html_tag_wird_nicht_doppelt_angehaengt(
-    text: str, wie_im_markdown: str
-) -> None:
-    """Text, der wie ein HTML-Tag oder eine Entity aussieht, schreibt DocVortex
-    als Entities (`inline.py`, `_escape_plain_markdown_text`: `html.escape` und
-    `_escape_entity_like_text`), damit ihn kein Markdown-Leser als Tag oder
-    Zeichen nimmt."""
-    ergebnis = _fussnote_im_markdown(text, wie_im_markdown)
-    assert rendered_markdown(ergebnis) == ergebnis["markdown"]
 
 
 # --- Echte Antworten des Endpoints --------------------------------------
@@ -867,26 +725,36 @@ def test_echte_teilstuecke_zaehlen_danach_die_seiten_des_originals() -> None:
     assert [s["page_idx"] for sc in ergebnis["structured_content"] for s in sc["pages"]] == erwartet
 
 
-def test_echte_normale_seite_traegt_alle_fuenf_randklassen() -> None:
+def test_echte_normale_seite_traegt_alle_fuenf_randklassen_einmal_an_ihrer_stelle() -> None:
     """Die echte normale Seite (`advanced`, OCR) liefert alle fuenf Randklassen als
     eigene Bloecke. `markdown.md` laesst Kopfzeile, Fusszeile, Seitenzahl und
-    Randtext weg; `markdown_full.md` und die Darstellung tragen sie."""
+    Randtext weg und behaelt die Seitenfussnote; `markdown_full.md` traegt alle
+    fuenf, je einmal, in der Lesereihenfolge des Middle-JSON (`index`): die
+    Kopfzeile vor der Ueberschrift, die Fussnote hinter dem Text, Fusszeile,
+    Seitenzahl und Randtext am Ende der Seite. Damit ist sie der Text fuer
+    Abnehmer, und das Paket setzt nichts selbst zusammen (Mineroo#13)."""
     ergebnis = assemble([unpack_response(ersatz.echte_antwort("normale_seite"), Chunk(0, 0))])
     typen = {block["type"] for block in ergebnis["middle_json"][0]["pages"][0]["blocks"]}
-    assert FURNITURE_TYPES <= typen
-
-    dargestellt = rendered_markdown(ergebnis)
-    assert dargestellt.startswith(ergebnis["markdown"])
-    # Kopfzeile, Fusszeile, Seitenzahl, Randtext.
+    assert {"header", "footer", "page_number", "aside_text", "page_footnote"} <= typen
     for text in ["Jahresbericht 2025 | Lagebericht", "Musterstrasse 1", "Seite 14", "Revisionsgesellschaft"]:
         assert text not in ergebnis["markdown"]
-        assert text in ergebnis["markdown_full"]
-        assert text in dargestellt
-    # Die Seitenfussnote traegt schon `markdown.md`, mit ihrer Inline-Formel
-    # `$^{1}$`; die Darstellung haengt sie deshalb kein zweites Mal an (QA zu
-    # Mineroo#11 fand sie doppelt).
     assert "Rahmenvertraegen" in ergebnis["markdown"]
-    assert dargestellt.count("Rahmenvertraegen") == 1
+
+    dargestellt = rendered_markdown(ergebnis)
+
+    assert dargestellt == ergebnis["markdown_full"]
+    reihenfolge = [
+        "Jahresbericht 2025 | Lagebericht",  # Kopfzeile
+        "3. Geschaeftsverlauf im Berichtsjahr",
+        "Rahmenvertraegen",  # Seitenfussnote
+        "Musterstrasse 1",  # Fusszeile
+        "Seite 14",  # Seitenzahl
+        "Revisionsgesellschaft",  # Randtext
+    ]
+    for text in reihenfolge:
+        assert dargestellt.count(text) == 1, text
+    stellen = [dargestellt.index(text) for text in reihenfolge]
+    assert stellen == sorted(stellen)
     assert not is_empty(ergebnis)
 
 

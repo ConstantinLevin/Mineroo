@@ -645,10 +645,12 @@ def markdown(
 ) -> None:
     """Schreibt das GANZE Dokument in Markdown-Form heraus.
 
-    Ausgegeben wird `OCRWrapper.rendered_markdown` — also alles, was auf dem
-    Dokument steht, einschliesslich der Randbloecke, die MinerU aus seinem
-    eigenen Markdown herausfiltert und in denen das Aktenzeichen liegt. Wer das
-    nackte Engine-Markdown will, nimmt den Python-Weg (`huelle["markdown"]`).
+    Ausgegeben wird `OCRWrapper.rendered_markdown`, die Vollmodus-Fassung —
+    also alles, was auf dem Dokument steht, einschliesslich Kopf- und
+    Fusszeilen, Seitenzahlen und Randtexten, die MinerU aus seinem
+    gewoehnlichen Markdown herausfiltert und in denen das Aktenzeichen liegt.
+    Wer dieses gewoehnliche Markdown will, nimmt den Python-Weg
+    (`huelle["markdown"]`).
 
     Nur der Text. Seiten und Bloecke, Bilder und die Rohantworten gibt es ueber
     den Python-Weg (`huelle["middle_json"]`, `huelle.images`, `huelle.raw`) — sie

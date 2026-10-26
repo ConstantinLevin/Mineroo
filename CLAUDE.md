@@ -647,6 +647,17 @@ Block im Middle-JSON und ohne Bild. Eine Seite ohne Bloecke traegt **keinen**
 `blocks`-Schluessel (`{"page_idx": 0}`, MinerU schreibt Voreinstellungen nicht),
 gemessen am Endpoint in der Stufe `advanced` mit OCR, als Bild wie als PDF.
 
+**Der Text für Abnehmer ist `markdown_full`, unverändert** (Mineroo#13):
+`assembly.rendered_markdown`, dahinter `OCRWrapper.rendered_markdown` und
+`mineru-ocr markdown`. Die Aufnahmen zeigen, dass die Vollmodus-Fassung alle
+fünf Randklassen (Kopfzeile, Fußzeile, Seitenzahl, Randtext, Seitenfußnote) je
+einmal an ihrer Stelle in MinerUs Lesereihenfolge trägt und die Bild-Deutungen
+als eingeklappte Blöcke hinter dem Bild; `markdown` lässt vier der fünf Klassen
+weg, und dort stehen oft die Kennungen. Das Paket setzt deshalb nichts selbst
+zusammen. Ist `markdown_full` `None` (einem Teilstück fehlte die Datei), wirft
+die Darstellung `IncompleteResultError`; ein Ersatz aus `markdown` sähe
+vollständig aus und ließe die Randklassen weg.
+
 `chunking.verify_page_coverage` prüft dabei strukturell und in dieser Reihenfolge:
 Beginn bei 0 → lückenlose Nachbarschaft → Ende bei `page_count - 1`. Die frühere
 Summenprüfung ist entfallen, weil sie von den drei Strukturprüfungen impliziert
