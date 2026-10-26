@@ -872,7 +872,13 @@ _DOCVORTEX_ENTITY: Final = re.compile(r"&(amp|lt|gt);")
 der wie ein HTML-Tag aussieht, `_escape_entity_like_text` fuer Text, der wie
 eine Entity aussieht). Andere Entities im Markdown hat DocVortex nicht
 geschrieben, etwa im Inline-Code, den es roh ausgibt; sie bleiben, wie man sie
-liest."""
+liest.
+
+Die Grenze: Code wird dabei nicht ausgenommen. Steht `&lt;`, `&gt;` oder
+`&amp;` woertlich in Code, wird es fuer den Vergleich trotzdem zum Zeichen, und
+ein Randblock mit genau diesem Text gilt als vorhanden (`&lt;Az 12/34&gt;` im
+Code verdeckt eine Kopfzeile „<Az 12/34>“). Ausgegeben wird das Markdown
+unveraendert; die Darstellung fuer Abnehmer entscheidet Mineroo#13."""
 
 _ENTITY_ZEICHEN: Final = {"amp": "&", "lt": "<", "gt": ">"}
 """Das Zeichen zu jeder Entity von `_DOCVORTEX_ENTITY`."""
