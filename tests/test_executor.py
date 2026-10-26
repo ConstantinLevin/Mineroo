@@ -311,7 +311,15 @@ async def test_der_job_schickt_die_lese_einstellungen_seiner_eingabe(
         db_conn, tmp_path, _pdf(3), lesen=ReadSettings("advanced", "auto", False)
     )
 
-    runpod = FalscherRunPod([ersatz.fertige_antwort("Text")])
+    # Bild, dann die zwei Teilstuecke des PDFs (Seiten 0-1 und 2): Seit Mineroo#12
+    # muss jede Antwort so viele Seiten tragen, wie geschickt wurden.
+    runpod = FalscherRunPod(
+        [
+            ersatz.fertige_antwort("Text"),
+            ersatz.fertige_antwort("Text", seiten=2),
+            ersatz.fertige_antwort("Text"),
+        ]
+    )
     await process_document(bild, settings=daemon, runpod=runpod, pool=pool)
     await process_document(pdf, settings=daemon, runpod=runpod, pool=pool)
 
@@ -1057,7 +1065,7 @@ async def test_nicht_passende_gemeldete_einstellungen_ergeben_einen_vermerk(
     sha, _ = _anlegen(db_conn, tmp_path, _pdf(3), lesen=ReadSettings("advanced", "ocr", True))
     runpod = FalscherRunPod(
         [
-            ersatz.fertige_antwort("eins"),
+            ersatz.fertige_antwort("eins", seiten=2),
             ersatz.fertige_antwort("zwei", tier="flash", ocr_mode="txt", image_analysis=False),
         ]
     )
