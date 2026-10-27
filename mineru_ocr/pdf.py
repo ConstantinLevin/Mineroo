@@ -148,6 +148,39 @@ class PdfReader:
                 ) from fehler
             seite.close()
 
+    def render_page(self, page: int) -> bytes:
+        """Rendert eine Einzelseite als JPEG: 200 dpi, laengste Kante hoechstens 3500 Pixel.
+
+        Nur als Ersatz fuer eine zu grosse Einzelseite (Mineroo#49). Wie der
+        Schnitt synchron im Event-Loop: PDFium darf nicht in einen Thread.
+        `CorruptDocumentError` nennt eine Seite, die sich nicht rendern laesst.
+        """
+        if not 0 <= page < self.page_count:
+            raise ValueError(f"Ungueltige Seite {page} (null-basiert).")
+        try:
+            seite = self._doc[page]
+            try:
+                breite, hoehe = seite.get_size()
+                bitmap = seite.render(scale=min(200 / 72, 3500 / max(breite, hoehe)))
+                try:
+                    bild = bitmap.to_pil()
+                    try:
+                        # PDFium rundet Pixel auf; Gleitkommafehler koennen 3501 ergeben.
+                        bild.thumbnail((3500, 3500))
+                        puffer = io.BytesIO()
+                        bild.save(puffer, format="JPEG", quality=90)
+                        return puffer.getvalue()
+                    finally:
+                        bild.close()
+                finally:
+                    bitmap.close()
+            finally:
+                seite.close()
+        except pypdfium2.PdfiumError as fehler:
+            raise CorruptDocumentError(
+                f"Seite {page} (null-basiert) laesst sich nicht rendern: {fehler}"
+            ) from fehler
+
     def extract(self, first_page: int, last_page: int) -> bytes:
         """Schneidet einen Seitenbereich als eigenstaendiges PDF heraus.
 

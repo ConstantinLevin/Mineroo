@@ -23,8 +23,11 @@ wieder.
 from __future__ import annotations
 
 import itertools
-from collections.abc import Callable, Iterator, Sequence
+import math
+import re
+from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 
 from .config import Settings
 from .errors import CorruptDocumentError, TooLargeError
@@ -163,12 +166,8 @@ def check_fits_unsplit(
 ) -> None:
     """Prueft ein nicht zerlegbares Dokument gegen die Upload-Grenze.
 
-    Gilt fuer alles ausser PDF — Bilder und die Ganzdokument-Formate
-    (`DocumentType.is_whole_document`, Mineroo#17). AUSDRUECKLICH NICHT
-    fuer die einzelne zu grosse PDF-Seite: Die faellt erst beim Zerlegen auf, und
-    `iter_chunks` ruft dafuer DIESE Funktion (statt selbst zu werfen), damit
-    Schwelle und Meldung samt Aufruest-Hinweis an einer Stelle stehen und nicht
-    an zweien auseinanderlaufen.
+    Gilt fuer Bilder und die Ganzdokument-Formate. Eine zu grosse PDF-Seite
+    rendert `iter_chunks` zuerst als Bild und prueft es dann ebenfalls hier.
 
     Args:
         size_bytes: Rohe Groesse.
@@ -179,13 +178,8 @@ def check_fits_unsplit(
         Nichts. Der gute Fall ist die stille Rueckkehr.
 
     Raises:
-        TooLargeError: Passt nicht. Die Meldung nennt die tatsaechliche Groesse,
-            die Grenze UND den Aufruest-Hinweis, denn genau so war die Festlegung:
-            „error fuers erste aber so dass man einen hinweis bekommt es
-            nachtraeglich aufzuruesten und es auch als TODO reintun" (Plan 2.4).
-            Der Aufruest-Weg, den der Hinweis nennt, waere das Rastern der Seite
-            in ein Bild — bewusst nicht gebaut, weil der Fall im gesamten
-            geprueften Bestand nicht vorkam (groesste Einzelseite: 1,27 MB).
+        TooLargeError: Passt nicht. Nennt Groesse, Grenze und den Hinweis auf
+            eine weitergehende Verkleinerung, die das Paket nicht vornimmt.
 
     Kosten: keine.
     """
@@ -195,11 +189,10 @@ def check_fits_unsplit(
         f"{size_bytes} Byte ueberschreiten die Upload-Grenze von "
         f"{settings.max_payload_bytes} Byte, und {doc_type.value} laesst sich "
         f"nicht seitenweise zerlegen. "
-        f"AUFRUESTBAR: Der Weg dafuer waere, die Seite bzw. das Bild zu rastern "
-        f"und verkleinert zu versenden. Bewusst nicht gebaut, weil der Fall im "
-        f"gesamten geprueften Bestand nicht vorkam (groesste Einzelseite: "
-        f"1,27 MB). Wer ihn braucht, legt dafuer eine Aufgabe an — dieser "
-        f"Hinweis ist der Ausloeser."
+        f"AUFRUESTBAR: Die Eingabe muss weiter verkleinert werden. "
+        f"Zu grosse PDF-Einzelseiten rendert das Paket bereits mit 200 dpi "
+        f"und hoechstens 3500 Pixeln an der laengsten Kante; eine weitere "
+        f"Verkleinerung ist nicht vorgesehen."
     )
 
 
@@ -273,15 +266,37 @@ def split_in_half(chunk: Chunk) -> tuple[Chunk, Chunk]:
             f"vorher behandeln — bei einer zu grossen Einzelseite ist das "
             f"check_fits_unsplit."
         )
-    # Bei ungerader Seitenzahl bekommt die erste Haelfte die zusaetzliche Seite:
-    # aufrunden statt abrunden. Die Wahl ist beliebig, aber sie muss FEST sein,
-    # sonst haengt der Zuschnitt von der Rundungsrichtung ab.
-    erste_haelfte = (chunk.page_count + 1) // 2
-    mitte = chunk.first_page + erste_haelfte - 1
-    return (
-        Chunk(first_page=chunk.first_page, last_page=mitte),
-        Chunk(first_page=mitte + 1, last_page=chunk.last_page),
+    erste, zweite = split_into_parts(chunk, 2)
+    return erste, zweite
+
+
+def split_into_parts(chunk: Chunk, parts: int) -> list[Chunk]:
+    """Teilt lueckenlos in hoechstens `parts` Teile; die vorderen sind ggf. groesser."""
+    if parts < 2 or chunk.page_count < 2:
+        raise ValueError("Zum Teilen braucht es mindestens zwei Seiten und zwei Teile.")
+    anzahl = min(parts, chunk.page_count)
+    laenge, rest = divmod(chunk.page_count, anzahl)
+    start = chunk.first_page
+    ergebnis = []
+    for nr in range(anzahl):
+        ende = start + laenge + (nr < rest) - 1
+        ergebnis.append(Chunk(start, ende))
+        start = ende + 1
+    return ergebnis
+
+
+def response_parts(message: str) -> int:
+    """Aufgerundetes Verhaeltnis aus der Worker-Meldung; ohne Groessen halbieren."""
+    groessen = re.search(
+        r"\boutput is (\d+(?:\.\d+)?) MB, past the (\d+(?:\.\d+)?) MB\b",
+        message,
     )
+    if groessen is None:
+        return 2
+    groesse, grenze = map(Decimal, groessen.groups())
+    if grenze == 0:
+        return 2
+    return max(2, math.ceil(groesse / grenze))
 
 
 def verify_page_coverage(chunks: Sequence[Chunk], page_count: int) -> None:
@@ -383,14 +398,19 @@ def iter_chunks(
     plan: Sequence[Chunk],
     cut: Callable[[int, int], bytes],
     settings: Settings,
-) -> Iterator[tuple[Chunk, bytes]]:
+    *,
+    render: Callable[[int], bytes] | None = None,
+) -> Generator[tuple[Chunk, bytes], int | None, None]:
     """Geht den Zuschnitt durch, korrigiert ihn an der Bytegrenze und liefert Stueck fuer Stueck.
 
     Fuer jeden geplanten Chunk wird geschnitten und die Groesse gemessen. Passt
     das Ergebnis unter `settings.max_payload_bytes`, wird es geliefert. Passt es
     nicht, wird der Chunk halbiert und mit beiden Haelften genauso verfahren —
     so lange, bis es passt oder bis eine einzelne Seite uebrig ist, die immer noch
-    zu gross ist.
+    zu gross ist. Diese wird, sofern `render` uebergeben ist, als Bild versucht.
+    `send(anzahl)` weist das zuletzt gelieferte Teilstueck wegen
+    einer zu grossen Antwort ab: Seine Teile kommen in dieselbe Warteschlange.
+    `next` bzw. `send(None)` bestaetigt es und geht zum naechsten weiter.
 
     Warum ein Generator und keine Liste: Ein 200-Seiten-Dokument zerfaellt in zehn
     Chunks zu je bis zu 7 MB. Alle gleichzeitig im Speicher zu halten waeren
@@ -407,15 +427,16 @@ def iter_chunks(
             die Halbierungsregel ohne eine einzige echte PDF-Datei durchgespielt
             werden kann.
         settings: Traegt die Bytegrenze.
+        render: Rendert eine zu grosse Einzelseite (`PdfReader.render_page`).
 
     Yields:
         Paare aus Chunk und den Bytes des zugehoerigen Ausschnitts, in
-        aufsteigender Seitenreihenfolge. Die gelieferten Chunks koennen FEINER
-        sein als der uebergebene Plan (dort, wo halbiert wurde) — nie groeber, nie
-        umsortiert.
+        Dokumentreihenfolge. Ein mit `send(anzahl)` abgewiesener Chunk wird durch
+        seine Teile ersetzt. Die bestaetigten Chunks koennen feiner sein als der
+        uebergebene Plan, nie groeber oder umsortiert.
 
     Zusicherung:
-        Die Folge der gelieferten Chunks deckt denselben Bereich ab wie `plan`
+        Die Folge der bestaetigten Chunks deckt denselben Bereich ab wie `plan`
         (Folge aus der Invariante von `split_in_half`). Jede gelieferte Bytefolge
         ist hoechstens `settings.max_payload_bytes` gross — mit der einen
         Ausnahme, die es nicht gibt, weil sie wirft: siehe unten.
@@ -425,7 +446,7 @@ def iter_chunks(
         das ist Absicht, denn sie steht erst am Ende fest.
 
     Raises:
-        TooLargeError: Eine einzelne Seite ist auch allein noch zu gross —
+        TooLargeError: Eine einzelne Seite ist auch gerendert noch zu gross —
             geworfen ueber `check_fits_unsplit`, damit Schwelle und Meldung nur
             an einer Stelle stehen. Faellt beim Durchlaufen an, also
             moeglicherweise NACHDEM schon Teilstuecke geliefert und vom Aufrufer
@@ -449,31 +470,25 @@ def iter_chunks(
             aktuell = offen.pop(0)
             daten = cut(aktuell.first_page, aktuell.last_page)
 
-            if _passt(len(daten), settings):
-                yield aktuell, daten
+            if not _passt(len(daten), settings) and aktuell.page_count > 1:
+                offen[:0] = split_into_parts(aktuell, 2)
                 continue
 
-            if aktuell.page_count == 1:
-                # Eine einzelne Seite laesst sich nicht weiter teilen. Der Wurf
-                # geht ueber `check_fits_unsplit`, damit Schwelle, Meldung und
-                # Aufruest-Hinweis nur an EINER Stelle formuliert sind; die
-                # Seitenzahl kommt hier dazu, weil nur diese Stelle sie kennt.
+            if not _passt(len(daten), settings):
+                if render is not None:
+                    daten = render(aktuell.first_page)
                 try:
                     check_fits_unsplit(
                         size_bytes=len(daten),
-                        doc_type=DocumentType.PDF,
+                        doc_type=DocumentType.JPEG if render is not None else DocumentType.PDF,
                         settings=settings,
                     )
                 except TooLargeError as fehler:
                     raise TooLargeError(
-                        f"Seite {aktuell.first_page} (null-basiert) allein: {fehler}"
+                        f"Seite {aktuell.first_page} (null-basiert) "
+                        f"{'gerendert' if render is not None else 'allein'}: {fehler}"
                     ) from fehler
-                raise AssertionError(
-                    "unerreichbar: check_fits_unsplit haette werfen muessen, denn "
-                    "_passt ist gerade falsch. Wer das hier sieht, hat die "
-                    "Kopplung der beiden zerschnitten."
-                )
 
-            erste, zweite = split_in_half(aktuell)
-            offen.insert(0, zweite)
-            offen.insert(0, erste)
+            teilzahl = yield aktuell, daten
+            if teilzahl is not None:
+                offen[:0] = split_into_parts(aktuell, teilzahl)

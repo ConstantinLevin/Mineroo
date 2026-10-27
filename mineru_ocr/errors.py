@@ -235,10 +235,9 @@ class TooLargeError(InputError):
     ueber der Grenze (DOCX, TIFF — nicht seitenweise zerlegbar), und beim
     Abschicken eine Eingabe ueber `db.MAX_INPUT_BYTES`, die sich nicht in
     `inputs` ablegen laesst (dann entsteht keine Zeile; die Kommandozeile zaehlt
-    sie in einem Ordner als uebersprungen). Die ersten beiden sind laut
-    Festlegung des Auftraggebers vorerst ein Fehler MIT Hinweis, kein stiller
-    Rettungsversuch: „error fuers erste aber so dass man einen hinweis bekommt es
-    nachtraeglich aufzuruesten und es auch als TODO reintun" (Plan 2.4).
+    sie in einem Ordner als uebersprungen). Eine zu grosse PDF-Einzelseite wird
+    zuerst mit 200 dpi und hoechstens 3500 Pixeln an der laengsten Kante gerendert
+    (Mineroo#49); erst wenn auch dieses Bild nicht passt, wird geworfen.
 
     Der Hinweis landet als Eintrag in `notes` der Zeile. Den Aufgaben-Eintrag legt
     NICHT der Daemon an — er wird ueber `status()` sichtbar, und der Mensch

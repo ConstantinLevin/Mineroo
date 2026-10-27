@@ -701,8 +701,10 @@ Teil-Zeilen.
 
 **Die Größe eines Teilstücks begrenzt die Antwort, nicht die Anfrage**
 (Mineroo#20). Der Worker weist eine Antwort über 19,4 MB selbst ab
-(`ResponseTooLargeError`); das Dokument endet dann `failed`, nie still `done`,
-und ein `retry` mit denselben Werten scheitert wieder. Die 10 MB, die RunPod
+(`ResponseTooLargeError`). Der Daemon gibt das abgewiesene Teilstück in denselben
+Zuschnitt zurück: in aufgerundet Antwortgröße/Grenze Teile, ohne Größenangaben
+halbiert (Mineroo#49). Passt ein Teil wieder nicht, wird weitergeteilt; erst
+eine einzelne Seite mit zu großer Antwort endet `failed`. Die 10 MB, die RunPod
 laut Doku und Worker auf `/run` kappen soll, gelten für die Antwort nicht: Eine
 Antwort von 14,0 MB kam vollständig an. Die dichtesten echten Scans brachten
 729 KB Antwort je Seite; mit 25 % Abstand zu 19,4 MB sind das **20 Seiten**
@@ -715,6 +717,20 @@ folgt derselben Rechnung wie `executionTimeout` des Endpoints (langsamste Seite
 (erfundene dichte Scan-Seiten: 24 Seiten, 26,7 MB, abgewiesen; 12 Seiten,
 14,0 MB, vollständig angekommen); die Messwerte
 stehen in `docs/MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md`, Abschnitt 8.
+
+`chunking.iter_chunks` verwaltet beide Grenzen in derselben Warteschlange:
+`send(anzahl)` verlangt die erneute Teilung des zuletzt gelieferten Stücks,
+`send(None)` bestätigt es. Bereits ausgepackte Antworten bleiben im Exekutor;
+bezahlte Abweisungen stehen auch bei `done` in `raw["unverwertbare_antworten"]`.
+Das abgewiesene Stück wird in Teilen erneut bezahlt.
+
+Eine einzelne PDF-Seite über der Anfragegrenze rendert `PdfReader.render_page`
+als JPEG mit 200 dpi, längster Kante höchstens 3.500 Pixel und Qualitätsstufe 90.
+Erst wenn auch dieses Bild nicht passt, endet das Dokument `input_error`.
+`notes` nennt die Originalseiten null-basiert unter `seiten_gerendert`; deren
+Seitenbereiche bleiben beim Zusammensetzen und bei der Vollständigkeitsprüfung
+die des Originals. Rendern läuft wie Schneiden synchron, weil PDFium nicht
+threadsicher ist. Zusätzliche Einstellungen oder ein neues Schema gibt es nicht.
 
 Jede Datei der Antwort hat in `raw` ihren eigenen Schlüssel: `markdown` und
 `markdown_full` als Text über alle Teilstücke (`markdown_full` ist `None`, wenn

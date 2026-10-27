@@ -134,11 +134,14 @@ wieder. Das sagst du dem Nutzer, bevor er zustimmt. Ebenso bei
 `MissingArtifactError` (der Antwort fehlte eine Datei, die das Paket braucht):
 Die bezahlte Antwort steht in `show ZIEL --raw`, und ein `retry` bezahlt das
 Dokument neu; eine Seite, die MinerU verwirft, verwirft es voraussichtlich
-wieder. Nennt der Fehler `ResponseTooLargeError`, war die Antwort eines Teilstücks
-größer als die 19,4 MB, die der Worker zurückgibt; ein
-`retry` scheitert mit denselben Einstellungen wieder. Erst ein kleineres
-`max_pages_per_chunk` in der Konfiguration des Daemons hilft, und das stellt der
-Betreiber ein.
+wieder. Bei `ResponseTooLargeError` teilt der Daemon das betroffene PDF-Teilstück
+automatisch weiter und liest es in Teilen erneut (erneut bezahlt). Erst wenn
+die Antwort einer einzelnen Seite zu groß ist, bleibt das Dokument `failed`;
+ein kleineres `max_pages_per_chunk` hilft dann nicht.
+Eine PDF-Einzelseite über der Uploadgrenze wird als Bild mit 200 dpi und längster
+Kante höchstens 3.500 Pixel versucht. `notes` nennt diese Originalseiten
+null-basiert unter `seiten_gerendert`. Passt auch das Bild nicht, endet das
+Dokument `input_error`.
 
 ## Was Lesen kostet
 

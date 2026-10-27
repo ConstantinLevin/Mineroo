@@ -33,7 +33,7 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Generator
 from datetime import UTC, datetime
 from typing import Any, Final, TypeVar
 
@@ -217,7 +217,9 @@ async def process_document(
            bewertet: alles ausser `COMPLETED` wird in `TerminalRunPodError` bzw.
            `TransientRunPodError` uebersetzt und geworfen. `TIMED_OUT` ist
            wiederholbar (es kann an der Warteschlange gelegen haben), `FAILED`
-           und `CANCELLED` sind endgueltig. Erst danach sieht
+           und `CANCELLED` sind endgueltig. Ausnahme: Eine mehrseitige PDF mit
+           `ResponseTooLargeError` geht zur weiteren Teilung in den Zuschnitt
+           zurueck (Mineroo#49). Erst danach sieht
            `assembly.unpack_response` die Antwort, und es sieht ausschliesslich
            erfolgreiche.
 
@@ -472,21 +474,32 @@ async def process_document(
                 # Vorsorglich, VOR dem ersten bezahlten Aufruf. Bei leerem Konto
                 # liefe man sonst in eine Wand aus 402-Antworten.
                 await wait_for_balance(runpod, settings, lesefragen=lesefragen)
-                if geteilt:
-                    stuecke: Any = chunking.iter_chunks(
-                        chunking.plan_chunks(seiten, settings),
-                        leser.extract,
-                        settings,
-                    )
-                else:
-                    # Passt ungeteilt: Dann gehen die ORIGINAL-Bytes hinaus,
-                    # nicht ein neu geschriebener Ausschnitt. Der Chunk deckt
-                    # trotzdem den ganzen Seitenbereich ab, damit die
-                    # Gegenrechnung in Schritt 3 aufgeht — es gibt keinen
-                    # Sonderfall „war nicht geschnitten".
-                    stuecke = [
-                        (chunking.Chunk(first_page=0, last_page=seiten - 1), rohbytes)
-                    ]
+                def schneiden(erste: int, letzte: int) -> bytes:
+                    # Passt das Original, bleibt es unveraendert. Auch dann kann
+                    # die Antwort spaeter eine Teilung desselben Plans verlangen.
+                    if not geteilt and erste == 0 and letzte == seiten - 1:
+                        return rohbytes
+                    return leser.extract(erste, letzte)
+
+                gerenderte_seiten: list[int] = []
+
+                def rendern(seite: int) -> bytes:
+                    bild = leser.render_page(seite)
+                    if not gerenderte_seiten:
+                        vermerke.append({
+                            "kind": "seiten_gerendert",
+                            "at": _jetzt(),
+                            "seiten": gerenderte_seiten,
+                            "dpi": 200,
+                            "max_kante_pixel": 3500,
+                        })
+                    gerenderte_seiten.append(seite)
+                    return bild
+
+                stuecke = chunking.iter_chunks(
+                    chunking.plan_chunks(seiten, settings), schneiden, settings,
+                    render=rendern,
+                )
                 await _stuecke_verarbeiten(
                     stuecke,
                     sha256=sha256,
@@ -529,7 +542,9 @@ async def process_document(
             # (Mineroo#17). Die Lese-Einstellungen gehen trotzdem mit: Der Worker
             # nimmt sie an und liest die Datei unabhaengig davon in `flash`.
             await _stuecke_verarbeiten(
-                [(chunking.Chunk(first_page=0, last_page=0), rohbytes)],
+                chunking.iter_chunks(
+                    [chunking.Chunk(0, 0)], lambda erste, letzte: rohbytes, settings
+                ),
                 sha256=sha256,
                 settings=settings,
                 lesen=lesen,
@@ -549,6 +564,8 @@ async def process_document(
             chunking.verify_page_coverage([teil.chunk for teil in teile], seiten)
 
         ergebnis = assembly.assemble(teile)
+        if unverwertbar:
+            ergebnis["unverwertbare_antworten"] = unverwertbar
         status = (
             db.DocumentStatus.EMPTY
             if assembly.is_empty(ergebnis)
@@ -1250,7 +1267,7 @@ async def _image_tag_lesen(
 
 
 async def _stuecke_verarbeiten(
-    stuecke: Any,
+    stuecke: Generator[tuple[chunking.Chunk, bytes], int | None, None],
     *,
     sha256: str,
     settings: Settings,
@@ -1277,6 +1294,10 @@ async def _stuecke_verarbeiten(
     endgueltige Ausnahme nach oben, und die folgenden Teilstuecke werden nicht
     mehr bezahlt. Ein `degraded`, das nur Dateien nennt, die das Paket nicht
     braucht, landet als Vermerk in `vermerke`.
+
+    Eine zu grosse Antwort (`ResponseTooLargeError`) gibt die verlangte Teilzahl
+    an denselben Zuschnitt zurueck (`send`), solange mehr als eine Seite bleibt.
+    Die bezahlte Abweisung wird wie jede unverwertbare Antwort aufgehoben.
 
     NACHEINANDER, und das ist eine Zusicherung und keine Absicht: Ein fertiges
     Ergebnis liegt auf der Gegenseite nur rund dreissig Minuten bereit. Wuerde
@@ -1309,7 +1330,13 @@ async def _stuecke_verarbeiten(
     zweites Mal und liesse das erste Ergebnis in seinem Dreissig-Minuten-Fenster
     verfallen.
     """
-    for chunk, daten in stuecke:
+    teilzahl: int | None = None
+    while True:
+        try:
+            chunk, daten = stuecke.send(teilzahl)
+        except StopIteration:
+            break
+        teilzahl = None
         kodiert = base64.b64encode(daten).decode("ascii")
 
         async def absenden(kodiert: str = kodiert) -> str:
@@ -1418,6 +1445,17 @@ async def _stuecke_verarbeiten(
                     "antwort": antwort,
                 }
             )
+            fehlertext = antwort.get("error")
+            if (
+                antwort.get("status") == "FAILED"
+                and isinstance(fehlertext, str)
+                and fehlertext.startswith("ResponseTooLargeError:")
+                and chunk.page_count > 1
+            ):
+                # Nur das abgewiesene Stueck zurueck in den Zuschnitt geben;
+                # alles zuvor Bezahlte bleibt in `teile` und `unverwertbar`.
+                teilzahl = chunking.response_parts(fehlertext)
+                continue
             raise
         # Ausgepackt ist die Antwort bezahlt und verwertbar: Sie gehoert in
         # `teile`, BEVOR geprueft wird, ob sie vollstaendig ist. Fehlt etwas,

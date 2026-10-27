@@ -667,8 +667,8 @@ class Settings:
 
     Wer den Wert hebt, hebt auch `executionTimeout` und `job_timeout_seconds`
     und prueft die Antwort: Ab 27 Seiten der dichtesten Scans reisst sie die
-    19,4 MB. Reisst sie, endet das Dokument `failed`; der Weg zurueck ist ein
-    kleinerer Wert und `retry`."""
+    19,4 MB. Reisst sie, teilt der Daemon das betroffene Teilstueck weiter
+    (Mineroo#49); erst eine einzelne Seite mit zu grosser Antwort endet `failed`."""
 
     # -- Zeitverhalten -----------------------------------------------------
 
