@@ -93,6 +93,91 @@ def test_ganzdokument_formate_werden_am_inhalt_erkannt(name: str, tmp_path: Path
 
 
 @pytest.mark.parametrize(
+    "mimetype",
+    [
+        "application/vnd.makemusic.notation", "application/vnd.recordare.musicxml", "",
+        "application/epub+zip" + " " * 256,
+    ],
+    ids=["finale", "musicxml", "leer", "zu-gross"],
+)
+def test_fremder_mimetype_ist_kein_epub_trotz_container(
+    mimetype: str, tmp_path: Path
+) -> None:
+    """Ein vorhandener fremder Medientyp entscheidet auch gegen einen
+    Container mit OPF-Verweis (Mineroo#50)."""
+    daten = zip_aus({
+        "mimetype": mimetype,
+        "META-INF/container.xml": (
+            '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+            '<rootfiles><rootfile full-path="buch.opf" '
+            'media-type="application/oebps-package+xml"/></rootfiles></container>'
+        ),
+        "buch.opf": "<package/>",
+    })
+    with pytest.raises(UnsupportedTypeError):
+        sniff_bytes(daten)
+
+    datei = tmp_path / "probe.epub"
+    datei.write_bytes(daten)
+    with pytest.raises(UnsupportedTypeError):
+        sniff_path(datei)
+
+
+@pytest.mark.parametrize("container", [None, "<kaputt"])
+def test_epub_mimetype_genuegt_auch_ohne_lesbaren_container(
+    container: str | None, tmp_path: Path
+) -> None:
+    """Der EPUB-Medientyp reicht; der Container ist nur der Ersatzweg."""
+    eintraege = {"mimetype": "application/epub+zip"}
+    if container is not None:
+        eintraege["META-INF/container.xml"] = container
+    daten = zip_aus(eintraege)
+    assert sniff_bytes(daten) is DocumentType.EPUB
+
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    assert sniff_path(datei) is DocumentType.EPUB
+
+
+@pytest.mark.parametrize(
+    "container",
+    [
+        '<container><rootfiles><rootfile full-path="partitur.xml" '
+        'media-type="application/vnd.recordare.musicxml+xml"/></rootfiles></container>',
+        '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+        '<rootfiles><rootfile full-path="partitur.xml" '
+        'media-type="application/vnd.recordare.musicxml+xml"/></rootfiles></container>',
+        '<container xmlns="urn:beispiel:notation"><rootfiles>'
+        '<rootfile full-path="score.dat"/></rootfiles></container>',
+        '<container xmlns="urn:beispiel:notation"><rootfiles>'
+        '<rootfile full-path="buch.opf" media-type="application/oebps-package+xml"/>'
+        '</rootfiles></container>',
+        '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+        '<rootfiles><rootfile media-type="application/oebps-package+xml"/>'
+        '</rootfiles></container>',
+        '<container/>',
+        '<container',
+    ],
+    ids=[
+        "musicxml", "musicxml-mit-namensraum", "notation", "fremder-namensraum",
+        "opf-ohne-pfad", "leer", "kaputt",
+    ],
+)
+def test_container_ohne_opf_verweis_ist_kein_epub(
+    container: str, tmp_path: Path
+) -> None:
+    """Ohne `mimetype` reicht der Name `container.xml` nicht (Mineroo#50)."""
+    daten = zip_aus({"META-INF/container.xml": container, "partitur.xml": "<score/>"})
+    with pytest.raises(UnsupportedTypeError):
+        sniff_bytes(daten)
+
+    datei = tmp_path / "probe.epub"
+    datei.write_bytes(daten)
+    with pytest.raises(UnsupportedTypeError):
+        sniff_path(datei)
+
+
+@pytest.mark.parametrize(
     "daten",
     [
         # Text und Daten ohne Kennung: CSV und TSV liest das Paket nicht (Mineroo#1,
