@@ -848,12 +848,11 @@ class RunPodClient:
     async def balance(self) -> float:
         """Liest den aktuellen Kontostand in US-Dollar.
 
-        Wird an drei Stellen gebraucht: im Preflight gegen
-        `min_balance_start_usd`, einmal vor dem ersten Chunk eines Dokuments, und
-        in der Warteschleife bei leerem Konto. Jurgens Vorgabe aus dem Braindump
-        verlangt, dass so etwas beim Zugriff live geholt und nicht zwischengelagert
-        wird — „dynmiasche attribute wie runpodcredit […] die per getter direkt
-        von der api gegettet werden wenn man darauf zugreift" (Plan 2.1).
+        Dieser Getter fragt immer direkt. Client, Status und Preflight behalten
+        damit die dynamische Auskunft (Plan 2.1). Fuer den Daemon gilt seit
+        Mineroo#47 die Entscheidung des Eigentuemers zum Zwischenspeichern:
+        `lesefragen.Lesefragen` buendelt dessen Aufrufe vor dem ersten Teilstueck
+        und waehrend der Kontopause fuer `runpod_cache_seconds`.
 
         Returns:
             Der Kontostand.
@@ -861,9 +860,9 @@ class RunPodClient:
         Raises:
             TransientRunPodError: Die Abfrage schlug fehl. Wichtig fuer den
                 Aufrufer: Ein FEHLGESCHLAGENER Kontostand ist NICHT dasselbe wie
-                ein leeres Konto. Die Arbeit wegen einer misslungenen Abfrage
-                anzuhalten waere so falsch wie sie bei leerem Konto weiterlaufen
-                zu lassen.
+                ein leeres Konto oder eine Bestaetigung ausreichenden Guthabens.
+                Der Daemon wartet nach einem solchen Fehler auf eine lesbare
+                Antwort, bevor er die Arbeit freigibt.
 
         Kosten: keine.
         """
@@ -1009,6 +1008,8 @@ class RunPodClient:
 
         Laeuft ueber GraphQL, weil die REST-Schnittstelle Templates aus einer
         GitHub-Anbindung nicht ausliefert (dort kommt 404 zurueck).
+        Im Daemon speichert `lesefragen.Lesefragen` diese Auskunft fuer
+        `runpod_cache_seconds`; die Herkunft am Dokument kann so alt sein.
 
         Returns:
             Der Image-Bezeichner, oder None, wenn das Template ihn nicht ausweist.

@@ -87,6 +87,9 @@ max_pages_per_chunk = 20                             # (20 Seiten)
 max_payload_bytes = 7400000                          # (7,4 MB roh; mehr passt nicht durch /run)
 job_timeout_seconds = 300                            # (300, wie executionTimeout)
 
+# Lesefragen im Daemon; alle Plaetze teilen Werte und Fehler:
+runpod_cache_seconds = 60                            # (60, Kontostand und Image-Herkunft)
+
 # Endpoint-Variablen, die der Preflight nach Wert prüft; was die Tabelle nicht
 # nennt, behält seinen Sollwert. Variablen, die das Image setzt (etwa
 # MINERU_MODEL_SOURCE), zeigt RunPods Worker-Umgebung nicht; sie gehören nicht hierher:
@@ -99,6 +102,18 @@ Jeder Schlüssel außer der Tabelle hat eine Umgebungsvariable, zum Beispiel
 `MINERU_OCR_ENDPOINT_ID`, `MINERU_OCR_DB_DSN`, `MINERU_OCR_EXPECTED_IMAGE_TAG`,
 `MINERU_OCR_IDLE_TIMEOUT`; die Rechenzentren stehen dort durch Kommas getrennt in
 `MINERU_OCR_ALLOWED_DATA_CENTERS`.
+
+Der Daemon fragt Kontostand und Image-Herkunft je höchstens einmal pro
+`runpod_cache_seconds` ab (positive, endliche Sekunden). Gleichzeitige Leser
+teilen eine laufende Abfrage; auch Fehler bleiben für dieses Intervall
+gespeichert. Nach einem vorübergehenden Kontofehler, etwa HTTP 429, erfolgt die
+nächste gemeinsame Prüfung nach Ablauf der Frist. Ohne gelesenen ausreichenden
+Kontostand wird nicht weitergearbeitet. HTTP 402 verlangt eine nach der
+Ablehnung begonnene Abfrage und wartet dafür gegebenenfalls das restliche
+Intervall ab. Bei bestätigt niedrigem Kontostand gilt weiterhin
+`balance_recheck_seconds` (900 Sekunden). Client, `status` und `preflight`
+fragen wie bisher direkt. Die Cache-Frist beginnt am Ende der Abfrage; beim
+Herunterfahren bleiben Abfragen und wartende Leser abbrechbar.
 
 Der Preflight zeigt die Werte der Variablen aus `[endpoint_env]`. Ist ein ganzer
 Namensteil (getrennt an allem außer Buchstaben und Ziffern) `KEY(S)`,

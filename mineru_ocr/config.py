@@ -62,6 +62,7 @@ DATEI_SCHLUESSEL: Final = frozenset(
         *ZAHL_SCHLUESSEL,
         *TEILSTUECK_ZAHL_SCHLUESSEL,
         "job_timeout_seconds",
+        "runpod_cache_seconds",
     }
 )
 """Die Schluessel, die die Konfigurationsdatei kennt. Ein anderer ist ein Fehler
@@ -335,6 +336,9 @@ def _sollwerte(
         gefunden = _wert(name, umgebung, datei, pfad)
         if gefunden is not None:
             ergebnis[name] = _zahl(name, *gefunden)
+    gefunden = _wert("runpod_cache_seconds", umgebung, datei, pfad)
+    if gefunden is not None:
+        ergebnis["runpod_cache_seconds"] = _sekunden("runpod_cache_seconds", *gefunden)
     gefunden = _wert("expected_image_tag", umgebung, datei, pfad)
     if gefunden is not None:
         ergebnis["expected_image_tag"] = _zeichenkette("expected_image_tag", *gefunden)
@@ -819,9 +823,20 @@ class Settings:
     Satzes: `db.wait_for_terminal` trug sie ein zweites Mal fest verdrahtet, also
     genau die Lage, die hier ausgeschlossen werden sollte."""
 
+    runpod_cache_seconds: float = 60.0
+    """Mindestabstand der Lesefragen nach Kontostand und Image-Herkunft im Daemon.
+    Alle Plaetze teilen je Lesefrage Wert, Fehler und laufende Abfrage. Nach
+    einem voruebergehenden Kontofehler wird nach diesem Intervall neu gefragt;
+    eine 402 verlangt eine danach begonnene Abfrage, unter Wahrung der Frist.
+    Die Minute ist die Vorgabe des Eigentuemers (Mineroo#47); die Frist beginnt
+    am Ende einer Abfrage, damit auch langsame Antworten geteilt werden.
+    Gilt nicht fuer Client, Status oder Preflight. Endlich und groesser als null.
+    Einstellbar ueber TOML und MINERU_OCR_RUNPOD_CACHE_SECONDS."""
+
     balance_recheck_seconds: float = 900.0
-    """Abstand der Kontostands-Pruefungen in der Warteschleife. Eine Viertelstunde
-    ist keine Messung, sondern die Abwaegung zwischen „merkt das Aufladen schnell"
+    """Abstand der Pruefungen bei bestaetigtem niedrigen Kontostand.
+    Voruebergehende Lesefehler folgen im Daemon `runpod_cache_seconds`.
+    Eine Viertelstunde ist keine Messung, sondern die Abwaegung zwischen „merkt das Aufladen schnell"
     und „belaestigt die API nicht ohne Not"."""
 
     # -- Sollwerte des Endpoints (gegen sie vergleicht der Preflight) ---------
@@ -944,6 +959,10 @@ class Settings:
                 oder eine Grenze eines Teilstuecks taugt nicht.
         """
         self.read_settings()
+        if not (math.isfinite(self.runpod_cache_seconds) and self.runpod_cache_seconds > 0):
+            raise ConfigurationError(
+                "runpod_cache_seconds muss eine endliche Zahl groesser als null sein."
+            )
         if self.max_pages_per_chunk < 1:
             raise ConfigurationError(
                 f"max_pages_per_chunk={self.max_pages_per_chunk!r}: Ein Teilstueck "

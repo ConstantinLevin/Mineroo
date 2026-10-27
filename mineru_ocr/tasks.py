@@ -41,6 +41,7 @@ from psycopg_pool import AsyncConnectionPool
 from . import config, executor
 from .config import Settings
 from .errors import TransientRunPodError, should_run_again
+from .lesefragen import Lesefragen
 from .runpod import RunPodClient
 
 
@@ -365,6 +366,7 @@ async def ocr_document(context: procrastinate.JobContext, sha256: str) -> None:
         runpod=mittel["runpod"],
         pool=mittel["pool"],
         letzter_versuch=letzter,
+        lesefragen=mittel["lesefragen"],
     )
 
 
@@ -551,19 +553,19 @@ def _ocr_task(
 def worker_context_resources(settings: Settings) -> dict[str, Any]:
     """Baut die Betriebsmittel, die alle Tasks eines Workers teilen.
 
-    Ein RunPod-Zugang und ein Verbindungspool fuer den ganzen Prozess, nicht je
-    Job. Vierundzwanzig eigene HTTP-Clients waeren vierundzwanzig eigene
-    Verbindungspools, die einander nichts nuetzen; ein geteilter Client haelt
+    Ein RunPod-Zugang, ein Lesefragen-Speicher und ein Verbindungspool fuer den
+    ganzen Prozess, nicht je Job. Vierundzwanzig eigene HTTP-Clients waeren
+    vierundzwanzig eigene Verbindungspools, die einander nichts nuetzen; ein geteilter Client haelt
     seine Verbindungen offen, und genau davon lebt eine Abfrageschleife, die alle
     zehn Sekunden dieselbe Gegenstelle fragt.
 
     Args:
-        settings: Wird an beide Betriebsmittel durchgereicht.
+        settings: Wird an die Betriebsmittel durchgereicht.
 
     Returns:
         Die Abbildung, die als `additional_context` an `run_worker_async`
         uebergeben wird. Die Tasks lesen sie als
-        `context.additional_context["runpod"]` bzw. `["pool"]`.
+        `context.additional_context["runpod"]`, `["lesefragen"]` bzw. `["pool"]`.
 
         Der Name steht hier ausdruecklich, weil er die ganze Frage beantwortet:
         Ohne ihn baut ein Implementierer wahrscheinlich eine Modul-Variable oder
@@ -604,6 +606,7 @@ def worker_context_resources(settings: Settings) -> dict[str, Any]:
         # ohne globalen Zustand auskommt.
         "settings": settings,
         "runpod": RunPodClient(settings),
+        "lesefragen": Lesefragen(settings),
         "pool": AsyncConnectionPool(
             settings.db_dsn,
             min_size=1,
