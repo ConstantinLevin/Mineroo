@@ -688,8 +688,8 @@ class RunPodClient:
         Er geht unveraendert nach oben, und der Aufrufer bricht den Job ab, denn
         er kann bei RunPod weiterlaufen.
 
-        Das Zeitbudget und die Frist gelten je Aufruf. Ruft der Executor nach
-        einer Kontopause (HTTP 402) erneut auf, beginnen beide von vorn; die
+        Das Zeitbudget und die Fristen gelten je Aufruf. Ruft der Executor nach
+        einer Kontopause (HTTP 402) erneut auf, beginnen sie von vorn; die
         Kontopause ist auf `_KONTOPAUSEN_JE_SCHRITT` Runden begrenzt.
 
         Zusicherung:
@@ -698,6 +698,8 @@ class RunPodClient:
         Raises:
             JobAufgegebenError: `settings.job_timeout_seconds` Sekunden in
                 Bearbeitung (alle Laeufe zusammen, die Schlange zaehlt nicht)
+                oder `settings.queue_timeout_seconds` Sekunden ununterbrochen
+                in der Warteschlange (IN_QUEUE)
                 oder `settings.poll_failure_timeout_seconds` Sekunden lang nur
                 fehlgeschlagene Abfragen. Wiederholbar.
                 Vorher fragt das Paket ein letztes Mal ab und gibt das Ergebnis
@@ -733,6 +735,7 @@ class RunPodClient:
         # Lauf wuerde bezahlt.
         verbraucht = 0.0  # Sekunden aus abgeschlossenen Laeufen
         lauf_seit: float | None = None  # Beginn des Laufs, der gerade andauert
+        schlange_seit: float | None = None
         # Eine eigene Grenze fuer fehlschlagende Abfragen, denn das Budget oben
         # laeuft erst ab dem ersten Lauf: Faellt die Abfrage vorher dauerhaft aus,
         # bliebe sonst kein Ende. Sie beginnt beim ersten Fehler einer Reihe und
@@ -754,6 +757,14 @@ class RunPodClient:
                 grund = f"{ausfall_frist} Sekunden lang nur fehlgeschlagene Abfragen"
             elif laufzeit >= budget:
                 grund = f"{budget} Sekunden in Bearbeitung (IN_PROGRESS)"
+            elif (
+                schlange_seit is not None
+                and jetzt - schlange_seit >= self._settings.queue_timeout_seconds
+            ):
+                grund = (
+                    f"{self._settings.queue_timeout_seconds} Sekunden "
+                    f"in der Warteschlange (IN_QUEUE)"
+                )
             if grund is not None:
                 # Vor dem Aufgeben ein letztes Mal fragen: Wird der Job im
                 # letzten Takt fertig, ist er bezahlt, und ihn abzubrechen und neu
@@ -818,15 +829,19 @@ class RunPodClient:
             if zustand in TERMINAL_STATUSES:
                 return antwort
             if zustand == "IN_QUEUE":
+                if schlange_seit is None:
+                    schlange_seit = time.monotonic()
                 if lauf_seit is not None:
                     verbraucht += time.monotonic() - lauf_seit
                     lauf_seit = None
-            elif lauf_seit is None:
-                # `IN_PROGRESS`, das beobachtete `RUNNING` und jeder unbekannte
-                # Zustand: Von einem unbekannten Zustand weiss man nicht, ob der
-                # Job wartet; zaehlte er nicht, bliebe ein unbekanntes Wort ohne
-                # Ende offen und der Job ohne Abbruch bezahlt.
-                lauf_seit = time.monotonic()
+            else:
+                schlange_seit = None
+                if lauf_seit is None:
+                    # `IN_PROGRESS`, das beobachtete `RUNNING` und jeder unbekannte
+                    # Zustand: Von einem unbekannten Zustand weiss man nicht, ob der
+                    # Job wartet; zaehlte er nicht, bliebe ein unbekanntes Wort ohne
+                    # Ende offen und der Job ohne Abbruch bezahlt.
+                    lauf_seit = time.monotonic()
             if zustand not in RUNNING_STATUSES:
                 # Ein unbekannter Zustand wird NICHT als Fehler behandelt und
                 # NICHT als terminal: Beides koennte einen laufenden, bezahlten

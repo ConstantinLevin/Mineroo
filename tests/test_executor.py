@@ -12,6 +12,7 @@ import base64
 import dataclasses
 import hashlib
 import io
+import logging
 import re
 import threading
 from pathlib import Path
@@ -332,6 +333,41 @@ async def test_der_job_schickt_die_lese_einstellungen_seiner_eingabe(
 
 
 # --- Eingang --------------------------------------------------------------
+
+
+async def test_jede_runpod_job_id_steht_mit_hash_und_seiten_im_log(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Abgeschickte Jobs sind schon beim Warten ueber das Log zuzuordnen."""
+    caplog.set_level(logging.INFO, logger="mineru_ocr")
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(3))
+    bild, _ = _anlegen(db_conn, tmp_path, b"Log-Test", typ=DocumentType.PNG)
+    erwartet = [(sha, "0-1"), (sha, "2-2"), (bild, "0-0")]
+
+    class RunPodMitLogpruefung(FalscherRunPod):
+        async def await_result(self, job_id: str) -> dict[str, Any]:
+            hashwert, seiten = erwartet[len(self.abgeholt)]
+            assert any(
+                job_id in eintrag.getMessage()
+                and hashwert in eintrag.getMessage()
+                and seiten in eintrag.getMessage()
+                and eintrag.levelno >= logging.INFO
+                for eintrag in caplog.records
+            ), f"Job {job_id} fehlt vor dem Abholen im Log"
+            return await super().await_result(job_id)
+
+    runpod = RunPodMitLogpruefung([
+        ersatz.fertige_antwort(seiten=2), ersatz.fertige_antwort(),
+        ersatz.fertige_antwort(),
+    ])
+    daemon = dataclasses.replace(exec_settings, max_pages_per_chunk=2)
+    await process_document(sha, settings=daemon, runpod=runpod, pool=pool)
+    await process_document(bild, settings=daemon, runpod=runpod, pool=pool)
+    assert runpod.abgeholt == ["job-0", "job-1", "job-2"]
 
 
 async def test_eingabe_kommt_aus_inputs_nicht_von_einem_pfad(

@@ -479,6 +479,23 @@ def test_anfragegrenze_von_run_ist_genau_getroffen(tmp_path: Path) -> None:
         _einstellung(config_path=datei)
 
 
+def test_warteschlangenfrist_kommt_aus_datei_und_umgebung(tmp_path: Path) -> None:
+    """Die einstellbare Frist begrenzt IN_QUEUE unabhaengig vom Laufzeitbudget."""
+    datei = tmp_path / "config.toml"
+    datei.write_text("queue_timeout_seconds = 900\n")
+    assert _einstellung(config_path=datei).queue_timeout_seconds == 900.0
+    assert _einstellung(
+        config_path=datei, environ={"MINERU_OCR_QUEUE_TIMEOUT_SECONDS": "1200.5"}
+    ).queue_timeout_seconds == 1200.5
+
+
+@pytest.mark.parametrize("frist", [0.0, -1.0, float("nan"), float("inf")])
+def test_unsinnige_warteschlangenfrist_wirft(frist: float) -> None:
+    """Null oder nan gaeben sofort auf, unendlich liesse den Job endlos warten."""
+    with pytest.raises(ConfigurationError, match="queue_timeout_seconds"):
+        dataclasses.replace(_einstellung(), queue_timeout_seconds=frist)
+
+
 def test_ausfall_der_abfragen_hat_eine_eigene_laengere_frist() -> None:
     """Das Wartebudget folgt `executionTimeout`; ein Ausfall der Abfragen darf
     laenger dauern, weil das Ergebnis bei RunPod noch rund dreissig Minuten

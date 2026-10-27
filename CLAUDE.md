@@ -861,7 +861,12 @@ Jede steht wegen eines bezahlten Fehlers, nicht wegen einer Vorliebe.
   Herunterfahren abbricht — sonst läuft er bei RunPod weiter und kostet. Das
   Zeitbudget (`job_timeout_seconds`) zählt die Zeit in `IN_PROGRESS` über alle
   Läufe des Jobs; Warteschlange und Kaltstart zählen nicht, und die Zeit in der
-  Warteschlange hat keine Obergrenze. Fehlschlagende Abfragen haben eine eigene,
+  Warteschlange hat eine eigene Frist für ununterbrochenes `IN_QUEUE`
+  (`queue_timeout_seconds`, 1800 s; auch über `MINERU_OCR_QUEUE_TIMEOUT_SECONDS`
+  einstellbar). Eine Bearbeitung setzt diese Frist zurück, eine fehlgeschlagene
+  Abfrage nicht. Beim Absenden jedes Teilstücks protokolliert der Exekutor die
+  RunPod-Job-ID mit Hash und null-basiertem Seitenbereich; `daemon` zeigt INFO
+  standardmäßig auf stderr. Fehlschlagende Abfragen haben eine eigene,
   längere Frist (`poll_failure_timeout_seconds`, 1500 s), denn das Ergebnis liegt
   bei RunPod rund 30 Minuten; solange sie scheitern, gibt auch das Zeitbudget
   nicht auf. Vor dem Aufgeben fragt das Paket ein letztes Mal ab.

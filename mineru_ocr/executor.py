@@ -315,8 +315,8 @@ async def process_document(
         Eine Verbindung wird ZWEIMAL kurz genommen — am Anfang zum Nachsehen, am Ende
         zum Schreiben — und dazwischen ZURUECKGEGEBEN. Waehrend des Wartens auf
         RunPod haelt diese Funktion KEINE Verbindung. Das ist keine Feinheit: Ein
-        Dokument haengt lange in seiner Abfrageschleife (die Warteschlange hat
-        keine Obergrenze), und vierundzwanzig gleichzeitig gehaltene Verbindungen
+        Dokument haengt lange in seiner Abfrageschleife, und vierundzwanzig
+        gleichzeitig gehaltene Verbindungen
         ueber diese Zeit wuerden den Verbindungspool blockieren, waehrend niemand
         ihn benutzt.
 
@@ -392,7 +392,7 @@ async def process_document(
         #
         # Die Verbindung wird SOFORT wieder zurueckgegeben. Alles Weitere
         # geschieht ohne Verbindung — ein Dokument haengt lange in seiner
-        # Abfrageschleife (die Warteschlange hat keine Obergrenze), und
+        # Abfrageschleife, und
         # vierundzwanzig gehaltene Verbindungen ueber diese Zeit blockierten den
         # Pool, waehrend niemand ihn benutzt.
         async with pool.connection() as conn:
@@ -502,6 +502,7 @@ async def process_document(
                 )
                 await _stuecke_verarbeiten(
                     stuecke,
+                    sha256=sha256,
                     settings=settings,
                     lesen=lesen,
                     runpod=runpod,
@@ -544,6 +545,7 @@ async def process_document(
                 chunking.iter_chunks(
                     [chunking.Chunk(0, 0)], lambda erste, letzte: rohbytes, settings
                 ),
+                sha256=sha256,
                 settings=settings,
                 lesen=lesen,
                 runpod=runpod,
@@ -1267,6 +1269,7 @@ async def _image_tag_lesen(
 async def _stuecke_verarbeiten(
     stuecke: Generator[tuple[chunking.Chunk, bytes], int | None, None],
     *,
+    sha256: str,
     settings: Settings,
     lesen: ReadSettings,
     runpod: RunPodAccess,
@@ -1348,6 +1351,10 @@ async def _stuecke_verarbeiten(
         job = await _mit_kontopause(
             absenden, runpod=runpod, settings=settings, schritt="Absenden",
             lesefragen=lesefragen,
+        )
+        log.info(
+            "RunPod-Job %s abgeschickt: Dokument %s, Seiten %s-%s (null-basiert).",
+            job, sha256, chunk.first_page, chunk.last_page,
         )
 
         async def abholen(job: str = job) -> dict[str, Any]:

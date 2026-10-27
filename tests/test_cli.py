@@ -1564,6 +1564,23 @@ def test_daemon_verlangt_den_schluessel_vor_dem_start(
     assert gestartet == []
 
 
+def test_daemon_zeigt_info_meldungen_mit_den_standardeinstellungen(
+    cli: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Job-Kennungen des Exekutors muessen ohne zusaetzliche Log-Option sichtbar sein."""
+    from mineru_ocr import daemon as daemon_modul
+
+    def protokollieren(*_a: Any, **_k: Any) -> int:
+        logging.getLogger("mineru_ocr.executor").info("RunPod-Job beispiel-job")
+        return 0
+
+    monkeypatch.setattr(daemon_modul, "main", protokollieren)
+    ergebnis = cli.invoke(app, ["daemon"])
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert "RunPod-Job beispiel-job" in ergebnis.stderr
+    assert ergebnis.stdout == ""
+
+
 def test_hash_oder_pfad_wird_festgelegt_unterschieden() -> None:
     """Vierundsechzig Zeichen aus `[0-9a-f]` sind ein Hash, alles andere ist ein
     Pfad. Die Regel steht als Muster an EINER Stelle der Kommandozeile."""
