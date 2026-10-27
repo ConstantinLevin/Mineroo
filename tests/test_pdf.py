@@ -6,6 +6,7 @@ import io
 
 import pypdfium2
 import pytest
+from PIL import Image
 
 from mineru_ocr.errors import CorruptDocumentError
 from mineru_ocr.pdf import PdfReader
@@ -160,3 +161,24 @@ def test_schnitt_blaeht_nicht_auf(pdf_zehn: bytes) -> None:
         f"Einzelseiten-Summe {summe} gegen Original {original} — der Faktor "
         f"{summe / original:.2f} deutet auf inkrementelles Speichern hin."
     )
+
+
+@pytest.mark.parametrize(
+    ("breite", "hoehe", "pixel"),
+    [
+        (72.0, 144.0, (200, 400)),
+        (720.0, 1440.0, (1750, 3500)),
+        (1440.0, 720.0, (3500, 1750)),
+        (1260.23, 100.0, (3500, 278)),  # PDFiums Aufrunden darf keinen Pixel zu viel liefern.
+    ],
+)
+def test_rendern_nimmt_200_dpi_und_begrenzt_die_laengste_kante(
+    breite: float, hoehe: float, pixel: tuple[int, int]
+) -> None:
+    """Eine Seite wird als lesbares JPEG mit hoechstens 3500 Pixeln gerendert."""
+    with PdfReader(_pdf_mit_seiten(1, breite, hoehe)) as leser:
+        bild = leser.render_page(0)
+    with Image.open(io.BytesIO(bild)) as geoeffnet:
+        assert geoeffnet.format == "JPEG"
+        assert geoeffnet.size == pixel
+        assert geoeffnet.getpixel((0, 0)) == (255, 255, 255)

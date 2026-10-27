@@ -358,9 +358,19 @@ Ein Teilstück hat höchstens 20 Seiten und 7,4 MB (`max_pages_per_chunk`,
 Bearbeitung ab (`job_timeout_seconds`, wie `executionTimeout` am Endpoint). Die
 Grenzen sind die Antwort und die Zeit: Der Worker gibt höchstens 19,4 MB zurück,
 die dichtesten gemessenen Scans brachten 729 KB je Seite, und die langsamste
-Seite brauchte 5,0 s. Wird eine Antwort
-zu groß, endet das Dokument `failed`; ein `retry` hilft erst mit einem
-kleineren `max_pages_per_chunk` im Daemon.
+Seite brauchte 5,0 s. Wird eine Antwort zu groß, teilt der Daemon das betroffene
+Teilstück weiter: in aufgerundet Antwortgröße/Grenze Teile, ohne Größenangaben
+in zwei Hälften. Passt ein Teil wieder nicht, wird ebenso weitergeteilt; erst
+eine zu große Antwort einer einzelnen Seite endet `failed`. Bereits bezahlte
+Teilantworten bleiben erhalten. Abgewiesene Teilstücke sind bezahlt und werden
+in Teilen erneut gelesen (Mineroo#49).
+
+Eine einzelne PDF-Seite über der Uploadgrenze wird als JPEG gerendert (200 dpi,
+längste Kante höchstens 3.500 Pixel, Qualitätsstufe 90) und als diese Seite
+geschickt. `notes` nennt die gerenderten Seiten unter `seiten_gerendert`,
+null-basiert. Passt auch das Bild nicht, bleibt es bei `input_error`. Die
+Seitenzählung des Originals und die Prüfung der vollständigen Abdeckung bleiben
+erhalten; am Client und am Datenbankschema ändert sich nichts.
 
 **Die Abruf-Regel — alles holen, alles persistieren, nie filtern — ist als
 Bauweise umgesetzt, nicht als Vorsatz.** Die Ergebnisse liegen auf der Gegenseite

@@ -865,6 +865,158 @@ async def test_grosses_pdf_wird_geschnitten(
 # --- Absenden und Abholen -------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("meldung", "teilseiten"),
+    [
+        ("ResponseTooLargeError: the output is 47.2 MB, past the 19.4 MB this transport can return", [3, 2, 2]),
+        ("ResponseTooLargeError: output too large", [4, 3]),
+    ],
+)
+async def test_zu_grosse_antwort_wird_im_selben_lauf_geteilt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    meldung: str,
+    teilseiten: list[int],
+) -> None:
+    """Die Antwortgrenze korrigiert auch einen zunaechst ungeteilten Zuschnitt."""
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(7))
+    abweisung = ersatz.fehlerantwort(meldung)
+    runpod = FalscherRunPod([
+        abweisung,
+        *[ersatz.fertige_antwort(f"Teil {nr}", seiten=n) for nr, n in enumerate(teilseiten)],
+    ])
+
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    assert zeile.page_count == 7
+    assert zeile.raw is not None
+    assert zeile.raw["markdown"].split() == [wort for nr in range(len(teilseiten)) for wort in ("Teil", str(nr))]
+    assert [s["page_idx"] for m in zeile.raw["middle_json"] for s in m["pages"]] == list(range(7))
+    assert zeile.raw["unverwertbare_antworten"][0]["antwort"] == abweisung
+    gesendet = []
+    for kodiert in runpod.abgesendet:
+        pdf = pypdfium2.PdfDocument(base64.b64decode(kodiert))
+        try:
+            gesendet.append(len(pdf))
+        finally:
+            pdf.close()
+    assert gesendet == [7, *teilseiten]
+    assert runpod.abgebrochen == []
+
+
+@pytest.mark.parametrize("einzelseite_scheitert", [False, True])
+async def test_erneute_antwortteilung_behaelt_bezahlte_teilstuecke(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+    einzelseite_scheitert: bool,
+) -> None:
+    """Auch eine zweite Teilung behaelt fruehere Antworten und die Originalreihenfolge."""
+    eng = dataclasses.replace(exec_settings, max_pages_per_chunk=4)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(9))
+    abweisung = ersatz.fehlerantwort("ResponseTooLargeError: output too large")
+    runpod = FalscherRunPod([
+        ersatz.fertige_antwort("Vorher", seiten=4),
+        abweisung,  # Seiten 4 bis 7 -> zwei Haelften
+        abweisung,  # Seiten 4 bis 5 -> zwei Einzelseiten
+        ersatz.fertige_antwort("Mitte"),
+        abweisung if einzelseite_scheitert else ersatz.fertige_antwort("Danach"),
+        ersatz.fertige_antwort("Rest", seiten=2),
+        ersatz.fertige_antwort("Ende"),
+    ])
+    if einzelseite_scheitert:
+        with pytest.raises(TerminalRunPodError, match="ResponseTooLargeError"):
+            await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+    else:
+        await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.raw is not None
+    assert zeile.page_count == 9
+    assert zeile.raw["markdown"].split() == (
+        ["Vorher", "Mitte"] if einzelseite_scheitert
+        else ["Vorher", "Mitte", "Danach", "Rest", "Ende"]
+    )
+    assert len(runpod.abgesendet) == (5 if einzelseite_scheitert else 7)
+    assert len(zeile.raw["unverwertbare_antworten"]) == (3 if einzelseite_scheitert else 2)
+    assert zeile.status is (DocumentStatus.FAILED if einzelseite_scheitert else DocumentStatus.DONE)
+    assert _eingabe_steht(db_conn, sha) is einzelseite_scheitert
+    assert runpod.verlauf == [
+        schritt for nr in range(len(runpod.abgesendet))
+        for schritt in (f"submit:job-{nr}", f"holen:job-{nr}")
+    ]
+
+
+async def test_zu_grosse_pdf_einzelseite_wird_als_bild_geschickt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Nur die zu grosse Seite wird gerendert; Originalzaehlung und bezahlte Antworten bleiben."""
+    bilder = [Image.new("RGB", groesse, farbe) for groesse, farbe in (
+        ((10, 10), "blue"), ((2000, 2000), "red"), ((10, 10), "green")
+    )]
+    puffer = io.BytesIO()
+    try:
+        bilder[0].save(puffer, format="PDF", save_all=True, append_images=bilder[1:], resolution=2000)
+    finally:
+        for bild in bilder:
+            bild.close()
+    eng = dataclasses.replace(exec_settings, max_payload_bytes=5000, max_pages_per_chunk=1)
+    sha, _ = _anlegen(db_conn, tmp_path, puffer.getvalue())
+    runpod = FalscherRunPod([ersatz.fertige_antwort(f"Seite {nr}") for nr in range(3)])
+
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    assert zeile.page_count == 3
+    assert zeile.raw is not None
+    assert zeile.raw["markdown"].split() == ["Seite", "0", "Seite", "1", "Seite", "2"]
+    assert [s["page_idx"] for m in zeile.raw["middle_json"] for s in m["pages"]] == [0, 1, 2]
+    daten = [base64.b64decode(b) for b in runpod.abgesendet]
+    assert [sniff_bytes(b) for b in daten] == [DocumentType.PDF, DocumentType.JPEG, DocumentType.PDF]
+    assert all(len(b) <= eng.max_payload_bytes for b in daten)
+    with Image.open(io.BytesIO(daten[1])) as bild:
+        assert bild.size == (200, 200)
+        pixel = bild.getpixel((100, 100))
+        assert isinstance(pixel, tuple)
+        rot, gruen, blau = pixel
+        assert rot > 240 and gruen < 10 and blau < 10
+    vermerk = next(v for v in zeile.notes if v["kind"] == "seiten_gerendert")
+    assert vermerk["seiten"] == [1]
+    assert not _eingabe_steht(db_conn, sha)
+
+
+async def test_auch_gerenderte_einzelseite_zu_gross_bleibt_input_error(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    """Passt auch das Bild nicht, bleiben Seitenzahl und Render-Vermerk am Eingabefehler."""
+    from mineru_ocr.errors import TooLargeError
+
+    eng = dataclasses.replace(exec_settings, max_payload_bytes=100)
+    sha, _ = _anlegen(db_conn, tmp_path, _pdf(1))
+    runpod = FalscherRunPod()
+    with pytest.raises(TooLargeError, match="Seite 0 .*gerendert"):
+        await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.page_count == 1
+    assert runpod.abgesendet == []
+    assert next(v for v in zeile.notes if v["kind"] == "seiten_gerendert")["seiten"] == [0]
+    assert not _eingabe_steht(db_conn, sha)
+
+
 async def test_hoechstens_ein_ergebnis_offen(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
@@ -3204,9 +3356,8 @@ async def test_zu_grosses_bild_wird_abgelehnt_ohne_zu_bezahlen(
     """Der Aufruest-Pfad, end-to-end: abgelehnt, `input_error`, NICHTS abgesendet.
 
     Ein Bild ueber der Nutzlast-Grenze laesst sich nicht seitenweise zerlegen —
-    nur PDFs koennen das. Der Fall ist bewusst NICHT gebaut (Rastern und
-    verkleinert versenden), weil er im gesamten geprueften Bestand nicht vorkam;
-    die groesste Einzelseite mass 1,27 MB gegen eine Grenze von 7 MB.
+    nur PDFs koennen das. Der Render-Fallback gilt fuer zu grosse PDF-Seiten,
+    nicht fuer eigenstaendige Bilddateien.
 
     Geprueft wurde bisher die Entscheidung selbst (`test_chunking`) und ihr
     Auftauchen im Bericht (`test_wrapper`) — aber nicht die Frage, an der Geld
