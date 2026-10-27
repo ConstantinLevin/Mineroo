@@ -110,6 +110,7 @@ _OPENDOCUMENT_TYPEN: Final = {
 Formel hat den Aufbau von OpenDocument, liest MinerU aber nicht."""
 
 _EPUB_TYP: Final = "application/epub+zip"
+_CONTAINER_NS: Final = "urn:oasis:names:tc:opendocument:xmlns:container"
 _MANIFEST_NS: Final = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"
 
 _KLEINER_EINTRAG: Final = 256
@@ -118,8 +119,8 @@ Erkennung sie liest (DocVortex: 256). Sie traegt nur den Medientyp; eine grosse
 waere kein Paket, sondern womoeglich eine ZIP-Bombe."""
 
 _GROSSER_EINTRAG: Final = 1024 * 1024
-"""So gross darf das Manifest eines OpenDocument-Pakets hoechstens sein, damit die
-Erkennung es liest (DocVortex: 1 MiB)."""
+"""So gross darf ein XML-Eintrag (OpenDocument-Manifest oder EPUB-Container)
+hoechstens sein, damit die Erkennung ihn liest (DocVortex: 1 MiB)."""
 
 _ZIP_LESEFEHLER: Final = (
     zipfile.BadZipFile,
@@ -334,13 +335,22 @@ def _ist_ofd(archiv: zipfile.ZipFile) -> bool:
 
 
 def _ist_epub(archiv: zipfile.ZipFile) -> bool:
-    """EPUB: `mimetype` mit `application/epub+zip`, oder `META-INF/container.xml`
-    (EPUB OCF 3.3, 4.2; DocVortex `analyzers/native/epub/package.py`,
-    `_detect_epub_zip`)."""
+    """EPUB am Medientyp; nur ohne `mimetype` am OPF-Verweis im Container.
+
+    Ein fremder Medientyp schliesst EPUB aus: Auch Notensatz-Archive tragen
+    `META-INF/container.xml` (Mineroo#50; EPUB OCF 3.3, 4.2).
+    """
     mimetype = _klein_lesen(archiv, "mimetype", _KLEINER_EINTRAG)
-    if mimetype is not None and mimetype.strip() == _EPUB_TYP.encode("ascii"):
-        return True
-    return "META-INF/container.xml" in archiv.namelist()
+    if "mimetype" in archiv.namelist():
+        return mimetype is not None and mimetype.strip() == _EPUB_TYP.encode("ascii")
+    container = _klein_lesen(archiv, "META-INF/container.xml", _GROSSER_EINTRAG)
+    if container is None:
+        return False
+    return any(
+        eintrag.get("media-type") == "application/oebps-package+xml"
+        and bool(eintrag.get("full-path"))
+        for eintrag in ElementTree.fromstring(container).iter(f"{{{_CONTAINER_NS}}}rootfile")
+    )
 
 
 def _opendocument_typ(archiv: zipfile.ZipFile) -> DocumentType | None:
