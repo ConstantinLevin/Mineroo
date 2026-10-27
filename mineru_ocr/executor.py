@@ -57,9 +57,12 @@ from .errors import (
     ist_dateiabweisung,
     should_run_again,
 )
+from .lesefragen import Lesefragen
 from .mime import sniff_bytes
 from .pdf import PdfReader
 from .runpod import RunPodAccess
+
+_kontopause_schlafen = asyncio.sleep
 
 T = TypeVar("T")
 """Der Rueckgabetyp des Schritts, den `_mit_kontopause` wiederholt. Er ist
@@ -146,6 +149,7 @@ async def process_document(
     runpod: RunPodAccess,
     pool: AsyncConnectionPool,
     letzter_versuch: bool = False,
+    lesefragen: Lesefragen | None = None,
 ) -> None:
     """Verarbeitet ein Dokument vollstaendig und schreibt genau einmal sein Ergebnis.
 
@@ -297,6 +301,8 @@ async def process_document(
             (Mineroo#14).
         runpod: Der geteilte Zugang. Gehoert dem Daemon, wird hier nur benutzt.
         pool: Verbindungen zur eigenen Datenbank.
+        lesefragen: Geteilter Speicher des Daemons fuer Kontostand und Herkunft.
+            Ohne Angabe werden die Lesefragen direkt gestellt.
 
     Returns:
         Nichts. Das Ergebnis steht in der Datenbank — das ist der ganze Punkt dieser
@@ -462,10 +468,10 @@ async def process_document(
                     # dort `failed`, bezahlt; hier endet sie `input_error`, ohne
                     # RunPod-Kontakt, wie geschnitten in `extract`.
                     leser.check_pages()
-                image_tag = await _image_tag_lesen(runpod, vermerke)
+                image_tag = await _image_tag_lesen(runpod, vermerke, lesefragen=lesefragen)
                 # Vorsorglich, VOR dem ersten bezahlten Aufruf. Bei leerem Konto
                 # liefe man sonst in eine Wand aus 402-Antworten.
-                await wait_for_balance(runpod, settings)
+                await wait_for_balance(runpod, settings, lesefragen=lesefragen)
                 if geteilt:
                     stuecke: Any = chunking.iter_chunks(
                         chunking.plan_chunks(seiten, settings),
@@ -486,6 +492,7 @@ async def process_document(
                     settings=settings,
                     lesen=lesen,
                     runpod=runpod,
+                    lesefragen=lesefragen,
                     teile=teile,
                     unverwertbar=unverwertbar,
                     vermerke=vermerke,
@@ -513,8 +520,8 @@ async def process_document(
                     "nur das erste. Bitte als PDF einreichen. Es wurde nichts "
                     "bezahlt."
                 )
-            image_tag = await _image_tag_lesen(runpod, vermerke)
-            await wait_for_balance(runpod, settings)
+            image_tag = await _image_tag_lesen(runpod, vermerke, lesefragen=lesefragen)
+            await wait_for_balance(runpod, settings, lesefragen=lesefragen)
             # Ein Bild ist eine Seite; ein Ganzdokument-Format (Office,
             # OpenDocument, RTF, EPUB, OFD, HTML, MHTML) hat keine Seitenzahl, die
             # das Paket kennt, und geht ungeteilt als EIN Stueck hinaus
@@ -525,6 +532,7 @@ async def process_document(
                 settings=settings,
                 lesen=lesen,
                 runpod=runpod,
+                lesefragen=lesefragen,
                 teile=teile,
                 unverwertbar=unverwertbar,
                 vermerke=vermerke,
@@ -1212,9 +1220,10 @@ def _json_faehig(wert: Any) -> Any:
 
 
 async def _image_tag_lesen(
-    runpod: RunPodAccess, vermerke: list[dict[str, Any]]
+    runpod: RunPodAccess, vermerke: list[dict[str, Any]],
+    *, lesefragen: Lesefragen | None = None,
 ) -> str | None:
-    """Liest die Herkunft des laufenden Images, einmal je Lauf.
+    """Liest die Herkunft des Images, im Daemon aus dem gemeinsamen Speicher.
 
     Ein Fehlschlag hier darf KEIN Dokument kosten: Die Angabe ist wertvoll, aber
     sie ist nicht das Ergebnis. Sie bleibt dann leer, und der Vermerk sagt, warum
@@ -1225,7 +1234,8 @@ async def _image_tag_lesen(
     und eine mehrbildige Bilddatei enden, ohne dass RunPod etwas davon hoert.
     """
     try:
-        return await runpod.image_tag()
+        return (await runpod.image_tag() if lesefragen is None
+                else await lesefragen.image_tag(runpod))
     except Exception as fehler:  # noqa: BLE001 — bewusst breit, siehe oben
         vermerke.append(
             {
@@ -1243,6 +1253,7 @@ async def _stuecke_verarbeiten(
     settings: Settings,
     lesen: ReadSettings,
     runpod: RunPodAccess,
+    lesefragen: Lesefragen | None = None,
     teile: list[assembly.ChunkArtifacts],
     unverwertbar: list[dict[str, Any]],
     vermerke: list[dict[str, Any]],
@@ -1308,7 +1319,8 @@ async def _stuecke_verarbeiten(
             )
 
         job = await _mit_kontopause(
-            absenden, runpod=runpod, settings=settings, schritt="Absenden"
+            absenden, runpod=runpod, settings=settings, schritt="Absenden",
+            lesefragen=lesefragen,
         )
 
         async def abholen(job: str = job) -> dict[str, Any]:
@@ -1318,7 +1330,8 @@ async def _stuecke_verarbeiten(
 
         try:
             antwort = await _mit_kontopause(
-                abholen, runpod=runpod, settings=settings, schritt="Abholen"
+                abholen, runpod=runpod, settings=settings, schritt="Abholen",
+                lesefragen=lesefragen,
             )
         except asyncio.CancelledError:
             # Der Daemon faehrt herunter (oder jemand bricht ab), waehrend der Job
@@ -1480,6 +1493,7 @@ async def _mit_kontopause(
     runpod: RunPodAccess,
     settings: Settings,
     schritt: str,
+    lesefragen: Lesefragen | None = None,
 ) -> T:
     """Fuehrt `aufruf` aus und pausiert bei HTTP 402, statt zu werfen.
 
@@ -1491,6 +1505,8 @@ async def _mit_kontopause(
         runpod: Fuer die Kontostandsabfrage waehrend der Pause.
         settings: Fuer Schwelle und Abfragetakt der Pause.
         schritt: Nur fuer die Meldung — „Absenden" oder „Abholen".
+        lesefragen: Geteilter Speicher. Nach 402 zaehlt nur eine danach begonnene
+            Kontostandsabfrage, unter Wahrung der gemeinsamen Frist.
 
     Returns:
         Was `aufruf` zurueckgibt, sobald er ohne 402 durchlief.
@@ -1530,7 +1546,10 @@ async def _mit_kontopause(
                 _KONTOPAUSEN_JE_SCHRITT,
                 leer,
             )
-            await wait_for_balance(runpod, settings)
+            await wait_for_balance(
+                runpod, settings, lesefragen=lesefragen,
+                nach=lesefragen.jetzt() if lesefragen is not None else None,
+            )
 
 
 def _endzustand_uebersetzen(antwort: dict[str, Any], job_id: str) -> None:
@@ -1571,7 +1590,10 @@ def _endzustand_uebersetzen(antwort: dict[str, Any], job_id: str) -> None:
     )
 
 
-async def wait_for_balance(runpod: RunPodAccess, settings: Settings) -> None:
+async def wait_for_balance(
+    runpod: RunPodAccess, settings: Settings, *,
+    lesefragen: Lesefragen | None = None, nach: float | None = None,
+) -> None:
     """Haelt an, bis das Konto wieder ueber der Pausenschwelle steht.
 
     Wird an zwei Stellen gebraucht: einmal vorsorglich vor dem ersten Chunk eines
@@ -1594,12 +1616,18 @@ async def wait_for_balance(runpod: RunPodAccess, settings: Settings) -> None:
     Karussell aus Jobs, keine Steuer-Zeile — und „keine Steuer-Zeile" ist eine
     ausdrueckliche Festlegung (Plan 2.4).
 
-    Prueft alle `settings.balance_recheck_seconds` mit `asyncio.sleep` — und ist
-    damit beim Herunterfahren von Haus aus abbrechbar.
+    Bei bestaetigt niedrigem Guthaben wird alle `balance_recheck_seconds`
+    geprueft. Im Daemon teilen alle Plaetze `lesefragen`: Auch Fehler werden
+    gespeichert, und nach voruebergehendem Lesefehler wird am Ende der
+    Cache-Frist (`runpod_cache_seconds`) erneut gefragt. Sperre, Abfrage und
+    Pausen bleiben beim Herunterfahren abbrechbar.
 
     Args:
         runpod: Zum Abfragen des Kontostands.
         settings: Traegt Schwelle und Abstand.
+        lesefragen: Der Speicher des Daemons; ohne ihn direkte Lesefragen.
+        nach: Frischegrenze nach HTTP 402. Nur eine ab diesem Zeitpunkt
+            begonnene Abfrage darf freigeben; die Cache-Frist gilt trotzdem.
 
     Returns:
         Nichts, sobald der Kontostand wieder reicht.
@@ -1640,7 +1668,8 @@ async def wait_for_balance(runpod: RunPodAccess, settings: Settings) -> None:
     """
     while True:
         try:
-            stand = await runpod.balance()
+            stand = (await runpod.balance() if lesefragen is None
+                     else await lesefragen.kontostand(runpod, nach))
         except InsufficientBalanceError:
             # Der Kontostand liess sich nicht lesen, WEIL das Konto leer ist —
             # dann ist die Antwort dieselbe wie unten: warten.
@@ -1664,9 +1693,13 @@ async def wait_for_balance(runpod: RunPodAccess, settings: Settings) -> None:
                 "in %.0f s.",
                 type(fehler).__name__,
                 fehler,
-                settings.balance_recheck_seconds,
+                (settings.balance_recheck_seconds if lesefragen is None
+                 else settings.runpod_cache_seconds),
             )
-            await asyncio.sleep(settings.balance_recheck_seconds)
+            if lesefragen is None:
+                await _kontopause_schlafen(settings.balance_recheck_seconds)
+            else:
+                await lesefragen.kontopruefung_abwarten()
             continue
 
         if stand >= settings.min_balance_pause_usd:
@@ -1678,4 +1711,4 @@ async def wait_for_balance(runpod: RunPodAccess, settings: Settings) -> None:
             settings.min_balance_pause_usd,
             settings.balance_recheck_seconds,
         )
-        await asyncio.sleep(settings.balance_recheck_seconds)
+        await _kontopause_schlafen(settings.balance_recheck_seconds)

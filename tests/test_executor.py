@@ -2741,11 +2741,13 @@ async def test_endgueltiger_fehler_der_kontoabfrage_beendet_das_warten(
     assert runpod.abfragen == 1
 
 
+@pytest.mark.parametrize("mit_cache", [False, True])
 async def test_402_beim_absenden_pausiert_statt_zu_werfen(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
     exec_settings: Settings,
     tmp_path: Path,
+    mit_cache: bool,
 ) -> None:
     """Regel 8 am ganzen Ablauf: Ein leeres Konto MITTEN im Lauf pausiert.
 
@@ -2780,8 +2782,12 @@ async def test_402_beim_absenden_pausiert_statt_zu_werfen(
                 raise InsufficientBalanceError("HTTP 402: Konto leer")
             return await super().submit(file_b64=file_b64, **rest)
 
+    from mineru_ocr.lesefragen import Lesefragen
+
+    exec_settings = dataclasses.replace(exec_settings, runpod_cache_seconds=0.01)
+    cache = Lesefragen(exec_settings) if mit_cache else None
     runpod = KontoLeertSich()
-    await process_document(sha, settings=eng, runpod=runpod, pool=pool)
+    await process_document(sha, settings=eng, runpod=runpod, pool=pool, lesefragen=cache)
 
     zeile = get_document(db_conn, sha)
     assert zeile is not None
@@ -2795,11 +2801,13 @@ async def test_402_beim_absenden_pausiert_statt_zu_werfen(
     assert len(runpod.abgesendet) == 2
 
 
+@pytest.mark.parametrize("mit_cache", [False, True])
 async def test_402_beim_abholen_sendet_den_job_nicht_neu_ab(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
     exec_settings: Settings,
     tmp_path: Path,
+    mit_cache: bool,
 ) -> None:
     """Ein 402 beim Abholen fuehrt NICHT zu einem zweiten Absenden.
 
@@ -2824,8 +2832,12 @@ async def test_402_beim_abholen_sendet_den_job_nicht_neu_ab(
                 raise InsufficientBalanceError("HTTP 402 beim Abfragen")
             return await super().await_result(job_id)
 
+    from mineru_ocr.lesefragen import Lesefragen
+
+    exec_settings = dataclasses.replace(exec_settings, runpod_cache_seconds=0.01)
+    cache = Lesefragen(exec_settings) if mit_cache else None
     runpod = LeerBeimAbholen()
-    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool, lesefragen=cache)
 
     zeile = get_document(db_conn, sha)
     assert zeile is not None
@@ -2835,11 +2847,13 @@ async def test_402_beim_abholen_sendet_den_job_nicht_neu_ab(
     assert runpod.versuche == 2
 
 
+@pytest.mark.parametrize("mit_cache", [False, True])
 async def test_402_trotz_gedecktem_konto_wird_als_widerspruch_benannt(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
     exec_settings: Settings,
     tmp_path: Path,
+    mit_cache: bool,
 ) -> None:
     """Sagt der Kontostand „gedeckt" und der Endpoint trotzdem 402, wird der
     Widerspruch benannt statt ausgesessen.
@@ -2861,9 +2875,13 @@ async def test_402_trotz_gedecktem_konto_wird_als_widerspruch_benannt(
         async def submit(self, *, file_b64: str, **_: Any) -> str:
             raise InsufficientBalanceError("HTTP 402: Konto leer")
 
+    from mineru_ocr.lesefragen import Lesefragen
+
+    exec_settings = dataclasses.replace(exec_settings, runpod_cache_seconds=0.01)
+    cache = Lesefragen(exec_settings) if mit_cache else None
     runpod = ImmerLeer()
     with pytest.raises(TerminalRunPodError) as gefangen:
-        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool, lesefragen=cache)
 
     assert "widersprechen einander" in str(gefangen.value)
     zeile = get_document(db_conn, sha)
@@ -3973,3 +3991,34 @@ async def test_herunterfahren_waehrend_des_abbruchs_nach_einem_fehler_gibt_ihn_n
         await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
     assert runpod.abgebrochen == ["job-0"]
+
+
+@pytest.mark.parametrize('pdf', [False, True])
+async def test_dokumente_teilen_kontostand_und_image_im_daemon(
+    db_conn: psycopg.Connection[Any], pool: AsyncConnectionPool,
+    exec_settings: Settings, tmp_path: Path, pdf: bool,
+) -> None:
+    """Beide Wege durch process_document benutzen denselben Daemon-Speicher."""
+    from mineru_ocr.lesefragen import Lesefragen
+
+    cache = Lesefragen(exec_settings)
+    runpod = FalscherRunPod([ersatz.fertige_antwort()])
+    hashes = []
+    for nummer in range(2):
+        daten = _pdf(1) + f'\n% {nummer}'.encode() if pdf else f'Bild {nummer}'.encode()
+        sha, _ = _anlegen(
+            db_conn, tmp_path, daten, name=f'test-{nummer}.pdf' if pdf else f'test-{nummer}.png',
+            typ=DocumentType.PDF if pdf else DocumentType.PNG,
+        )
+        hashes.append(sha)
+    await asyncio.gather(*(
+        process_document(sha, settings=exec_settings, runpod=runpod, pool=pool, lesefragen=cache)
+        for sha in hashes
+    ))
+    assert runpod.kontakte.count('balance') == 1
+    assert runpod.kontakte.count('image_tag') == 1
+    assert len(runpod.abgesendet) == 2
+    for sha in hashes:
+        zeile = get_document(db_conn, sha)
+        assert zeile is not None
+        assert zeile.status is DocumentStatus.DONE

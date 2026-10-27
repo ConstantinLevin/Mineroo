@@ -259,6 +259,27 @@ Procrastinate selbst. Die Lebendigkeit ist nur Auskunft für `status` und
 meldet `status` den Daemon als „unbekannt“, und das Abschicken warnt und reiht
 trotzdem ein.
 
+### Geteilte Lesefragen des Daemons
+
+**Kontostand und Image-Herkunft teilen alle Plätze des Daemons**
+(Mineroo#47): `tasks.worker_context_resources` baut einmal `lesefragen.Lesefragen`
+und reicht denselben Speicher über `ocr_document` an den Exekutor weiter.
+`runpod_cache_seconds` (60 s, TOML oder `MINERU_OCR_RUNPOD_CACHE_SECONDS`)
+begrenzt beide Lesefragen getrennt. Je Frage hält eine asynchrone Sperre
+gleichzeitige Leser bis zur Antwort an; Wert oder Fehler bleiben danach für
+das Intervall gespeichert. Es gibt keinen Hintergrundtask und keinen globalen
+Speicher. Auch eine abgebrochene Abfrage gibt das Zeitfenster nicht vorzeitig frei.
+
+`wait_for_balance` gibt nach einem vorübergehenden Lesefehler nichts frei und
+wartet im Daemon nur bis zum nächsten erlaubten Abfragezeitpunkt. Bei bestätigt
+niedrigem Kontostand bleibt der bisherige Prüftakt `balance_recheck_seconds`
+(900 s); endgültige Fehler brechen das Warten ab. `_mit_kontopause` verlangt
+nach HTTP 402 eine danach **begonnene** Kontostandsabfrage, weiterhin unter
+Wahrung der Cache-Frist. Damit zählen alte Werte nicht als Widerspruch, auch
+wenn ihre Abfrage beim Eintreffen der 402 noch lief. Client, `credit`, `status`
+und `preflight` benutzen diesen Speicher nicht. Die direkten Exekutor-Aufrufe
+ohne übergebenen Speicher bleiben für isolierte Aufrufer unverändert.
+
 ### Welcher Prozess welche App hält
 
 Procrastinate wird so benutzt, wie es vorgesehen ist: **jeder Prozess baut seine

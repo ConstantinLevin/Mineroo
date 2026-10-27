@@ -566,7 +566,7 @@ def test_betriebsmittel_kommen_ungeoeffnet(settings: Settings) -> None:
     Daemon.
     """
     mittel = tasks.worker_context_resources(settings)
-    assert set(mittel) == {"settings", "runpod", "pool"}
+    assert set(mittel) == {"settings", "runpod", "pool", "lesefragen"}
     assert mittel["pool"].closed is True
     assert mittel["settings"] is settings
 

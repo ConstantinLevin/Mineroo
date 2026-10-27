@@ -792,3 +792,28 @@ def test_eine_stufe_oder_ein_modus_vom_falschen_typ_wird_ebenso_abgewiesen(
         ReadSettings(falsch, "ocr", True)  # type: ignore[arg-type]
     with pytest.raises(ConfigurationError, match="kennt der Worker nicht"):
         ReadSettings("advanced", falsch, True)  # type: ignore[arg-type]
+
+
+def test_runpod_cache_aus_datei_und_umgebung(tmp_path: Path) -> None:
+    """Die gemeinsame Frist folgt der Konfigurationsrangfolge, auch mit Komma."""
+    assert _einstellung().runpod_cache_seconds == 60
+    datei = tmp_path / 'cache.toml'
+    datei.write_text('runpod_cache_seconds = 75.5\n')
+    assert _einstellung(config_path=datei).runpod_cache_seconds == 75.5
+    assert _einstellung(
+        config_path=datei, environ={'MINERU_OCR_RUNPOD_CACHE_SECONDS': '90'},
+    ).runpod_cache_seconds == 90
+
+
+@pytest.mark.parametrize('wert', ['0', '-1', 'nan', 'inf', 'keine-zahl'])
+def test_runpod_cache_braucht_positive_endliche_frist(wert: str) -> None:
+    with pytest.raises(ConfigurationError, match='runpod_cache_seconds'):
+        _einstellung(environ={'MINERU_OCR_RUNPOD_CACHE_SECONDS': wert})
+
+
+@pytest.mark.parametrize('wert', ['true', '[]'])
+def test_runpod_cache_weist_falschen_dateityp_ab(tmp_path: Path, wert: str) -> None:
+    datei = tmp_path / 'cache.toml'
+    datei.write_text(f'runpod_cache_seconds = {wert}\n')
+    with pytest.raises(ConfigurationError, match='runpod_cache_seconds'):
+        _einstellung(config_path=datei)
