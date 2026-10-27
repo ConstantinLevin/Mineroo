@@ -701,6 +701,78 @@ async def test_misslungener_abbruch_verdeckt_die_zeitueberschreitung_nicht(
     assert fehler.value.abgebrochen is False
 
 
+async def test_dauerhafte_warteschlange_wird_nach_dreissig_minuten_aufgegeben(
+    echte_settings: Settings, uhr: _Uhr
+) -> None:
+    """Auch erfolgreiche IN_QUEUE-Antworten halten einen Job nicht endlos offen."""
+    einstellung = dataclasses.replace(echte_settings, poll_interval_seconds=10.0)
+    client, transport = _client(
+        einstellung,
+        Aufzeichnung(
+            [_antwort({"status": "IN_QUEUE"})] * 182
+            + [_antwort({"status": "COMPLETED", "output": {"ok": True}})]
+        ),
+    )
+    with pytest.raises(JobAufgegebenError, match="IN_QUEUE") as fehler:
+        await client.await_result("wartender-job")
+
+    assert uhr.jetzt == 1800.0
+    assert fehler.value.abgebrochen is True
+    assert len(transport.anfragen) == 182  # 180 regulaer, Schlussabruf, Abbruch
+    assert transport.anfragen[-2].url.path.endswith("/status/wartender-job")
+    assert transport.anfragen[-1].url.path.endswith("/cancel/wartender-job")
+    assert transport.anfragen[-1].method == "POST"
+
+
+@pytest.mark.parametrize("schluss", ["IN_QUEUE", "COMPLETED", "IN_PROGRESS"])
+async def test_warteschlangenfrist_nutzt_den_schlussabruf(
+    echte_settings: Settings, uhr: _Uhr, schluss: str
+) -> None:
+    """Nach Ablauf rettet nur ein Endergebnis den Job, auch nach einem Ausfall."""
+    einstellung = dataclasses.replace(
+        echte_settings, queue_timeout_seconds=3.0, poll_interval_seconds=1.0
+    )
+    letzte = {"status": schluss, "output": {"ok": True}}
+    client, transport = _client(
+        einstellung,
+        Aufzeichnung(
+            [_antwort({"status": "IN_QUEUE"})] * 3
+            + [_antwort({"error": "voruebergehend"}, code=503)]
+            + [_antwort(letzte)]
+        ),
+    )
+    if schluss == "COMPLETED":
+        assert await client.await_result("j") == letzte
+        assert not any("/cancel/" in a.url.path for a in transport.anfragen)
+    else:
+        with pytest.raises(JobAufgegebenError, match="IN_QUEUE"):
+            await client.await_result("j")
+        assert sum("/cancel/" in a.url.path for a in transport.anfragen) == 1
+    assert uhr.jetzt == 5.0
+
+
+async def test_warteschlangenfrist_beginnt_nach_bearbeitung_neu(
+    echte_settings: Settings, uhr: _Uhr
+) -> None:
+    """Zwei getrennte Wartephasen unter der Frist duerfen zusammen laenger dauern."""
+    einstellung = dataclasses.replace(
+        echte_settings, queue_timeout_seconds=3.0, job_timeout_seconds=2.0,
+        poll_interval_seconds=1.0,
+    )
+    client, transport = _client(
+        einstellung,
+        Aufzeichnung(
+            [_antwort({"status": "IN_QUEUE"})] * 2
+            + [_antwort({"status": "IN_PROGRESS"})]
+            + [_antwort({"status": "IN_QUEUE"})] * 2
+            + [_antwort({"status": "COMPLETED", "output": {"ok": True}})]
+        ),
+    )
+    assert (await client.await_result("j"))["status"] == "COMPLETED"
+    assert uhr.jetzt == 5.0
+    assert not any("/cancel/" in a.url.path for a in transport.anfragen)
+
+
 async def test_zeitbudget_laeuft_nicht_in_der_warteschlange(
     echte_settings: Settings, uhr: _Uhr
 ) -> None:

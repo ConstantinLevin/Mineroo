@@ -86,6 +86,7 @@ allowed_data_centers = ["EU-RO-1", "EU-CZ-1", "EUR-IS-1", "EUR-IS-2", "EUR-NO-1"
 max_pages_per_chunk = 20                             # (20 Seiten)
 max_payload_bytes = 7400000                          # (7,4 MB roh; mehr passt nicht durch /run)
 job_timeout_seconds = 300                            # (300, wie executionTimeout)
+queue_timeout_seconds = 1800                         # (1800, 30 Minuten ununterbrochen IN_QUEUE)
 
 # Lesefragen im Daemon; alle Plaetze teilen Werte und Fehler:
 runpod_cache_seconds = 60                            # (60, Kontostand und Image-Herkunft)
@@ -102,6 +103,20 @@ Jeder Schlüssel außer der Tabelle hat eine Umgebungsvariable, zum Beispiel
 `MINERU_OCR_ENDPOINT_ID`, `MINERU_OCR_DB_DSN`, `MINERU_OCR_EXPECTED_IMAGE_TAG`,
 `MINERU_OCR_IDLE_TIMEOUT`; die Rechenzentren stehen dort durch Kommas getrennt in
 `MINERU_OCR_ALLOWED_DATA_CENTERS`.
+
+`queue_timeout_seconds` (oder `MINERU_OCR_QUEUE_TIMEOUT_SECONDS`) begrenzt
+ununterbrochenes Warten eines RunPod-Jobs in `IN_QUEUE`; der Wert muss positiv
+und endlich sein. Nach der Frist fragt das Paket ein letztes Mal ab, übernimmt
+ein fertiges Ergebnis oder schickt `/cancel` und lässt die vorhandene
+Wiederholung greifen. Eine Bearbeitung beendet die Wartephase; kehrt der Job
+in die Schlange zurück, beginnt die Frist neu. Fehlgeschlagene Abfragen setzen
+sie nicht zurück und behalten ihre eigene Ausfallfrist. Das Budget für
+`IN_PROGRESS` bleibt davon getrennt. Beide Fristen beginnen nach einer
+Kontopause (HTTP 402) beim erneuten Warten auf denselben Job neu.
+
+Der Daemon schreibt beim Absenden jedes Teilstücks die RunPod-Job-ID mit
+Dokumenthash und null-basiertem Seitenbereich auf stderr (Log-Stufe INFO,
+standardmäßig sichtbar).
 
 Der Daemon fragt Kontostand und Image-Herkunft je höchstens einmal pro
 `runpod_cache_seconds` ab (positive, endliche Sekunden). Gleichzeitige Leser
