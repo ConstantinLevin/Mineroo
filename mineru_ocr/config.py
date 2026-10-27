@@ -62,6 +62,7 @@ DATEI_SCHLUESSEL: Final = frozenset(
         *ZAHL_SCHLUESSEL,
         *TEILSTUECK_ZAHL_SCHLUESSEL,
         "job_timeout_seconds",
+        "queue_timeout_seconds",
         "runpod_cache_seconds",
     }
 )
@@ -381,9 +382,10 @@ def _teilstueck_grenzen(
         gefunden = _wert(name, umgebung, datei, pfad)
         if gefunden is not None:
             ergebnis[name] = _zahl(name, *gefunden)
-    gefunden = _wert("job_timeout_seconds", umgebung, datei, pfad)
-    if gefunden is not None:
-        ergebnis["job_timeout_seconds"] = _sekunden("job_timeout_seconds", *gefunden)
+    for name in ("job_timeout_seconds", "queue_timeout_seconds"):
+        gefunden = _wert(name, umgebung, datei, pfad)
+        if gefunden is not None:
+            ergebnis[name] = _sekunden(name, *gefunden)
     return ergebnis
 
 
@@ -744,6 +746,15 @@ class Settings:
     liesse. Wer Seiten je Teilstueck oder `executionTimeout` aendert, rechnet
     diesen Wert mit."""
 
+    queue_timeout_seconds: float = 1_800.0
+    """Frist fuer ununterbrochenes Warten in RunPods Warteschlange (IN_QUEUE).
+
+    30 Minuten sind bewusst grosszuegig gegenueber Rueckstau und Kaltstart
+    (Mineroo#51). Danach letzter Abruf, `/cancel` und wiederholbarer Fehler.
+    Eine Bearbeitung beendet die Wartephase; kehrt der Job in die Schlange
+    zurueck, beginnt die Frist neu. Fehlgeschlagene Abfragen setzen sie nicht
+    zurueck und behalten ihre eigene Ausfallfrist."""
+
     poll_failure_timeout_seconds: float = 1_500.0
     """Wie lange eine Reihe fehlgeschlagener Abfragen (RunPod nicht erreichbar,
     5xx) dauern darf, bevor das Paket den Job aufgibt und `/cancel` schickt. Die
@@ -978,6 +989,7 @@ class Settings:
             )
         for name, frist in (
             ("job_timeout_seconds", self.job_timeout_seconds),
+            ("queue_timeout_seconds", self.queue_timeout_seconds),
             ("poll_failure_timeout_seconds", self.poll_failure_timeout_seconds),
         ):
             if not (math.isfinite(frist) and frist > 0):

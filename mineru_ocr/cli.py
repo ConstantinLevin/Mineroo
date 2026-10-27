@@ -103,14 +103,14 @@ class _FehlerAusgabe(logging.Handler):
 
 
 @app.callback()
-def _vorweg() -> None:
+def _vorweg(ctx: typer.Context) -> None:
     """OCR-Dienst fuer MinerU auf RunPod: Dokumente rein, Text und Struktur raus."""
     # Meldungen und Warnungen der Bibliothek gehen auf stderr (nie auf stdout).
     # Einmal anmelden, nicht bei jedem Aufruf.
     logger = logging.getLogger(_LOG_NAME)
     if not any(isinstance(h, _FehlerAusgabe) for h in logger.handlers):
         logger.addHandler(_FehlerAusgabe())
-    logger.setLevel(logging.WARNING)
+    logger.setLevel(logging.INFO if ctx.invoked_subcommand == "daemon" else logging.WARNING)
 
 
 def _ziel(target: str) -> str:
