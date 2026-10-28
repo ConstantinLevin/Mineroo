@@ -503,7 +503,8 @@ def worker_bytes(data: bytes, doc_type: DocumentType) -> bytes:
     """Bereitet erkannte Bytes nur fuer den Worker auf, nie fuer Hash oder DB.
 
     PDF verliert ausschliesslich den von der Erkennung erlaubten Vorspann.
-    HTML in UTF-16 wird UTF-8 ohne BOM; andere Bytes bleiben unveraendert (#56).
+    HTML in UTF-16 wird UTF-8 mit BOM, damit beim Worker die BOM vor alten
+    Kodierungsangaben im HTML gilt; andere Bytes bleiben unveraendert (#56).
     """
     if doc_type.is_pdf:
         anfang = _PDF_ANFANG.match(data[:KOPF_BYTES])
@@ -513,7 +514,7 @@ def worker_bytes(data: bytes, doc_type: DocumentType) -> bytes:
         kodierung = _html_utf16_kodierung(data[:KOPF_BYTES])
         if kodierung is not None:
             try:
-                return data.decode(kodierung).encode("utf-8")
+                return data.decode(kodierung).encode("utf-8-sig")
             except UnicodeDecodeError as fehler:
                 raise CorruptDocumentError(
                     f"UTF-16-HTML ist beschaedigt (Byte {fehler.start}, null-basiert)."

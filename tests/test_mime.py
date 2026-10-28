@@ -9,9 +9,10 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from lxml import html
 
 from mineru_ocr.errors import UnsupportedTypeError
-from mineru_ocr.mime import KOPF_BYTES, DocumentType, sniff_bytes, sniff_file
+from mineru_ocr.mime import KOPF_BYTES, DocumentType, sniff_bytes, sniff_file, worker_bytes
 
 from ganzdokumente import (
     GANZDOKUMENTE,
@@ -100,6 +101,37 @@ def test_html_in_utf16_wird_am_inhalt_erkannt(
     datei.write_bytes(daten)
     assert sniff_bytes(daten) is DocumentType.HTML
     assert sniff_path(datei) is DocumentType.HTML
+
+
+@pytest.mark.parametrize("kodierung", ["utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize("bom", [False, True])
+@pytest.mark.parametrize("deklaration", [
+    '<meta charset="utf-16">',
+    '<meta charset="utf-16-le">',
+    '<meta charset="utf-16-be">',
+    '<meta http-equiv="Content-Type" content="text/html; charset=utf-16">',
+    '<meta http-equiv="Content-Type" content="text/html; charset=utf-16-le">',
+    '<meta http-equiv="Content-Type" content="text/html; charset=utf-16-be">',
+])
+def test_utf16_html_bleibt_mit_kodierungsdeklaration_beim_worker_lesbar(
+    kodierung: str, bom: bool, deklaration: str,
+) -> None:
+    """Der Worker darf UTF-8 nicht nach einer alten UTF-16-Angabe lesen (#56)."""
+    inhalt = "Pr\u00fcfung \u6f22\u5b57 \U0001f600"
+    text = f"<!DOCTYPE html><html><head>{deklaration}</head><body>{inhalt}</body></html>"
+    original = (("\ufeff" if bom else "") + text).encode(kodierung)
+    gesendet = worker_bytes(original, sniff_bytes(original))
+
+    # DocVortex 0.5.16, native/html/document.py: _html_parser_input reicht
+    # Bytes mit BOM oder Kodierungsdeklaration direkt an diesen Parser durch.
+    # https://github.com/myhloli/DocVortex/blob/v0.5.16/src/docvortex/analyzers/native/html/document.py
+    parser = html.HTMLParser(
+        recover=True, no_network=True, remove_comments=False, huge_tree=False,
+        encoding=None,
+    )
+    dokument = html.document_fromstring(gesendet, parser=parser)
+    assert dokument.text_content() == inhalt
+    assert gesendet.decode("utf-8-sig") == text
 
 
 @pytest.mark.parametrize("daten", [

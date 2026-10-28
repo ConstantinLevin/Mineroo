@@ -416,7 +416,7 @@ async def test_utf16_html_geht_nur_zum_worker_als_utf8(
     runpod = FalscherRunPod([ersatz.fertige_antwort("synthetisch")])
     await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
 
-    assert [base64.b64decode(b) for b in runpod.abgesendet] == [text.encode("utf-8")]
+    assert [base64.b64decode(b) for b in runpod.abgesendet] == [text.encode("utf-8-sig")]
     zeile = get_document(db_conn, sha)
     assert zeile is not None and zeile.status is DocumentStatus.DONE
     assert zeile.mime == "text/html" and zeile.page_count is None
