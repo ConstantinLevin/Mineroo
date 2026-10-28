@@ -492,3 +492,12 @@ bedeutungslos. Das Verzeichnis enthält auch die eigenen `.log`-Dateien je
 Daemon. `list` und `stop` verwalten Daemons auf diesem Rechner für die gewählte
 Datenbank; die OCR-Warteschlange gilt datenbankweit. Nach einem Rechnerneustart
 startet nichts von selbst. Weder Bibliothek noch Dateiaufruf starten Daemons.
+
+Die DB-Kennung besteht aus PostgreSQLs Clusterkennung (`system_identifier`) und
+der Datenbank-OID; IPv4, IPv6 und Unix-Socket führen zum selben Verzeichnis.
+Die Datenbankrolle braucht dafür `EXECUTE` auf `pg_control_system()` (bei einer
+Superuser-Rolle bereits vorhanden). Beim Wechsel von der früheren,
+adressabhängigen Kennung zuerst die laufenden Daemons mit der alten Version
+stoppen und danach mit der neuen Version starten.
+Nach einer Stop-Bestätigung wartet `stop` auf das Prozessende (einschließlich
+Zombie-Zustand), auch wenn die Ereignisschleife keinen Socket mehr beantwortet.

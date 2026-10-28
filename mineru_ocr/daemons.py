@@ -18,6 +18,8 @@ import time
 from typing import Any
 import uuid
 
+import psycopg
+
 from . import db
 from .config import Settings
 from .errors import DatabaseError
@@ -25,10 +27,18 @@ from .errors import DatabaseError
 
 def verzeichnis(settings: Settings) -> Path:
     """Gleiche Datenbank auf diesem Rechner bedeutet gleiche Kontrollsockets."""
-    with db.connect(settings.db_dsn) as conn:
-        identitaet = conn.execute(
-            "SELECT current_database(), inet_server_addr()::text, inet_server_port()"
-        ).fetchone()
+    try:
+        with db.connect(settings.db_dsn) as conn:
+            identitaet = conn.execute(
+                # Clusterkennung und Datenbank-OID haengen nicht vom Zugangsweg ab.
+                "SELECT system_identifier, oid FROM pg_control_system(), pg_database "
+                "WHERE datname = current_database()"
+            ).fetchone()
+    except psycopg.Error as fehler:
+        raise DatabaseError(
+            "Datenbankkennung nicht lesbar; die Datenbankrolle braucht "
+            "EXECUTE auf pg_control_system()."
+        ) from fehler
     kennung = hashlib.sha256(repr(identitaet).encode()).hexdigest()[:16]
     pfad = Path("/tmp") / f"mineru-{os.getuid()}-{kennung}"
     pfad.mkdir(mode=0o700, exist_ok=True)
@@ -133,15 +143,6 @@ def start(settings: Settings, anzahl: int) -> list[dict[str, Any]]:
                     break
                 time.sleep(0.05)
             else:
-                # Nur dieses selbst gestartete Kind; ein fehlgeschlagener Start
-                # darf keinen unbemerkten Prozess hinterlassen.
-                if kind.poll() is None:
-                    kind.terminate()
-                    try:
-                        kind.wait(timeout=settings.shutdown_graceful_timeout + 10)
-                    except subprocess.TimeoutExpired:
-                        kind.kill()
-                        kind.wait()
                 raise DatabaseError(f"Daemon startet nicht; Protokoll: {protokoll}")
     except BaseException:
         for kind in kinder:
@@ -165,17 +166,35 @@ def stop(settings: Settings, anzahl: int) -> dict[str, int]:
     with (verzeichnis(settings) / "stop.lock").open("a") as sperre:
         fcntl.flock(sperre, fcntl.LOCK_EX)
         kandidaten = sorted(status(settings)["daemons"], key=lambda d: (d["occupied"], d["pid"]))
-        ausgewaehlt: list[Path] = []
+        ausgewaehlt: list[int] = []
         for kandidat in kandidaten:
             if len(ausgewaehlt) == anzahl:
                 break
             pfad = Path(kandidat["socket"])
             antwort = fragen(pfad, "stop")
             if antwort and antwort.get("stopping"):
-                ausgewaehlt.append(pfad)
+                ausgewaehlt.append(antwort["pid"])
         frist = time.monotonic() + settings.shutdown_graceful_timeout + 15
-        while any(fragen(pfad) is not None for pfad in ausgewaehlt):
+        # Ein blockierter Socket ist kein beendeter Prozess. Die PIDs stammen
+        # aus der Stop-Bestaetigung; ps liest nur, ohne PID-Signale zu senden.
+        while ausgewaehlt and not _prozesse_beendet(ausgewaehlt):
             if time.monotonic() > frist:
                 raise DatabaseError("Daemons fahren noch herunter; bitte daemon list pruefen.")
             time.sleep(0.05)
     return {"requested": anzahl, "stopped": len(ausgewaehlt), "running_before": len(kandidaten)}
+
+
+def _prozesse_beendet(pids: list[int]) -> bool:
+    """Fehlende Prozesse und Zombies sind beendet, auch ohne erreichbaren Socket."""
+    try:
+        lauf = subprocess.run(
+            ["ps", "-p", ",".join(str(pid) for pid in pids), "-o", "stat="],
+            capture_output=True, text=True, timeout=2,
+        )
+    except subprocess.TimeoutExpired as fehler:
+        raise DatabaseError("Daemon-Prozesszustand konnte nicht gelesen werden.") from fehler
+    # ps liefert 1, wenn keine der angefragten PIDs mehr existiert. Fehler
+    # duerfen niemals als erfolgreiches Herunterfahren durchgehen.
+    if lauf.returncode not in (0, 1) or lauf.stderr.strip():
+        raise DatabaseError("Daemon-Prozesszustand konnte nicht gelesen werden.")
+    return all(zeile.strip().startswith("Z") for zeile in lauf.stdout.splitlines())

@@ -12,6 +12,160 @@ from mineru_ocr.cli import app
 pytestmark = pytest.mark.db
 
 
+@pytest.mark.parametrize("startfehler", [True, False])
+def test_teilstart_raeumt_alle_kinder_auf(
+    settings: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, startfehler: bool,
+) -> None:
+    """Auch Fehler nach einem bereiten Kind terminieren und ernten jedes Kind."""
+    import subprocess
+    from unittest.mock import MagicMock
+    from mineru_ocr import daemons
+
+    kinder = [MagicMock(), MagicMock()]
+    for kind in kinder:
+        kind.poll.return_value = None
+    # Das erste Kind ignoriert terminate: Auch der kill-Zweig muss es ernten.
+    kinder[0].wait.side_effect = [subprocess.TimeoutExpired("daemon", 1), 0]
+    popen = MagicMock(side_effect=[kinder[0], OSError("Startfehler") if startfehler else kinder[1]])
+    fragen = MagicMock(side_effect=[{"ready": True}, RuntimeError("Bereitschaftsfehler")])
+    monkeypatch.setattr("mineru_ocr.daemons.subprocess.Popen", popen)
+    monkeypatch.setattr(daemons, "fragen", fragen)
+    monkeypatch.setattr(daemons, "verzeichnis", lambda _: tmp_path)
+    monkeypatch.setattr("mineru_ocr.daemon._schema_pruefen", lambda _: None)
+
+    with pytest.raises((OSError, RuntimeError), match="fehler"):
+        daemons.start(settings, 2)
+
+    assert fragen.call_count == (1 if startfehler else 2)
+    for kind in kinder[:1 if startfehler else 2]:
+        kind.terminate.assert_called_once_with()
+        kind.wait.assert_any_call(timeout=settings.shutdown_graceful_timeout + 10)
+    kinder[0].kill.assert_called_once_with()
+    assert kinder[0].wait.call_count == 2
+    assert kinder[0].wait.call_args.args == ()
+    if not startfehler:
+        kinder[1].kill.assert_not_called()
+        kinder[1].wait.assert_called_once()
+
+
+def test_stop_wartet_auf_prozess_statt_auf_socket(
+    settings: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ein Socket-Timeout nach der Bestaetigung darf keinen Erfolg melden."""
+    from unittest.mock import MagicMock
+    from mineru_ocr import daemons
+
+    monkeypatch.setattr(daemons, "verzeichnis", lambda _: tmp_path)
+    monkeypatch.setattr(daemons, "status", lambda _: {
+        "daemons": [{"pid": 123, "socket": str(tmp_path / "test.sock"), "occupied": 0}],
+    })
+    fragen = MagicMock(side_effect=[{"pid": 123, "stopping": True}, None])
+    beendet = MagicMock(side_effect=[False, False, True])
+    monkeypatch.setattr(daemons, "fragen", fragen)
+    monkeypatch.setattr(daemons, "_prozesse_beendet", beendet)
+    monkeypatch.setattr("mineru_ocr.daemons.time.sleep", lambda _: None)
+    assert daemons.stop(settings, 1)["stopped"] == 1
+    assert beendet.call_count == 3
+    fragen.assert_called_once_with(tmp_path / "test.sock", "stop")
+
+
+def test_stop_meldet_frist_statt_erfolg(
+    settings: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import MagicMock
+    from mineru_ocr import daemons
+    from mineru_ocr.errors import DatabaseError
+
+    monkeypatch.setattr(daemons, "verzeichnis", lambda _: tmp_path)
+    monkeypatch.setattr(daemons, "status", lambda _: {
+        "daemons": [{"pid": 123, "socket": str(tmp_path / "test.sock"), "occupied": 0}],
+    })
+    monkeypatch.setattr(daemons, "fragen", lambda *args: {"pid": 123, "stopping": True})
+    monkeypatch.setattr(daemons, "_prozesse_beendet", lambda _: False)
+    monkeypatch.setattr("mineru_ocr.daemons.time.monotonic", MagicMock(side_effect=[0, 10000]))
+    with pytest.raises(DatabaseError, match="fahren noch herunter"):
+        daemons.stop(settings, 1)
+
+
+@pytest.mark.parametrize(("ausgabe", "code", "beendet"), [
+    ("S\n", 0, False), ("Z\n", 0, True), ("Z+\nS\n", 0, False), ("", 1, True),
+])
+def test_prozesszustand_erkennt_beendete_prozesse(
+    monkeypatch: pytest.MonkeyPatch, ausgabe: str, code: int, beendet: bool,
+) -> None:
+    import subprocess
+    from mineru_ocr import daemons
+
+    monkeypatch.setattr("mineru_ocr.daemons.subprocess.run", lambda *args, **kwargs:
+                        subprocess.CompletedProcess([], code, stdout=ausgabe, stderr=""))
+    assert daemons._prozesse_beendet([123]) is beendet
+
+
+@pytest.mark.parametrize("fehler", ["exit", "stderr", "timeout"])
+def test_prozessabfrage_fehler_meldet_keinen_erfolg(
+    monkeypatch: pytest.MonkeyPatch, fehler: str,
+) -> None:
+    import subprocess
+    from unittest.mock import MagicMock
+    from mineru_ocr import daemons
+    from mineru_ocr.errors import DatabaseError
+
+    lauf = MagicMock(return_value=subprocess.CompletedProcess(
+        [], 2 if fehler == "exit" else 1,
+        stdout="", stderr="Fehler" if fehler == "stderr" else "",
+    ))
+    if fehler == "timeout":
+        lauf.side_effect = subprocess.TimeoutExpired("ps", 2)
+    monkeypatch.setattr("mineru_ocr.daemons.subprocess.run", lauf)
+    with pytest.raises(DatabaseError, match="Prozesszustand"):
+        daemons._prozesse_beendet([123])
+
+
+def test_db_kennung_ohne_leserecht_ist_betriebsfehler(
+    settings: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import MagicMock
+    from psycopg.errors import InsufficientPrivilege
+    from mineru_ocr import daemons
+    from mineru_ocr.errors import DatabaseError
+
+    verbindung = MagicMock()
+    verbindung.__enter__.return_value.execute.side_effect = InsufficientPrivilege("verboten")
+    monkeypatch.setattr("mineru_ocr.daemons.db.connect", lambda _: verbindung)
+    with pytest.raises(DatabaseError, match="EXECUTE auf pg_control_system"):
+        daemons.verzeichnis(settings)
+
+
+def test_db_identitaet_gilt_fuer_alle_zugangswege(db_conn: Any, settings: Any) -> None:
+    import dataclasses
+    from mineru_ocr import daemons
+    from psycopg.conninfo import make_conninfo
+
+    pfade = {daemons.verzeichnis(dataclasses.replace(
+        settings, db_dsn=make_conninfo(settings.db_dsn, host=host),
+    )) for host in ("localhost", "127.0.0.1", "::1", "/tmp")}
+    assert len(pfade) == 1
+
+
+def test_cluster_mit_gleicher_datenbank_oid_bleiben_getrennt(
+    settings: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import MagicMock
+    from mineru_ocr import daemons
+
+    verbindung = MagicMock()
+    verbindung.__enter__.return_value.execute.return_value.fetchone.side_effect = [
+        (7652790125226463687, 123), (7652790125226463688, 123),
+    ]
+    monkeypatch.setattr("mineru_ocr.daemons.db.connect", lambda _: verbindung)
+    pfade = [daemons.verzeichnis(settings), daemons.verzeichnis(settings)]
+    try:
+        assert pfade[0] != pfade[1]
+    finally:
+        for pfad in pfade:
+            pfad.rmdir()
+
+
 def test_liste_ohne_daemon(db_conn: Any) -> None:
     lauf = CliRunner().invoke(app, ["daemon", "list"])
     assert lauf.exit_code == 0, lauf.output
