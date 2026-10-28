@@ -507,6 +507,13 @@ Rettungshinweis. Ein Ganzdokument-Format geht ungeteilt als ein Stück hinaus (u
 Seitenzahl, also keinen Seitenvergleich. CSV und TSV tragen keine Kennung und
 bleiben draußen.
 
+HTML erkennt `mime` auch in UTF-16LE und UTF-16BE, mit und ohne BOM (#56),
+weiterhin nur mit HTML-Kennung am Anfang. `mime.worker_bytes` kodiert es erst
+im Executor nach UTF-8 um; kaputte UTF-16-Zeichen ergeben `input_error`, ohne
+RunPod-Kontakt. Die Anfragegrenze prüft der Executor nach dem Umkodieren, denn
+UTF-8 kann größer sein. Die Originalbytes bleiben für Hash, Eingabe und
+`size_bytes` maßgeblich, auch wenn ein fehlgeschlagener Job sie für `retry` behält.
+
 ### Die Lese-Einstellungen eines Dokuments stehen an seiner Eingabe
 
 Stufe, OCR-Modus und Bildanalyse reisen als **ein Wert**, `config.ReadSettings`

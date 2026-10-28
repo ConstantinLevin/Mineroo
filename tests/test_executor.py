@@ -39,6 +39,7 @@ from mineru_ocr.errors import (
     MultiImageError,
     ResultLostError,
     TerminalRunPodError,
+    TooLargeError,
     TransientRunPodError,
     UnstorableResultError,
     UnsupportedTypeError,
@@ -393,6 +394,70 @@ async def test_pdf_hinter_binaerem_vorspann_endet_ohne_runpod_input_error(
     assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
     assert zeile.error is not None and "Byte 4800" in zeile.error
     assert runpod.kontakte == []
+
+
+@pytest.mark.parametrize("kodierung", ["utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize("bom", [False, True])
+async def test_utf16_html_geht_nur_zum_worker_als_utf8(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    kodierung: str,
+    bom: bool,
+) -> None:
+    """Der Worker bekommt UTF-8, Hash, DB und Dateigroesse bleiben original (#56)."""
+    text = "<!DOCTYPE html><html><body>Pr\u00fcfung \u6f22\u5b57 \U0001f600</body></html>"
+    original = (("\ufeff" if bom else "") + text).encode(kodierung)
+    with OCRClient(db_dsn=exec_settings.db_dsn) as client:
+        sha = client.ocr_start([original])[0]
+    assert sha == hashlib.sha256(original).hexdigest()
+    eingabe = await db_modul.read_input_async(exec_settings.db_dsn, sha)
+    assert eingabe is not None and eingabe.content == original
+    runpod = FalscherRunPod([ersatz.fertige_antwort("synthetisch")])
+    await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+
+    assert [base64.b64decode(b) for b in runpod.abgesendet] == [text.encode("utf-8")]
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    assert zeile.mime == "text/html" and zeile.page_count is None
+    assert zeile.size_bytes == len(original)
+
+
+async def test_abgeschnittenes_utf16_html_endet_input_error_ohne_runpod(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+) -> None:
+    """Kein stilles Ersetzen kaputter Zeichen und kein bezahlter Fehlversuch."""
+    original = "<html><body>synthetisch</body></html>".encode("utf-16-le") + b"\x00"
+    sha = hashlib.sha256(original).hexdigest()
+    insert_input(db_conn, sha256=sha, content=original, read_settings=ReadSettings())
+    runpod = FalscherRunPod([ersatz.fertige_antwort("synthetisch")])
+    with pytest.raises(CorruptDocumentError, match="UTF-16"):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
+    assert runpod.kontakte == []
+
+
+async def test_utf16_html_muss_auch_nach_umkodierung_in_die_anfrage_passen(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+) -> None:
+    """UTF-8 kann groesser sein als UTF-16; geprueft wird vor jedem Kontakt."""
+    original = ("<html><body>" + "\u6f22" * 200 + "</body></html>").encode("utf-16-le")
+    sha = hashlib.sha256(original).hexdigest()
+    insert_input(db_conn, sha256=sha, content=original, read_settings=ReadSettings())
+    runpod = FalscherRunPod()
+    with pytest.raises(TooLargeError):
+        await process_document(
+            sha, settings=dataclasses.replace(exec_settings, max_payload_bytes=512),
+            runpod=runpod, pool=pool,
+        )
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.size_bytes == len(original) and runpod.kontakte == []
 
 
 async def test_jede_runpod_job_id_steht_mit_hash_und_seiten_im_log(

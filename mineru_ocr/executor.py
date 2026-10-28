@@ -521,7 +521,7 @@ async def process_document(
             # Sie ist billig, und Pillow soll nur Bytes lesen, die ohnehin an
             # RunPod gehen koennten.
             chunking.check_fits_unsplit(
-                size_bytes=len(rohbytes), doc_type=typ, settings=settings
+                size_bytes=len(worker_daten), doc_type=typ, settings=settings
             )
             # Die Engine liest von einer Bilddatei nur das erste Bild. Mehr als
             # eines (ein mehrseitiges Fax als TIFF) hiesse: alle Seiten nach der
@@ -546,7 +546,7 @@ async def process_document(
             # nimmt sie an und liest die Datei unabhaengig davon in `flash`.
             await _stuecke_verarbeiten(
                 chunking.iter_chunks(
-                    [chunking.Chunk(0, 0)], lambda erste, letzte: rohbytes, settings
+                    [chunking.Chunk(0, 0)], lambda erste, letzte: worker_daten, settings
                 ),
                 sha256=sha256,
                 settings=settings,

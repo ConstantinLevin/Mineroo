@@ -32,6 +32,7 @@ Out of Scope).
 
 from __future__ import annotations
 
+import codecs
 import email.parser
 import email.policy
 import enum
@@ -43,7 +44,7 @@ from collections.abc import Callable
 from typing import BinaryIO, Final
 from xml.etree import ElementTree
 
-from .errors import UnsupportedTypeError
+from .errors import CorruptDocumentError, UnsupportedTypeError
 
 KOPF_BYTES: Final = 65536
 """So viele Bytes liest die Erkennung am Dateianfang: so viele, wie die Kennungen
@@ -470,8 +471,26 @@ def _typ_aus_kopf(kopf: bytes) -> DocumentType | None:
         return DocumentType.RTF
     if _ist_mhtml(kopf):
         return DocumentType.MHTML
-    if _HTML_ANFANG.match(kopf):
+    if _HTML_ANFANG.match(kopf) or _html_utf16_kodierung(kopf) is not None:
         return DocumentType.HTML
+    return None
+
+
+def _html_utf16_kodierung(kopf: bytes) -> str | None:
+    """UTF-16 nur mit HTML-Kennung am Anfang, mit oder ohne BOM (#56).
+
+    Inkrementell, weil die 64-KiB-Grenze mitten in einem Surrogatpaar oder
+    Codepunkt liegen kann. Der ganze Inhalt wird erst fuer den Worker dekodiert.
+    """
+    for kodierung in ("utf-16",) if kopf.startswith((b"\xff\xfe", b"\xfe\xff")) else (
+        "utf-16-le", "utf-16-be",
+    ):
+        try:
+            text = codecs.getincrementaldecoder(kodierung)().decode(kopf, final=False)
+        except UnicodeDecodeError:
+            continue
+        if _HTML_ANFANG.match(text.encode("utf-8")):
+            return kodierung
     return None
 
 
@@ -484,12 +503,21 @@ def worker_bytes(data: bytes, doc_type: DocumentType) -> bytes:
     """Bereitet erkannte Bytes nur fuer den Worker auf, nie fuer Hash oder DB.
 
     PDF verliert ausschliesslich den von der Erkennung erlaubten Vorspann.
-    Andere Typen bleiben unveraendert (#56).
+    HTML in UTF-16 wird UTF-8 ohne BOM; andere Bytes bleiben unveraendert (#56).
     """
     if doc_type.is_pdf:
         anfang = _PDF_ANFANG.match(data[:KOPF_BYTES])
         if anfang is not None:
             return data[anfang.end() - len(b"%PDF-"):]
+    if doc_type is DocumentType.HTML:
+        kodierung = _html_utf16_kodierung(data[:KOPF_BYTES])
+        if kodierung is not None:
+            try:
+                return data.decode(kodierung).encode("utf-8")
+            except UnicodeDecodeError as fehler:
+                raise CorruptDocumentError(
+                    f"UTF-16-HTML ist beschaedigt (Byte {fehler.start}, null-basiert)."
+                ) from fehler
     return data
 
 

@@ -87,6 +87,54 @@ def test_jeder_unterstuetzte_typ_wird_erkannt(typ: DocumentType, tmp_path: Path)
     assert sniff_path(datei) is typ
 
 
+@pytest.mark.parametrize("kodierung", ["utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize("bom", [False, True])
+@pytest.mark.parametrize("anfang", ["<!DOCTYPE HTML>", "<HtMl lang='de'>"])
+def test_html_in_utf16_wird_am_inhalt_erkannt(
+    tmp_path: Path, kodierung: str, bom: bool, anfang: str,
+) -> None:
+    """Beide Bytefolgen mit und ohne BOM, aber nur mit HTML-Kennung (#56)."""
+    text = " \n" + anfang + "<body>Pr\u00fcfung</body></html>"
+    daten = (("\ufeff" if bom else "") + text).encode(kodierung)
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    assert sniff_bytes(daten) is DocumentType.HTML
+    assert sniff_path(datei) is DocumentType.HTML
+
+
+@pytest.mark.parametrize("daten", [
+    b"\xef%PDF-", b"\xbb\xbf%PDF-", b"\x00%PDF-", b"Text %PDF-",
+    b"\xff\xfe", b"\xfe\xff", b"<\x00h\x00t\x00",
+    "<htmlish>".encode("utf-16-le"), "<html=oops>".encode("utf-16-be"),
+    "Text <html>".encode("utf-16-le"), "Text".encode("utf-16"),
+    "<html></html>".encode("utf-32"),
+    b" \x89PNG\r\n\x1a\n", b"\xef\xbb\xbfGIF89a",
+])
+def test_toleranter_anfang_laesst_fremde_dateien_nicht_durch(
+    daten: bytes, tmp_path: Path,
+) -> None:
+    """Keine Teil-BOMs, fremden Vorspaenne oder Kennungen mitten im Text."""
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    with pytest.raises(UnsupportedTypeError):
+        sniff_bytes(daten)
+    with pytest.raises(UnsupportedTypeError):
+        sniff_path(datei)
+
+
+@pytest.mark.parametrize("kodierung", ["utf-16-le", "utf-16-be"])
+def test_html_utf16_mit_surrogatpaar_an_der_kopfgrenze(
+    tmp_path: Path, kodierung: str,
+) -> None:
+    """Die Lesegrenze darf ein gueltiges Zeichen halbieren, nicht die Erkennung."""
+    text = "<html>" + "a" * (KOPF_BYTES // 2 - 7) + "\U0001f600</html>"
+    daten = text.encode(kodierung)
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    assert sniff_bytes(daten) is DocumentType.HTML
+    assert sniff_path(datei) is DocumentType.HTML
+
+
 @pytest.mark.parametrize(
     "verzeichnis, erwartet",
     [("word/", DocumentType.DOCX), ("xl/", DocumentType.XLSX), ("ppt/", DocumentType.PPTX)],
