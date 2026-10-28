@@ -285,7 +285,7 @@ def test_fehlende_konfiguration_endet_bei_daemon_mit_meldung_statt_traceback(
     umgebung["NO_COLOR"] = "1"
 
     lauf = subprocess.run(
-        [sys.executable, "-m", "mineru_ocr.cli", "daemon", "--dsn", "host=egal"],
+        [sys.executable, "-m", "mineru_ocr.cli", "daemon", "start", "1", "--dsn", "host=egal"],
         cwd=WURZEL,
         env=umgebung,
         capture_output=True,

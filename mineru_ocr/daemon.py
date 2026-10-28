@@ -22,15 +22,18 @@ ist der Rueckfallweg der dokumentierte — ein zweiter Prozess, der nur die
 Wartungs-Queue bedient. Der Rueckfall ist vorbereitet und nicht bloss gedacht:
 `run` nimmt dafuer den Parameter `queues`.
 
-Kein Autostart im ersten Wurf. Der Daemon wird von Hand gestartet, damit man ihm
-im echten Bestandslauf zusieht, bevor er ein Hintergrundprozess wird, den man
-vergisst (Plan 5.3).
+Kein Autostart: Der Betreiber startet mit `daemon start X` ausdruecklich
+Hintergrundprozesse. `daemon stop X` und `daemon list` verwalten sie (#58).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import json
+import os
+from pathlib import Path
+import sys
 import signal
 from collections.abc import Sequence
 from typing import Any, Final
@@ -61,10 +64,16 @@ def _schema_pruefen(dsn: str) -> None:
         db.check_schema(conn)
 
 
-async def run(
+async def run(settings: Settings, *, queues: Sequence[str] | None = None) -> None:
+    """Startet den Exekutor fuer Bibliotheksaufrufer, bis SIGTERM/SIGINT kommt."""
+    await _run(settings, queues=queues)
+
+
+async def _run(
     settings: Settings,
     *,
     queues: Sequence[str] | None = None,
+    control: tuple[Path, Path] | None = None,
 ) -> None:
     """Startet die Worker und laeuft, bis ein Beendigungssignal kommt.
 
@@ -127,9 +136,8 @@ async def run(
     Nebenlaeufigkeit:
         Mehrere Daemon-Prozesse auf derselben Datenbank sind moeglich und
         unschaedlich: Procrastinate verteilt die Jobs, und der `lock` je Dokument
-        verhindert, dass zwei dasselbe Dokument anfassen. Gewollt ist es
-        trotzdem nicht — ein Prozess ist beobachtbar, zwei sind eine Frage mehr,
-        die niemand stellt, wenn etwas schiefgeht.
+        verhindert, dass zwei dasselbe Dokument anfassen. Die CLI kann mit `daemon start X` mehrere starten und mit `daemon list`
+        ihre Auslastung beobachten.
 
     Raises:
         ConfigurationError: Kein Endpoint oder kein RunPod-Schluessel eingestellt
@@ -189,6 +197,8 @@ async def run(
     schleife = asyncio.get_running_loop()
     laufende: list[asyncio.Task[None]] = []
     ergebnisse: list[Any] = []
+    server: asyncio.Server | None = None
+    worker: list[Any] = []
 
     try:
         # `App.open_async(pool=…)` reicht UNSEREN Pool durch, statt Procrastinate
@@ -201,11 +211,38 @@ async def run(
                 schleife.add_signal_handler(nummer, _signal_empfangen, nummer)
             try:
                 for optionen in _worker_optionen(settings, queues, mittel):
-                    laufende.append(
-                        asyncio.create_task(
-                            app.run_worker_async(**optionen), name=optionen["name"]
-                        )
-                    )
+                    if control is None:
+                        koroutine = app.run_worker_async(**optionen)
+                    else:
+                        # Dieselbe Worker-Klasse wie App.run_worker_async; ihre
+                        # Kennung ordnet reale Jobs dem Prozess zu (#58).
+                        from procrastinate.worker import Worker
+                        instanz: Any = Worker(app=app, **{**app.worker_defaults, **optionen})
+                        worker.append(instanz)
+                        koroutine = instanz.run()
+                    laufende.append(asyncio.create_task(koroutine, name=optionen["name"]))
+
+                if control is not None:
+                    async def antworten(leser: asyncio.StreamReader, schreiber: asyncio.StreamWriter) -> None:
+                        try:
+                            befehl = (await asyncio.wait_for(leser.readline(), 2)).decode().strip()
+                            if befehl == "stop" and not beenden.is_set():
+                                _signal_empfangen(signal.SIGTERM)
+                            antwort = {
+                                "pid": os.getpid(), "available": settings.ocr_concurrency,
+                                "log_path": str(control[1]),
+                                "worker_ids": [w.worker_id for w in worker],
+                                "ready": all(w.worker_id is not None for w in worker),
+                                "stopping": beenden.is_set(),
+                            }
+                            schreiber.write((json.dumps(antwort) + "\n").encode())
+                            await schreiber.drain()
+                        except (OSError, asyncio.TimeoutError):
+                            pass
+                        finally:
+                            schreiber.close()
+                            await schreiber.wait_closed()
+                    server = await asyncio.start_unix_server(antworten, path=control[0])
 
                 # Auf das Signal warten — oder darauf, dass ein Worker von sich
                 # aus endet. Der zweite Fall ist der wichtige: Stirbt EIN Worker
@@ -255,6 +292,11 @@ async def run(
         # Im `finally` und nicht dahinter: Wird `run` SELBST abgebrochen — was
         # beim Prozess-Abbau der Normalfall ist —, springt die Ausfuehrung aus
         # dem `async with` heraus, und alles, was danach steht, laeuft nie.
+        if server is not None:
+            server.close()
+            await server.wait_closed()
+        if control is not None:
+            control[0].unlink(missing_ok=True)
         await unabbrechbar_abwarten(_betriebsmittel_schliessen(runpod, pool))
 
     if zweites_signal:
@@ -373,3 +415,11 @@ def main(settings: Settings, *, queues: Sequence[str] | None = None) -> int:
         log.error("Der Daemon ist beendet worden: %s: %s", type(fehler).__name__, fehler)
         return 1
     return 0
+
+
+if __name__ == "__main__":
+    # Privater Kindprozess-Einstieg. Die CLI bietet keinen Vordergrundbetrieb.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    daten = json.load(sys.stdin)
+    einstellung = Settings(**daten)
+    asyncio.run(_run(einstellung, control=(Path(sys.argv[1]), Path(sys.argv[2]))))

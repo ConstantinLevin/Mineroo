@@ -342,7 +342,7 @@ def test_setup_braucht_weder_endpoint_noch_schluessel(
 def test_daemon_verlangt_den_schluessel_vor_dem_start(
     db_conn: psycopg.Connection[Any],
 ) -> None:
-    lauf = CliRunner().invoke(app, ["daemon"])
+    lauf = CliRunner().invoke(app, ["daemon", "start", "1"])
     assert lauf.exit_code == 1, lauf.output
     assert "Kein API-Schluessel" in lauf.stderr
     assert "Traceback" not in lauf.stderr

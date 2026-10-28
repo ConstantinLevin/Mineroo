@@ -1,0 +1,181 @@
+"""Lokale Daemon-Verwaltung: lebende Kontrollsockets statt einer PID-Kartei.
+
+Nur der Besitzer darf das Verzeichnis betreten. Ein Socket antwortet aus dem
+Daemon selbst; alte Dateien und wiederverwendete PIDs koennen niemanden stoppen.
+Job-Zustand bleibt ausschliesslich in Procrastinate.
+"""
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import time
+from typing import Any
+import uuid
+
+from . import db
+from .config import Settings
+from .errors import DatabaseError
+
+
+def verzeichnis(settings: Settings) -> Path:
+    """Gleiche Datenbank auf diesem Rechner bedeutet gleiche Kontrollsockets."""
+    with db.connect(settings.db_dsn) as conn:
+        identitaet = conn.execute(
+            "SELECT current_database(), inet_server_addr()::text, inet_server_port()"
+        ).fetchone()
+    kennung = hashlib.sha256(repr(identitaet).encode()).hexdigest()[:16]
+    pfad = Path("/tmp") / f"mineru-{os.getuid()}-{kennung}"
+    pfad.mkdir(mode=0o700, exist_ok=True)
+    if pfad.is_symlink() or pfad.stat().st_uid != os.getuid() or pfad.stat().st_mode & 0o077:
+        raise DatabaseError(f"Unsicheres Daemon-Verzeichnis: {pfad}")
+    return pfad
+
+
+def fragen(pfad: Path, befehl: str = "status") -> dict[str, Any] | None:
+    """Fragt den Prozess selbst, mit Frist; ein totes Socket zaehlt nicht."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as kanal:
+            kanal.settimeout(2)
+            kanal.connect(str(pfad))
+            kanal.sendall((befehl + "\n").encode())
+            daten = bytearray()
+            while b"\n" not in daten:
+                teil = kanal.recv(65536)
+                if not teil:
+                    return None
+                daten.extend(teil)
+            antwort: dict[str, Any] = json.loads(daten)
+            return antwort
+    except (OSError, ValueError):
+        return None
+
+
+def status(settings: Settings) -> dict[str, Any]:
+    """Ein Snapshot der lokalen Daemons und der OCR-Warteschlange."""
+    daemons = []
+    with db.connect(settings.db_dsn) as conn:
+        db.check_schema(conn)
+        for pfad in sorted(verzeichnis(settings).glob("*.sock")):
+            antwort = fragen(pfad)
+            if antwort is None or not antwort["ready"]:
+                continue
+            ids = antwort.pop("worker_ids")
+            frisch = {kennung for kennung, _ in db.worker_heartbeats(conn)}
+            if not set(ids).issubset(frisch):
+                continue
+            antwort.pop("ready")
+            antwort["socket"] = str(pfad)
+            zeile = conn.execute(
+                "SELECT count(*) FROM procrastinate_jobs "
+                "WHERE worker_id = %s AND status = 'doing' AND queue_name = 'ocr'",
+                (ids[0],),
+            ).fetchone()
+            assert zeile is not None
+            antwort["occupied"] = zeile[0]
+            daemons.append(antwort)
+        queue = conn.execute(
+            "SELECT count(*) FILTER (WHERE status = 'todo'), "
+            "count(*) FILTER (WHERE status = 'doing') "
+            "FROM procrastinate_jobs WHERE queue_name = 'ocr'"
+        ).fetchone()
+    assert queue is not None
+    wartend, laufend = queue
+    return {
+        "count": len(daemons), "daemons": daemons,
+        "slots": {"occupied": sum(d["occupied"] for d in daemons),
+                  "available": sum(d["available"] for d in daemons)},
+        "queue": {"waiting": wartend, "running": laufend},
+    }
+
+
+def start(settings: Settings, anzahl: int) -> list[dict[str, Any]]:
+    """Prueft vor dem ersten Kind; wartet nur auf Start, niemals auf Dokumente."""
+    from .daemon import _schema_pruefen
+
+    settings.require_endpoint_id()
+    schluessel = settings.require_api_key()
+    _schema_pruefen(settings.db_dsn)
+    if settings.ocr_concurrency < 1:
+        raise ValueError("ocr_concurrency muss mindestens 1 sein.")
+    ordner = verzeichnis(settings)
+    daten = dataclasses.asdict(dataclasses.replace(settings, api_key=schluessel))
+    daten["config_path"] = None
+    gestartet = []
+    kinder: list[subprocess.Popen[bytes]] = []
+    try:
+        for _ in range(anzahl):
+            kennung = uuid.uuid4().hex[:12]
+            sock = ordner / f"{kennung}.sock"
+            protokoll = ordner / f"{kennung}.log"
+            with protokoll.open("xb") as ausgabe:
+                kind = subprocess.Popen(
+                    [sys.executable, "-m", "mineru_ocr.daemon", str(sock), str(protokoll)],
+                    stdin=subprocess.PIPE, stdout=ausgabe, stderr=ausgabe,
+                    start_new_session=True, close_fds=True,
+                    cwd=Path(__file__).resolve().parent.parent,
+                )
+            kinder.append(kind)
+            assert kind.stdin is not None
+            # Geheimnisse nur im anonymen Rohr, nie in Argumenten oder Dateien.
+            kind.stdin.write(json.dumps(daten).encode())
+            kind.stdin.close()
+            frist = time.monotonic() + 20
+            while kind.poll() is None and time.monotonic() < frist:
+                antwort = fragen(sock)
+                if antwort and antwort["ready"]:
+                    gestartet.append(antwort)
+                    break
+                time.sleep(0.05)
+            else:
+                # Nur dieses selbst gestartete Kind; ein fehlgeschlagener Start
+                # darf keinen unbemerkten Prozess hinterlassen.
+                if kind.poll() is None:
+                    kind.terminate()
+                    try:
+                        kind.wait(timeout=settings.shutdown_graceful_timeout + 10)
+                    except subprocess.TimeoutExpired:
+                        kind.kill()
+                        kind.wait()
+                raise DatabaseError(f"Daemon startet nicht; Protokoll: {protokoll}")
+    except BaseException:
+        for kind in kinder:
+            if kind.poll() is None:
+                kind.terminate()
+        for kind in kinder:
+            try:
+                kind.wait(timeout=settings.shutdown_graceful_timeout + 10)
+            except subprocess.TimeoutExpired:
+                kind.kill()
+                kind.wait()
+        raise
+    return gestartet
+
+
+def stop(settings: Settings, anzahl: int) -> dict[str, int]:
+    """Stoppt die am wenigsten belegten; der Socket ersetzt unsichere PID-Signale."""
+    import fcntl
+
+    # Zwei gleichzeitige stop-Aufrufe duerfen nicht dieselben Prozesse waehlen.
+    with (verzeichnis(settings) / "stop.lock").open("a") as sperre:
+        fcntl.flock(sperre, fcntl.LOCK_EX)
+        kandidaten = sorted(status(settings)["daemons"], key=lambda d: (d["occupied"], d["pid"]))
+        ausgewaehlt: list[Path] = []
+        for kandidat in kandidaten:
+            if len(ausgewaehlt) == anzahl:
+                break
+            pfad = Path(kandidat["socket"])
+            antwort = fragen(pfad, "stop")
+            if antwort and antwort.get("stopping"):
+                ausgewaehlt.append(pfad)
+        frist = time.monotonic() + settings.shutdown_graceful_timeout + 15
+        while any(fragen(pfad) is not None for pfad in ausgewaehlt):
+            if time.monotonic() > frist:
+                raise DatabaseError("Daemons fahren noch herunter; bitte daemon list pruefen.")
+            time.sleep(0.05)
+    return {"requested": anzahl, "stopped": len(ausgewaehlt), "running_before": len(kandidaten)}
