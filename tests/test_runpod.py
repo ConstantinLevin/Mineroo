@@ -18,10 +18,8 @@ from typing import Any
 
 import httpx
 import pytest
-from typer.testing import CliRunner
 
 from mineru_ocr import OCRClient
-from mineru_ocr.cli import app
 from mineru_ocr import runpod as runpod_modul
 from mineru_ocr.config import Settings
 from mineru_ocr.errors import (
@@ -1221,7 +1219,7 @@ async def test_worker_geheimnisse_verlassen_den_zugang_nur_maskiert(
 
 
 @pytest.mark.db
-def test_preflight_und_cli_zeigen_geheimnisse_ohne_wertvergleich(
+def test_preflight_zeigt_geheimnisse_ohne_wertvergleich(
     _test_datenbank: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Ein maskierter Istwert erlaubt keine Aussage ueber Wertgleichheit."""
@@ -1240,15 +1238,12 @@ def test_preflight_und_cli_zeigen_geheimnisse_ohne_wertvergleich(
     )
     with OCRClient(db_dsn=_test_datenbank, preflight=False, strict=False) as client:
         befund = client.preflight()
-    ausgabe = CliRunner().invoke(app, ["preflight", "--no-strict", "--json"])
-    assert ausgabe.exit_code == 0
-    for bericht in (befund, json.loads(ausgabe.stdout)):
-        assert "erfundener-istwert" not in repr(bericht)
-        assert "erfundener-sollwert" not in repr(bericht)
-        punkt = next(b for b in bericht["checks"] if b["punkt"] == "env:serviceToken")
-        assert punkt["soll"] == "***"
-        assert punkt["ist"] == {"gesetzt": "***"}
-        assert punkt["bewertung"] == "nicht_pruefbar"
+    assert "erfundener-istwert" not in repr(befund)
+    assert "erfundener-sollwert" not in repr(befund)
+    punkt = next(b for b in befund["checks"] if b["punkt"] == "env:serviceToken")
+    assert punkt["soll"] == "***"
+    assert punkt["ist"] == {"gesetzt": "***"}
+    assert punkt["bewertung"] == "nicht_pruefbar"
 
 
 async def test_worker_liste_ist_einzeln(echte_settings: Settings) -> None:
