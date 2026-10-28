@@ -78,6 +78,29 @@ def _lesen(datei: Path) -> bytes:
     return datei.read_bytes()
 
 
+def _ausgabe_pruefen(out: Path, kandidaten: list[tuple[Path, bool]]) -> None:
+    """Verhindert Verzeichnisse als Ziel und das Ueberschreiben einer Eingabe."""
+    if out.is_dir():
+        raise typer.BadParameter("-o braucht eine Datei, kein Verzeichnis.")
+    for datei, _ in kandidaten:
+        if out.resolve() == datei.resolve() or (
+            out.exists() and datei.exists() and out.samefile(datei)
+        ):
+            raise typer.BadParameter("Die Ausgabe darf keine Eingabedatei ueberschreiben.")
+
+
+def _textdatei_schreiben(text: str, out: Path | None) -> str:
+    """Schreibt UTF-8 ins gewaehlte oder temporaere Ziel und liefert dessen Pfad."""
+    if out is not None:
+        out.write_text(text, encoding="utf-8")
+        return str(out)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", prefix="mineru-ocr-", suffix=".md", delete=False,
+    ) as ausgabe:
+        ausgabe.write(text)
+    return ausgabe.name
+
+
 def _betriebsfehler(fehler: BaseException) -> None:
     typer.echo(f"{type(fehler).__name__}: {fehler}", err=True)
     raise typer.Exit(code=1)
@@ -174,13 +197,7 @@ def lesen(
         else:
             kandidaten.append((pfad, True))
     if out is not None:
-        if out.is_dir():
-            raise typer.BadParameter("-o braucht eine Datei, kein Verzeichnis.")
-        for datei, _ in kandidaten:
-            if out.resolve() == datei.resolve() or (
-                out.exists() and datei.exists() and out.samefile(datei)
-            ):
-                raise typer.BadParameter("Die Ausgabe darf keine Eingabedatei ueberschreiben.")
+        _ausgabe_pruefen(out, kandidaten)
     codes: set[int] = set()
     texte: list[str] = []
     erfolg = False
@@ -237,16 +254,7 @@ def lesen(
                     typer.echo(f"{_pfad_zeigen(str(pfad))}: {type(fehler).__name__}: {fehler}", err=True)
                     codes.add(1)
         if (temporary or out is not None) and erfolg:
-            text = "\n\n".join(texte)
-            if temporary:
-                with tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8", prefix="mineru-ocr-", suffix=".md", delete=False,
-                ) as ausgabe:
-                    ausgabe.write(text)
-                typer.echo(ausgabe.name)
-            elif out is not None:
-                out.write_text(text, encoding="utf-8")
-                typer.echo(str(out))
+            typer.echo(_textdatei_schreiben("\n\n".join(texte), out))
     except (MineruOcrError, OSError) as fehler:
         _betriebsfehler(fehler)
     for code in (1, 5, 4, 3):
