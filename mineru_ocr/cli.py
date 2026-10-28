@@ -1,102 +1,59 @@
-"""Die Kommandozeile. Enthaelt KEINE Logik — nur Uebersetzung.
+"""Dateien abschicken, synchron warten und den ganzen Dokumenttext ausgeben.
 
-Der zweite Zugangsweg neben `import mineru_ocr`, und ausdruecklich derselbe
-Dienst und nicht ein zweiter. Jedes Kommando hier ruft genau eine oeffentliche
-Funktion und formatiert deren Rueckgabe. Es entscheidet nichts, es rechnet
-nichts, es prueft nichts, was nicht schon geprueft wird.
+Die Bibliothek bleibt der Zugang fuer Struktur, Rohantworten und Job-Verwaltung.
+Pfade und Ausgabeziele kennt nur die CLI. `setup` und `daemon` sind Betrieb.
 
-Warum diese Regel so hart ist: Sobald ein Kommando eine eigene Entscheidung
-trifft — eine Voreinstellung anders setzt, einen Fall abfaengt, eine Schwelle
-kennt —, verhaelt sich das Werkzeug ueber die Kommandozeile anders als aus Python
-heraus. Von da an gibt es zwei Wahrheiten, und Fehler treten nur auf einem der
-beiden Wege auf. Ein Kommando, das nur uebersetzt, kann das nicht.
-
-Die Exit-Codes sind Teil des Vertrags, weil in einer Shell darauf verzweigt wird:
-    0  Erfolg.
-    1  Betriebsfehler — Endpoint nicht erreichbar, Datenbank weg, Konto leer.
-       Auch bei `ocr`, wenn eine ausdruecklich genannte Datei nicht abgeschickt
-       werden konnte (nicht unterstuetzt, zu gross, nicht vorhanden): Die uebrigen
-       sind dann trotzdem eingereiht.
-    2  Aufruffehler — falsche Argumente oder Schalter; auch ein Pfad, den typer
-       schon beim Entgegennehmen ablehnt (etwa eine Datei ohne Leserecht, dann
-       wird NICHTS eingereiht). Setzt typer selbst.
-    3  Nur bei `wait` und `markdown`: Ein Dokument ist endgueltig, aber NICHT
-       erfolgreich (`failed` oder `input_error`). Ein eigener Code, weil das
-       weder ein Erfolg noch ein Fehler DES WERKZEUGS ist — das Werkzeug hat
-       einwandfrei gearbeitet, das Ergebnis ist nur schlecht. Wer beides auf 1
-       wirft, kann in einer Schleife nicht mehr zwischen „kaputtes Dokument" und
-       „kaputte Einrichtung" unterscheiden.
-    4  Nur bei `wait`: Nach Ablauf der Frist ist noch ein Dokument offen. Der
-       Aufrufer wartet spaeter erneut; die Dokumente laufen weiter.
-    130 Strg-C (setzt typer). Beendet nur das Warten bzw. den Lauf.
-
-Treffen bei `wait` mehrere zu, gilt der schwerste: 1 vor 4 vor 3 vor 0.
-
-Gesetzt werden sie mit `raise typer.Exit(code=…)`.
-
-Jedes Kommando, das etwas ausgibt, kennt `--json`. Menschenlesbar ist die
-Voreinstellung; `--json` ist fuer den Fall, dass ein anderes Programm zuhoert.
-
-Die Namen sind die der Python-Flaeche: `ocr` reiht ein wie `OCRClient.ocr_start`,
-`status` und `wait` heissen wie ihre Methoden. Zwei Vokabulare fuer dieselbe
-Sache waeren dieselbe Doppelung wie zwei Wahrheiten im Verhalten.
-
-PFADE KENNT NUR DIESE DATEI. Die Bibliothek nimmt Bytes und gibt Hashes; die
-Kommandozeile liest Dateien und Ordner, reicht deren Bytes herein und nennt in
-ihrer Ausgabe die Zuordnung von Pfad zu Hash. Ziele fuer `show`, `wait`,
-`markdown` und `retry` sind Hashes oder Pfade, die sie selbst hasht.
-
-Auf der Standardausgabe stehen nur DATEN. Meldungen und Warnungen — auch die der
-Bibliothek, etwa dass kein Daemon laeuft — gehen auf die Fehlerausgabe.
+Exit-Codes: 0 Erfolg (auch empty), 1 Betriebs-/Dateifehler, 2 Aufruffehler,
+3 failed/input_error, 4 Wartefrist abgelaufen, 5 kein laufender Daemon,
+130 Strg-C. Bei gemischten Ergebnissen gilt 1 vor 5 vor 4 vor 3 vor 0.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json as json_modul
 import logging
-import re
+import math
+import tempfile
 from pathlib import Path
-from typing import Annotated, Any, Final
+from typing import Annotated, Final
 
 import click
 import typer
+from typer.core import TyperGroup
+from typer.main import get_command
 
 from . import core, db, mime
 from .client import OCRClient
 from .config import GUELTIGE_OCR_MODI, GUELTIGE_STUFEN, Settings
-from .core import RetryOutcome
-from .errors import (
-    DocumentNotFound,
-    MineruOcrError,
-    TooLargeError,
-    UnsupportedTypeError,
-    WaitTimeoutError,
-)
+from .errors import DocumentNotFound, MineruOcrError, UnsupportedTypeError, TooLargeError, WaitTimeoutError
+from .db import DocumentStatus
 
-app = typer.Typer(
-    name="mineru-ocr",
-    help="OCR-Dienst fuer MinerU auf RunPod: Dokumente rein, Text und Struktur raus.",
-    no_args_is_help=True,
-)
 
-HASH_FORM: Final = re.compile(r"^[0-9a-f]{64}$")
-"""Woran die Kommandozeile einen Hash von einem Pfad unterscheidet.
+class _PfadGruppe(TyperGroup):
+    """Leitet Dateiaufrufe an die Lese-App, Betriebskommandos an die Gruppe."""
 
-Festgelegt und nicht geraten: vierundsechzig Zeichen aus `[0-9a-f]` sind ein Hash,
-alles andere ist ein Pfad. Die Regel gilt in `show`, `wait`, `markdown` und
-`retry` und steht deshalb EINMAL hier."""
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if args and args[0] not in {"setup", "daemon", "--help"}:
+            args = ["_pfade", *args]
+        return super().parse_args(ctx, args)
 
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        if cmd_name == "_pfade":
+            return get_command(_lese_app)
+        return super().get_command(ctx, cmd_name)
+
+    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        get_command(_lese_app).format_help(ctx, formatter)
+        self.format_commands(ctx, formatter)
+
+
+app = typer.Typer(name="mineru-ocr", cls=_PfadGruppe, no_args_is_help=True)
+_lese_app = typer.Typer(name="mineru-ocr", pretty_exceptions_enable=False)
 _LOG_NAME: Final = "mineru_ocr"
 
 
 class _FehlerAusgabe(logging.Handler):
-    """Schreibt Log-Meldungen der Bibliothek auf die Fehlerausgabe des Kommandos.
-
-    Ueber `typer.echo(err=True)` und nicht ueber einen `StreamHandler`, der seinen
-    Strom beim Anlegen festhielte: Der Strom wechselt mit jedem Aufruf (im Test mit
-    jedem `invoke`), und ein festgehaltener zeigte auf einen geschlossenen.
-    """
+    """Schreibt Bibliotheksmeldungen auf den aktuellen stderr-Strom."""
 
     def emit(self, record: logging.LogRecord) -> None:
         typer.echo(self.format(record), err=True)
@@ -104,103 +61,26 @@ class _FehlerAusgabe(logging.Handler):
 
 @app.callback()
 def _vorweg(ctx: typer.Context) -> None:
-    """OCR-Dienst fuer MinerU auf RunPod: Dokumente rein, Text und Struktur raus."""
-    # Meldungen und Warnungen der Bibliothek gehen auf stderr (nie auf stdout).
-    # Einmal anmelden, nicht bei jedem Aufruf.
     logger = logging.getLogger(_LOG_NAME)
     if not any(isinstance(h, _FehlerAusgabe) for h in logger.handlers):
         logger.addHandler(_FehlerAusgabe())
     logger.setLevel(logging.INFO if ctx.invoked_subcommand == "daemon" else logging.WARNING)
 
 
-def _ziel(target: str) -> str:
-    """Der Hash zu einem Ziel: ein Hash bleibt ein Hash, ein Pfad wird gehasht.
-
-    Die Bibliothek kennt keine Pfade; hier ist die einzige Stelle, die einen in
-    einen Hash verwandelt. Gehasht wird in Stuecken (`hashlib.file_digest`),
-    mit demselben Ergebnis wie `core.sha256_of` auf den ganzen Bytes.
-
-    Raises:
-        DocumentNotFound: Weder ein Hash noch eine lesbare Datei.
-    """
-    if HASH_FORM.match(target):
-        return target
-    pfad = Path(target)
-    if not pfad.is_file():
-        raise DocumentNotFound(
-            f"Kein Dokument zu {target!r}: Es ist weder ein sha256 noch eine "
-            f"lesbare Datei."
-        )
-    # In Stuecken und nicht ueber `read_bytes`: Eine grosse Datei soll nicht ganz in
-    # den Speicher, nur um einen Hash zu bilden. Derselbe Hash wie `core.sha256_of`.
-    try:
-        with pfad.open("rb") as datei:
-            return hashlib.file_digest(datei, "sha256").hexdigest()
-    except OSError as fehler:
-        # Eine Datei, die da ist, aber nicht lesbar (kein Leserecht), ist fuer das
-        # Ziel dasselbe wie keine: ein Betriebsfehler mit Auskunft, kein Traceback.
-        raise DocumentNotFound(
-            f"Kein Dokument zu {target!r}: Die Datei ist nicht lesbar "
-            f"({fehler.strerror or fehler})."
-        ) from fehler
-
-
 def _pfad_zeigen(pfad: str) -> str:
-    """Ein Pfad fuer eine Zeile der Textausgabe. Traegt er ein Zeichen, das sich
-    nicht drucken laesst (etwa einen Zeilenumbruch), erscheint er als
-    Python-Literal: Sonst stuende eine zweite Zeile da, die wie das Ergebnis eines
-    anderen Dokuments aussieht."""
     return pfad if pfad.isprintable() else repr(pfad)
 
 
 def _lesen(datei: Path) -> bytes:
-    """Liest eine Datei, nachdem sie die Vorpruefung bestanden hat.
-
-    Die Vorpruefung steht VOR dem Lesen, weil eine grosse Datei fremden Typs nicht
-    erst ganz in den Speicher soll, um dann abgewiesen zu werden: Der Typ wird am
-    Anfang der Datei erkannt (bei einem ZIP am Verzeichnis), die Groesse am
-    Dateisystem. Die endgueltige Pruefung macht `ocr_start` an den Bytes.
-
-    Raises:
-        UnsupportedTypeError: Der Typ wird nicht unterstuetzt.
-        TooLargeError: Die Datei passt nicht in die Datenbank.
-        OSError: Nicht lesbar.
-    """
     with datei.open("rb") as geoeffnet:
         mime.sniff_file(geoeffnet)
     core.check_size(datei.stat().st_size, datei.name)
     return datei.read_bytes()
 
 
-def _ausgeben(wert: Any, json_out: bool, text: str) -> None:
-    """Eine Ausgabe, zwei Formen — und die Entscheidung faellt an EINER Stelle.
-
-    Menschenlesbar ist die Voreinstellung; `--json` ist fuer den Fall, dass ein
-    anderes Programm zuhoert. Beide zeigen DIESELBEN Daten: Der Text ist eine
-    Darstellung des Werts und keine zweite, gekuerzte Auskunft.
-    """
-    if json_out:
-        typer.echo(json_modul.dumps(wert, indent=2, ensure_ascii=False, default=str))
-    else:
-        typer.echo(text)
-
-
 def _betriebsfehler(fehler: BaseException) -> None:
-    """Meldet einen Betriebsfehler und beendet mit Code 1.
-
-    Auf die FEHLERausgabe und nicht auf die Standardausgabe: Wer `mineru-ocr
-    markdown … > datei.md` schreibt, soll die Meldung sehen und nicht in der
-    Datei haben.
-    """
     typer.echo(f"{type(fehler).__name__}: {fehler}", err=True)
     raise typer.Exit(code=1)
-
-
-def _daemon_zeile(lebt: bool | None) -> str:
-    """Die Daemon-Angabe von `status`; `None` heisst „nicht lesbar“, nicht „aus“."""
-    if lebt is None:
-        return "unbekannt"
-    return "laeuft" if lebt else "LAEUFT NICHT"
 
 
 @app.command()
@@ -248,7 +128,7 @@ def daemon(
     """
     # Erst hier importiert und nicht oben: `daemon` zieht den ganzen
     # Verarbeitungsweg nach — Procrastinate-Worker, RunPod-Zugang, pypdfium2.
-    # Wer `mineru-ocr status` aufruft, soll das nicht laden muessen.
+    # Der Dateiaufruf soll das nicht laden muessen.
     from . import daemon as daemon_modul
 
     try:
@@ -262,548 +142,112 @@ def daemon(
     raise typer.Exit(code=daemon_modul.main(einstellung, queues=queues or None))
 
 
-@app.command()
-def ocr(
-    paths: Annotated[list[Path], typer.Argument(help="Dateien oder Verzeichnisse.")],
-    glob: Annotated[str, typer.Option(help="Welche Dateien in Verzeichnissen.")] = "**/*",
-    json_out: Annotated[bool, typer.Option("--json", help="Maschinenlesbar ausgeben.")] = False,
-    tier: Annotated[
-        str | None,
-        typer.Option(
-            click_type=click.Choice(sorted(GUELTIGE_STUFEN)),
-            help="Stufe, mit der MinerU liest; ohne Angabe die Voreinstellung.",
-        ),
-    ] = None,
-    ocr_mode: Annotated[
-        str | None,
-        typer.Option(
-            click_type=click.Choice(sorted(GUELTIGE_OCR_MODI)),
-            help="Woher der Text kommt; ohne Angabe die Voreinstellung.",
-        ),
-    ] = None,
-    image_analysis: Annotated[
-        bool | None,
-        typer.Option(
-            "--image-analysis/--no-image-analysis",
-            help="Bilder und Diagramme beschreiben lassen (nur in `advanced`); "
-            "ohne Angabe die Voreinstellung.",
-        ),
-    ] = None,
+@_lese_app.command()
+def lesen(
+    paths: Annotated[list[Path], typer.Argument(help="Dateien oder Verzeichnisse.", metavar="PATH…")],
+    temporary: Annotated[bool, typer.Option("-t", help="Text in eine temporaere Datei schreiben; deren Pfad ausgeben.")] = False,
+    out: Annotated[Path | None, typer.Option("-o", help="Text in diese UTF-8-Datei schreiben; deren Pfad ausgeben.")] = None,
+    timeout: Annotated[float | None, typer.Option(help="Wartefrist je Dokument in Sekunden; ohne Angabe unbegrenzt.")] = None,
+    tier: Annotated[str | None, typer.Option(click_type=click.Choice(sorted(GUELTIGE_STUFEN)), help="MinerU-Stufe fuer neue Dokumente.")] = None,
+    ocr_mode: Annotated[str | None, typer.Option(click_type=click.Choice(sorted(GUELTIGE_OCR_MODI)), help="Textquelle fuer neue Dokumente.")] = None,
+    image_analysis: Annotated[bool | None, typer.Option("--image-analysis/--no-image-analysis", help="Bildanalyse fuer neue Dokumente.")] = None,
 ) -> None:
-    """Liest Dateien, schickt sie ab und kehrt sofort zurueck. Blockiert nicht.
+    """Schickt Dokumente ab, wartet und schreibt den Volltext auf stdout.
 
-    `--tier`, `--ocr-mode` und `--image-analysis/--no-image-analysis` sind die
-    Lese-Einstellungen dieses Laufs, fuer jede Datei; ohne Angabe gelten die
-    Voreinstellungen (`advanced`, `ocr`, Bildanalyse an). Sie gelten nur fuer
-    Dateien, die dieser Lauf einreiht: Eine mit Ergebnis oder eine, die schon
-    unterwegs ist, behaelt ihre. Bei Dateien, die MinerU als ganzes Dokument liest
-    (Office, OpenDocument, RTF, EPUB, OFD, HTML, MHTML), wirken sie nicht. Womit ein
-    Dokument gelesen wurde, zeigt `show`.
+    Treffer aus der Datenbank brauchen keinen Daemon. Neue oder offene Dateien
+    brauchen einen frischen Herzschlag; ohne ihn wird nichts eingereiht.
+    Mehrere Dateien erhalten je eine Pfad-Ueberschrift; -t/-o schreiben alle
+    Texte in eine Datei. Meldungen und Gruende stehen auf stderr.
 
-    Die Kommandozeile ist die einzige, die Pfade kennt: Sie liest die Dateien (in
-    Verzeichnissen ueber ein Muster), hasht sie und nennt in der Ausgabe je Datei
-    Pfad, Hash, Zustand und ob dieser Aufruf sie eingereiht hat. Mit `--json` sind
-    das die `documents`, dazu die `skipped`: die uebersprungenen Dateien samt Grund.
-    Ruft je Datei `OCRClient.ocr_start`.
-
-    In Verzeichnissen werden nicht unterstuetzte und zu grosse Dateien
-    UEBERSPRUNGEN und gezaehlt, statt den Lauf abzubrechen. Eine ausdruecklich
-    genannte Datei dagegen wird mit Grund gemeldet — wer sie beim Namen nennt,
-    meint sie —, die uebrigen werden trotzdem eingereiht, und das Kommando endet
-    mit Exit-Code 1.
-
-    Wiederholtes Aufrufen auf demselben Verzeichnis ist der vorgesehene Gebrauch,
-    kein Missbrauch: Ein Dokument, zu dem es ein Ergebnis gibt (auch `failed`), oder
-    das schon unterwegs ist, wird nicht angefasst.
-
-    Bricht der Lauf mittendrin ab, steht auf stdout, was bis dahin eingereiht ist.
-    Bei einem Betriebsfehler (Datenbank weg) endet das Kommando mit Exit-Code 1, und
-    die Meldung des Abbruchs steht auf stderr; Exit-Code 1 mit Ausgabe heisst also
-    nicht immer „einzelne Dateien uebersprungen, der Rest eingereiht". Bei Strg-C
-    endet es, wie typer es fuer einen Abbruch vorsieht, mit Exit-Code 130.
-
-    Laeuft kein Daemon, wird trotzdem eingereiht: Abschicken haengt nicht vom
-    Daemon ab, die Jobs liegen in der Datenbank, bis einer startet. Die Warnung
-    steht auf stderr (einmal), und das Kommando endet deshalb nicht mit einem
-    Fehler. Den Daemon startet der Betreiber (`mineru-ocr daemon`), das Kommando
-    tut es nicht.
+    Exit-Codes: 0 Erfolg (auch empty), 1 Betriebs-/Dateifehler, 2 Aufruffehler,
+    3 failed/input_error, 4 Wartefrist abgelaufen, 5 kein laufender Daemon,
+    130 Strg-C. Vorrang bei mehreren: 1 vor 5 vor 4 vor 3 vor 0.
     """
-    dokumente: list[dict[str, Any]] = []
-    uebersprungen: list[dict[str, str]] = []
-    ausdruecklich_fehlgeschlagen = False
-    betriebsfehler: MineruOcrError | None = None
-
-    try:
-        with OCRClient(preflight=False) as klient:
-            for pfad in paths:
-                ausdruecklich = not pfad.is_dir()
-                kandidaten = (
-                    [pfad]
-                    if ausdruecklich
-                    else [d for d in sorted(pfad.glob(glob)) if d.is_file()]
-                )
-                for datei in kandidaten:
-                    try:
-                        gereicht = klient.ocr_start(
-                            _lesen(datei),
-                            tier=tier,
-                            ocr_mode=ocr_mode,
-                            image_analysis=image_analysis,
-                        )
-                    except (UnsupportedTypeError, TooLargeError, OSError) as fehler:
-                        grund = _grund(fehler)
-                        uebersprungen.append(
-                            {"path": str(datei), "reason": grund, "detail": str(fehler)}
-                        )
-                        if ausdruecklich:
-                            # Eine ausdruecklich genannte Datei wird MIT GRUND
-                            # gemeldet; die uebrigen laufen weiter.
-                            typer.echo(f"{datei}: {fehler}", err=True)
-                            ausdruecklich_fehlgeschlagen = True
-                        continue
-                    dokumente.append(
-                        {
-                            "path": str(datei),
-                            "sha256": str(gereicht),
-                            # Offen (eingereiht oder schon unterwegs) hat keinen
-                            # Endzustand: `null`, kein erfundenes Wort.
-                            "status": gereicht.status.value
-                            if gereicht.status is not None
-                            else None,
-                            "queued": gereicht.queued,
-                        }
-                    )
-    except MineruOcrError as fehler:
-        betriebsfehler = fehler
-    finally:
-        # AUCH bei einem Abbruch mitten im Lauf (Betriebsfehler, Strg-C): Was
-        # bis dahin eingereiht ist, steht in der Datenbank, und die Zuordnung von
-        # Pfad zu Hash ist der Zweck dieser Ausgabe.
-        if betriebsfehler is None or dokumente or uebersprungen:
-            _ocr_ausgeben(dokumente, uebersprungen, json_out)
-    if betriebsfehler is not None:
-        _betriebsfehler(betriebsfehler)
-    if ausdruecklich_fehlgeschlagen:
-        raise typer.Exit(code=1)
-
-
-def _ocr_ausgeben(
-    dokumente: list[dict[str, Any]],
-    uebersprungen: list[dict[str, str]],
-    json_out: bool,
-) -> None:
-    """Die Ausgabe von `ocr`: Daten auf stdout, die Zaehlzeile auf stderr."""
-    if json_out:
-        typer.echo(
-            json_modul.dumps(
-                {"documents": dokumente, "skipped": uebersprungen},
-                indent=2,
-                ensure_ascii=False,
-            )
-        )
-    else:
-        for eintrag in dokumente:
-            typer.echo(
-                f"{eintrag['sha256']}  {eintrag['status'] or 'offen':<12} "
-                f"{'eingereiht' if eintrag['queued'] else 'nicht eingereiht':<16} "
-                f"{eintrag['path']}"
-            )
-    eingereiht = sum(1 for e in dokumente if e["queued"])
-    gruende: dict[str, int] = {}
-    for eintrag in uebersprungen:
-        gruende[eintrag["reason"]] = gruende.get(eintrag["reason"], 0) + 1
-    typer.echo(
-        f"{len(dokumente)} Dokumente, davon {eingereiht} eingereiht"
-        + (
-            f"; {len(uebersprungen)} uebersprungen ("
-            + ", ".join(f"{grund}: {anzahl}" for grund, anzahl in sorted(gruende.items()))
-            + ")"
-            if uebersprungen
-            else ""
-        ),
-        err=True,
-    )
-
-
-_GANZDOKUMENT_MIMES: Final = frozenset(
-    typ.mime for typ in mime.DocumentType if typ.is_whole_document
-)
-"""Die Typen, bei denen die Lese-Einstellungen nicht wirken (Mineroo#17)."""
-
-
-def _lesung_zeigen(angaben: dict[str, Any]) -> str:
-    """Version und bestellte Lese-Einstellungen, lesbar: fuer `show` und `status`.
-
-    Traegt die Zeile keine Einstellungen, sagt die Ausgabe warum, soweit sie es
-    weiss: Bei einem Ganzdokument-Format wirken sie nicht und werden deshalb nicht
-    gespeichert (Mineroo#17); sonst gab es keine Eingabe, an der sie standen.
-    `status` kennt den Typ nicht und sagt nur, dass keine gespeichert sind."""
-    teile = [f"MinerU {angaben['mineru_version'] or 'unbekannt'}"]
-    if angaben["tier"]:
-        teile += [
-            angaben["tier"],
-            angaben["ocr_mode"],
-            f"Bildanalyse {'an' if angaben['image_analysis'] else 'aus'}",
-        ]
-    elif angaben.get("mime") in _GANZDOKUMENT_MIMES:
-        teile.append("Einstellungen wirken bei diesem Format nicht")
-    else:
-        teile.append("ohne gespeicherte Einstellungen")
-    return ", ".join(teile)
-
-
-def _grund(fehler: BaseException) -> str:
-    """Der Grund einer uebersprungenen Datei, als Schluessel fuer Zaehler und JSON."""
-    if isinstance(fehler, UnsupportedTypeError):
-        return "nicht_unterstuetzter_typ"
-    if isinstance(fehler, TooLargeError):
-        return "zu_gross"
-    return "nicht_lesbar"
-
-
-@app.command()
-def status(
-    json_out: Annotated[bool, typer.Option("--json", help="Maschinenlesbar ausgeben.")] = False,
-) -> None:
-    """Zeigt den Gesamtzustand: Endzustaende, Offenes, Jobs, Daemon, Guthaben.
-
-    Alles davon ist abgeleitet und nirgends gespeichert. Offen (`open`) sind die
-    Dokumente, deren Eingabe steht und die noch kein Ergebnis haben; wie viele
-    Jobs warten oder laufen, zeigt die Zeile darunter. Weist ausserdem offene
-    Aufruest-Faelle aus — das ist der Weg, auf dem ein zu grosses Dokument zu
-    einem Aufgaben-Eintrag wird: Der Bericht zeigt ihn, der Mensch legt ihn an.
-
-    Kontostand und Worker-Liste stecken hier mit drin und haben KEINE eigenen
-    Kommandos. Sie sind Teil der Antwort auf „wie steht es gerade?", und wer sie
-    einzeln braucht, nimmt den Python-Weg (`client.credit()`, `client.workers()`).
-    """
-    try:
-        with OCRClient(preflight=False) as klient:
-            uebersicht = klient.status()
-    except MineruOcrError as fehler:
-        _betriebsfehler(fehler)
-
-    zeilen = [
-        "Dokumente:  "
-        + "  ".join(
-            f"{name}={anzahl}" for name, anzahl in uebersicht["documents"].items()
-        ),
-        # Womit gelesen wurde (Mineroo#14): je Version und bestellten
-        # Lese-Einstellungen die Zahl der Dokumente mit Ergebnis `done` oder `empty`.
-        *(
-            f"Gelesen:    {eintrag['documents']}  {_lesung_zeigen(eintrag)}"
-            for eintrag in uebersicht["readings"]
-        ),
-        "Jobs:       "
-        + "  ".join(f"{name}={anzahl}" for name, anzahl in uebersicht["jobs"].items()),
-        f"Daemon:     {_daemon_zeile(uebersicht['daemon_alive'])}",
-        f"Guthaben:   {uebersicht['balance'] if uebersicht['balance'] is not None else 'unbekannt'}",
-    ]
-    if uebersicht["upgrade_cases"]:
-        # Der Weg, auf dem ein zu grosses Dokument zu einem Aufgaben-Eintrag
-        # wird: Der Bericht zeigt ihn, der Mensch legt ihn an.
-        zeilen.append(
-            f"OFFENE AUFRUEST-FAELLE: {uebersicht['upgrade_cases']} — bitte je "
-            f"einen Aufgaben-Eintrag anlegen (`mineru-ocr show <hash>` zeigt den "
-            f"Hinweis)."
-        )
-    if uebersicht["daemon_alive"] is False:
-        zeilen.append(
-            "Es laeuft kein Daemon — eingereihte Jobs bleiben liegen. "
-            "Starten mit `mineru-ocr daemon`."
-        )
-    _ausgeben(uebersicht, json_out, "\n".join(zeilen))
-
-
-@app.command()
-def show(
-    target: Annotated[str, typer.Argument(help="Hash oder Pfad.")],
-    json_out: Annotated[bool, typer.Option("--json", help="Maschinenlesbar ausgeben.")] = False,
-    raw: Annotated[bool, typer.Option("--raw", help="Die vollstaendige Antwort als JSON ausgeben.")] = False,
-) -> None:
-    """Zeigt, wo ein Dokument steht: Endzustand, oder offen samt seinem Job.
-
-    Ruft `OCRClient.document` und laedt dabei `raw` nicht. Der Job-Teil ist die
-    Antwort auf „warum passiert nichts?" — er zeigt, ob ein offenes Dokument
-    wartet, laeuft, wie oft es schon versucht wurde, oder ob sein Job (der,
-    dessen Kennung an der Eingabe steht) endete, ohne ein Ergebnis zu schreiben
-    (dann hilft `retry`).
-
-    `--raw` gibt die vollstaendige Antwort aus (`OCRClient.get(...).to_dict(
-    raw=True)`), immer als JSON: die Angaben und unter `raw` alles, was MinerU
-    lieferte. Ein offenes Dokument hat noch keine; das Kommando sagt es auf
-    stderr und endet mit Exit-Code 1. Ein unbekannter Hash endet ebenso.
-    """
-    if raw:
-        try:
-            with OCRClient(preflight=False) as klient:
-                vollstaendig = klient.get(_ziel(target)).to_dict(raw=True)
-        except MineruOcrError as fehler:
-            _betriebsfehler(fehler)
-        _ausgeben(vollstaendig, True, "")
-        return
-
-    try:
-        with OCRClient(preflight=False) as klient:
-            angaben = klient.document(_ziel(target)).to_dict()
-    except MineruOcrError as fehler:
-        _betriebsfehler(fehler)
-
-    zeilen = [
-        f"{angaben['sha256']}",
-        f"  Zustand:   {angaben['status'] or 'offen'}   Phase: {angaben['phase']}",
-        f"  Job:       {angaben['job']}",
-    ]
-    if angaben["status"] is not None:
-        # Ein Ergebnis: seine Angaben. Ein offenes Dokument hat keine Zeile.
-        zeilen.insert(
-            1,
-            f"  Typ:       {angaben['mime'] or 'unbekannt'}  "
-            f"{angaben['size_bytes'] if angaben['size_bytes'] is not None else '?'} Byte"
-            + (f"  {angaben['page_count']} Seiten" if angaben["page_count"] else ""),
-        )
-        if angaben["error"]:
-            zeilen.append(f"  Fehler:    {angaben['error']}")
-        if angaben["mineru_version"] or angaben["tier"]:
-            # Womit gelesen wurde: die gemeldete Version und die bestellten
-            # Lese-Einstellungen (Mineroo#14).
-            zeilen.append(f"  Gelesen:   {_lesung_zeigen(angaben)}")
-        if angaben["image_tag_at_submit"]:
-            zeilen.append(f"  Image:     {angaben['image_tag_at_submit']}")
-        for vermerk in angaben["notes"]:
-            zeilen.append(f"  Vermerk:   {vermerk}")
-    _ausgeben(angaben, json_out, "\n".join(zeilen))
-
-
-@app.command()
-def wait(
-    targets: Annotated[list[str], typer.Argument(help="Hashes oder Pfade.")],
-    timeout: Annotated[float | None, typer.Option(help="Sekunden fuer alle zusammen; ohne Angabe unbegrenzt.")] = None,
-    json_out: Annotated[bool, typer.Option("--json", help="Je Dokument eine JSON-Zeile.")] = False,
-) -> None:
-    """Wartet, bis die Dokumente endgueltig sind, und nennt jedes, sobald es das ist.
-
-    Ruft `OCRClient.as_completed`: Je Dokument steht eine Zeile auf stdout, sobald
-    es endgueltig ist (`HASH: ZUSTAND`, mit `--json` eine JSON-Zeile mit seinen
-    Angaben, ohne `raw`). Die Zeilen kommen in der Reihenfolge, in der die
-    Dokumente fertig werden; war ein Ziel ein Pfad, nennt seine Zeile ihn deshalb
-    mit (`HASH: ZUSTAND  PFAD`, in JSON `paths`, leer fuer ein Ziel, das ein Hash
-    war). Ein gescheitertes beendet das Warten auf die uebrigen nicht. Die Frist
-    gilt fuer alle zusammen; nach ihrem Ablauf nennt stderr die noch offenen.
-    Frist und Strg-C beenden nur das Warten, kein Job wird angefasst. Ohne Frist
-    wartet `wait`, bis die Datenbank zurueck ist, wenn sie unterwegs wegbricht —
-    auch wenn sie geloescht oder der Zugang entzogen wurde, denn ein
-    gescheitertes Verbinden traegt keinen SQLSTATE. Deshalb im Zweifel
-    `--timeout` setzen.
-
-    Exit-Code: 0, wenn alle `done` oder `empty` sind; 3, wenn eines `failed` oder
-    `input_error` ist; 4, wenn nach Ablauf der Frist noch eines offen ist; 1 bei
-    einem Betriebsfehler (auch ein unbekannter Hash, sofort gemeldet); 2 bei einer
-    Frist, die keine Zahl ab null ist; 130 bei Strg-C. Bei mehreren gilt der
-    schwerste, 1 vor 4 vor 3 vor 0.
-    """
-    try:
-        db.check_wait_timeout(timeout)
-    except ValueError as fehler:
-        raise typer.BadParameter(str(fehler), param_hint="--timeout") from fehler
-    code = 0
-    try:
-        with OCRClient(preflight=False) as klient:
-            pfade: dict[str, list[str]] = {}
-            for target in targets:
-                eintrag = pfade.setdefault(_ziel(target), [])
-                if not HASH_FORM.match(target) and target not in eintrag:
-                    eintrag.append(target)
-            try:
-                for huelle in klient.as_completed(list(pfade), timeout=timeout):
-                    if json_out:
-                        typer.echo(
-                            json_modul.dumps(
-                                {**huelle.to_dict(), "paths": pfade[huelle.sha256]},
-                                ensure_ascii=False,
-                                default=str,
-                            )
-                        )
-                    else:
-                        typer.echo(
-                            "  ".join(
-                                [
-                                    f"{huelle.sha256}: {huelle.status.value}",
-                                    *map(_pfad_zeigen, pfade[huelle.sha256]),
-                                ]
-                            )
-                        )
-                    if not huelle.success:
-                        # Weder ein Erfolg noch ein Fehler DES WERKZEUGS: Es hat
-                        # einwandfrei gearbeitet, das Ergebnis ist nur schlecht.
-                        code = 3
-            except WaitTimeoutError as fehler:
-                # 4 vor 3: Es verlangt eine Handlung (spaeter erneut warten); die
-                # Fehlschlaege stehen ohnehin in den Zeilen.
-                typer.echo(
-                    f"Nach Ablauf der Frist ({timeout} s) noch offen "
-                    f"({len(fehler.pending)}): "
-                    + " ".join(fehler.pending),
-                    err=True,
-                )
-                code = 4
-    except MineruOcrError as fehler:
-        _betriebsfehler(fehler)
-    if code:
-        raise typer.Exit(code=code)
-
-
-@app.command()
-def markdown(
-    target: Annotated[str, typer.Argument(help="Hash oder Pfad.")],
-    out: Annotated[Path | None, typer.Option(help="Zieldatei; ohne Angabe auf die Standardausgabe.")] = None,
-) -> None:
-    """Schreibt das GANZE Dokument in Markdown-Form heraus.
-
-    Ausgegeben wird `OCRWrapper.rendered_markdown`, die Vollmodus-Fassung —
-    also alles, was auf dem Dokument steht, einschliesslich Kopf- und
-    Fusszeilen, Seitenzahlen und Randtexten, die MinerU aus seinem
-    gewoehnlichen Markdown herausfiltert und in denen das Aktenzeichen liegt,
-    dazu die Seitenfussnoten und, war die Bildanalyse an, hinter jedem Bild
-    die Deutung des Modells als eingeklappten Block (`<details>`). Wer das
-    gewoehnliche Markdown will, nimmt den Python-Weg (`huelle["markdown"]`).
-
-    Nur der Text. Seiten und Bloecke, Bilder und die Rohantworten gibt es ueber
-    den Python-Weg (`huelle["middle_json"]`, `huelle.images`, `huelle.raw`) — sie
-    auch noch ueber die Kommandozeile anzubieten hiesse, die Zugangsschicht ein
-    zweites Mal zu bauen, und Binaerdaten haben auf der Standardausgabe ohnehin
-    nichts zu suchen.
-
-    Ist das Dokument nicht erfolgreich terminal, wird NICHTS ausgegeben und der
-    Exit-Code ist 3 (`raise typer.Exit(code=3)`). Fehlte einem Teilstueck die
-    Vollmodus-Fassung, gibt es ebenfalls keinen Text; die Meldung nennt, wo das
-    Bezahlte liegt (`mineru-ocr show ZIEL --raw`), und der Exit-Code ist 1. Einen halben Text auszugeben
-    waere schlimmer als keinen: Er saehe vollstaendig aus.
-    """
-    try:
-        with OCRClient(preflight=False) as klient:
-            huelle = klient.get(_ziel(target))
-            if not huelle.success:
-                typer.echo(
-                    f"{huelle.sha256} steht auf {huelle.status.value} — "
-                    f"es gibt keinen vollstaendigen Text. Was ankam, zeigt "
-                    f"`mineru-ocr show {target}`.",
-                    err=True,
-                )
-                raise typer.Exit(code=3)
-            text = huelle.rendered_markdown
-    except MineruOcrError as fehler:
-        _betriebsfehler(fehler)
-
+    if temporary and out is not None:
+        raise typer.BadParameter("-t und -o schliessen einander aus.")
+    if timeout is not None and (not math.isfinite(timeout) or timeout < 0):
+        raise typer.BadParameter("--timeout muss eine endliche Zahl ab null sein.")
+    kandidaten: list[tuple[Path, bool]] = []
+    for pfad in paths:
+        if pfad.is_dir():
+            kandidaten.extend((d, False) for d in sorted(pfad.rglob("*")) if d.is_file())
+        else:
+            kandidaten.append((pfad, True))
     if out is not None:
-        out.write_text(text, encoding="utf-8")
-        typer.echo(f"{len(text)} Zeichen nach {out} geschrieben.", err=True)
-    else:
-        typer.echo(text)
-
-
-_AUSGANG: Final = {
-    RetryOutcome.RESET: "zurueckgesetzt",
-    RetryOutcome.REQUEUED: "neu eingereiht",
-    RetryOutcome.UNDERWAY: "unterwegs",
-    RetryOutcome.HAS_RESULT: "mit Ergebnis",
-}
-"""Wie `retry` seine Ausgaenge nennt, in dieser Reihenfolge auch in der Summe."""
-
-
-@app.command()
-def retry(
-    target: Annotated[str | None, typer.Argument(help="Hash oder Pfad; ohne Angabe siehe --all.")] = None,
-    all_: Annotated[bool, typer.Option("--all", help="Jedes Dokument ohne gueltiges Ergebnis.")] = False,
-    yes: Annotated[bool, typer.Option("--yes", help="Ohne Rueckfrage ausfuehren.")] = False,
-) -> None:
-    """Bringt Dokumente ohne gueltiges Ergebnis wieder in Gang. KOSTET GELD.
-
-    Mit einem Ziel ruft es `OCRClient.retry`, mit `--all` `OCRClient.retry_all`,
-    das selbst auswaehlt: jedes Dokument ohne gueltiges Ergebnis. Je Dokument:
-    ein gueltiges Ergebnis oder ein wartender oder laufender Job bleibt, wie er
-    ist; ein gescheiterter Job wird zurueckgesetzt; fuer einen abgebrochenen,
-    abgesagten oder fehlenden wird ein neuer eingereiht.
-
-    Jedes zurueckgesetzte oder neu eingereihte Dokument wird vollstaendig neu
-    verarbeitet und neu bezahlt. Das Kommando fragt deshalb vorher nach — ausser
-    mit `--yes` — und nennt danach je Dokument und in Summe, was geschah. Laeuft
-    kein Daemon, warnt es wie `ocr` auf stderr.
-    """
-    if (target is None) == (not all_):
-        typer.echo(
-            "Entweder ein Dokument nennen oder `--all` fuer jedes ohne gueltiges "
-            "Ergebnis. Mit keinem oder beidem waere nicht klar, was gemeint ist.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-
+        if out.is_dir():
+            raise typer.BadParameter("-o braucht eine Datei, kein Verzeichnis.")
+        for datei, _ in kandidaten:
+            if out.resolve() == datei.resolve() or (
+                out.exists() and datei.exists() and out.samefile(datei)
+            ):
+                raise typer.BadParameter("Die Ausgabe darf keine Eingabedatei ueberschreiben.")
+    codes: set[int] = set()
+    texte: list[str] = []
     try:
-        sha256 = _ziel(target) if target is not None else None
-        # VOR der Ausgabe von Geld wird gefragt, ohne Anzahl: Was je Dokument
-        # geschieht, entscheidet erst die Bibliothek, in dem einen Aufruf.
-        gemeint = sha256 if sha256 is not None else "Jedes Dokument ohne gueltiges Ergebnis"
-        typer.echo(
-            f"{gemeint}: Ohne gueltiges Ergebnis und ohne laufenden Job wird es "
-            f"VOLLSTAENDIG NEU VERARBEITET — das kostet Geld.",
-            err=True,
-        )
-        if not yes and not typer.confirm("Fortfahren?", err=True):
-            raise typer.Exit(code=0)
         with OCRClient(preflight=False) as klient:
-            if sha256 is not None:
-                ausgaenge = {sha256: klient.retry(sha256)}
-            else:
-                ausgaenge = klient.retry_all()
-    except MineruOcrError as fehler:
+            for pfad, ausdruecklich in kandidaten:
+                try:
+                    try:
+                        inhalt = _lesen(pfad)
+                    except (UnsupportedTypeError, TooLargeError) as fehler:
+                        typer.echo(f"{_pfad_zeigen(str(pfad))}: uebersprungen: {fehler}", err=True)
+                        if ausdruecklich:
+                            codes.add(1)
+                        continue
+                    try:
+                        huelle = klient.get(hashlib.sha256(inhalt).hexdigest())
+                    except DocumentNotFound:
+                        if not db.worker_heartbeats(klient.conn):
+                            typer.echo(
+                                f"{_pfad_zeigen(str(pfad))}: Es laufen keine Daemons. "
+                                "Start: `mineru-ocr daemon start X` "
+                                "(Verwaltung folgt in #58; derzeit `mineru-ocr daemon`).",
+                                err=True,
+                            )
+                            codes.add(5)
+                            continue
+                        gereicht = klient.ocr_start(
+                            inhalt, tier=tier, ocr_mode=ocr_mode, image_analysis=image_analysis,
+                        )
+                        huelle = klient.wait(str(gereicht), timeout=timeout)
+                    if huelle.status != DocumentStatus.DONE:
+                        typer.echo(
+                            f"{_pfad_zeigen(str(pfad))}: {huelle.status.value}: "
+                            f"{huelle.row.error or 'kein Text im Dokument'}",
+                            err=True,
+                        )
+                        if not huelle.success:
+                            codes.add(3)
+                        continue
+                    text = huelle.rendered_markdown
+                    if len(kandidaten) > 1:
+                        text = f"# Datei: {_pfad_zeigen(str(pfad))}\n\n{text}"
+                    if temporary or out is not None:
+                        texte.append(text)
+                    else:
+                        typer.echo(text)
+                except WaitTimeoutError as fehler:
+                    typer.echo(f"{_pfad_zeigen(str(pfad))}: Wartefrist abgelaufen: {fehler}", err=True)
+                    codes.add(4)
+                except (MineruOcrError, OSError) as fehler:
+                    typer.echo(f"{_pfad_zeigen(str(pfad))}: {type(fehler).__name__}: {fehler}", err=True)
+                    codes.add(1)
+        if texte:
+            text = "\n\n".join(texte)
+            if temporary:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", prefix="mineru-ocr-", suffix=".md", delete=False,
+                ) as ausgabe:
+                    ausgabe.write(text)
+                typer.echo(ausgabe.name)
+            elif out is not None:
+                out.write_text(text, encoding="utf-8")
+                typer.echo(str(out))
+    except (MineruOcrError, OSError) as fehler:
         _betriebsfehler(fehler)
-
-    if not ausgaenge:
-        typer.echo("Nichts zu wiederholen.", err=True)
-        return
-    for sha, ausgang in ausgaenge.items():
-        typer.echo(f"{sha} {_AUSGANG[ausgang]}")
-    anzahl = {ausgang: 0 for ausgang in _AUSGANG}
-    for ausgang in ausgaenge.values():
-        anzahl[ausgang] += 1
-    typer.echo(
-        ", ".join(f"{anzahl[ausgang]} {name}" for ausgang, name in _AUSGANG.items()),
-        err=True,
-    )
-
-
-@app.command()
-def preflight(
-    strict: Annotated[bool, typer.Option(help="Abweichungen als Fehler behandeln.")] = True,
-    json_out: Annotated[bool, typer.Option("--json", help="Maschinenlesbar ausgeben.")] = False,
-) -> None:
-    """Prueft Endpoint, Konto und Daemon. VERAENDERT NICHTS.
-
-    Es gibt in diesem Werkzeug kein Kommando, das eine bezahlte Ressource anlegt
-    oder aendert — nicht abgeschaltet, sondern nicht vorhanden.
-
-    `--strict` ist AN, wie in Python (`OCRClient(strict=True)`). Waere es hier
-    aus, verhielte sich dieselbe Pruefung ueber die Kommandozeile nachsichtiger
-    als aus Python heraus — genau die zwei Wahrheiten, die der Vorspann dieser
-    Datei ausschliesst. Mit `--no-strict` wird dieselbe Abweichung zur Warnung.
-
-    Exit-Code 1 bei einer Abweichung unter `--strict`, sonst 0 mit Warnungen im
-    Bericht.
-    """
-    try:
-        # Ohne Schemapruefung: `preflight` liest weder `documents` noch `inputs`
-        # und darf jederzeit laufen, auch vor `setup`.
-        with OCRClient(preflight=False, strict=strict, schema_check=False) as klient:
-            befund = klient.preflight()
-    except MineruOcrError as fehler:
-        _betriebsfehler(fehler)
-
-    zeilen = [
-        f"{eintrag['bewertung']:<14} {eintrag['punkt']:<20} "
-        f"soll={eintrag['soll']!r}  ist={eintrag['ist']!r}"
-        for eintrag in befund["checks"]
-    ]
-    _ausgeben(befund, json_out, "\n".join(zeilen))
+    for code in (1, 5, 4, 3):
+        if code in codes:
+            raise typer.Exit(code=code)
 
 
 def main() -> None:
