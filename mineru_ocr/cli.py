@@ -11,6 +11,7 @@ Exit-Codes: 0 Erfolg (auch empty), 1 Betriebs-/Dateifehler, 2 Aufruffehler,
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import tempfile
@@ -126,43 +127,46 @@ def setup(
     typer.echo(f"Datenbank {name!r} und Schema stehen.", err=True)
 
 
-@app.command()
-def daemon(
-    dsn: Annotated[str | None, typer.Option(help="Verbindung; sonst die Konfiguration (MINERU_OCR_DB_DSN, config.toml).")] = None,
-    concurrency: Annotated[int | None, typer.Option(help="Gleichzeitig betreute Dokumente; sonst 24.")] = None,
-    queues: Annotated[list[str] | None, typer.Option(help="Nur diese Queues bedienen (Rueckfall auf zwei Prozesse).")] = None,
+_daemon_app = typer.Typer(no_args_is_help=True)
+app.add_typer(_daemon_app, name="daemon", help="Daemons im Hintergrund verwalten.")
+
+
+@_daemon_app.command("start")
+def daemon_start(
+    anzahl: Annotated[int, typer.Argument(min=1, metavar="X")],
+    dsn: Annotated[str | None, typer.Option()] = None,
+    concurrency: Annotated[int | None, typer.Option(min=1)] = None,
 ) -> None:
-    """DER EXEKUTOR. Laeuft im Vordergrund, bis Strg-C oder SIGTERM kommt.
-
-    Das ist der eigene Prozess, in dem die Arbeit stattfindet — der einzige, der
-    mit RunPod spricht. Alles andere reiht nur ein und liest.
-
-    Er laeuft im VORDERGRUND und gibt sein Log auf die Konsole. Kein Zweig in den
-    Hintergrund, kein Autostart: Erst wird zugesehen, wie er sich im echten
-    Bestandslauf verhaelt, bevor er ein Prozess wird, den man vergisst
-    (Plan 5.3).
-
-    Ohne `--queues` startet er zwei Worker in einem Prozess — OCR und Wartung
-    getrennt, damit der Waechter nicht verhungert, wenn alle OCR-Plaetze belegt
-    sind. Diese Konstruktion ist in der Procrastinate-Doku weder erlaubt noch
-    verboten (Feature-Verifikation Punkt 1); traegt sie im Test nicht, ist
-    `--queues ocr` in einem und `--queues maintenance` in einem zweiten Prozess
-    der dokumentierte Rueckfall.
-    """
-    # Erst hier importiert und nicht oben: `daemon` zieht den ganzen
-    # Verarbeitungsweg nach — Procrastinate-Worker, RunPod-Zugang, pypdfium2.
-    # Der Dateiaufruf soll das nicht laden muessen.
-    from . import daemon as daemon_modul
-
+    """Startet X vollstaendige Daemons mit je eigenem Protokoll."""
+    from . import daemons
     try:
-        einstellung = Settings.load(db_dsn=dsn, ocr_concurrency=concurrency)
-        # Der Daemon spricht RunPod an: Endpoint und Schluessel VOR dem Start, nicht
-        # erst beim ersten Job.
-        einstellung.require_endpoint_id()
-        einstellung.require_api_key()
-    except MineruOcrError as fehler:
+        daten = daemons.start(Settings.load(db_dsn=dsn, ocr_concurrency=concurrency), anzahl)
+        typer.echo(json.dumps({"started": len(daten), "daemons": daten}, indent=2))
+    except (MineruOcrError, OSError, ValueError) as fehler:
         _betriebsfehler(fehler)
-    raise typer.Exit(code=daemon_modul.main(einstellung, queues=queues or None))
+
+
+@_daemon_app.command("list")
+def daemon_list(dsn: Annotated[str | None, typer.Option()] = None) -> None:
+    """Zeigt lokale Daemons, OCR-Plaetze und die OCR-Warteschlange als JSON."""
+    from . import daemons
+    try:
+        typer.echo(json.dumps(daemons.status(Settings.load(db_dsn=dsn)), indent=2))
+    except (MineruOcrError, OSError) as fehler:
+        _betriebsfehler(fehler)
+
+
+@_daemon_app.command("stop")
+def daemon_stop(
+    anzahl: Annotated[int, typer.Argument(min=1, metavar="X")],
+    dsn: Annotated[str | None, typer.Option()] = None,
+) -> None:
+    """Beendet bis zu X Daemons ordentlich, die am wenigsten belegten zuerst."""
+    from . import daemons
+    try:
+        typer.echo(json.dumps(daemons.stop(Settings.load(db_dsn=dsn), anzahl), indent=2))
+    except (MineruOcrError, OSError) as fehler:
+        _betriebsfehler(fehler)
 
 
 @_lese_app.command()
@@ -219,7 +223,7 @@ def lesen(
                             typer.echo(
                                 f"{_pfad_zeigen(str(pfad))}: Es laufen keine Daemons. "
                                 "Start: `mineru-ocr daemon start X` "
-                                "(Verwaltung folgt in #58; derzeit `mineru-ocr daemon`).",
+                                "und Kontrolle: `mineru-ocr daemon list`.",
                                 err=True,
                             )
                             codes.add(5)

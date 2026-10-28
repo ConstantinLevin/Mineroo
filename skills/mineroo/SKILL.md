@@ -134,12 +134,14 @@ viele Dokumente mit welchen gelesen sind, zeigt `client.status()`.
 
 ## Der Daemon
 
-Fertig wird ein neues Dokument nur, wenn ein `mineru-ocr daemon` läuft: Er ist
+Fertig wird ein neues Dokument nur, wenn ein Daemon läuft: Er ist
 der einzige Prozess, der Dokumente an RunPod schickt. Die CLI verweigert ohne
 frischen Herzschlag das Einreihen und endet mit Exit 5; Treffer gibt sie weiter
-aus. Die Meldung nennt `mineru-ocr daemon start X`, die Verwaltung aus #58.
-Bis dahin startet der Betreiber den unveränderten Vordergrundprozess mit
-`mineru-ocr daemon`. Der Dateiaufruf startet nie selbst einen.
+aus. Mit `mineru-ocr daemon start X` startet der Betreiber X Hintergrundprozesse,
+mit `mineru-ocr daemon stop X` beendet er bis zu X ordentlich (die am wenigsten
+belegten zuerst), mit `mineru-ocr daemon list` sieht er eingerücktes JSON zu
+Anzahl, belegten/verfügbaren OCR-Plätzen, Warteschlange und Protokollpfaden.
+Der Vordergrund-Aufruf entfällt. Der Dateiaufruf startet nie selbst einen.
 
 Die Bibliothek (`ocr_start`, `retry`) kann weiterhin ohne Daemon einreihen und
 warnt im Logger `mineru_ocr.client`; die Dokumente bleiben offen, bis einer

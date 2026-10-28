@@ -150,7 +150,9 @@ Norwegen, denn dort gilt die DSGVO —, und die zulässige Liste ist der Sollwer
 
 ```bash
 mineru-ocr setup                 # Schema anlegen; mehrfach aufrufbar
-mineru-ocr daemon                # eigenes Fenster: Exekutor im Vordergrund
+mineru-ocr daemon start 3        # drei Exekutoren im Hintergrund
+mineru-ocr daemon list           # JSON: Auslastung und Warteschlange
+mineru-ocr daemon stop 2         # zwei ordentlich beenden
 mineru-ocr dokument.pdf          # abschicken, warten, Volltext auf stdout
 mineru-ocr dokument.pdf -t       # Volltext in temporaere Datei; Pfad auf stdout
 mineru-ocr dokument.pdf -o text.md
@@ -162,8 +164,7 @@ Kopf- und Fußzeilen, Randtexten, Fußnoten und Bildbeschreibungen. Ein Treffer
 kommt direkt aus Postgres, ohne neuen Lauf und auch ohne Daemon. Die CLI fragt
 RunPod nicht ab und startet keinen Daemon. Braucht eine Datei Verarbeitung und
 läuft kein Daemon, wird sie nicht eingereiht (Exit-Code **5**). Die Meldung nennt
-`mineru-ocr daemon start X`, die künftige Verwaltung aus #58; bis dahin startet
-man ihn unverändert mit `mineru-ocr daemon` im eigenen Fenster.
+`mineru-ocr daemon start X`; `mineru-ocr daemon list` zeigt die Auslastung.
 
 Mehrere Dateien und Ordner liefern den Text in Eingabereihenfolge, in Ordnern
 rekursiv nach Pfad sortiert. Jeder Text eines Stapels beginnt mit `# Datei: PFAD`.
@@ -343,8 +344,9 @@ bleiben bis zum Start offen. Für Wiederholungen gilt dieselbe Bibliotheksregel.
 Die CLI wartet synchron: Fehlt für eine Datei noch ein Ergebnis, prüft sie vor
 dem Abschicken den Herzschlag und endet ohne Einreihen mit Exit-Code 5, falls
 kein Daemon läuft. Treffer brauchen keinen Daemon. Weder Bibliothek noch
-Dateiaufruf starten selbst einen. Der Betreiber verwendet derzeit unverändert
-`mineru-ocr daemon`; `daemon start X`, `stop X` und `list` folgen in #58.
+Dateiaufruf starten selbst einen. Der Betreiber startet mit
+`mineru-ocr daemon start X`, beendet mit `mineru-ocr daemon stop X` und liest
+die Auslastung mit `mineru-ocr daemon list`. Der Vordergrund-Aufruf entfällt.
 
 Als laufend gilt ein Worker mit einem Herzschlag jünger als 30 Sekunden, gemessen
 an der Datenbankuhr. Eine alte Zeile eines abgestürzten Daemons genügt nicht.
@@ -464,3 +466,38 @@ sind **Vorlagen und Messlatte, keine Bausteine** — `mineru_ocr` wird an ihnen
 gemessen, nicht aus ihnen gepatcht. `scripts/ocr_test.py` ist der Mini-Treiber
 des Doku-Verifikationstests vom 05.08.2026; seine Belege liegen unter
 `artifacts/2026-08-05-doku-verifikationstest/`.
+
+### Kein Autostart
+
+`mineru-ocr daemon start X` startet ausdrücklich X lokale, vom Terminal gelöste
+Prozesse mit je OCR- und Wartungs-Worker. Endpoint, Schlüssel und Schema werden
+vor dem Start geprüft. `--concurrency N` stellt die OCR-Plätze je Prozess ein.
+`mineru-ocr daemon stop X` beendet bis zu X, die am wenigsten belegten zuerst,
+und wartet auf das ordentliche Ende mit `shutdown_graceful_timeout` und der
+bestehenden Wiederholungsregel. Sind weniger da, nennt das JSON `requested`,
+`stopped` und `running_before`. X muss eine ganze Zahl ab 1 sein.
+
+`mineru-ocr daemon list` liefert eingerücktes JSON: `count` zählt Prozesse,
+`daemons` nennt je Prozess `pid`, `occupied`, `available`, `log_path` und den
+Kontrollsocket; `slots` summiert belegte und verfügbare OCR-Plätze.
+`queue.waiting`/`queue.running` zählen OCR-Jobs in Procrastinate (`todo`/`doing`,
+einschließlich für später vorgemerkter Jobs). Ohne Daemon ist `count` null.
+Die Wartungsplätze zählen nicht zur OCR-Auslastung.
+
+Lebende Kontrollsockets im privaten Verzeichnis `/tmp/mineru-UID-DBKENNUNG/`
+identifizieren die lokalen Prozesse; es gibt keine PID-Kartei. Jobbelegung und
+Herzschläge kommen ausschließlich aus Postgres. Ein nicht antwortender oder
+veralteter Prozess zählt nicht; alte Socketdateien nach einem Absturz sind
+bedeutungslos. Das Verzeichnis enthält auch die eigenen `.log`-Dateien je
+Daemon. `list` und `stop` verwalten Daemons auf diesem Rechner für die gewählte
+Datenbank; die OCR-Warteschlange gilt datenbankweit. Nach einem Rechnerneustart
+startet nichts von selbst. Weder Bibliothek noch Dateiaufruf starten Daemons.
+
+Die DB-Kennung besteht aus PostgreSQLs Clusterkennung (`system_identifier`) und
+der Datenbank-OID; IPv4, IPv6 und Unix-Socket führen zum selben Verzeichnis.
+Die Datenbankrolle braucht dafür `EXECUTE` auf `pg_control_system()` (bei einer
+Superuser-Rolle bereits vorhanden). Beim Wechsel von der früheren,
+adressabhängigen Kennung zuerst die laufenden Daemons mit der alten Version
+stoppen und danach mit der neuen Version starten.
+Nach einer Stop-Bestätigung wartet `stop` auf das Prozessende (einschließlich
+Zombie-Zustand), auch wenn die Ereignisschleife keinen Socket mehr beantwortet.

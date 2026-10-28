@@ -87,15 +87,17 @@ fremde und zu große Dateien in Ordnern werden mit Grund übersprungen.
 
 ```bash
 mineru-ocr setup
-mineru-ocr daemon       # eigenes Fenster, unverändert im Vordergrund
+mineru-ocr daemon start 3  # drei Hintergrundprozesse
+mineru-ocr daemon list     # JSON: Daemons, Plaetze, Warteschlange
+mineru-ocr daemon stop 2   # die zwei am wenigsten belegten ordentlich beenden
 mineru-ocr scan.pdf     # abschicken, warten, Volltext ausgeben
 mineru-ocr ~/Scans -o texte.md --timeout 600
 ```
 
 `setup` und `daemon` bleiben Betriebskommandos. Die bisherigen Kommandos `ocr`,
 `status`, `show`, `wait`, `markdown`, `retry` und `preflight` entfallen; diese
-Funktionen bleiben in der Bibliothek. `daemon start X`, `stop X` und `list` sind
-#58 und nicht Teil von #55. Auch ein Dateiaufruf startet keinen Daemon.
+Funktionen bleiben in der Bibliothek. `daemon start X`, `daemon stop X` und
+`daemon list` verwalten die Hintergrundprozesse (#58). Auch ein Dateiaufruf startet keinen Daemon.
 
 Nur `setup` legt das Schema an. Daemon und jeder Client prüfen es beim
 Öffnen rein lesend (`db.check_schema`, im `AsyncOCRClient` `db.check_schema_async`;
@@ -234,7 +236,7 @@ Die CLI (`mineru-ocr PATH…`) wartet synchron und prüft für eine Datei ohne
 Ergebnis **vor** dem Einreihen `db.worker_heartbeats`. Fehlt ein frischer
 Herzschlag, reiht sie diese Datei nicht ein, wartet auch auf bereits offene
 nicht und meldet Exit-Code 5. Die Meldung nennt `mineru-ocr daemon start X`
-(Verwaltung in #58); derzeit startet man unverändert `mineru-ocr daemon`.
+und zur Kontrolle `mineru-ocr daemon list`.
 Treffer aus der Datenbank brauchen keinen Daemon. Beide Wege starten nie selbst
 einen; den startet der Betreiber.
 
@@ -994,3 +996,29 @@ Single-context: ein `GLOSSARY.md` an der Wurzel, ADRs in `docs/adr/`, sobald die
 ### External peers
 
 Modus `auto`: Claude-Peer auf `claude-opus-5-5` mit Effort `high`, Codex-Peer mit Standardmodell und Effort `high`. Siehe `docs/agents/cross-model.json`.
+
+### Kein Autostart
+
+`mineru-ocr daemon start X` startet ausdrücklich X lokale, vom Terminal gelöste
+Prozesse mit je OCR- und Wartungs-Worker. Endpoint, Schlüssel und Schema werden
+vor dem Start geprüft. `--concurrency N` stellt die OCR-Plätze je Prozess ein.
+`mineru-ocr daemon stop X` beendet bis zu X, die am wenigsten belegten zuerst,
+und wartet auf das ordentliche Ende mit `shutdown_graceful_timeout` und der
+bestehenden Wiederholungsregel. Sind weniger da, nennt das JSON `requested`,
+`stopped` und `running_before`. X muss eine ganze Zahl ab 1 sein.
+
+`mineru-ocr daemon list` liefert eingerücktes JSON: `count` zählt Prozesse,
+`daemons` nennt je Prozess `pid`, `occupied`, `available`, `log_path` und den
+Kontrollsocket; `slots` summiert belegte und verfügbare OCR-Plätze.
+`queue.waiting`/`queue.running` zählen OCR-Jobs in Procrastinate (`todo`/`doing`,
+einschließlich für später vorgemerkter Jobs). Ohne Daemon ist `count` null.
+Die Wartungsplätze zählen nicht zur OCR-Auslastung.
+
+Lebende Kontrollsockets im privaten Verzeichnis `/tmp/mineru-UID-DBKENNUNG/`
+identifizieren die lokalen Prozesse; es gibt keine PID-Kartei. Jobbelegung und
+Herzschläge kommen ausschließlich aus Postgres. Ein nicht antwortender oder
+veralteter Prozess zählt nicht; alte Socketdateien nach einem Absturz sind
+bedeutungslos. Das Verzeichnis enthält auch die eigenen `.log`-Dateien je
+Daemon. `list` und `stop` verwalten Daemons auf diesem Rechner für die gewählte
+Datenbank; die OCR-Warteschlange gilt datenbankweit. Nach einem Rechnerneustart
+startet nichts von selbst. Weder Bibliothek noch Dateiaufruf starten Daemons.
