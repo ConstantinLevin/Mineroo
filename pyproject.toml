@@ -53,6 +53,8 @@ dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "mypy>=1.19.1",
+    # Der HTML-Regressionstest liest die Worker-Bytes mit DocVortex' lxml-Parser.
+    "lxml",
 ]
 
 [project.scripts]
@@ -73,6 +75,17 @@ warn_unreachable = true
 # procrastinate, psycopg, httpx und typer liefern eigene Typangaben mit. Fehlen
 # sie einem Paket, wird die Ausnahme hier einzeln und mit Begruendung
 # eingetragen, nie global abgeschaltet — siehe direkt darunter.
+
+[[tool.mypy.overrides]]
+module = ["lxml", "lxml.*"]
+# lxml in der Miniconda-Base liefert keine Typangaben; nur der Regressionstest
+# benutzt es, um die Kodierung wie DocVortex 0.5.16 zu erkennen.
+follow_untyped_imports = true
+
+[[tool.mypy.overrides]]
+module = ["test_mime"]
+# Wie bei PDFium unten bleiben Aufrufe in den untypisierten Parser lokal.
+disallow_untyped_calls = false
 
 [[tool.mypy.overrides]]
 module = ["pypdfium2", "pypdfium2.*"]

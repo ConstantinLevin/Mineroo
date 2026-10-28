@@ -246,6 +246,15 @@ passen; es hat keine Seitenzahl. Die Lese-Einstellungen wirken bei ihm nicht (de
 Worker liest es immer in `flash`): Am Ergebnis stehen keine, und es gibt keinen
 Vermerk über abweichende.
 
+Vor `%PDF-` sind ASCII-Leerraum und vollständige UTF-8-BOMs erlaubt. Entfernt
+wird dieser Vorspann erst im Executor für den Worker; der Hash und die
+gespeicherte Eingabe bleiben die des Originals. Fremde Bytes vor der Kennung
+bleiben abgewiesen. Steht `%PDF-` in den ersten 64 KiB, nennt die Meldung den
+null-basierten Byteversatz als Hinweis zur manuellen Prüfung.
+HTML wird auch in UTF-16LE und UTF-16BE erkannt, jeweils mit oder ohne BOM.
+Der Executor kodiert es für den Worker nach UTF-8 um; Hash, gespeicherte Eingabe
+und die am Ergebnis gemeldete Dateigröße beziehen sich weiter auf die Originalbytes.
+
 Gibt es zu den Bytes schon ein Ergebnis (auch ein `failed`), ist das ein Treffer:
 Es wird nichts angelegt und nichts eingereiht; ein gescheitertes Dokument liest
 nur `retry` neu. `client.retry(h)` bringt ein Dokument ohne gültiges Ergebnis

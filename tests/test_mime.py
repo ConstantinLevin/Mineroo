@@ -9,9 +9,10 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from lxml import html
 
 from mineru_ocr.errors import UnsupportedTypeError
-from mineru_ocr.mime import KOPF_BYTES, DocumentType, sniff_bytes, sniff_file
+from mineru_ocr.mime import KOPF_BYTES, DocumentType, sniff_bytes, sniff_file, worker_bytes
 
 from ganzdokumente import (
     GANZDOKUMENTE,
@@ -48,6 +49,33 @@ KOEPFE: dict[DocumentType, bytes] = {
 # --- Erkennung ------------------------------------------------------------
 
 
+@pytest.mark.parametrize("vorspann", [
+    b" \r\n", b"\xef\xbb\xbf" * 2, b" \t\xef\xbb\xbf\n\xef\xbb\xbf\f\v",
+])
+def test_pdf_nach_harmlosem_vorspann(tmp_path: Path, vorspann: bytes) -> None:
+    """Leerraum und vollstaendige BOMs vor PDF sind kein fremder Typ (#56)."""
+    daten = vorspann + KOEPFE[DocumentType.PDF]
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    assert sniff_bytes(daten) is DocumentType.PDF
+    assert sniff_path(datei) is DocumentType.PDF
+
+
+def test_pdf_hinter_fremdinhalt_wird_mit_versatz_abgewiesen(tmp_path: Path) -> None:
+    """Die PDF-Kennung im Kopf ist nur ein Rettungshinweis, keine Erkennung."""
+    daten = b"\x00\xff\x01" * 1600 + KOEPFE[DocumentType.PDF]
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    for von_der_platte in (False, True):
+        with pytest.raises(UnsupportedTypeError) as fehler:
+            if von_der_platte:
+                sniff_path(datei)
+            else:
+                sniff_bytes(daten)
+        assert "Byte 4800" in str(fehler.value)
+        assert "%PDF-" in str(fehler.value)
+
+
 @pytest.mark.parametrize("typ", list(KOEPFE))
 def test_jeder_unterstuetzte_typ_wird_erkannt(typ: DocumentType, tmp_path: Path) -> None:
     """Je ein Kopf-Fixture ergibt den richtigen Typ — aus Bytes und von der
@@ -58,6 +86,85 @@ def test_jeder_unterstuetzte_typ_wird_erkannt(typ: DocumentType, tmp_path: Path)
     datei = tmp_path / "probe"
     datei.write_bytes(daten)
     assert sniff_path(datei) is typ
+
+
+@pytest.mark.parametrize("kodierung", ["utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize("bom", [False, True])
+@pytest.mark.parametrize("anfang", ["<!DOCTYPE HTML>", "<HtMl lang='de'>"])
+def test_html_in_utf16_wird_am_inhalt_erkannt(
+    tmp_path: Path, kodierung: str, bom: bool, anfang: str,
+) -> None:
+    """Beide Bytefolgen mit und ohne BOM, aber nur mit HTML-Kennung (#56)."""
+    text = " \n" + anfang + "<body>Pr\u00fcfung</body></html>"
+    daten = (("\ufeff" if bom else "") + text).encode(kodierung)
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    assert sniff_bytes(daten) is DocumentType.HTML
+    assert sniff_path(datei) is DocumentType.HTML
+
+
+@pytest.mark.parametrize("kodierung", ["utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize("bom", [False, True])
+@pytest.mark.parametrize("deklaration", [
+    '<meta charset="utf-16">',
+    '<meta charset="utf-16-le">',
+    '<meta charset="utf-16-be">',
+    '<meta http-equiv="Content-Type" content="text/html; charset=utf-16">',
+    '<meta http-equiv="Content-Type" content="text/html; charset=utf-16-le">',
+    '<meta http-equiv="Content-Type" content="text/html; charset=utf-16-be">',
+])
+def test_utf16_html_bleibt_mit_kodierungsdeklaration_beim_worker_lesbar(
+    kodierung: str, bom: bool, deklaration: str,
+) -> None:
+    """Der Worker darf UTF-8 nicht nach einer alten UTF-16-Angabe lesen (#56)."""
+    inhalt = "Pr\u00fcfung \u6f22\u5b57 \U0001f600"
+    text = f"<!DOCTYPE html><html><head>{deklaration}</head><body>{inhalt}</body></html>"
+    original = (("\ufeff" if bom else "") + text).encode(kodierung)
+    gesendet = worker_bytes(original, sniff_bytes(original))
+
+    # DocVortex 0.5.16, native/html/document.py: _html_parser_input reicht
+    # Bytes mit BOM oder Kodierungsdeklaration direkt an diesen Parser durch.
+    # https://github.com/myhloli/DocVortex/blob/v0.5.16/src/docvortex/analyzers/native/html/document.py
+    parser = html.HTMLParser(
+        recover=True, no_network=True, remove_comments=False, huge_tree=False,
+        encoding=None,
+    )
+    dokument = html.document_fromstring(gesendet, parser=parser)
+    assert dokument.text_content() == inhalt
+    assert gesendet.decode("utf-8-sig") == text
+
+
+@pytest.mark.parametrize("daten", [
+    b"\xef%PDF-", b"\xbb\xbf%PDF-", b"\x00%PDF-", b"Text %PDF-",
+    b"\xff\xfe", b"\xfe\xff", b"<\x00h\x00t\x00",
+    "<htmlish>".encode("utf-16-le"), "<html=oops>".encode("utf-16-be"),
+    "Text <html>".encode("utf-16-le"), "Text".encode("utf-16"),
+    "<html></html>".encode("utf-32"),
+    b" \x89PNG\r\n\x1a\n", b"\xef\xbb\xbfGIF89a",
+])
+def test_toleranter_anfang_laesst_fremde_dateien_nicht_durch(
+    daten: bytes, tmp_path: Path,
+) -> None:
+    """Keine Teil-BOMs, fremden Vorspaenne oder Kennungen mitten im Text."""
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    with pytest.raises(UnsupportedTypeError):
+        sniff_bytes(daten)
+    with pytest.raises(UnsupportedTypeError):
+        sniff_path(datei)
+
+
+@pytest.mark.parametrize("kodierung", ["utf-16-le", "utf-16-be"])
+def test_html_utf16_mit_surrogatpaar_an_der_kopfgrenze(
+    tmp_path: Path, kodierung: str,
+) -> None:
+    """Die Lesegrenze darf ein gueltiges Zeichen halbieren, nicht die Erkennung."""
+    text = "<html>" + "a" * (KOPF_BYTES // 2 - 7) + "\U0001f600</html>"
+    daten = text.encode(kodierung)
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    assert sniff_bytes(daten) is DocumentType.HTML
+    assert sniff_path(datei) is DocumentType.HTML
 
 
 @pytest.mark.parametrize(
