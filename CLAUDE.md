@@ -497,7 +497,12 @@ dann nicht liest, endet `input_error` über `errors.ist_dateiabweisung`; dafür
 stehen DocVortex' Fehlertypen der Ganzdokumente in `DATEIABWEISUNG_KENNUNGEN`
 (am Endpoint beobachtet: ein OLE2-Container ohne `WordDocument` endete sonst
 `failed`, `artifacts/2026-10-27-ganzdokumente/`). Ein
-Ganzdokument-Format geht ungeteilt als ein Stück hinaus (unter
+PDF darf nach ASCII-Leerraum und vollständigen UTF-8-BOMs beginnen (#56).
+Nur der Executor entfernt diesen Vorspann für PDFium und den Worker, nach der
+Hashprüfung; Hash, gespeicherte Eingabe und `size_bytes` bleiben die des
+Originals. Fremde Bytes vor `%PDF-` bleiben abgewiesen; steht die Kennung im
+gelesenen Kopf, nennt die Meldung ihren null-basierten Byteversatz als
+Rettungshinweis. Ein Ganzdokument-Format geht ungeteilt als ein Stück hinaus (unter
 `max_payload_bytes`, sonst weist schon das Abschicken es ab) und hat keine
 Seitenzahl, also keinen Seitenvergleich. CSV und TSV tragen keine Kennung und
 bleiben draußen.

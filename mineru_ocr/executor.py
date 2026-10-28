@@ -58,7 +58,7 @@ from .errors import (
     should_run_again,
 )
 from .lesefragen import Lesefragen
-from .mime import sniff_bytes
+from .mime import sniff_bytes, worker_bytes
 from .pdf import PdfReader
 from .runpod import RunPodAccess
 
@@ -440,6 +440,9 @@ async def process_document(
         typ = sniff_bytes(rohbytes)
         art = typ.mime
         ganzdokument = typ.is_whole_document
+        # Erst nach Hashpruefung und Metadaten: Client und DB behalten die
+        # Originalbytes, nur der Weg zum Worker wird normalisiert (#56).
+        worker_daten = worker_bytes(rohbytes, typ)
 
         # --- 2.: zerlegen, absenden, abholen ----------------------------
         # Zuerst wird geprueft, was sich billig ohne RunPod pruefen laesst (eine
@@ -455,11 +458,11 @@ async def process_document(
         # Sie faellt erst beim Schneiden auf (`chunking.iter_chunks` arbeitet
         # traege und halbiert unterwegs), also nach dem Warten.
         if typ.is_pdf:
-            with PdfReader(rohbytes) as leser:
+            with PdfReader(worker_daten) as leser:
                 seiten = leser.page_count
                 seitenzahl = seiten
                 geteilt = chunking.needs_chunking(
-                    size_bytes=len(rohbytes),
+                    size_bytes=len(worker_daten),
                     page_count=seiten,
                     doc_type=typ,
                     settings=settings,
@@ -475,10 +478,10 @@ async def process_document(
                 # liefe man sonst in eine Wand aus 402-Antworten.
                 await wait_for_balance(runpod, settings, lesefragen=lesefragen)
                 def schneiden(erste: int, letzte: int) -> bytes:
-                    # Passt das Original, bleibt es unveraendert. Auch dann kann
+                    # Passt die Worker-Eingabe, bleibt sie unveraendert. Auch dann kann
                     # die Antwort spaeter eine Teilung desselben Plans verlangen.
                     if not geteilt and erste == 0 and letzte == seiten - 1:
-                        return rohbytes
+                        return worker_daten
                     return leser.extract(erste, letzte)
 
                 gerenderte_seiten: list[int] = []

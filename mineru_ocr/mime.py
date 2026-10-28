@@ -51,8 +51,9 @@ brauchen. MHTML ist der laengste Fall: Sein Kopf nennt `multipart/related` oft e
 nach vielen Kopfzeilen, und DocVortex liest dafuer bis 64 KiB
 (`document/filetypes.py`, `has_mhtml_header`). RTF darf nach bis zu 64
 Leerzeichen beginnen und wird in den ersten 128 Bytes gesucht (`RTF_KOPF_BYTES`),
-alle uebrigen Kennungen stehen in den ersten zwoelf (WebP: `RIFF`, vier Bytes
-Groesse, `WEBP`)."""
+PDF und HTML koennen nach Leerraum beginnen, PDF auch nach mehreren UTF-8-BOMs.
+Die festen Bildkennungen stehen in den ersten zwoelf Bytes (WebP: `RIFF`, vier
+Bytes Groesse, `WEBP`). Die Grenze gilt auch fuer den PDF-Rettungshinweis."""
 
 RTF_KOPF_BYTES: Final = 128
 """In so vielen Bytes am Anfang sucht die Erkennung den Kopf einer RTF-Datei, wie
@@ -85,6 +86,10 @@ _HTML_ANFANG: Final = re.compile(
 nach einer BOM und Leerraum. MinerU erkennt HTML an keiner Kennung, sondern mit
 seinem Inhaltsklassifizierer (Magika); das Paket laesst nur durch, was so
 beginnt, und kein Text, in dem irgendwo ein Tag steht."""
+
+_PDF_ANFANG: Final = re.compile(rb"\A(?:[ \t\r\n\f\v]|\xef\xbb\xbf)*%PDF-")
+"""Nur ASCII-Leerraum und vollstaendige UTF-8-BOMs duerfen vor PDF stehen (#56).
+Kein Suchen nach der Kennung hinter fremden Bytes; der Kopf bleibt begrenzt."""
 
 _OOXML_VERZEICHNISSE: Final = {
     "word/": "DOCX",
@@ -443,7 +448,7 @@ def _typ_aus_kopf(kopf: bytes) -> DocumentType | None:
     Die festen Kennbytes zuerst, dann die Textformate in der Reihenfolge von
     DocVortex (RTF vor MHTML); HTML zuletzt, denn ein MHTML-Teil ist HTML.
     """
-    if kopf.startswith(b"%PDF-"):
+    if _PDF_ANFANG.match(kopf):
         return DocumentType.PDF
     if kopf.startswith(b"\x89PNG\r\n\x1a\n"):
         return DocumentType.PNG
@@ -475,13 +480,32 @@ def _ist_zip(kopf: bytes) -> bool:
     return kopf.startswith(b"PK\x03\x04")
 
 
+def worker_bytes(data: bytes, doc_type: DocumentType) -> bytes:
+    """Bereitet erkannte Bytes nur fuer den Worker auf, nie fuer Hash oder DB.
+
+    PDF verliert ausschliesslich den von der Erkennung erlaubten Vorspann.
+    Andere Typen bleiben unveraendert (#56).
+    """
+    if doc_type.is_pdf:
+        anfang = _PDF_ANFANG.match(data[:KOPF_BYTES])
+        if anfang is not None:
+            return data[anfang.end() - len(b"%PDF-"):]
+    return data
+
+
 def _unbekannt(kopf: bytes, groesse: str) -> UnsupportedTypeError:
     """Die Meldung fuer einen Typ ohne Treffer. Die Kennbytes stehen UNGEKUERZT
     darin (`MELDUNG_BYTES`): Wer sie abschneidet, nimmt genau die Angabe weg, mit
     der man den Typ von Hand nachschlaegt."""
+    versatz = kopf.find(b"%PDF-")
+    hinweis = (
+        f" Ab Byte {versatz} (null-basiert) beginnt %PDF-, aber davor stehen "
+        "fremde Bytes. Die Datei muss von Hand geprueft werden."
+        if versatz > 0 else ""
+    )
     return UnsupportedTypeError(
         f"Kein unterstuetzter Typ (die ersten {MELDUNG_BYTES} Byte: "
-        f"{kopf[:MELDUNG_BYTES]!r}; {groesse})."
+        f"{kopf[:MELDUNG_BYTES]!r}; {groesse}).{hinweis}"
     )
 
 

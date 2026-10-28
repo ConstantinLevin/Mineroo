@@ -48,6 +48,33 @@ KOEPFE: dict[DocumentType, bytes] = {
 # --- Erkennung ------------------------------------------------------------
 
 
+@pytest.mark.parametrize("vorspann", [
+    b" \r\n", b"\xef\xbb\xbf" * 2, b" \t\xef\xbb\xbf\n\xef\xbb\xbf\f\v",
+])
+def test_pdf_nach_harmlosem_vorspann(tmp_path: Path, vorspann: bytes) -> None:
+    """Leerraum und vollstaendige BOMs vor PDF sind kein fremder Typ (#56)."""
+    daten = vorspann + KOEPFE[DocumentType.PDF]
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    assert sniff_bytes(daten) is DocumentType.PDF
+    assert sniff_path(datei) is DocumentType.PDF
+
+
+def test_pdf_hinter_fremdinhalt_wird_mit_versatz_abgewiesen(tmp_path: Path) -> None:
+    """Die PDF-Kennung im Kopf ist nur ein Rettungshinweis, keine Erkennung."""
+    daten = b"\x00\xff\x01" * 1600 + KOEPFE[DocumentType.PDF]
+    datei = tmp_path / "probe"
+    datei.write_bytes(daten)
+    for von_der_platte in (False, True):
+        with pytest.raises(UnsupportedTypeError) as fehler:
+            if von_der_platte:
+                sniff_path(datei)
+            else:
+                sniff_bytes(daten)
+        assert "Byte 4800" in str(fehler.value)
+        assert "%PDF-" in str(fehler.value)
+
+
 @pytest.mark.parametrize("typ", list(KOEPFE))
 def test_jeder_unterstuetzte_typ_wird_erkannt(typ: DocumentType, tmp_path: Path) -> None:
     """Je ein Kopf-Fixture ergibt den richtigen Typ — aus Bytes und von der

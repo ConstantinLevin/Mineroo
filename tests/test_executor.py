@@ -27,6 +27,7 @@ from psycopg_pool import AsyncConnectionPool
 import ersatz_antworten as ersatz
 import ganzdokumente
 from mineru_ocr import db as db_modul
+from mineru_ocr.client import OCRClient
 from mineru_ocr.config import ReadSettings, Settings
 from mineru_ocr.db import DocumentStatus, get_document, insert_input, write_terminal_async
 from mineru_ocr.errors import (
@@ -333,6 +334,65 @@ async def test_der_job_schickt_die_lese_einstellungen_seiner_eingabe(
 
 
 # --- Eingang --------------------------------------------------------------
+
+
+@pytest.mark.parametrize("seitengrenze, teilseiten", [(20, [3]), (2, [2, 1])])
+async def test_pdf_vorspann_nur_auf_dem_weg_zum_worker_entfernt(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+    seitengrenze: int,
+    teilseiten: list[int],
+) -> None:
+    """Originalbytes und Hash bleiben beim Client und in Postgres (#56)."""
+    original = b" \xef\xbb\xbf\r\n\xef\xbb\xbf" + _pdf(3)
+    with OCRClient(db_dsn=exec_settings.db_dsn) as client:
+        sha = client.ocr_start([original])[0]
+    assert sha == hashlib.sha256(original).hexdigest()
+    eingabe = await db_modul.read_input_async(exec_settings.db_dsn, sha)
+    assert eingabe is not None and eingabe.content == original
+
+    runpod = FalscherRunPod([
+        ersatz.fertige_antwort("synthetisch", seiten=n) for n in teilseiten
+    ])
+    await process_document(
+        sha, settings=dataclasses.replace(exec_settings, max_pages_per_chunk=seitengrenze),
+        runpod=runpod, pool=pool,
+    )
+
+    gesendet = [base64.b64decode(b) for b in runpod.abgesendet]
+    assert len(gesendet) == len(teilseiten)
+    for daten, anzahl in zip(gesendet, teilseiten, strict=True):
+        assert daten.startswith(b"%PDF-")
+        pdf = pypdfium2.PdfDocument(daten)
+        try:
+            assert len(pdf) == anzahl
+            for nummer in range(anzahl):
+                pdf[nummer].close()
+        finally:
+            pdf.close()
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.DONE
+    assert zeile.size_bytes == len(original)
+    assert zeile.mime == "application/pdf" and zeile.page_count == 3
+
+
+async def test_pdf_hinter_binaerem_vorspann_endet_ohne_runpod_input_error(
+    db_conn: psycopg.Connection[Any],
+    pool: AsyncConnectionPool,
+    exec_settings: Settings,
+) -> None:
+    """Auch eine schon gespeicherte fremde Eingabe wird nicht zurechtgeschnitten."""
+    original = b"\x00\xff\x01" * 1600 + _pdf(1)
+    sha = hashlib.sha256(original).hexdigest()
+    insert_input(db_conn, sha256=sha, content=original, read_settings=ReadSettings())
+    runpod = FalscherRunPod()
+    with pytest.raises(UnsupportedTypeError, match="Byte 4800"):
+        await process_document(sha, settings=exec_settings, runpod=runpod, pool=pool)
+    zeile = get_document(db_conn, sha)
+    assert zeile is not None and zeile.status is DocumentStatus.INPUT_ERROR
+    assert zeile.error is not None and "Byte 4800" in zeile.error
+    assert runpod.kontakte == []
 
 
 async def test_jede_runpod_job_id_steht_mit_hash_und_seiten_im_log(
