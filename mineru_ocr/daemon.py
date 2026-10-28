@@ -29,16 +29,17 @@ Hintergrundprozesse. `daemon stop X` und `daemon list` verwalten sie (#58).
 from __future__ import annotations
 
 import asyncio
-import logging
 import json
+import logging
 import os
-from pathlib import Path
-import sys
 import signal
-from collections.abc import Sequence
+import sys
+from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any, Final
 
 import psycopg
+from procrastinate.worker import Worker
 
 from . import config, db, tasks
 from .abbruch import unabbrechbar_abwarten
@@ -198,7 +199,7 @@ async def _run(
     laufende: list[asyncio.Task[None]] = []
     ergebnisse: list[Any] = []
     server: asyncio.Server | None = None
-    worker: list[Any] = []
+    worker: list[Worker] = []
 
     try:
         # `App.open_async(pool=…)` reicht UNSEREN Pool durch, statt Procrastinate
@@ -216,33 +217,16 @@ async def _run(
                     else:
                         # Dieselbe Worker-Klasse wie App.run_worker_async; ihre
                         # Kennung ordnet reale Jobs dem Prozess zu (#58).
-                        from procrastinate.worker import Worker
-                        instanz: Any = Worker(app=app, **{**app.worker_defaults, **optionen})
+                        instanz = Worker(app=app, **{**app.worker_defaults, **optionen})
                         worker.append(instanz)
-                        koroutine = instanz.run()
+                        # Procrastinate annotiert Worker.run nicht.
+                        koroutine = instanz.run()  # type: ignore[no-untyped-call]
                     laufende.append(asyncio.create_task(koroutine, name=optionen["name"]))
 
                 if control is not None:
-                    async def antworten(leser: asyncio.StreamReader, schreiber: asyncio.StreamWriter) -> None:
-                        try:
-                            befehl = (await asyncio.wait_for(leser.readline(), 2)).decode().strip()
-                            if befehl == "stop" and not beenden.is_set():
-                                _signal_empfangen(signal.SIGTERM)
-                            antwort = {
-                                "pid": os.getpid(), "available": settings.ocr_concurrency,
-                                "log_path": str(control[1]),
-                                "worker_ids": [w.worker_id for w in worker],
-                                "ready": all(w.worker_id is not None for w in worker),
-                                "stopping": beenden.is_set(),
-                            }
-                            schreiber.write((json.dumps(antwort) + "\n").encode())
-                            await schreiber.drain()
-                        except (OSError, asyncio.TimeoutError):
-                            pass
-                        finally:
-                            schreiber.close()
-                            await schreiber.wait_closed()
-                    server = await asyncio.start_unix_server(antworten, path=control[0])
+                    server = await _kontrollserver_starten(
+                        control, settings, worker, beenden, _signal_empfangen
+                    )
 
                 # Auf das Signal warten — oder darauf, dass ein Worker von sich
                 # aus endet. Der zweite Fall ist der wichtige: Stirbt EIN Worker
@@ -311,6 +295,42 @@ async def _run(
             ergebnis, asyncio.CancelledError
         ):
             raise ergebnis
+
+
+async def _kontrollserver_starten(
+    control: tuple[Path, Path],
+    settings: Settings,
+    worker: Sequence[Worker],
+    beenden: asyncio.Event,
+    signal_empfangen: Callable[[int], None],
+) -> asyncio.Server:
+    """Beantwortet Status und Stop am Socket mit dem aktuellen Worker-Zustand."""
+    socket_pfad, protokoll = control
+
+    async def antworten(
+        leser: asyncio.StreamReader, schreiber: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            befehl = (await asyncio.wait_for(leser.readline(), 2)).decode().strip()
+            if befehl == "stop" and not beenden.is_set():
+                signal_empfangen(signal.SIGTERM)
+            antwort = {
+                "pid": os.getpid(),
+                "available": settings.ocr_concurrency,
+                "log_path": str(protokoll),
+                "worker_ids": [w.worker_id for w in worker],
+                "ready": all(w.worker_id is not None for w in worker),
+                "stopping": beenden.is_set(),
+            }
+            schreiber.write((json.dumps(antwort) + "\n").encode())
+            await schreiber.drain()
+        except (OSError, asyncio.TimeoutError):
+            pass
+        finally:
+            schreiber.close()
+            await schreiber.wait_closed()
+
+    return await asyncio.start_unix_server(antworten, path=socket_pfad)
 
 
 async def _betriebsmittel_schliessen(runpod: Any, pool: Any) -> None:
