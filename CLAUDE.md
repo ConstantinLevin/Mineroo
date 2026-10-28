@@ -23,10 +23,10 @@ Wer hier ein venv anlegt, arbeitet an einer Installation vorbei, in der die
 Abhängigkeiten bereits liegen.
 
 ```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pytest -q                      # alle Tests
+/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pytest -q -m "not live"                      # alle Tests
 /opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pytest tests/test_chunking.py -q   # eine Datei
-/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pytest -q -k "seitenversatz"       # ein Test nach Namensteil
-/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pytest -q -m "not db"              # ohne Datenbank
+/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pytest -q -m "not live" -k "seitenversatz"       # ein Test nach Namensteil
+/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pytest -q -m "not live" -m "not db"              # ohne Datenbank
 /opt/homebrew/Caskroom/miniconda/base/bin/python3 -m mypy mineru_ocr tests              # Typprüfung
 ```
 
@@ -39,7 +39,7 @@ der Lauf über beide Pfade deckt das auf.
 Abdeckung, falls gebraucht:
 
 ```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m coverage run -m pytest -q
+/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m coverage run -m pytest -q -m "not live"
 /opt/homebrew/Caskroom/miniconda/base/bin/python3 -m coverage report --include="mineru_ocr/*"
 ```
 
@@ -50,7 +50,7 @@ Kommando selbst“). Gearbeitet und getestet wird trotzdem aus dem Verzeichnis
 heraus.
 
 **Testausgabe immer vollständig in eine Datei schreiben, bevor gefiltert wird.**
-Also `python3 -m pytest -q > /pfad/zur/ausgabe.txt 2>&1`, dann die Datei lesen
+Also `python3 -m pytest -q -m "not live" > /pfad/zur/ausgabe.txt 2>&1`, dann die Datei lesen
 oder gezielt mit `grep` durchsuchen. Der Lauf selbst geht nie durch einen Filter:
 Ein gefilterter Lauf zeigt nur, was der Filter durchlässt, und ein zweiter Lauf,
 um „den Rest" zu sehen, kostet die Zeit nochmals und kann anders ausgehen.
@@ -78,22 +78,31 @@ bestandener Lauf überhaupt beweist:
 
 ### Das Kommando selbst
 
-Neun Unterkommandos in `mineru_ocr/cli.py`: `setup`, `daemon`, `ocr`, `status`,
-`show`, `wait`, `markdown`, `retry`, `preflight`. Der übliche Ablauf:
+`mineru-ocr PATH…` schickt Dateien ab, wartet synchron und gibt den ganzen Text
+(`rendered_markdown`) auf stdout aus. `-t` schreibt ihn in eine temporäre Datei,
+`-o PFAD` in eine bestimmte; stdout nennt dann nur deren Pfad. Ein Stapel steht
+in einer Datei, mit `# Datei: PFAD` vor jedem Text. Ordner werden rekursiv nach
+Pfad sortiert gelesen. Explizite Dateifehler halten übrige Dateien nicht auf;
+fremde und zu große Dateien in Ordnern werden mit Grund übersprungen.
 
 ```bash
-mineru-ocr setup        # Schema anlegen (documents, inputs + Procrastinates Tabellen)
-mineru-ocr daemon       # EIGENES Fenster: hier läuft der Exekutor
-mineru-ocr ocr ~/Scans  # einreihen; nennt je Datei Pfad und Hash
-mineru-ocr status
+mineru-ocr setup
+mineru-ocr daemon       # eigenes Fenster, unverändert im Vordergrund
+mineru-ocr scan.pdf     # abschicken, warten, Volltext ausgeben
+mineru-ocr ~/Scans -o texte.md --timeout 600
 ```
+
+`setup` und `daemon` bleiben Betriebskommandos. Die bisherigen Kommandos `ocr`,
+`status`, `show`, `wait`, `markdown`, `retry` und `preflight` entfallen; diese
+Funktionen bleiben in der Bibliothek. `daemon start X`, `stop X` und `list` sind
+#58 und nicht Teil von #55. Auch ein Dateiaufruf startet keinen Daemon.
 
 Nur `setup` legt das Schema an. Daemon und jeder Client prüfen es beim
 Öffnen rein lesend (`db.check_schema`, im `AsyncOCRClient` `db.check_schema_async`;
 beide lesen den Katalog in einer Anweisung, `db._KATALOG_SQL`): Fehlt es oder stammt die Tabelle aus der
 Zeit vor dem letzten Update (mit `new`), endet der Start mit `DatabaseError` und
 dem Weg, statt dass ein Job an einer alten Zeile ohne Ergebnis endet. Ausgenommen
-ist `preflight` (`OCRClient(schema_check=False)`): Er liest beide Tabellen nicht
+ist die Bibliotheksmethode `preflight` (`OCRClient(schema_check=False)`): Er liest beide Tabellen nicht
 und darf jederzeit laufen. Die Prüfung im Daemon läuft in einem Faden, damit eine
 hängende Datenbank die Ereignisschleife nicht anhält, und mit einer Frist für
 Verbindung und Abfragen (`daemon.SCHEMA_PRUEFUNG_FRIST_SEKUNDEN`), damit der Faden
@@ -142,22 +151,15 @@ Empfang (#40). Namen mit KEY, SECRET, TOKEN oder PASSWORD zählen unabhängig vo
 Großschreibung auch als Teilwort. Der Preflight kann deren Wert nicht vergleichen
 (`nicht_pruefbar`), meldet aber fehlende oder leere erwartete Geheimnisse als
 Abweichung. Leere Werte bleiben in der Worker-Auskunft leer.
-Die Exit-Codes sind belegt (0/1/2/3/4, dazu 130 bei Strg-C) und werden von
-`cli.py` bewusst gesetzt.
-
-`wait ZIEL… [--timeout S] [--json]` wartet auf viele (`OCRClient.as_completed`)
-und schreibt je Dokument eine Zeile, sobald es endgültig ist (mit `--json` eine
-JSON-Zeile ohne `raw`); war ein Ziel ein Pfad, nennt die Zeile ihn mit (in JSON
-`paths`), denn die Zeilen kommen in der Reihenfolge, in der die Dokumente fertig
-werden. Exit-Code 0, wenn alle `done` oder `empty` sind; 3, wenn
-eines `failed` oder `input_error` ist; **4, wenn nach Ablauf der Frist noch eines
-offen ist** (die offenen nennt stderr); 1 bei einem Betriebsfehler, auch einem
-unbekannten Hash; 2 bei einer Frist, die keine Zahl ab null ist (`nan`, negativ);
-130 bei Strg-C. Bei mehreren gilt der schwerste, 1 vor 4 vor 3
-vor 0: 4 verlangt vom Aufrufer eine Handlung (später erneut warten), die
-Fehlschläge stehen ohnehin in den Zeilen. Ohne `--timeout` wartet `wait`, bis die
-Datenbank zurück ist, wenn sie unterwegs wegbricht, auch wenn sie gelöscht oder
-der Zugang entzogen wurde; in Skripten deshalb `--timeout` setzen.
+Die CLI setzt Exit-Codes bewusst: 0 Erfolg (auch `empty`, mit Grund ohne Text),
+1 Betriebs-/Datei-/Ausgabefehler, 2 ungültiger Aufruf, 3 `failed`/`input_error`
+(je Datei mit Grund), 4 abgelaufene Wartefrist, **5 kein laufender Daemon**,
+130 Strg-C. Bei mehreren gilt 1 vor 5 vor 4 vor 3 vor 0. Die CLI reiht eine Datei
+nur ein, wenn noch kein Ergebnis vorliegt und ein frischer Herzschlag da ist.
+Treffer werden ohne Daemon ausgegeben; gescheiterte Treffer werden nicht neu
+gelesen. `--timeout S` begrenzt das Warten je Dokument; Frist und Strg-C lassen
+Jobs bestehen. Ohne Frist wird unbegrenzt gewartet. `-t` und `-o` schließen
+einander aus; eine Eingabedatei darf nicht überschrieben werden.
 
 ### Konfiguration — Endpoint, Datenbank und Sollwerte stehen nicht im Code
 
@@ -173,7 +175,7 @@ nennt dann die Stellen bzw. sagt, was mit `~/.runpod/config.toml` ist:
 
 | Weg | Endpoint | RunPod-Schlüssel |
 |---|---|---|
-| `setup`, `get`, `wait`, `show`, `markdown`, `retry` | nein | nein |
+| `setup`, Dateiaufruf, `get`, `wait`, `retry` | nein | nein |
 | Abschicken (`ocr_start`, `ocr`) | nein (den Endpoint trägt erst die Ergebniszeile, die der Job anlegt) | nein |
 | `daemon`, `preflight`, `workers` | ja | ja |
 | `status`, `credit`, `account` | nein | ja |
@@ -212,15 +214,10 @@ Preflight berichtet den Ist-Wert und bewertet ihn als „nicht prüfbar“.
 (`OCRClient.ocr_start(bytes | Sequence[bytes])`, `ocr`, `wait`, `wait_all`,
 `as_completed`, `get`, `document`; dieselben Namen bis auf `document` mit `await`
 im `AsyncOCRClient`);
-`cli.py` liest Dateien und Ordner, hasht sie und nennt die Zuordnung von Pfad zu
-Hash. `ocr --json` gibt je Dokument Hash, Zustand (`null`, solange es offen ist)
-und ob eingereiht, dazu die übersprungenen Dateien. `show` zeigt, was `document()`
-sagt, ohne `raw`; `show --raw` gibt die vollständige Antwort als JSON aus. Eine ausdrücklich genannte, nicht unterstützte oder zu große
-Datei hält die übrigen nicht auf, `ocr` endet dann mit Exit-Code 1; in Ordnern
-werden solche Dateien übersprungen und gezählt. Auf stdout stehen nur Daten,
-Meldungen und Warnungen (auch die der Bibliothek) gehen auf stderr. Es gibt in der
-Bibliothek keinen Parameter, der ein Pfad ist; `ocr_path`, `OCRWrapper.from_path`,
-`from_bytes` und `OCRMegaWrapper` gibt es nicht mehr.
+`cli.py` liest Dateien und Ordner und gibt den Volltext aus. Struktur, Bilder,
+Rohantworten und Zustandsabfragen bleiben der Bibliothek vorbehalten. Auf stdout
+stehen nur Daten bzw. der Ausgabepfad; Meldungen und Warnungen gehen auf stderr.
+Die Bibliothek kennt weiterhin keine Pfadparameter.
 
 ---
 
@@ -228,36 +225,26 @@ Bibliothek keinen Parameter, der ein Pfad ist; `ocr_path`, `OCRWrapper.from_path
 
 ### Der Daemon ist ein eigener Prozess
 
-Einreihen und Abarbeiten sind getrennt. `ocr_start` bzw. `mineru-ocr ocr` legt
-Jobs an und kehrt sofort zurück; läuft kein `mineru-ocr daemon`, passiert danach
-gar nichts, und es sieht aus wie ein Hänger. Das ist die häufigste Überraschung
-dieses Aufbaus — das Abschicken warnt, und `status` und `preflight` sagen es einem
-ausdrücklich, statt es einen suchen zu lassen.
+Einreihen und Abarbeiten sind getrennt. Die Bibliothek (`ocr_start`, `retry`,
+`retry_all`) reiht auch ohne Daemon ein und warnt einmal je daemonloser Phase
+im Logger `mineru_ocr.client`, wenn danach Dokumente offen sind. Eingabe und Job
+entstehen in einer Transaktion; das Ergebnis entsteht erst am Ende des Jobs.
 
-**Abschicken hängt nicht vom Daemon ab und warnt nur.** `ocr_start` und
-`mineru-ocr ocr` reihen auch ohne laufenden Daemon ein; die Warnung steht im
-Logger `mineru_ocr.client`, die Kommandozeile schreibt sie auf stderr. Abgebrochen
-wird nichts, und weder Bibliothek noch Kommandozeile starten selbst einen Daemon —
-den startet der Betreiber. Es gibt keinen `strict`-Abbruch und keine
-`--strict`-Option am Kommando `ocr`; `strict` betrifft nur Konfigurations-
-Abweichungen im Preflight. Eingabe und Job entstehen je Dokument in einer
-Transaktion (die Ergebniszeile erst am Ende des Jobs); ohne Daemon bleibt deshalb
-zu jeder Eingabe ein Job zurück. Gewarnt
-wird einmal je daemonloser Phase eines Clients und nur, wenn nach dem Aufruf
-Dokumente offen sind, eingereiht oder schon unterwegs (ein erneuter Lauf, der nichts
-mehr einreiht, sähe ohne Hinweis wie ein Hänger aus). Dieselbe Regel gilt für
-`retry` und `retry_all`, denn sie gilt für jeden Weg, auf dem eingereiht wird. Ein
-`--no-start`, das nur ablegt, gibt es nicht mehr.
+Die CLI (`mineru-ocr PATH…`) wartet synchron und prüft für eine Datei ohne
+Ergebnis **vor** dem Einreihen `db.worker_heartbeats`. Fehlt ein frischer
+Herzschlag, reiht sie diese Datei nicht ein, wartet auch auf bereits offene
+nicht und meldet Exit-Code 5. Die Meldung nennt `mineru-ocr daemon start X`
+(Verwaltung in #58); derzeit startet man unverändert `mineru-ocr daemon`.
+Treffer aus der Datenbank brauchen keinen Daemon. Beide Wege starten nie selbst
+einen; den startet der Betreiber.
 
-Ein Daemon **läuft**, wenn ein Worker einen Herzschlag hat, der jünger ist als
-`config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS` (30 s, Procrastinates
-`stalled_worker_timeout`), gemessen an der Uhr der Datenbank
-(`db.worker_heartbeats`). Die Zeile eines abgestürzten Daemons bleibt bis zum
-nächsten Start stehen; ihr Alter ist das Merkmal, und abgeräumt wird sie dann von
-Procrastinate selbst. Die Lebendigkeit ist nur Auskunft für `status` und
-`preflight`; ist sie nicht lesbar (die undokumentierte Worker-Tabelle fehlt),
-meldet `status` den Daemon als „unbekannt“, und das Abschicken warnt und reiht
-trotzdem ein.
+Ein Daemon läuft, wenn ein Worker einen Herzschlag jünger als
+`config.DAEMON_HEARTBEAT_MAX_AGE_SECONDS` (30 s) hat, gemessen an der Datenbankuhr.
+Die Zeile eines abgestürzten Daemons genügt nicht. Ist die Tabelle nicht lesbar,
+bricht die CLI für diese Datei mit Betriebsfehler 1 ab, ohne einzureihen; die
+Bibliothek warnt und reiht weiterhin ein. `status()` und `preflight()` berichten
+über die Bibliothek. Ein nach der Prüfung ausfallender Daemon kann das Warten
+weiterhin anhalten; dafür gibt es `--timeout`.
 
 ### Geteilte Lesefragen des Daemons
 
@@ -426,9 +413,8 @@ Zurücksetzen kommt als `DatabaseError` des Pakets an. Bekannte Grenze: Setzt
 jemand denselben Job im selben Moment von Hand außerhalb des Pakets zurück
 (Procrastinate-Shell oder Admin), kann `retry_job_by_id` einen schon wieder
 laufenden Job noch einmal starten (`procrastinate_retry_job_v2` nimmt auch
-`doing` an); `db.retry_lock` schützt nur vor Aufrufern des Pakets. Das Kommando `retry` (Ziel
-oder `--all`) fragt vorher nach, außer mit `--yes`, und ruft genau eine der
-beiden Funktionen.
+`doing` an); `db.retry_lock` schützt nur vor Aufrufern des Pakets. Wiederholungen
+erfolgen ausschließlich über die Bibliothek und kosten erneut Geld.
 
 `empty` ist ein **gültiges** Ergebnis, kein Fehler: Der Gegenstand war leer. Als
 Erfolg geführt wäre es unsichtbarer Verlust, als Fehler geführt erzeugte es
@@ -522,7 +508,7 @@ Stufe, OCR-Modus und Bildanalyse reisen als **ein Wert**, `config.ReadSettings`
 was er sagt, geht an RunPod und an die Zeile. Wo er auf dem Weg steht:
 
 - **Gewählt** beim Abschicken: `ocr_start` und `ocr` (beide Clients) nehmen
-  `tier=`, `ocr_mode=`, `image_analysis=`, das Kommando `ocr` `--tier`,
+  `tier=`, `ocr_mode=`, `image_analysis=`, der CLI-Dateiaufruf `--tier`,
   `--ocr-mode` und `--image-analysis/--no-image-analysis`. Was fehlt, kommt aus
   `Settings.read_settings`, also aus den Feld-Voreinstellungen von `Settings`
   (`advanced`, `ocr`, an); Schlüssel der Konfigurationsdatei sind sie nicht.
@@ -553,7 +539,7 @@ was er sagt, geht an RunPod und an die Zeile. Wo er auf dem Weg steht:
   nicht schreiben; `raw` bleibt unbereinigt. Was MinerU tatsächlich nahm, steht im
   Rohergebnis unter `envelopes[…]["output_meta"]`; bei `auto` der Modus, den es für
   die Datei wählte. `DocumentRow.read_settings`, die Hülle (`mineru_version`,
-  `read_settings`), `document()` und `show` nennen sie.
+  `read_settings`) und `document()` nennen sie.
 - **Abweichungen** sind Vermerke, kein Fehler, und das Ergebnis gilt trotzdem
   (`executor._lesung_vermerken`): `lese_einstellungen_abweichend`, wenn ein
   Teilstück andere Einstellungen meldet als bestellt (`auto` passt zu `txt` wie zu
@@ -772,7 +758,7 @@ sonst schiede sie erst im Worker aus, bezahlt, als `failed`.
 
 **Der Text für Abnehmer ist `markdown_full`, unverändert** (Mineroo#13):
 `assembly.rendered_markdown`, dahinter `OCRWrapper.rendered_markdown` und
-`mineru-ocr markdown`. Die Aufnahmen zeigen, dass die Vollmodus-Fassung alle
+`mineru-ocr PATH`. Die Aufnahmen zeigen, dass die Vollmodus-Fassung alle
 fünf Randklassen (Kopfzeile, Fußzeile, Seitenzahl, Randtext, Seitenfußnote) je
 einmal an ihrer Stelle in MinerUs Lesereihenfolge trägt und die Bild-Deutungen
 als eingeklappte Blöcke hinter dem Bild; `markdown` lässt vier der fünf Klassen
@@ -844,9 +830,9 @@ hinweg, und eine Vereinigung behielte nur das letzte.)
   (`DocumentType.can_hold_several_images`); JPEG und BMP tragen keine Seitenfolge,
   ein Multi-Picture-JPEG ist ein Foto. Ein Bild, das Pillow nicht lesen kann, geht
   weiter — ob es lesbar ist, entscheidet die Engine.
-- `client.py` und `cli.py` sind zwei Zugänge auf **dieselbe** Fläche. Das
-  Kommando enthält keine eigene Logik; jedes ruft genau eine Funktion der
-  Bibliothek.
+- `client.py` bietet die vollständige Bibliothek. `cli.py` verbindet Abschicken,
+  Warten und Volltextausgabe für Pfade. Nur die CLI verlangt vor dem Einreihen
+  einen laufenden Daemon; die Bibliothek behält ihre Warnung ohne Abbruch.
 - `core.py` ist der Kern des Abschickens ohne Ein- und Ausgabe (Hash,
   Typ- und Größenprüfung, `Submitted`, dazu `RetryOutcome`, das Bibliothek und
   Kommando teilen), und `client.py` hält die zwei dünnen Schalen darüber:

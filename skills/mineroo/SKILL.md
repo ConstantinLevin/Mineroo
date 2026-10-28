@@ -25,12 +25,20 @@ Namen; alles andere, auch CSV, weist das Abschicken ab.
 Der Endpoint soll nur in Rechenzentren des EWR rechnen (EU-Staaten, Island und
 Norwegen; dort gilt die DSGVO). Mineroo weiß nicht, ob ein Dokument
 personenbezogen ist, und behandelt deshalb jedes so. Ob der Endpoint die
-zulässige Liste einhält, sagt allein der Preflight, und weder das Kommando `ocr`
+zulässige Liste einhält, sagt allein der Preflight. Weder der CLI-Dateiaufruf
 noch der `AsyncOCRClient` lassen ihn laufen. Deshalb, einmal je Sitzung vor dem
 ersten Abschicken, auf jedem Weg:
 
-`mineru-ocr preflight --no-strict --json`, darin der Eintrag mit
-`"punkt": "datacenters"`:
+Über die Bibliothek (das frühere CLI-Kommando `preflight` entfällt):
+
+```python
+from mineru_ocr import OCRClient
+
+with OCRClient(preflight=False, strict=False, schema_check=False) as client:
+    befund = client.preflight()
+```
+
+In `befund["checks"]` zählt der Eintrag mit `"punkt": "datacenters"`:
 
 - `in_ordnung`: Du darfst abschicken, auch personenbezogene Dokumente.
 - `abweichung`: Du schickst nichts ab und zeigst dem Nutzer `soll` und `ist`.
@@ -42,7 +50,7 @@ ersten Abschicken, auf jedem Weg:
   wenn er zustimmt.
 
 Der Preflight verändert nichts, fragt aber RunPod und braucht deshalb den
-RunPod-Schlüssel; dasselbe gilt für `mineru-ocr status`.
+RunPod-Schlüssel; dasselbe gilt für `client.status()`.
 
 Geheimnisse der Worker-Umgebung zeigt das Paket nur als `***` (Namen mit
 KEY, SECRET, TOKEN oder PASSWORD, unabhängig von Großschreibung). Ihr Wert
@@ -51,16 +59,27 @@ sind eine Abweichung. `workers()` gibt dieselbe maskierte Umgebung zurück.
 
 ## Ablauf über die CLI
 
-Für Dateien und Ordner auf der Platte:
+Für Dateien und Ordner auf der Platte genügt `mineru-ocr PFAD…`: abschicken,
+synchron warten und den vollständigen Markdown-Text auf stdout ausgeben. Ist das
+Ergebnis schon gespeichert, kommt es sofort aus Postgres, auch ohne Daemon.
+`-t` schreibt den Text in eine temporäre Datei und gibt deren Pfad aus;
+`-o PFAD` schreibt unter diesem Pfad. Bei mehreren Dokumenten steht vor jedem
+Text seine Quelldatei; `-t` und `-o` schreiben den ganzen Stapel in eine Datei.
+Ordner werden rekursiv gelesen, fremde und zu große Dateien mit Grund
+übersprungen. Meldungen gehen auf stderr.
 
-1. `mineru-ocr ocr PFAD… --json`; je Datei steht dort ihr Hash.
-2. `mineru-ocr wait ZIEL… --timeout S --json`. Ziele sind Dateien oder Hashes;
-   für einen Ordner gibst du die Hashes aus Schritt 1 weiter. Läuft die Frist
-   ab, wartest du später erneut auf die noch offenen.
-3. Ergebnis holen: `mineru-ocr markdown ZIEL` für den Text des ganzen Dokuments,
-   `mineru-ocr show ZIEL --raw` für die vollständige Antwort als JSON.
+Setz beim Dateiaufruf `--timeout S`, um das Warten je Dokument zu begrenzen.
+Exit-Code 4 lässt den Job bestehen; später rufst du denselben Pfad erneut auf.
+Exit-Code 5 sagt: kein laufender Daemon, für diese Datei wurde nichts eingereiht.
+`empty` ist gültig (Exit 0), mit Grund ohne Text; `failed` und `input_error`
+werden je Datei mit Grund und Exit 3 gemeldet. Ein gespeicherter Fehlschlag wird
+nicht automatisch neu bezahlt. Betrieb-/Dateifehler sind Exit 1, Aufruffehler 2.
+Bei gemischten Fehlern gilt 1 vor 5 vor 4 vor 3 vor 0; erfolgreiche Texte stehen
+trotzdem in der Ausgabe.
 
-Setz bei `wait` immer `--timeout`: Ohne Daemon wird nichts fertig.
+`setup` und `daemon` bleiben Betriebskommandos. Die bisherigen Kommandos `ocr`,
+`status`, `show`, `wait`, `markdown`, `retry` und `preflight` sind entfernt.
+Struktur, Bilder, Rohantworten, Zustände und Wiederholungen nutzt du über Python.
 
 ## Ablauf über die Bibliothek
 
@@ -97,7 +116,7 @@ nächste kommt.
 
 ## Lese-Einstellungen
 
-Stufe, OCR-Modus und Bildanalyse wählst du je Lauf: beim Kommando `ocr` mit
+Stufe, OCR-Modus und Bildanalyse wählst du je Lauf: beim CLI-Dateiaufruf mit
 `--tier`, `--ocr-mode` und `--no-image-analysis`, in der Bibliothek mit `tier=`,
 `ocr_mode=` und `image_analysis=` an `ocr_start` und `ocr`. Ohne Angabe liest
 MinerU in `advanced` mit erzwungenem OCR und Bildanalyse; davon weichst du nur ab,
@@ -110,31 +129,34 @@ und am Ergebnis stehen keine Einstellungen.
 Die Einstellungen wirken nur auf Dokumente, die der Aufruf neu einreiht. Ein
 Treffer liefert das gespeicherte Ergebnis, gleich welche Einstellungen du
 verlangst, und ein Neu-Lesen mit anderen gibt es nicht. Womit ein Ergebnis
-gelesen wurde, zeigen `mineru-ocr show ZIEL` und an der Hülle `.read_settings` und
-`.mineru_version`; wie viele Dokumente mit welchen gelesen sind, zeigt
-`mineru-ocr status`.
+gelesen wurde, zeigen an der Hülle `.read_settings` und `.mineru_version`; wie
+viele Dokumente mit welchen gelesen sind, zeigt `client.status()`.
 
 ## Der Daemon
 
-Fertig wird ein Dokument nur, wenn ein `mineru-ocr daemon` läuft: Er ist der
-einzige Prozess, der Dokumente an RunPod schickt. Abschicken gelingt auch ohne
-ihn und warnt nur (CLI auf stderr, Bibliothek im Logger `mineru_ocr.client`);
-die Dokumente bleiben dann offen, bis einer startet. Den Daemon startet der
-Betreiber. Kommt beim Abschicken die Warnung, gibst du sie dem Nutzer weiter,
-bevor du wartest; sie sagt, ob kein Daemon läuft oder ob sich das nicht prüfen
-ließ. Ob einer läuft, zeigen auch `mineru-ocr status` und der Preflight.
+Fertig wird ein neues Dokument nur, wenn ein `mineru-ocr daemon` läuft: Er ist
+der einzige Prozess, der Dokumente an RunPod schickt. Die CLI verweigert ohne
+frischen Herzschlag das Einreihen und endet mit Exit 5; Treffer gibt sie weiter
+aus. Die Meldung nennt `mineru-ocr daemon start X`, die Verwaltung aus #58.
+Bis dahin startet der Betreiber den unveränderten Vordergrundprozess mit
+`mineru-ocr daemon`. Der Dateiaufruf startet nie selbst einen.
 
-Hängt ein Dokument, sagt `mineru-ocr show ZIEL`, ob sein Job wartet, läuft oder
+Die Bibliothek (`ocr_start`, `retry`) kann weiterhin ohne Daemon einreihen und
+warnt im Logger `mineru_ocr.client`; die Dokumente bleiben offen, bis einer
+startet. Gib die Warnung dem Nutzer weiter, bevor du wartest. `client.status()`
+und der Preflight melden die Lebendigkeit. Ein frischer Herzschlag ist jünger
+als 30 s, gemessen an der Datenbankuhr. Eine nicht lesbare Lebendigkeit endet in
+der CLI mit Exit 1 ohne Einreihen, in der Bibliothek nur mit Warnung.
+
+Hängt ein Dokument, sagt `client.document(hash)`, ob sein Job wartet, läuft oder
 ohne Ergebnis endete. Im letzten Fall und bei `failed` hilft
-`mineru-ocr retry ZIEL --yes`, nachdem der Nutzer zugestimmt hat (siehe Kosten).
-Nennt `show` als Fehler `UnstorableResultError`, liess sich das Ergebnis nicht
-speichern; ein `retry` bezahlt das Dokument neu und scheitert voraussichtlich
-wieder. Das sagst du dem Nutzer, bevor er zustimmt. Ebenso bei
-`MissingPagesError` (MinerU hat nicht alle geschickten Seiten verarbeitet) und
-`MissingArtifactError` (der Antwort fehlte eine Datei, die das Paket braucht):
-Die bezahlte Antwort steht in `show ZIEL --raw`, und ein `retry` bezahlt das
-Dokument neu; eine Seite, die MinerU verwirft, verwirft es voraussichtlich
-wieder. Bei `ResponseTooLargeError` teilt der Daemon das betroffene PDF-Teilstück
+`client.retry(hash)`, nachdem der Nutzer zugestimmt hat (siehe Kosten).
+`UnstorableResultError` bedeutet, das Ergebnis ließ sich nicht speichern; ein
+`retry` bezahlt das Dokument neu und scheitert voraussichtlich wieder. Ebenso
+bei `MissingPagesError` (nicht alle Seiten verarbeitet) und
+`MissingArtifactError` (Pflichtdatei fehlt): Die bezahlte Antwort steht in
+`client.get(hash).raw`, und ein `retry` bezahlt das Dokument neu. Gib den Grund
+dem Nutzer weiter, bevor er zustimmt. Bei `ResponseTooLargeError` teilt der Daemon das betroffene PDF-Teilstück
 automatisch weiter und liest es in Teilen erneut (erneut bezahlt). Erst wenn
 die Antwort einer einzelnen Seite zu groß ist, bleibt das Dokument `failed`;
 ein kleineres `max_pages_per_chunk` hilft dann nicht.
@@ -155,7 +177,7 @@ fallen Kaltstart und Leerlauf je Seite ins Gewicht. Fragt der Nutzer nach dem
 Preis, nennst du ihm diese Messung als Größenordnung, nicht als Zusage
 (Einzelheiten in `docs/MinerU-OCR-Kalibrierung-und-Backend-Vergleich.md`,
 Abschnitt 8.2). Keine Rechenzeit kosten ein
-Treffer, das Warten und das Abholen (`wait`, `get`, `show`, `markdown`). `retry`
+Treffer, das Warten und das Abholen (`wait`, `get`, ein CLI-Treffer). `retry`
 lässt ein Dokument ohne gültiges Ergebnis neu lesen und bezahlt es neu.
 
 Der Eigentümer hat die Leerlaufzeit auf **5 s** festgelegt; am Endpoint

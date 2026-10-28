@@ -140,8 +140,8 @@ zählen nicht: `HF_TOKEN` wird verdeckt, `MAX_TOKENS` und `MONKEY` nicht.
 
 **Der RunPod-Schlüssel bleibt in `~/.runpod/config.toml`**, Feld `apikey`, und
 steht nie in dieser Konfiguration. Verlangt wird er nur, wo RunPod angesprochen
-wird: von `daemon`, `status` und `preflight` und den Lesefragen an RunPod.
-Abschicken, `get`, `wait`, `show`, `markdown`, `retry` und `setup` brauchen nur die
+wird: von `daemon`, den Bibliotheksmethoden `status` und `preflight` und den Lesefragen an RunPod.
+Abschicken, `get`, `wait`, `retry`, der CLI-Dateiaufruf und `setup` brauchen nur die
 Datenbank. „Nur EU" heißt EWR — EU-Staaten plus Island und
 Norwegen, denn dort gilt die DSGVO —, und die zulässige Liste ist der Sollwert
 `allowed_data_centers`.
@@ -149,11 +149,56 @@ Norwegen, denn dort gilt die DSGVO —, und die zulässige Liste ist der Sollwer
 ### Der übliche Ablauf
 
 ```bash
-mineru-ocr setup         # legt Datenbank und Schema an. Mehrfach aufrufbar.
-mineru-ocr preflight     # prueft Endpoint, Konto und Daemon. VERAENDERT NICHTS.
-mineru-ocr daemon        # in einem EIGENEN Fenster: hier laeuft der Exekutor
-mineru-ocr ocr ~/Scans   # einreihen — kehrt sofort zurueck, nennt Pfad und Hash
-mineru-ocr status
+mineru-ocr setup                 # Schema anlegen; mehrfach aufrufbar
+mineru-ocr daemon                # eigenes Fenster: Exekutor im Vordergrund
+mineru-ocr dokument.pdf          # abschicken, warten, Volltext auf stdout
+mineru-ocr dokument.pdf -t       # Volltext in temporaere Datei; Pfad auf stdout
+mineru-ocr dokument.pdf -o text.md
+mineru-ocr ~/Scans --timeout 600  # rekursiv; Wartefrist je Dokument
+```
+
+`mineru-ocr PATH…` gibt die Vollfassung (`rendered_markdown`) aus, einschließlich
+Kopf- und Fußzeilen, Randtexten, Fußnoten und Bildbeschreibungen. Ein Treffer
+kommt direkt aus Postgres, ohne neuen Lauf und auch ohne Daemon. Die CLI fragt
+RunPod nicht ab und startet keinen Daemon. Braucht eine Datei Verarbeitung und
+läuft kein Daemon, wird sie nicht eingereiht (Exit-Code **5**). Die Meldung nennt
+`mineru-ocr daemon start X`, die künftige Verwaltung aus #58; bis dahin startet
+man ihn unverändert mit `mineru-ocr daemon` im eigenen Fenster.
+
+Mehrere Dateien und Ordner liefern den Text in Eingabereihenfolge, in Ordnern
+rekursiv nach Pfad sortiert. Jeder Text eines Stapels beginnt mit `# Datei: PFAD`.
+`-t` und `-o PFAD` schreiben den gesamten Stapel in **eine UTF-8-Datei** und geben
+nur deren Pfad auf stdout aus; beide Optionen schließen einander aus. Eine
+Eingabedatei darf nicht das Ausgabeziel sein. Ohne diese Optionen steht der Text
+auf stdout. Meldungen und Fehler stehen immer auf stderr. Fremde oder zu große
+Dateien in Ordnern werden mit Grund übersprungen; ausdrücklich genannte
+problematische Dateien führen zu Exit-Code 1. Die übrigen Dateien laufen weiter.
+
+| Exit-Code | Bedeutung |
+|---|---|
+| 0 | Erfolg; auch `empty` (je Datei mit Grund auf stderr, ohne Text) |
+| 1 | Betriebs-, Datei- oder Ausgabefehler; auch beschädigtes gespeichertes Ergebnis |
+| 2 | Ungültiger Aufruf oder Optionen |
+| 3 | Mindestens ein `failed` oder `input_error`, je Datei mit Grund |
+| 4 | Wartefrist abgelaufen; Job bleibt bestehen |
+| 5 | Kein Daemon mit frischem Herzschlag für eine noch offene/neue Datei |
+| 130 | Strg-C; beendet nur den CLI-Aufruf, keine eingereihten Jobs |
+
+Bei mehreren Fehlern gilt 1 vor 5 vor 4 vor 3 vor 0. Bereits erfolgreiche Texte
+werden auch bei einem Fehler ausgegeben. Ohne `--timeout` wartet die CLI
+unbegrenzt; mit `--timeout S` höchstens S Sekunden je offenem Dokument. Fällt
+der Daemon nach der Prüfung aus, schützt die Frist vor endlosem Warten.
+
+`setup` und `daemon` bleiben Betriebskommandos. `ocr`, `status`, `show`, `wait`,
+`markdown`, `retry` und `preflight` gibt es nicht mehr als CLI-Kommandos.
+Zustände, Wiederholungen, Struktur, Bilder und vollständige Antworten sind über
+die Bibliothek erreichbar. Für den Preflight zum Beispiel:
+
+```python
+from mineru_ocr import OCRClient
+
+with OCRClient(preflight=False, strict=False, schema_check=False) as client:
+    befund = client.preflight()
 ```
 
 Der Preflight berichtet nur und verändert nichts; das Paket legt keine bezahlte
@@ -168,31 +213,7 @@ ausdrücklich nicht „in Ordnung". Die Rechenzentren liest er aus RunPods REST-
 v2, alles andere aus v1; die Liste in `allowed_data_centers` muss jedes
 Rechenzentrum enthalten, auf das der Endpoint gesetzt ist.
 
-Neun Kommandos gibt es: `setup`, `daemon`, `ocr`, `status`, `show`, `wait`,
-`markdown`, `retry`, `preflight`. Die Exit-Codes sind belegt (0/1/2/3/4, 130 bei
-Strg-C). `wait ZIEL… [--timeout S] [--json]` wartet auf viele und schreibt je
-Dokument eine Zeile, sobald es endgültig ist, mit dem Pfad, wenn das Ziel einer
-war; es endet mit 0, wenn alle `done` oder `empty` sind, mit 3, wenn eines
-`failed` oder `input_error` ist, mit 4, wenn nach Ablauf der Frist noch eines
-offen ist, mit 1 bei einem Betriebsfehler und mit 2 bei einer Frist, die keine
-Zahl ab null ist; bei mehreren gilt der schwerste, 1 vor 4 vor 3 vor 0. Ohne
-`--timeout` wartet `wait`, wenn die Datenbank unterwegs wegbricht, bis sie zurück
-ist, auch wenn sie gelöscht oder der Zugang entzogen wurde; in Skripten deshalb
-`--timeout` setzen.
-
-**Pfade kennt nur die CLI.** Sie liest Dateien und Ordner (in Ordnern über das
-Muster `--glob`), hasht sie und nennt in ihrer Ausgabe die Zuordnung von Pfad zu
-Hash; `ocr --json` gibt je Dokument den Hash, den Zustand (`null`, solange es
-offen ist) und ob es eingereiht wurde, dazu die übersprungenen Dateien. `show` zeigt,
-wo ein Dokument steht (Endzustand, oder offen samt seinem Job); `show --raw` gibt
-die vollständige Antwort als JSON aus. Eine ausdrücklich genannte, nicht
-unterstützte oder zu große Datei hält die übrigen nicht auf: Sie wird mit Grund
-gemeldet, und `ocr` endet mit Exit-Code 1. In Ordnern werden solche Dateien
-übersprungen und gezählt. Ziele für `show`, `wait`, `markdown` und `retry` sind
-Hashes oder Pfade, die die CLI selbst hasht. Auf stdout stehen nur Daten;
-Meldungen und Warnungen gehen auf stderr.
-
-### Und dieselbe Fläche aus Python
+### Aus Python
 
 Die Bibliothek nimmt **Bytes** und gibt **Hashes**; einen Pfad kennt sie nicht.
 
@@ -225,7 +246,7 @@ with OCRClient() as client:
 ```
 
 Stufe, OCR-Modus und Bildanalyse (`tier=`, `ocr_mode=`, `image_analysis=`, auf der
-Kommandozeile `ocr --tier … --ocr-mode … --no-image-analysis`) gelten für jedes
+Kommandozeile `mineru-ocr PFAD --tier … --ocr-mode … --no-image-analysis`) gelten für jedes
 Dokument des Aufrufs, das neu eingereiht wird. Sie stehen an seiner Eingabe, und
 der Daemon schickt genau diese an RunPod, auch in einem großen Lauf. An jedem
 Ergebnis stehen die bestellten Einstellungen und die MinerU-Version, die der
@@ -260,8 +281,8 @@ Es wird nichts angelegt und nichts eingereiht; ein gescheitertes Dokument liest
 nur `retry` neu. `client.retry(h)` bringt ein Dokument ohne gültiges Ergebnis
 wieder in Gang (ein gescheiterter Job wird zurückgesetzt, für einen abgebrochenen
 oder abgesagten ein neuer eingereiht, ein laufender bleibt, wie er ist);
-`client.retry_all()` tut das für jedes. Auf der Kommandozeile `mineru-ocr retry
-<hash|pfad>` oder `mineru-ocr retry --all`, mit Rückfrage, weil es Geld kostet. Abschicken lädt kein `raw`; Hüllen laden es erst, wenn jemand das
+`client.retry_all()` tut das für jedes. Wiederholungen gibt es nur über die
+Bibliothek; sie kosten erneut Geld. Abschicken lädt kein `raw`; Hüllen laden es erst, wenn jemand das
 Ergebnis will.
 
 Asynchron gibt es dasselbe als `AsyncOCRClient`: dieselben Namen und dieselbe
@@ -292,8 +313,8 @@ offen wirft nach etwa 10 s plus der Ladezeit von `a`. Beide Clients dürfen zugl
 laufen; jeder hält seine eigene Verbindung und, wie die Spec es verlangt, keine
 stehende Procrastinate-Verbindung.
 
-Kommandozeile und `import mineru_ocr` sind zwei Zugänge auf **dieselbe** Fläche;
-das Kommando enthält keine eigene Logik.
+Die Bibliothek bietet die vollständige Verwaltung. Die CLI verbindet Abschicken,
+Warten und Textausgabe zu einem Dateiaufruf; sie kennt Pfade, keine Hash-Ziele.
 
 ### Für Agenten: der Skill
 
@@ -316,21 +337,26 @@ legt sonst einen Link `skills/mineroo/mineroo` im Checkout an.
 
 ### Die eine Überraschung, die jeder einmal hat
 
-**Der Daemon ist ein eigener Prozess.** `ocr_start` bzw. das Kommando `ocr` legt
-Jobs an und kehrt sofort zurück. Läuft kein `daemon`, wird trotzdem eingereiht —
-aber danach passiert gar nichts, und es sieht aus wie ein Hänger. Deshalb warnen
-das Abschicken und `retry` (auf stderr bzw. dem Logger `mineru_ocr.client`), und `status` und
-`preflight` sagen es einem ausdrücklich, statt es einen suchen zu lassen; einen
-Daemon startet der Betreiber. Als laufend gilt ein Daemon, wenn ein Worker einen
-Herzschlag hat, der jünger ist als 30 Sekunden — gemessen an der Uhr der
-Datenbank, damit die Zeile eines abgestürzten Daemons nicht weiter „läuft" sagt.
+**Der Daemon ist ein eigener Prozess.** Die Bibliothek kann mit `ocr_start`
+auch ohne Daemon einreihen; sie warnt im Logger `mineru_ocr.client`, und Jobs
+bleiben bis zum Start offen. Für Wiederholungen gilt dieselbe Bibliotheksregel.
+Die CLI wartet synchron: Fehlt für eine Datei noch ein Ergebnis, prüft sie vor
+dem Abschicken den Herzschlag und endet ohne Einreihen mit Exit-Code 5, falls
+kein Daemon läuft. Treffer brauchen keinen Daemon. Weder Bibliothek noch
+Dateiaufruf starten selbst einen. Der Betreiber verwendet derzeit unverändert
+`mineru-ocr daemon`; `daemon start X`, `stop X` und `list` folgen in #58.
+
+Als laufend gilt ein Worker mit einem Herzschlag jünger als 30 Sekunden, gemessen
+an der Datenbankuhr. Eine alte Zeile eines abgestürzten Daemons genügt nicht.
+Ist die Lebendigkeit nicht lesbar, endet der Dateiaufruf mit Betriebsfehler 1,
+ohne die betroffene Datei einzureihen.
 
 ---
 
 ## 2. Tests und Typprüfung
 
 ```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pytest -q > ausgabe.txt 2>&1
+/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pytest -q -m "not live" > ausgabe.txt 2>&1
 /opt/homebrew/Caskroom/miniconda/base/bin/python3 -m mypy mineru_ocr tests
 ```
 
