@@ -183,6 +183,7 @@ def lesen(
                 raise typer.BadParameter("Die Ausgabe darf keine Eingabedatei ueberschreiben.")
     codes: set[int] = set()
     texte: list[str] = []
+    erfolg = False
     try:
         with OCRClient(preflight=False) as klient:
             for pfad, ausdruecklich in kandidaten:
@@ -218,8 +219,11 @@ def lesen(
                         )
                         if not huelle.success:
                             codes.add(3)
+                        else:
+                            erfolg = True
                         continue
                     text = huelle.rendered_markdown
+                    erfolg = True
                     if len(kandidaten) > 1:
                         text = f"# Datei: {_pfad_zeigen(str(pfad))}\n\n{text}"
                     if temporary or out is not None:
@@ -232,7 +236,7 @@ def lesen(
                 except (MineruOcrError, OSError) as fehler:
                     typer.echo(f"{_pfad_zeigen(str(pfad))}: {type(fehler).__name__}: {fehler}", err=True)
                     codes.add(1)
-        if texte:
+        if (temporary or out is not None) and erfolg:
             text = "\n\n".join(texte)
             if temporary:
                 with tempfile.NamedTemporaryFile(

@@ -393,3 +393,49 @@ def test_strg_c_beendet_nur_das_warten_mit_130(
         if prozess.poll() is None:
             prozess.kill()
             prozess.communicate(timeout=5)
+
+
+@pytest.mark.parametrize("option", ["-o", "-t"])
+@pytest.mark.parametrize("anzahl", [1, 2])
+def test_leere_ergebnisse_schreiben_eine_leere_datei(
+    db_conn: psycopg.Connection[Any], tmp_path: Path, option: str, anzahl: int,
+) -> None:
+    pfade = [datei(tmp_path, f"leer-{nr}.png") for nr in range(anzahl)]
+    for pfad in pfade:
+        speichern(db_conn, pfad, "", status="empty")
+    ziel = tmp_path / "text.md"
+    ziel.write_text("Unzugehoeriger alter Text")
+    args = [*(str(p) for p in pfade), option]
+    if option == "-o":
+        args.append(str(ziel))
+    lauf = CliRunner().invoke(app, args)
+    assert lauf.exit_code == 0, lauf.output
+    assert len(lauf.stdout.splitlines()) == 1
+    ausgabe = Path(lauf.stdout.strip())
+    try:
+        assert ausgabe.is_file()
+        assert ausgabe.read_bytes() == b""
+        assert lauf.stderr.count("empty") == anzahl
+        if option == "-o":
+            assert ausgabe == ziel
+    finally:
+        ausgabe.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("status,code", [("failed", 3), ("input_error", 3), ("neu", 5)])
+@pytest.mark.parametrize("vorhanden", [False, True])
+def test_reine_fehlschlaege_lassen_das_ausgabeziel_unberuehrt(
+    db_conn: psycopg.Connection[Any], tmp_path: Path, status: str, code: int, vorhanden: bool,
+) -> None:
+    pfad = datei(tmp_path)
+    if status != "neu":
+        speichern(db_conn, pfad, status=status, error="synthetischer Fehler")
+    ziel = tmp_path / "text.md"
+    if vorhanden:
+        ziel.write_text("Alter Text")
+    lauf = CliRunner().invoke(app, [str(pfad), "-o", str(ziel)])
+    assert lauf.exit_code == code, lauf.output
+    assert lauf.stdout == ""
+    assert ziel.exists() == vorhanden
+    if vorhanden:
+        assert ziel.read_text() == "Alter Text"
