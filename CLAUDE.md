@@ -98,6 +98,18 @@ mineru-ocr scan.pdf     # abschicken, warten, Volltext ausgeben
 mineru-ocr ~/Scans -o texte.md --timeout 600
 ```
 
+`--ra` schreibt `huelle.to_dict(raw=True)` als vollständiges JSON immer in
+eine Datei (`-o PFAD`, sonst temporär mit `.json`); stdout nennt nur den Pfad.
+Ein Stapel ist ein Array mit zusätzlichem `path` je Eingabe. Auch `empty`,
+`failed` und `input_error` stehen darin, mit unveränderten Meldungen und
+Exit-Codes. `--re` nutzt `huelle.readable_markdown`: HTML-Inseln, besonders
+Tabellen, werden Markdown (GFM), vorhandenes Markdown außerhalb bleibt
+zeichengetreu. Das gilt auch mit `-t`/`-o`. Beide Flags schließen einander aus;
+ohne sie bleibt `rendered_markdown` unverändert. Die Umsetzung liegt in
+`markdown.py` und der Hülle, nicht in der CLI; `html-to-markdown>=2.19.5`
+ist gegen die vorhandene Base geprüft. Es wird nur die Darstellung umgewandelt,
+nichts gespeichert.
+
 `setup` und `daemon` bleiben Betriebskommandos. Die bisherigen Kommandos `ocr`,
 `status`, `show`, `wait`, `markdown`, `retry` und `preflight` entfallen; diese
 Funktionen bleiben in der Bibliothek. `daemon start X`, `daemon stop X` und
