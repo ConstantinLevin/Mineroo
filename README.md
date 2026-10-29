@@ -168,7 +168,7 @@ with OCRClient(db_dsn=os.environ["MINERU_OCR_DB_DSN"], preflight=False) as clien
         print(huelle.readable_markdown)      # wie --re: HTML als Markdown
         print(huelle["middle_json"])         # Seiten und Blöcke je Teilstück
         for verweis, daten in huelle.images.items():
-            ziel = Path("bilder") / verweis
+            ziel = Path(verweis)
             ziel.parent.mkdir(parents=True, exist_ok=True)
             ziel.write_bytes(daten)
     else:
@@ -226,9 +226,16 @@ die Paketversion (derzeit `mineru-ocr 1.0`).
 
 Bei mehreren Eingaben beginnt jeder ausgegebene Text mit `# Datei: PFAD`.
 `-t` und `-o` schreiben den ganzen Stapel in **eine** Datei. Auch ein erfolgreiches
-`empty` legt eine leere Textdatei an. Nicht unterstützte oder zu große Dateien
-in Ordnern werden mit Grund übersprungen; ausdrücklich genannte problematische
-Dateien ergeben Code 1. Die übrigen laufen weiter.
+`empty` legt eine leere Textdatei an. Dateien unbekannten Typs oder über der
+Datenbankgrenze (`db.MAX_INPUT_BYTES`, 1 GB) werden in Ordnern mit Grund
+übersprungen; ausdrücklich genannte solche Dateien ergeben Code 1.
+
+Bilder und Ganzdokument-Formate innerhalb der Datenbankgrenze, aber über
+`max_payload_bytes` (Standard: 7,4 MB), ergeben bei frischem Daemon-Herzschlag
+und ohne gespeichertes Ergebnis auch im Ordner `TooLargeError` und Gesamtcode 1
+([bekannte Einschränkung #66](https://github.com/ConstantinLevin/Mineroo/issues/66)).
+Die übrigen Dateien laufen weiter, einschließlich Einreihen und Warten für
+zulässige neue Dokumente bei frischem Herzschlag sowie Verarbeitung von Treffern.
 
 `--ra` liefert bei einer Eingabe ein Objekt wie `huelle.to_dict(raw=True)`,
 bei mehreren ein Array mit zusätzlichem `path` je Eintrag. Auch die Endzustände
