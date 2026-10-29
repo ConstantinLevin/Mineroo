@@ -360,14 +360,15 @@ async def ocr_document(context: procrastinate.JobContext, sha256: str) -> None:
         _ERSCHOEPFUNGS_SONDE, context.job, einstellungen
     )
 
-    await executor.process_document(
-        sha256,
-        settings=einstellungen,
-        runpod=mittel["runpod"],
-        pool=mittel["pool"],
-        letzter_versuch=letzter,
-        lesefragen=mittel["lesefragen"],
-    )
+    with mittel["fortschritte"].versuch(sha256, context.job.id):
+        await executor.process_document(
+            sha256,
+            settings=einstellungen,
+            runpod=mittel["runpod"],
+            pool=mittel["pool"],
+            letzter_versuch=letzter,
+            lesefragen=mittel["lesefragen"],
+        )
 
 
 _ERSCHOEPFUNGS_SONDE: Final = TransientRunPodError(
@@ -598,7 +599,10 @@ def worker_context_resources(settings: Settings) -> dict[str, Any]:
 
     Kosten: keine.
     """
+    from .progress import Fortschritte
+
     return {
+        "fortschritte": Fortschritte(),
         # Die Einstellung wandert mit. Der Vertrag nannte in Phase A nur
         # `runpod` und `pool` — der Task braucht aber auch die Schwellen, und
         # sie sich aus einer globalen Einstellung zu holen ist ausdruecklich

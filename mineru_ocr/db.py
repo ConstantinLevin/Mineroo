@@ -32,8 +32,8 @@ import enum
 import json
 import math
 import time
-from collections.abc import AsyncGenerator, Generator, Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, fields
 from datetime import datetime
 from typing import Any, Final
@@ -1451,6 +1451,69 @@ def _stand_aus_zeilen(zeilen: Sequence[dict[str, Any]]) -> list[DocumentState]:
     return stand
 
 
+_WARTE_SNAPSHOT_SQL = """
+SELECT h.sha256, d.status::text AS final, d.updated_at,
+       i.sha256 IS NOT NULL AS stored, j.id, j.status::text AS job_status,
+       j.attempts, j.worker_id, j.scheduled_at,
+       e.beginn, e.schritt, extract(epoch FROM clock_timestamp()) AS jetzt
+FROM unnest(%s::text[]) h(sha256)
+LEFT JOIN documents d ON d.sha256 = h.sha256
+LEFT JOIN inputs i ON i.sha256 = h.sha256
+LEFT JOIN procrastinate_jobs j ON j.id = i.job_id
+LEFT JOIN LATERAL (
+    SELECT min(at) AS beginn, max(at) AS schritt
+    FROM procrastinate_events WHERE job_id = j.id
+) e ON true
+"""
+
+
+async def read_wait_snapshot(
+    dsn: str, hashes: Sequence[str], *, timeout: float,
+) -> tuple[list[dict[str, Any]], tuple[Any, ...] | None]:
+    """Liest nur Anzeigefakten und die lokale DB-Kennung mit gemeinsamer Frist.
+
+    Die eigene Verbindung gehoert dieser Beobachtung. Der asynchrone Treiber
+    begrenzt auch Verbinden und blockierte Abfragen auf Bruchteile einer
+    Sekunde; libpqs synchroner connect_timeout kann das nicht. Ein Abbruch
+    schliesst die Verbindung, ohne die eigentliche Warte-Verbindung anzufassen.
+    """
+    async with asyncio.timeout(timeout):
+        optionen = psycopg.conninfo.conninfo_to_dict(dsn).get("options", "")
+        conn = await psycopg.AsyncConnection.connect(
+            dsn, autocommit=True, connect_timeout=2,
+            application_name="mineru-ocr progress",
+            options=f"{optionen} -c statement_timeout={max(1, math.ceil(timeout * 1000))}",
+        )
+        arbeit = asyncio.create_task(_read_wait_snapshot(conn, hashes))
+        try:
+            return await asyncio.shield(arbeit)
+        finally:
+            # Erst lokal schliessen, dann abbrechen: psycopg wuerde sonst bis
+            # zu fuenf Sekunden auf die Bestaetigung eines Query-Cancel warten.
+            await conn.close()
+            arbeit.cancel()
+            with suppress(asyncio.CancelledError, psycopg.Error):
+                await arbeit
+
+
+async def _read_wait_snapshot(
+    conn: psycopg.AsyncConnection[Any], hashes: Sequence[str],
+) -> tuple[list[dict[str, Any]], tuple[Any, ...] | None]:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(_WARTE_SNAPSHOT_SQL, (list(hashes),))
+        staende = await cur.fetchall()
+    try:
+        cur_kennung = await conn.execute(
+            "SELECT system_identifier, oid FROM pg_control_system(), pg_database "
+            "WHERE datname = current_database()"
+        )
+        identitaet = await cur_kennung.fetchone()
+    except psycopg.Error:
+        # Fehlende Rechte auf die Kennung verbergen keine DB-Fakten.
+        identitaet = None
+    return staende, identitaet
+
+
 def read_states(
     conn: psycopg.Connection[Any], hashes: Sequence[str]
 ) -> list[DocumentState]:
@@ -2112,6 +2175,7 @@ def wait_for_terminal(
     *,
     timeout: float | None = None,
     poll_seconds: float = DEFAULT_WAIT_POLL_SECONDS,
+    _on_poll: Callable[[float | None], None] | None = None,
 ) -> Generator[DocumentRow]:
     """Wartet auf das Ergebnis vieler Dokumente und liefert jedes, sobald es da ist.
 
@@ -2209,7 +2273,10 @@ def wait_for_terminal(
             zu_lesen = plan.alle()
             while True:
                 if zu_lesen:
-                    yield from plan.auswerten(read_states(conn, zu_lesen))
+                    fertig = plan.auswerten(read_states(conn, zu_lesen))
+                    if _on_poll is not None:
+                        _on_poll(plan.ende)
+                    yield from fertig
                 if not plan.offen:
                     return
                 if plan.abgelaufen():

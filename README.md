@@ -213,6 +213,23 @@ werden auch bei einem Fehler ausgegeben. Ohne `--timeout` wartet die CLI
 unbegrenzt; mit `--timeout S` höchstens S Sekunden je offenem Dokument. Fällt
 der Daemon nach der Prüfung aus, schützt die Frist vor endlosem Warten.
 
+Mit `-d` (Debug) zeigt die CLI beim Warten je Datei den bekannten Stand auf
+stderr: Datenbanktreffer oder gespeicherte Eingabe, Daemon-Warteschlange bzw.
+laufender Versuch, Wiederholungen und Zeit im Schritt sowie insgesamt.
+Lokale aktuelle Daemons liefern zusätzlich den Chunk-Plan (weitere Teilung ist
+möglich), gesendete und beendete Chunks sowie RunPods `IN_QUEUE`/`IN_PROGRESS`.
+Nicht verfügbare Angaben, etwa bei älteren oder entfernten Daemons, heißen
+`unbekannt`. Treffer brauchen keine Warteanzeige. Am Terminal aktualisieren sich
+die Zeilen an Ort und Stelle; hohe Stapel wechseln alle fünf Sekunden zwischen
+fenstergroßen Ausschnitten. Auf schmalen Terminals stehen `ges` für gesendete,
+`fertig` für beendete Chunks, `W` für Wiederholungen, `S` für Schritt- und `T`
+für Gesamtsekunden. Umgeleitetes stderr enthält nur sachliche
+Änderungen als Klartextzeilen, keine Uhrenticks oder Steuerzeichen.
+Nur mit `-d` werden offene Dateien eines Stapels vor dem Warten eingereiht;
+die Ausgabe bleibt in Eingabereihenfolge. Ohne `-d` bleiben stderr, stdout und
+Exit-Codes wie bisher; mit `-d` bleiben stdout und Exit-Codes unverändert.
+Beispiel: `mineru-ocr -d scans/ --timeout 600 2>fortschritt.log`.
+
 `setup` und `daemon` bleiben Betriebskommandos. `ocr`, `status`, `show`, `wait`,
 `markdown`, `retry` und `preflight` gibt es nicht mehr als CLI-Kommandos.
 Zustände, Wiederholungen, Struktur, Bilder und vollständige Antworten sind über

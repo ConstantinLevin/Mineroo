@@ -44,6 +44,7 @@ from typing import Any, Final, Protocol
 
 import httpx
 
+from . import progress
 from .config import MASKE, Settings, ist_geheimnisname
 from .errors import (
     ConfigurationError,
@@ -582,11 +583,15 @@ class RunPodClient:
 
         Kosten: keine. Abfragen ist frei.
         """
-        return await self._anfragen(
+        antwort = await self._anfragen(
             "GET",
             f"{API_BASE}/{self._settings.require_endpoint_id()}/status/{job_id}",
             f"Job {job_id} abfragen",
         )
+        zustand = antwort.get("status")
+        if isinstance(zustand, str):
+            progress.melden(f"RunPod {zustand}", runpod=zustand)
+        return antwort
 
     async def cancel(self, job_id: str) -> dict[str, Any]:
         """Bricht einen Job bei RunPod ab: `POST {API_BASE}/{endpoint_id}/cancel/{job_id}`.

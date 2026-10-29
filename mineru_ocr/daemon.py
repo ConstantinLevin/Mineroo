@@ -225,7 +225,7 @@ async def _run(
 
                 if control is not None:
                     server = await _kontrollserver_starten(
-                        control, settings, worker, beenden, _signal_empfangen
+                        control, settings, worker, beenden, _signal_empfangen, mittel["fortschritte"]
                     )
 
                 # Auf das Signal warten — oder darauf, dass ein Worker von sich
@@ -303,6 +303,7 @@ async def _kontrollserver_starten(
     worker: Sequence[Worker],
     beenden: asyncio.Event,
     signal_empfangen: Callable[[int], None],
+    fortschritte: Any = None,
 ) -> asyncio.Server:
     """Beantwortet Status und Stop am Socket mit dem aktuellen Worker-Zustand."""
     socket_pfad, protokoll = control
@@ -322,6 +323,8 @@ async def _kontrollserver_starten(
                 "ready": all(w.worker_id is not None for w in worker),
                 "stopping": beenden.is_set(),
             }
+            if befehl == "progress" and fortschritte is not None:
+                antwort["progress"] = fortschritte.snapshot()
             schreiber.write((json.dumps(antwort) + "\n").encode())
             await schreiber.drain()
         except (OSError, asyncio.TimeoutError):
