@@ -23,7 +23,7 @@ import typer
 from typer.core import TyperGroup
 from typer.main import get_command
 
-from . import core, db, mime
+from . import __version__, core, db, mime
 from .client import OCRClient
 from .config import GUELTIGE_OCR_MODI, GUELTIGE_STUFEN, Settings
 from .errors import DocumentNotFound, MineruOcrError, UnsupportedTypeError, TooLargeError, WaitTimeoutError
@@ -46,9 +46,13 @@ class _PfadGruppe(TyperGroup):
     def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         get_command(_lese_app).format_help(ctx, formatter)
         self.format_commands(ctx, formatter)
+        self.format_epilog(ctx, formatter)
 
 
-app = typer.Typer(name="mineru-ocr", cls=_PfadGruppe, no_args_is_help=True)
+_HILFE_EPILOG: Final = f"mineru-ocr {__version__}"
+app = typer.Typer(
+    name="mineru-ocr", cls=_PfadGruppe, no_args_is_help=True, epilog=_HILFE_EPILOG,
+)
 _lese_app = typer.Typer(name="mineru-ocr", pretty_exceptions_enable=False)
 _LOG_NAME: Final = "mineru_ocr"
 
@@ -107,7 +111,7 @@ def _betriebsfehler(fehler: BaseException) -> None:
     raise typer.Exit(code=1)
 
 
-@app.command()
+@app.command(epilog=_HILFE_EPILOG)
 def setup(
     dsn: Annotated[str | None, typer.Option(help="Verbindung; sonst die Konfiguration (MINERU_OCR_DB_DSN, config.toml).")] = None,
 ) -> None:
@@ -128,10 +132,12 @@ def setup(
 
 
 _daemon_app = typer.Typer(no_args_is_help=True)
-app.add_typer(_daemon_app, name="daemon", help="Daemons im Hintergrund verwalten.")
+app.add_typer(
+    _daemon_app, name="daemon", help="Daemons im Hintergrund verwalten.", epilog=_HILFE_EPILOG,
+)
 
 
-@_daemon_app.command("start")
+@_daemon_app.command("start", epilog=_HILFE_EPILOG)
 def daemon_start(
     anzahl: Annotated[int, typer.Argument(min=1, metavar="X")],
     dsn: Annotated[str | None, typer.Option()] = None,
@@ -146,7 +152,7 @@ def daemon_start(
         _betriebsfehler(fehler)
 
 
-@_daemon_app.command("list")
+@_daemon_app.command("list", epilog=_HILFE_EPILOG)
 def daemon_list(dsn: Annotated[str | None, typer.Option()] = None) -> None:
     """Zeigt lokale Daemons, OCR-Plaetze und die OCR-Warteschlange als JSON."""
     from . import daemons
@@ -156,7 +162,7 @@ def daemon_list(dsn: Annotated[str | None, typer.Option()] = None) -> None:
         _betriebsfehler(fehler)
 
 
-@_daemon_app.command("stop")
+@_daemon_app.command("stop", epilog=_HILFE_EPILOG)
 def daemon_stop(
     anzahl: Annotated[int, typer.Argument(min=1, metavar="X")],
     dsn: Annotated[str | None, typer.Option()] = None,

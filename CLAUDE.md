@@ -78,6 +78,10 @@ bestandener Lauf überhaupt beweist:
 
 ### Das Kommando selbst
 
+Jede Hilfeseite endet mit `mineru-ocr <Version>` aus `mineru_ocr.__version__`.
+Die Haupthilfe setzt den Epilog in `_PfadGruppe.format_help` erst nach der
+Kommandoliste; die Lese-App darf ihn nicht vor diese Liste setzen.
+
 `mineru-ocr PATH…` schickt Dateien ab, wartet synchron und gibt den ganzen Text
 (`rendered_markdown`) auf stdout aus. `-t` schreibt ihn in eine temporäre Datei,
 `-o PFAD` in eine bestimmte; stdout nennt dann nur deren Pfad. Ein Stapel steht

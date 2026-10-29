@@ -51,6 +51,9 @@ Ohne Installation geht dasselbe aus dem Verzeichnis heraus als
 `/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m mineru_ocr.cli …`; es gibt
 keinen Build-Schritt.
 
+`mineru-ocr --help` und die Hilfeseiten aller Unterkommandos enden mit
+`mineru-ocr <Version>` fuer die aktuelle Paketversion.
+
 ### Konfiguration
 
 Endpoint, Datenbank und die Sollwerte des Preflights stehen **nicht im Code**,
