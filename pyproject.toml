@@ -22,6 +22,8 @@ dependencies = [
     "procrastinate>=3.10.0",
     "psycopg[binary,pool]>=3.3.3",
     "httpx>=0.28.1",
+    # HTML-Inseln in der Vollfassung; gegen die vorhandene Base geprueft (#61).
+    "html-to-markdown>=2.19.5",
     # pypdfium2 schneidet PDFs ohne Aufblaehen (gemessen 1,00x am 17-MB-
     # Fixture-Bescheid). pypdf ist im ganzen Projekt VERBOTEN (Betriebshandbuch:
     # 360 MB Quelle wurden zu 4,1 GB Einzelseiten) und taucht deshalb hier nicht

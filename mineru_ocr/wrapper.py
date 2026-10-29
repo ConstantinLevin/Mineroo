@@ -31,6 +31,7 @@ import psycopg
 
 from . import assembly, db
 from .config import ReadSettings
+from .markdown import html_to_markdown
 from .db import DocumentRow, DocumentStatus
 from .errors import ConfigurationError, DocumentNotFound, IncompleteResultError
 
@@ -324,6 +325,16 @@ class OCRWrapper:
                 steht unveraendert in `raw`.
         """
         return assembly.rendered_markdown(self._ergebnis())
+
+    @property
+    def readable_markdown(self) -> str:
+        """Die Vollfassung mit HTML als Markdown; vorhandenes Markdown bleibt.
+
+        Wie `rendered_markdown`, aber HTML-Inseln (etwa Tabellen und
+        Bildbeschreibungen) werden umgesetzt. Rohantwort und Vollfassung
+        bleiben unveraendert; dieselben Vollstaendigkeitspruefungen gelten.
+        """
+        return html_to_markdown(self.rendered_markdown)
 
     # -- Umgang -----------------------------------------------------------
 
