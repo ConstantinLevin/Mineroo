@@ -25,8 +25,14 @@ def _sicher(text: str) -> str:
     return text if text.isprintable() else repr(text)
 
 
+def _zeichenbreite(zeichen: str) -> int:
+    if unicodedata.combining(zeichen):
+        return 0
+    return 2 if unicodedata.east_asian_width(zeichen) in {"W", "F"} else 1
+
+
 def _breite(text: str) -> int:
-    return sum(0 if unicodedata.combining(z) else (2 if unicodedata.east_asian_width(z) in {"W", "F"} else 1) for z in text)
+    return sum(_zeichenbreite(zeichen) for zeichen in text)
 
 
 def _kuerzen(text: str, breite: int) -> str:
@@ -34,7 +40,7 @@ def _kuerzen(text: str, breite: int) -> str:
     ausgabe = ""
     benutzt = 0
     for zeichen in text:
-        platz = 0 if unicodedata.combining(zeichen) else (2 if unicodedata.east_asian_width(zeichen) in {"W", "F"} else 1)
+        platz = _zeichenbreite(zeichen)
         if benutzt + platz > breite:
             return ausgabe[:-1] + "~" if ausgabe else ""
         ausgabe += zeichen
@@ -124,6 +130,12 @@ class Anzeige:
             # Beobachtung darf Erfolg, Wartefrist und Exit-Code nicht aendern.
             self.schliessen()
             return
+        self._darstellen(staende, fortschritte)
+
+    def _darstellen(
+        self, staende: Sequence[dict[str, Any]], fortschritte: dict[str, Any],
+    ) -> None:
+        """Stellt einen gelesenen Snapshot ohne weitere Beobachtung dar."""
         nach_hash = {s["sha256"]: s for s in staende}
         tty = self.stream.isatty()
         try:
@@ -179,7 +191,9 @@ class Anzeige:
             versuch = "" if stand["attempts"] is None else f"; Wiederholungen {stand['attempts']}"
             # Uhren zaehlen auf TTY weiter; im Protokoll entscheidet nur der Fakt.
             fakten = f"{phase}; DB: {gespeichert}; {detail}{versuch}"
-            zeit = f"Schritt {max(0, int(jetzt - seit))}s / gesamt {max(0, int(jetzt - beginn))}s"
+            schrittsekunden = max(0, int(jetzt - seit))
+            gesamtsekunden = max(0, int(jetzt - beginn))
+            zeit = f"Schritt {schrittsekunden}s / gesamt {gesamtsekunden}s"
             zeile = f"{datei.pfad}: {fakten}; {zeit}"
             if tty and erste <= nr < letzte:
                 breite = groesse.columns - 1
@@ -195,7 +209,7 @@ class Anzeige:
                                 f"fertig:{fluechtig.get('fertig', 0)} Plan:{fluechtig.get('geplant') or '?'}")
                     if stand["attempts"] is not None:
                         kurz += f" W:{stand['attempts']}"
-                    zeit = f"S:{max(0, int(jetzt - seit))}s T:{max(0, int(jetzt - beginn))}s"
+                    zeit = f"S:{schrittsekunden}s T:{gesamtsekunden}s"
                     fakten_tty = kurz
                 else:
                     fakten_tty = fakten
@@ -209,17 +223,21 @@ class Anzeige:
                 self.stream.write(zeile + "\n")
             datei.letzte = fakten
         if tty:
-            if self.zeilen:
-                # Beim Verkleinern bricht das Terminal den alten Frame um.
-                # Zurueck geht es um physische Zeilen, nicht um Dateizeilen.
-                spalten = max(1, groesse.columns)
-                physisch = sum(max(1, (_breite(z) + spalten - 1) // spalten) for z in self.block)
-                self.stream.write(f"\x1b[{min(physisch, hoehe)}A\r\x1b[J")
-            self.block = [_kuerzen(z, max(1, groesse.columns - 1)) for z in block[:hoehe]]
-            for zeile_tty in self.block:
-                self.stream.write("\r\x1b[2K" + zeile_tty + "\n")
-            self.zeilen = len(self.block)
+            self._terminalblock_schreiben(block, breite=groesse.columns, hoehe=hoehe)
         self.stream.flush()
+
+    def _terminalblock_schreiben(self, block: list[str], *, breite: int, hoehe: int) -> None:
+        """Ersetzt den alten Frame unter Beachtung von Umbruch und Fensterhoehe."""
+        if self.zeilen:
+            # Beim Verkleinern bricht das Terminal den alten Frame um.
+            # Zurueck geht es um physische Zeilen, nicht um Dateizeilen.
+            spalten = max(1, breite)
+            physisch = sum(max(1, (_breite(z) + spalten - 1) // spalten) for z in self.block)
+            self.stream.write(f"\x1b[{min(physisch, hoehe)}A\r\x1b[J")
+        self.block = [_kuerzen(z, max(1, breite - 1)) for z in block[:hoehe]]
+        for zeile_tty in self.block:
+            self.stream.write("\r\x1b[2K" + zeile_tty + "\n")
+        self.zeilen = len(self.block)
 
     def schliessen(self) -> None:
         """Der Cursor steht nach dem Block; stdout darf wieder schreiben."""
