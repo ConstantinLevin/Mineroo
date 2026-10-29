@@ -107,7 +107,10 @@ Tabellen, werden Markdown (GFM), vorhandenes Markdown außerhalb bleibt
 zeichengetreu. Das gilt auch mit `-t`/`-o`. Beide Flags schließen einander aus;
 ohne sie bleibt `rendered_markdown` unverändert. Die Umsetzung liegt in
 `markdown.py` und der Hülle, nicht in der CLI; `html-to-markdown>=2.19.5`
-ist gegen die vorhandene Base geprüft. Es wird nur die Darstellung umgewandelt,
+ist gegen die vorhandene Base geprüft. `markdown-it-py>=4.0.0` erkennt dabei
+Code- und Referenzblöcke anhand ihrer Quellzeilen, auch in Zitaten und Listen;
+Markdown wird nie neu serialisiert. Beide Pakete liegen bereits in der Base.
+Es wird nur die Darstellung umgewandelt,
 nichts gespeichert.
 
 `setup` und `daemon` bleiben Betriebskommandos. Die bisherigen Kommandos `ocr`,

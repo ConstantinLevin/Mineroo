@@ -62,3 +62,35 @@ def test_markdown_linkziele_und_titel_bleiben_auch_neben_html_erhalten() -> None
     assert huelle('[<b>Label</b>](https://example.org "<b>Titel</b>")').readable_markdown == (
         '[**Label**](https://example.org "<b>Titel</b>")'
     )
+
+
+def test_markdown_referenztitel_in_containern_und_mit_escaptem_label_bleiben() -> None:
+    for text in (
+        '> [ref]: https://example.org "<b>literal title</b>"\n',
+        '- [ref]: https://example.org "<b>literal title</b>"\n',
+        '[ref\\]]: https://example.org "<b>literal title</b>"\n',
+        '> [ref]: https://example.org\n>   "<b>literal title</b>"\n',
+        '> - [ref]: https://example.org "<b>literal title</b>"\n',
+        '1. [ref]: https://example.org "<b>literal title</b>"\n',
+    ):
+        assert huelle(text).readable_markdown == text
+
+
+def test_markdown_code_in_zitaten_und_listen_bleibt_auch_neben_html_erhalten() -> None:
+    for text in (
+        '> ~~~html\n> <b>literal</b>\n> ~~~\n',
+        '- ~~~html\n  <b>literal</b>\n  ~~~\n',
+        '> - ~~~html\n>   <b>literal</b>\n>   ~~~\n',
+        '>     <b>literal</b>\n',
+        '-     <b>literal</b>\n',
+        '> -     <b>literal</b>\n',
+        '1.     <b>literal</b>\n',
+    ):
+        assert huelle(text + '\n<b>echt</b>').readable_markdown == text + '\n**echt**'
+
+
+def test_offener_codezaun_endet_mit_seinem_markdown_container() -> None:
+    tabelle = '<table><tr><th>A</th></tr></table>'
+    for code in ('> ~~~html\n> <b>literal</b>\n', '- ~~~html\n  <b>literal</b>\n'):
+        assert huelle(code + '\n' + tabelle).readable_markdown == code + '\n| A |\n| --- |'
+    assert huelle('~~~html\n' + tabelle).readable_markdown == '~~~html\n' + tabelle

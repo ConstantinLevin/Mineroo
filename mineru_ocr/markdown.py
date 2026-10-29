@@ -6,6 +6,7 @@ import re
 from html.parser import HTMLParser
 
 from html_to_markdown import ConversionOptions, convert
+from markdown_it import MarkdownIt
 
 
 _HTML_TAGS = frozenset("""
@@ -72,19 +73,13 @@ def _markdown_schuetzen(text: str) -> str:
             if text[i] != "\n":
                 maskiert[i] = " "
 
-    ende = 0
-    for treffer in re.finditer(r"(?m)^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)", text):
-        if treffer.start() < ende:
-            continue
-        zaun = treffer[1]
-        schluss = re.search(
-            rf"(?m)^ {{0,3}}{re.escape(zaun[0])}{{{len(zaun)},}}[ \t]*(?:\n|$)",
-            text[treffer.end():],
-        )
-        ende = treffer.end() + schluss.end() if schluss else len(text)
-        schuetzen(treffer.start(), ende)
+    # Nur Quellbereiche lesen, nie Markdown neu serialisieren. Die Zeilenkarte
+    # kennt auch offene Codezaeune, die mit ihrem Zitat oder Listeneintrag enden.
+    zeilen = [0, *(t.end() for t in re.finditer(r"\r\n?|\n", text)), len(text)]
+    for token in MarkdownIt("commonmark", {"inline_definitions": True}).parse(text):
+        if token.type in {"fence", "code_block", "definition"} and token.map is not None:
+            schuetzen(zeilen[token.map[0]], zeilen[token.map[1]])
     for muster in (
-        r"(?m)^(?: {4}|\t)[^\n]*(?:\n|$)",
         r"(?s)(`+)(?!`)(.+?)(?<!`)\1(?!`)",
         r"(?s)(?<!\\)\$\$.*?(?<!\\)\$\$|(?<![\\$])\$(?!\$)[^\n]*?(?<!\\)\$",
         r"(?s)\\\(.*?\\\)|\\\[.*?\\\]",
@@ -121,14 +116,6 @@ def _markdown_schuetzen(text: str) -> str:
                 if tiefe == 0:
                     schuetzen(treffer.start(), i + 1)
                     break
-    for treffer in re.finditer(
-        r"""(?mx)^\ {0,3}\[[^\]\n]+\]:[\t ]*\S+
-        (?:[\t ]*(?:\n[\t ]*)?
-            (?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\((?:\\.|[^)\\])*\)))?
-        """,
-        "".join(maskiert),
-    ):
-        schuetzen(treffer.start(), treffer.end())
     # Ein maskiertes Startzeichen verhindert, dass ein escaptes Tag beginnt.
     for treffer in re.finditer(r"(\\+)<", text):
         if len(treffer[1]) % 2:
