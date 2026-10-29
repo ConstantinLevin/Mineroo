@@ -98,6 +98,23 @@ mineru-ocr scan.pdf     # abschicken, warten, Volltext ausgeben
 mineru-ocr ~/Scans -o texte.md --timeout 600
 ```
 
+Mit `-d` (Debug) zeigt die CLI beim Warten je Datei den bekannten Stand auf
+stderr: Datenbanktreffer oder gespeicherte Eingabe, Daemon-Warteschlange bzw.
+laufender Versuch, Wiederholungen und Zeit im Schritt sowie insgesamt.
+Lokale aktuelle Daemons liefern zusätzlich den Chunk-Plan (weitere Teilung ist
+möglich), gesendete und beendete Chunks sowie RunPods `IN_QUEUE`/`IN_PROGRESS`.
+Nicht verfügbare Angaben, etwa bei älteren oder entfernten Daemons, heißen
+`unbekannt`. Treffer brauchen keine Warteanzeige. Am Terminal aktualisieren sich
+die Zeilen an Ort und Stelle; hohe Stapel wechseln alle fünf Sekunden zwischen
+fenstergroßen Ausschnitten. Auf schmalen Terminals stehen `ges` für gesendete,
+`fertig` für beendete Chunks, `W` für Wiederholungen, `S` für Schritt- und `T`
+für Gesamtsekunden. Umgeleitetes stderr enthält nur sachliche
+Änderungen als Klartextzeilen, keine Uhrenticks oder Steuerzeichen.
+Nur mit `-d` werden offene Dateien eines Stapels vor dem Warten eingereiht;
+die Ausgabe bleibt in Eingabereihenfolge. Ohne `-d` bleiben stderr, stdout und
+Exit-Codes wie bisher; mit `-d` bleiben stdout und Exit-Codes unverändert.
+Beispiel: `mineru-ocr -d scans/ --timeout 600 2>fortschritt.log`.
+
 `--ra` schreibt `huelle.to_dict(raw=True)` als vollständiges JSON immer in
 eine Datei (`-o PFAD`, sonst temporär mit `.json`); stdout nennt nur den Pfad.
 Ein Stapel ist ein Array mit zusätzlichem `path` je Eingabe. Auch `empty`,
@@ -342,6 +359,15 @@ Was daraus folgt und nicht aus einer einzelnen Datei hervorgeht:
   (`tests/test_client.py`, `tests/test_integration.py`).
 
 ### Ein Buch, nicht zwei
+
+Debug-Fortschritt (#64) ist keine zweite Zustandsquelle: `progress.Fortschritte`
+gehört dem Daemon, ein Eintrag lebt nur während eines Executor-Versuchs.
+`ContextVar` trennt parallele Tasks am geteilten RunPod-Zugang. Der bestehende
+Kontrollsocket liefert ihn nur auf `progress`; Job-ID und Worker-ID müssen zur
+aktuellen DB-Zeile passen. Die Debuganzeige liest Eingabe, Ergebnis, Job und
+Ereigniszeiten in einem Snapshot, ohne `content` oder `raw`; nach einem Absturz
+bleiben Chunk-Angaben unbekannt. Der optionale Beobachter der synchronen
+DB-Warteschleife ist nur für die CLI, ohne Änderung der Bibliotheksausgabe.
 
 Jede Tatsache steht an genau einer Stelle: das Ergebnis in `documents`, die
 offene Eingabe in `inputs`, was wartet oder läuft in Procrastinates Job-Tabelle.

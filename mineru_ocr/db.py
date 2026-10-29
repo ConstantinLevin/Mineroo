@@ -32,7 +32,7 @@ import enum
 import json
 import math
 import time
-from collections.abc import AsyncGenerator, Generator, Iterable, Iterator, Sequence
+from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from datetime import datetime
@@ -2112,6 +2112,7 @@ def wait_for_terminal(
     *,
     timeout: float | None = None,
     poll_seconds: float = DEFAULT_WAIT_POLL_SECONDS,
+    _on_poll: Callable[[psycopg.Connection[Any]], None] | None = None,
 ) -> Generator[DocumentRow]:
     """Wartet auf das Ergebnis vieler Dokumente und liefert jedes, sobald es da ist.
 
@@ -2216,6 +2217,8 @@ def wait_for_terminal(
                     yield from plan.auswerten(read_states(conn, plan.alle()))
                     plan.frist_melden()
                     return
+                if _on_poll is not None:
+                    _on_poll(conn)
                 warte = plan.wartezeit()
                 if warte is None:
                     zu_lesen = plan.alle()

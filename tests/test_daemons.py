@@ -208,11 +208,11 @@ def test_drei_hintergrundprozesse_stoppen_und_absturz(
     print(f"Daemon-Test: db={einstellung.db_dsn}; config={konfig}; endpoint=testendpoint; concurrency=2; key=fake (maskiert)", flush=True)
     pids: list[int] = []
     try:
-        start = CliRunner().invoke(app, ["daemon", "start", "3", "--concurrency", "2"])
+        start = CliRunner().invoke(app, ["daemon", "start", "3", "--concurrency", "2", "--dsn", TEST_DSN])
         assert start.exit_code == 0, start.output
         gestartet = json.loads(start.stdout)["daemons"]
         pids = [d["pid"] for d in gestartet]
-        liste = CliRunner().invoke(app, ["daemon", "list"])
+        liste = CliRunner().invoke(app, ["daemon", "list", "--dsn", TEST_DSN])
         daten = json.loads(liste.stdout)
         assert daten["count"] == 3
         assert daten["slots"] == {"occupied": 0, "available": 6}
@@ -229,12 +229,12 @@ def test_drei_hintergrundprozesse_stoppen_und_absturz(
             "INSERT INTO procrastinate_jobs (queue_name, task_name, scheduled_at) "
             "VALUES ('ocr', 'synthetisch', now() + interval '1 day')"
         )
-        daten = json.loads(CliRunner().invoke(app, ["daemon", "list"]).stdout)
+        daten = json.loads(CliRunner().invoke(app, ["daemon", "list", "--dsn", TEST_DSN]).stdout)
         assert daten["slots"] == {"occupied": 1, "available": 6}
         assert daten["queue"] == {"waiting": 1, "running": 1}
-        stop = CliRunner().invoke(app, ["daemon", "stop", "2"])
+        stop = CliRunner().invoke(app, ["daemon", "stop", "2", "--dsn", TEST_DSN])
         assert stop.exit_code == 0, stop.output
-        daten = json.loads(CliRunner().invoke(app, ["daemon", "list"]).stdout)
+        daten = json.loads(CliRunner().invoke(app, ["daemon", "list", "--dsn", TEST_DSN]).stdout)
         assert daten["count"] == 1
         assert daten["daemons"][0]["pid"] == pids[-1]
         # Nur den in diesem Test gestarteten Prozess hart beenden.
@@ -243,7 +243,7 @@ def test_drei_hintergrundprozesse_stoppen_und_absturz(
         while daemons.status(einstellung)["count"] and time.monotonic() < frist:
             time.sleep(0.05)
         assert daemons.status(einstellung)["count"] == 0
-        stop = CliRunner().invoke(app, ["daemon", "stop", "4"])
+        stop = CliRunner().invoke(app, ["daemon", "stop", "4", "--dsn", TEST_DSN])
         assert stop.exit_code == 0, stop.output
         assert json.loads(stop.stdout) == {"requested": 4, "stopped": 0, "running_before": 0}
     finally:

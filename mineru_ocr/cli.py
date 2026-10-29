@@ -16,6 +16,7 @@ import logging
 import math
 import tempfile
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Annotated, Any, Final
 
 import click
@@ -28,6 +29,8 @@ from .client import OCRClient
 from .config import GUELTIGE_OCR_MODI, GUELTIGE_STUFEN, Settings
 from .errors import DocumentNotFound, MineruOcrError, UnsupportedTypeError, TooLargeError, WaitTimeoutError
 from .db import DocumentStatus
+from .wrapper import OCRWrapper
+from .wait_display import Anzeige
 
 
 class _PfadGruppe(TyperGroup):
@@ -175,9 +178,51 @@ def daemon_stop(
         _betriebsfehler(fehler)
 
 
+def _eingaben(
+    klient: OCRClient, kandidaten: list[tuple[Path, bool]], codes: set[int],
+    tier: str | None, ocr_mode: str | None, image_analysis: bool | None,
+    anzeige: Anzeige | None,
+) -> Iterator[tuple[Path, OCRWrapper | str | Exception]]:
+    """Ohne Debug traege wie bisher, mit Debug vorab als Stapel eingereiht."""
+    for pfad, ausdruecklich in kandidaten:
+        try:
+            try:
+                inhalt = _lesen(pfad)
+            except (UnsupportedTypeError, TooLargeError) as fehler:
+                typer.echo(f"{_pfad_zeigen(str(pfad))}: uebersprungen: {fehler}", err=True)
+                if ausdruecklich:
+                    codes.add(1)
+                continue
+            try:
+                huelle = klient.get(hashlib.sha256(inhalt).hexdigest())
+            except DocumentNotFound:
+                if not db.worker_heartbeats(klient.conn):
+                    typer.echo(
+                        f"{_pfad_zeigen(str(pfad))}: Es laufen keine Daemons. "
+                        "Start: `mineru-ocr daemon start X` "
+                        "und Kontrolle: `mineru-ocr daemon list`.",
+                        err=True,
+                    )
+                    codes.add(5)
+                    continue
+                gereicht = str(klient.ocr_start(
+                    inhalt, tier=tier, ocr_mode=ocr_mode, image_analysis=image_analysis,
+                ))
+                if anzeige is not None:
+                    anzeige.hinzufuegen(pfad, gereicht)
+                yield pfad, gereicht
+            else:
+                if anzeige is not None:
+                    anzeige.treffer(pfad, huelle)
+                yield pfad, huelle
+        except (MineruOcrError, OSError) as fehler:
+            yield pfad, fehler
+
+
 @_lese_app.command()
 def lesen(
     paths: Annotated[list[Path], typer.Argument(help="Dateien oder Verzeichnisse.", metavar="PATH…")],
+    debug: Annotated[bool, typer.Option("-d", help="Debug: bekannten Wartefortschritt je Datei auf stderr anzeigen.")] = False,
     temporary: Annotated[bool, typer.Option("-t", help="Text in eine temporaere Datei schreiben; deren Pfad ausgeben.")] = False,
     out: Annotated[Path | None, typer.Option("-o", help="Ausgabe in diese UTF-8-Datei schreiben; deren Pfad ausgeben.")] = None,
     render: Annotated[bool, typer.Option("--re", help="HTML im Volltext als Markdown darstellen; vorhandenes Markdown bleibt.")] = False,
@@ -220,31 +265,18 @@ def lesen(
     erfolg = False
     try:
         with OCRClient(preflight=False) as klient:
-            for pfad, ausdruecklich in kandidaten:
+            anzeige = Anzeige(klient) if debug else None
+            eingaben = _eingaben(klient, kandidaten, codes, tier, ocr_mode, image_analysis, anzeige)
+            vorbereitet = list(eingaben) if debug else eingaben
+            for pfad, eingabe in vorbereitet:
                 try:
-                    try:
-                        inhalt = _lesen(pfad)
-                    except (UnsupportedTypeError, TooLargeError) as fehler:
-                        typer.echo(f"{_pfad_zeigen(str(pfad))}: uebersprungen: {fehler}", err=True)
-                        if ausdruecklich:
-                            codes.add(1)
-                        continue
-                    try:
-                        huelle = klient.get(hashlib.sha256(inhalt).hexdigest())
-                    except DocumentNotFound:
-                        if not db.worker_heartbeats(klient.conn):
-                            typer.echo(
-                                f"{_pfad_zeigen(str(pfad))}: Es laufen keine Daemons. "
-                                "Start: `mineru-ocr daemon start X` "
-                                "und Kontrolle: `mineru-ocr daemon list`.",
-                                err=True,
-                            )
-                            codes.add(5)
-                            continue
-                        gereicht = klient.ocr_start(
-                            inhalt, tier=tier, ocr_mode=ocr_mode, image_analysis=image_analysis,
-                        )
-                        huelle = klient.wait(str(gereicht), timeout=timeout)
+                    if isinstance(eingabe, Exception):
+                        raise eingabe
+                    if isinstance(eingabe, str):
+                        huelle = (klient.wait(eingabe, timeout=timeout) if anzeige is None
+                                  else anzeige.wait(eingabe, timeout))
+                    else:
+                        huelle = eingabe
                     if raw:
                         daten = huelle.to_dict(raw=True)
                         if len(kandidaten) > 1:

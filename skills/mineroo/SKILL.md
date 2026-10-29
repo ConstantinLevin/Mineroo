@@ -69,6 +69,23 @@ Text seine Quelldatei; `-t` und `-o` schreiben den ganzen Stapel in eine Datei.
 Ordner werden rekursiv gelesen, fremde und zu große Dateien mit Grund
 übersprungen. Meldungen gehen auf stderr.
 
+Mit `-d` (Debug) zeigt die CLI beim Warten je Datei den bekannten Stand auf
+stderr: Datenbanktreffer oder gespeicherte Eingabe, Daemon-Warteschlange bzw.
+laufender Versuch, Wiederholungen und Zeit im Schritt sowie insgesamt.
+Lokale aktuelle Daemons liefern zusätzlich den Chunk-Plan (weitere Teilung ist
+möglich), gesendete und beendete Chunks sowie RunPods `IN_QUEUE`/`IN_PROGRESS`.
+Nicht verfügbare Angaben, etwa bei älteren oder entfernten Daemons, heißen
+`unbekannt`. Treffer brauchen keine Warteanzeige. Am Terminal aktualisieren sich
+die Zeilen an Ort und Stelle; hohe Stapel wechseln alle fünf Sekunden zwischen
+fenstergroßen Ausschnitten. Auf schmalen Terminals stehen `ges` für gesendete,
+`fertig` für beendete Chunks, `W` für Wiederholungen, `S` für Schritt- und `T`
+für Gesamtsekunden. Umgeleitetes stderr enthält nur sachliche
+Änderungen als Klartextzeilen, keine Uhrenticks oder Steuerzeichen.
+Nur mit `-d` werden offene Dateien eines Stapels vor dem Warten eingereiht;
+die Ausgabe bleibt in Eingabereihenfolge. Ohne `-d` bleiben stderr, stdout und
+Exit-Codes wie bisher; mit `-d` bleiben stdout und Exit-Codes unverändert.
+Beispiel: `mineru-ocr -d scans/ --timeout 600 2>fortschritt.log`.
+
 Für das vollständige gespeicherte Ergebnis wählst du `--ra`: Dokumentangaben
 samt `raw`, einschließlich Bildern, gehen als JSON immer in eine Datei (`-o
 PFAD`, sonst temporär); stdout nennt nur deren Pfad. Ein Stapel enthält je

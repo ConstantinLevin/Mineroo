@@ -39,7 +39,7 @@ from typing import Any, Final, TypeVar
 
 from psycopg_pool import AsyncConnectionPool
 
-from . import assembly, chunking, db, images, vollstaendigkeit
+from . import assembly, chunking, db, images, progress, vollstaendigkeit
 from .abbruch import abwarten_bis_zum_zweiten_abbruch
 from .config import ReadSettings, Settings
 from .errors import (
@@ -473,9 +473,11 @@ async def process_document(
                     # dort `failed`, bezahlt; hier endet sie `input_error`, ohne
                     # RunPod-Kontakt, wie geschnitten in `extract`.
                     leser.check_pages()
+                progress.melden("RunPod vorbereiten", geplant=len(chunking.plan_chunks(seiten, settings)))
                 image_tag = await _image_tag_lesen(runpod, vermerke, lesefragen=lesefragen)
                 # Vorsorglich, VOR dem ersten bezahlten Aufruf. Bei leerem Konto
                 # liefe man sonst in eine Wand aus 402-Antworten.
+                progress.melden("Kontostand pruefen / warten")
                 await wait_for_balance(runpod, settings, lesefragen=lesefragen)
                 def schneiden(erste: int, letzte: int) -> bytes:
                     # Passt die Worker-Eingabe, bleibt sie unveraendert. Auch dann kann
@@ -537,7 +539,9 @@ async def process_document(
                     "nur das erste. Bitte als PDF einreichen. Es wurde nichts "
                     "bezahlt."
                 )
+            progress.melden("RunPod vorbereiten", geplant=1)
             image_tag = await _image_tag_lesen(runpod, vermerke, lesefragen=lesefragen)
+            progress.melden("Kontostand pruefen / warten")
             await wait_for_balance(runpod, settings, lesefragen=lesefragen)
             # Ein Bild ist eine Seite; ein Ganzdokument-Format (Office,
             # OpenDocument, RTF, EPUB, OFD, HTML, MHTML) hat keine Seitenzahl, die
@@ -559,6 +563,7 @@ async def process_document(
                 seiten_zaehlen=typ.is_image,
             )
 
+        progress.melden("Ergebnis zusammensetzen und speichern")
         # --- 3.: nachrechnen, zusammensetzen, EINMAL schreiben ----------
         if seiten is not None:
             # Die laute Gegenrechnung. Sie steht hier und nicht in `plan_chunks`,
@@ -1335,6 +1340,7 @@ async def _stuecke_verarbeiten(
     """
     teilzahl: int | None = None
     while True:
+        progress.melden("Teilstueck vorbereiten", runpod=None)
         try:
             chunk, daten = stuecke.send(teilzahl)
         except StopIteration:
@@ -1351,10 +1357,12 @@ async def _stuecke_verarbeiten(
                 transport=settings.transport,
             )
 
+        progress.melden("Zu RunPod senden")
         job = await _mit_kontopause(
             absenden, runpod=runpod, settings=settings, schritt="Absenden",
             lesefragen=lesefragen,
         )
+        progress.gesendet()
         log.info(
             "RunPod-Job %s abgeschickt: Dokument %s, Seiten %s-%s (null-basiert).",
             job, sha256, chunk.first_page, chunk.last_page,
@@ -1407,6 +1415,7 @@ async def _stuecke_verarbeiten(
             # abholt. Der Grund des Fehlers bleibt der Grund: Er wird weitergeworfen.
             await _abbruch_nach_fehler(runpod, job)
             raise
+        progress.fertig()
         try:
             # BEIDE Schritte im selben Schutz: das Bewerten des Endzustands und
             # das Auspacken. Der erste stand frueher davor, und damit ueberlebte

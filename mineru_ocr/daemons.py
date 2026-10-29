@@ -47,11 +47,11 @@ def verzeichnis(settings: Settings) -> Path:
     return pfad
 
 
-def fragen(pfad: Path, befehl: str = "status") -> dict[str, Any] | None:
+def fragen(pfad: Path, befehl: str = "status", *, timeout: float = 2) -> dict[str, Any] | None:
     """Fragt den Prozess selbst, mit Frist; ein totes Socket zaehlt nicht."""
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as kanal:
-            kanal.settimeout(2)
+            kanal.settimeout(timeout)
             kanal.connect(str(pfad))
             kanal.sendall((befehl + "\n").encode())
             daten = bytearray()
