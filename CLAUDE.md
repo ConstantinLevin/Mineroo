@@ -160,9 +160,9 @@ statt Build-Werkzeug nachzuladen. Die Installation ist editierbar und zeigt auf 
 Checkout, aus dem sie gemacht wurde: nicht aus einem Arbeitsbaum, der wieder
 verschwindet (ein Worktree eines Laufs).
 
-**Der Agent-Skill.** `skills/mineroo/SKILL.md` sagt Agenten, die Mineroo
-*benutzen*, wann und wie sie Dokumente lesen lassen (Bibliothek oder CLI, Warten
-auf viele, Daemon, Kosten, EWR und personenbezogene Daten); für die Arbeit am Code
+**Der Agent-Skill.** `skills/mineroo/SKILL.md` führt kurz in Mineroo ein und
+verweist nach Auftrag auf fünf Referenzen unter `skills/mineroo/references/`: ein Dokument,
+viele Dokumente, CLI, Python sowie Technik und Betrieb; für die Arbeit am Code
 gilt diese Datei. Verlinkt wird er wie die Installation aus dem Haupt-Checkout, in
 die Skill-Verzeichnisse von Claude Code und der übrigen Agenten; die Befehle stehen
 in `README.md` unter „Für Agenten: der Skill“.
