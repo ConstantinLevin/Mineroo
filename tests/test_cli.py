@@ -439,3 +439,145 @@ def test_reine_fehlschlaege_lassen_das_ausgabeziel_unberuehrt(
     assert ziel.exists() == vorhanden
     if vorhanden:
         assert ziel.read_text() == "Alter Text"
+
+
+@pytest.mark.parametrize("ziel", ["temp", "out"])
+def test_raw_schreibt_die_vollstaendige_huelle_nur_in_eine_jsondatei(
+    db_conn: psycopg.Connection[Any], tmp_path: Path, ziel: str,
+) -> None:
+    import json
+    import tempfile
+
+    from mineru_ocr import OCRClient
+
+    pfad = datei(tmp_path)
+    speichern(db_conn, pfad)
+    raw = {
+        "markdown_full": "Ungefiltert <table>synthetisch</table>",
+        "images": {"bild.png": "ZXJmdW5kZW4="},
+        "unbekannt": {"alles": [1, None, "Übung"]},
+    }
+    db_conn.execute("UPDATE documents SET raw = %s", (Jsonb(raw),))
+    with OCRClient(preflight=False) as klient:
+        erwartet = klient.get(hashlib.sha256(pfad.read_bytes()).hexdigest()).to_dict(raw=True)
+    args = [str(pfad), "--ra"]
+    if ziel == "out":
+        args += ["-o", str(tmp_path / "roh.json")]
+    lauf = CliRunner().invoke(app, args)
+    assert lauf.exit_code == 0, lauf.output
+    assert len(lauf.stdout.splitlines()) == 1
+    ausgabe = Path(lauf.stdout.strip())
+    try:
+        assert ausgabe.suffix == ".json"
+        if ziel == "temp":
+            assert ausgabe.is_relative_to(Path(tempfile.gettempdir()))
+        assert json.loads(ausgabe.read_text(encoding="utf-8")) == erwartet
+        assert lauf.stderr == ""
+    finally:
+        ausgabe.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("ziel", ["stdout", "temp", "out"])
+def test_render_gilt_fuer_stdout_und_dateien(
+    db_conn: psycopg.Connection[Any], tmp_path: Path, ziel: str,
+) -> None:
+    pfad = datei(tmp_path)
+    speichern(db_conn, pfad, '*Wert* foo_bar $x_i=a*b$\n\n<table><tr><th>A</th></tr><tr><td>2</td></tr></table>\n\n_Fuss_')
+    erwartet = '*Wert* foo_bar $x_i=a*b$\n\n| A |\n| --- |\n| 2 |\n\n_Fuss_'
+    args = [str(pfad), "--re"]
+    if ziel == "temp":
+        args.append("-t")
+    elif ziel == "out":
+        args += ["-o", str(tmp_path / "lesbar.md")]
+    lauf = CliRunner().invoke(app, args)
+    assert lauf.exit_code == 0, lauf.output
+    assert lauf.stderr == ""
+    if ziel == "stdout":
+        assert lauf.stdout == erwartet + "\n"
+    else:
+        ausgabe = Path(lauf.stdout.strip())
+        try:
+            assert ausgabe.read_text(encoding="utf-8") == erwartet
+        finally:
+            ausgabe.unlink(missing_ok=True)
+
+
+def test_render_setzt_stapel_nach_kaputter_deklaration_fort(
+    db_conn: psycopg.Connection[Any], tmp_path: Path,
+) -> None:
+    kaputt = datei(tmp_path, 'kaputt.png')
+    danach = datei(tmp_path, 'danach.png')
+    speichern(db_conn, kaputt, '<![foo]>\n\n<b>Erstes</b>')
+    speichern(db_conn, danach, '> <table><tr><th>Zweites</th></tr></table>')
+    lauf = CliRunner().invoke(app, [str(kaputt), str(danach), '--re'])
+    assert lauf.exit_code == 0, lauf.output
+    assert lauf.stderr == ''
+    assert '<![foo]>\n\n**Erstes**' in lauf.stdout
+    assert '> | Zweites |\n> | --- |' in lauf.stdout
+    gespeichert = db_conn.execute('SELECT raw FROM documents ORDER BY sha256').fetchall()
+    assert len(gespeichert) == 2
+    assert any(z[0]['markdown_full'] == '<![foo]>\n\n<b>Erstes</b>' for z in gespeichert)
+    assert db_conn.execute('SELECT count(*) FROM procrastinate_jobs').fetchone() == (0,)
+
+
+@pytest.mark.parametrize("option", ["--ra", "--re"])
+@pytest.mark.parametrize("status,code", [("empty", 0), ("failed", 3), ("input_error", 3)])
+def test_ausgabemodi_behalten_endzustaende_und_exitcodes(
+    db_conn: psycopg.Connection[Any], tmp_path: Path, option: str, status: str, code: int,
+) -> None:
+    import json
+
+    pfad = datei(tmp_path)
+    speichern(db_conn, pfad, status=status, error=None if status == "empty" else "Erfundener Fehler")
+    db_conn.execute("UPDATE documents SET raw = NULL")
+    lauf = CliRunner().invoke(app, [str(pfad), option])
+    assert lauf.exit_code == code, lauf.output
+    assert status in lauf.stderr
+    if option == "--ra":
+        ausgabe = Path(lauf.stdout.strip())
+        try:
+            daten = json.loads(ausgabe.read_text(encoding="utf-8"))
+            assert daten["status"] == status
+            assert daten["raw"] == {}
+            assert daten["success"] == (status == "empty")
+        finally:
+            ausgabe.unlink(missing_ok=True)
+    else:
+        assert lauf.stdout == ""
+
+
+@pytest.mark.parametrize("ziel", ["temp", "out"])
+def test_raw_stapel_hat_je_eingabepfad_ein_vollstaendiges_ergebnis(
+    db_conn: psycopg.Connection[Any], tmp_path: Path, ziel: str,
+) -> None:
+    import json
+
+    a = datei(tmp_path, "eingaben/eins.png")
+    b = datei(tmp_path, "eingaben/unter/zwei.png")
+    b.write_bytes(a.read_bytes())
+    speichern(db_conn, a, "<b>Unveraendert</b>")
+    args = [str(a.parent), "--ra"]
+    if ziel == "out":
+        args += ["-o", str(tmp_path / "stapel.json")]
+    lauf = CliRunner().invoke(app, args)
+    assert lauf.exit_code == 0, lauf.output
+    assert len(lauf.stdout.splitlines()) == 1
+    ausgabe = Path(lauf.stdout.strip())
+    try:
+        daten = json.loads(ausgabe.read_text(encoding="utf-8"))
+        assert [d["path"] for d in daten] == [str(a), str(b)]
+        assert all(d["raw"]["markdown_full"] == "<b>Unveraendert</b>" for d in daten)
+        assert all(d["sha256"] == hashlib.sha256(a.read_bytes()).hexdigest() for d in daten)
+    finally:
+        ausgabe.unlink(missing_ok=True)
+
+
+def test_raw_und_render_schliessen_einander_aus(
+    db_conn: psycopg.Connection[Any], tmp_path: Path,
+) -> None:
+    pfad = datei(tmp_path)
+    ziel = tmp_path / "nicht-anlegen.json"
+    lauf = CliRunner().invoke(app, [str(pfad), "--ra", "--re", "-o", str(ziel)])
+    assert lauf.exit_code == 2, lauf.output
+    assert not ziel.exists()
+    assert db_conn.execute("SELECT count(*) FROM inputs").fetchone() == (0,)

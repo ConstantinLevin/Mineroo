@@ -159,6 +159,10 @@ mineru-ocr daemon stop 2         # zwei ordentlich beenden
 mineru-ocr dokument.pdf          # abschicken, warten, Volltext auf stdout
 mineru-ocr dokument.pdf -t       # Volltext in temporaere Datei; Pfad auf stdout
 mineru-ocr dokument.pdf -o text.md
+mineru-ocr dokument.pdf --ra      # vollstaendiges JSON in temporaere Datei
+mineru-ocr dokument.pdf --ra -o ergebnis.json
+mineru-ocr dokument.pdf --re      # HTML (auch Tabellen) als Markdown
+mineru-ocr dokument.pdf --re -o lesbar.md
 mineru-ocr ~/Scans --timeout 600  # rekursiv; Wartefrist je Dokument
 ```
 
@@ -177,6 +181,22 @@ Eingabedatei darf nicht das Ausgabeziel sein. Ohne diese Optionen steht der Text
 auf stdout. Meldungen und Fehler stehen immer auf stderr. Fremde oder zu große
 Dateien in Ordnern werden mit Grund übersprungen; ausdrücklich genannte
 problematische Dateien führen zu Exit-Code 1. Die übrigen Dateien laufen weiter.
+
+`--ra` schreibt die vollständigen gespeicherten Dokumentangaben samt `raw`
+(auch Bilder und unbekannte Felder) als JSON in eine Datei: mit `-o PFAD`
+dorthin, sonst in eine temporäre `.json`-Datei. Auf stdout steht ausschließlich
+der Dateipfad. Eine einzelne Eingabe ergibt ein JSON-Objekt wie
+`OCRClient.get(h).to_dict(raw=True)`, ein Stapel ein Array solcher Objekte mit
+zusätzlichem `path` je Eingabedatei. Auch `empty`, `failed` und `input_error`
+stehen darin; ihre Meldungen und Exit-Codes bleiben erhalten.
+
+`--re` setzt HTML-Inseln im Volltext in lesbares Markdown um, Tabellen als
+GFM-Tabellen. Vorhandenes Markdown außerhalb von HTML bleibt zeichengetreu,
+auch Code und Formeln. Das gilt für stdout und mit `-t`/`-o` für die Datei.
+`--ra` und `--re` schließen einander aus (Exit-Code 2). Ohne beide Optionen
+bleibt die Ausgabe unverändert. In Python liefert `huelle.readable_markdown`
+dieselbe Darstellung; `huelle.rendered_markdown` bleibt die unveränderte
+Vollfassung. Beide prüfen, dass die Vollfassung vollständig vorliegt.
 
 | Exit-Code | Bedeutung |
 |---|---|

@@ -1,6 +1,6 @@
 """Dateien abschicken, synchron warten und den ganzen Dokumenttext ausgeben.
 
-Die Bibliothek bleibt der Zugang fuer Struktur, Rohantworten und Job-Verwaltung.
+Die Bibliothek bleibt der Zugang fuer Struktur und Job-Verwaltung.
 Pfade und Ausgabeziele kennt nur die CLI. `setup` und `daemon` sind Betrieb.
 
 Exit-Codes: 0 Erfolg (auch empty), 1 Betriebs-/Dateifehler, 2 Aufruffehler,
@@ -16,7 +16,7 @@ import logging
 import math
 import tempfile
 from pathlib import Path
-from typing import Annotated, Final
+from typing import Annotated, Any, Final
 
 import click
 import typer
@@ -94,13 +94,13 @@ def _ausgabe_pruefen(out: Path, kandidaten: list[tuple[Path, bool]]) -> None:
             raise typer.BadParameter("Die Ausgabe darf keine Eingabedatei ueberschreiben.")
 
 
-def _textdatei_schreiben(text: str, out: Path | None) -> str:
+def _textdatei_schreiben(text: str, out: Path | None, *, suffix: str = ".md") -> str:
     """Schreibt UTF-8 ins gewaehlte oder temporaere Ziel und liefert dessen Pfad."""
     if out is not None:
         out.write_text(text, encoding="utf-8")
         return str(out)
     with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", prefix="mineru-ocr-", suffix=".md", delete=False,
+        mode="w", encoding="utf-8", prefix="mineru-ocr-", suffix=suffix, delete=False,
     ) as ausgabe:
         ausgabe.write(text)
     return ausgabe.name
@@ -179,7 +179,9 @@ def daemon_stop(
 def lesen(
     paths: Annotated[list[Path], typer.Argument(help="Dateien oder Verzeichnisse.", metavar="PATH…")],
     temporary: Annotated[bool, typer.Option("-t", help="Text in eine temporaere Datei schreiben; deren Pfad ausgeben.")] = False,
-    out: Annotated[Path | None, typer.Option("-o", help="Text in diese UTF-8-Datei schreiben; deren Pfad ausgeben.")] = None,
+    out: Annotated[Path | None, typer.Option("-o", help="Ausgabe in diese UTF-8-Datei schreiben; deren Pfad ausgeben.")] = None,
+    render: Annotated[bool, typer.Option("--re", help="HTML im Volltext als Markdown darstellen; vorhandenes Markdown bleibt.")] = False,
+    raw: Annotated[bool, typer.Option("--ra", help="Vollstaendiges gespeichertes Ergebnis als JSON-Datei; -o oder temporaer, nur Pfad auf stdout.")] = False,
     timeout: Annotated[float | None, typer.Option(help="Wartefrist je Dokument in Sekunden; ohne Angabe unbegrenzt.")] = None,
     tier: Annotated[str | None, typer.Option(click_type=click.Choice(sorted(GUELTIGE_STUFEN)), help="MinerU-Stufe fuer neue Dokumente.")] = None,
     ocr_mode: Annotated[str | None, typer.Option(click_type=click.Choice(sorted(GUELTIGE_OCR_MODI)), help="Textquelle fuer neue Dokumente.")] = None,
@@ -190,12 +192,16 @@ def lesen(
     Treffer aus der Datenbank brauchen keinen Daemon. Neue oder offene Dateien
     brauchen einen frischen Herzschlag; ohne ihn wird nichts eingereiht.
     Mehrere Dateien erhalten je eine Pfad-Ueberschrift; -t/-o schreiben alle
-    Texte in eine Datei. Meldungen und Gruende stehen auf stderr.
+    Texte in eine Datei. --ra schreibt vollstaendiges JSON immer in eine
+    Datei (-o oder temporaer); --re setzt HTML im Text nach Markdown um.
+    Beide schliessen einander aus. Meldungen und Gruende stehen auf stderr.
 
     Exit-Codes: 0 Erfolg (auch empty), 1 Betriebs-/Dateifehler, 2 Aufruffehler,
     3 failed/input_error, 4 Wartefrist abgelaufen, 5 kein laufender Daemon,
     130 Strg-C. Vorrang bei mehreren: 1 vor 5 vor 4 vor 3 vor 0.
     """
+    if raw and render:
+        raise typer.BadParameter("--ra und --re schliessen einander aus.")
     if temporary and out is not None:
         raise typer.BadParameter("-t und -o schliessen einander aus.")
     if timeout is not None and (not math.isfinite(timeout) or timeout < 0):
@@ -210,6 +216,7 @@ def lesen(
         _ausgabe_pruefen(out, kandidaten)
     codes: set[int] = set()
     texte: list[str] = []
+    rohdaten: list[dict[str, Any]] = []
     erfolg = False
     try:
         with OCRClient(preflight=False) as klient:
@@ -238,6 +245,11 @@ def lesen(
                             inhalt, tier=tier, ocr_mode=ocr_mode, image_analysis=image_analysis,
                         )
                         huelle = klient.wait(str(gereicht), timeout=timeout)
+                    if raw:
+                        daten = huelle.to_dict(raw=True)
+                        if len(kandidaten) > 1:
+                            daten = {"path": str(pfad), **daten}
+                        rohdaten.append(daten)
                     if huelle.status != DocumentStatus.DONE:
                         typer.echo(
                             f"{_pfad_zeigen(str(pfad))}: {huelle.status.value}: "
@@ -249,7 +261,9 @@ def lesen(
                         else:
                             erfolg = True
                         continue
-                    text = huelle.rendered_markdown
+                    if raw:
+                        continue
+                    text = huelle.readable_markdown if render else huelle.rendered_markdown
                     erfolg = True
                     if len(kandidaten) > 1:
                         text = f"# Datei: {_pfad_zeigen(str(pfad))}\n\n{text}"
@@ -263,7 +277,13 @@ def lesen(
                 except (MineruOcrError, OSError) as fehler:
                     typer.echo(f"{_pfad_zeigen(str(pfad))}: {type(fehler).__name__}: {fehler}", err=True)
                     codes.add(1)
-        if (temporary or out is not None) and erfolg:
+        if raw and rohdaten:
+            daten_json = json.dumps(
+                rohdaten if len(kandidaten) > 1 else rohdaten[0],
+                ensure_ascii=False, indent=2,
+            )
+            typer.echo(_textdatei_schreiben(daten_json, out, suffix=".json"))
+        elif not raw and (temporary or out is not None) and erfolg:
             typer.echo(_textdatei_schreiben("\n\n".join(texte), out))
     except (MineruOcrError, OSError) as fehler:
         _betriebsfehler(fehler)

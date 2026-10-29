@@ -22,6 +22,11 @@ dependencies = [
     "procrastinate>=3.10.0",
     "psycopg[binary,pool]>=3.3.3",
     "httpx>=0.28.1",
+    # HTML-Inseln in der Vollfassung; gegen die vorhandene Base geprueft (#61).
+    "html-to-markdown>=2.19.5",
+    # Erkennt Code- und Referenzbloecke, ohne Markdown neu zu schreiben.
+    # Auch 4.0.0 liegt bereits in der geteilten Miniconda-Base (#61).
+    "markdown-it-py>=4.0.0",
     # pypdfium2 schneidet PDFs ohne Aufblaehen (gemessen 1,00x am 17-MB-
     # Fixture-Bescheid). pypdf ist im ganzen Projekt VERBOTEN (Betriebshandbuch:
     # 360 MB Quelle wurden zu 4,1 GB Einzelseiten) und taucht deshalb hier nicht

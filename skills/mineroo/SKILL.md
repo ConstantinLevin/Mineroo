@@ -69,6 +69,16 @@ Text seine Quelldatei; `-t` und `-o` schreiben den ganzen Stapel in eine Datei.
 Ordner werden rekursiv gelesen, fremde und zu große Dateien mit Grund
 übersprungen. Meldungen gehen auf stderr.
 
+Für das vollständige gespeicherte Ergebnis wählst du `--ra`: Dokumentangaben
+samt `raw`, einschließlich Bildern, gehen als JSON immer in eine Datei (`-o
+PFAD`, sonst temporär); stdout nennt nur deren Pfad. Ein Stapel enthält je
+Eingabepfad einen Eintrag. Auch bei `empty`, `failed` und `input_error` erhältst
+du das gespeicherte JSON, bei unveränderten Meldungen und Exit-Codes.
+Für lesbaren Text mit HTML-Tabellen als GFM-Markdown wählst du `--re`, auch mit
+`-t`/`-o`. Markdown außerhalb von HTML bleibt unverändert. Die beiden Optionen
+schließen einander aus. In Python ist `readable_markdown` diese Darstellung
+neben der unveränderten Vollfassung `rendered_markdown`.
+
 Setz beim Dateiaufruf `--timeout S`, um das Warten je Dokument zu begrenzen.
 Exit-Code 4 lässt den Job bestehen; später rufst du denselben Pfad erneut auf.
 Exit-Code 5 sagt: kein laufender Daemon, für diese Datei wurde nichts eingereiht.
@@ -80,7 +90,8 @@ trotzdem in der Ausgabe.
 
 `setup` und `daemon` bleiben Betriebskommandos. Die bisherigen Kommandos `ocr`,
 `status`, `show`, `wait`, `markdown`, `retry` und `preflight` sind entfernt.
-Struktur, Bilder, Rohantworten, Zustände und Wiederholungen nutzt du über Python.
+Struktur, Bilder, Zustände und Wiederholungen nutzt du über Python;
+Rohantworten auch über `--ra`.
 
 ## Ablauf über die Bibliothek
 
