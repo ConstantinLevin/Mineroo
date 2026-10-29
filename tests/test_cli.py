@@ -502,6 +502,24 @@ def test_render_gilt_fuer_stdout_und_dateien(
             ausgabe.unlink(missing_ok=True)
 
 
+def test_render_setzt_stapel_nach_kaputter_deklaration_fort(
+    db_conn: psycopg.Connection[Any], tmp_path: Path,
+) -> None:
+    kaputt = datei(tmp_path, 'kaputt.png')
+    danach = datei(tmp_path, 'danach.png')
+    speichern(db_conn, kaputt, '<![foo]>\n\n<b>Erstes</b>')
+    speichern(db_conn, danach, '> <table><tr><th>Zweites</th></tr></table>')
+    lauf = CliRunner().invoke(app, [str(kaputt), str(danach), '--re'])
+    assert lauf.exit_code == 0, lauf.output
+    assert lauf.stderr == ''
+    assert '<![foo]>\n\n**Erstes**' in lauf.stdout
+    assert '> | Zweites |\n> | --- |' in lauf.stdout
+    gespeichert = db_conn.execute('SELECT raw FROM documents ORDER BY sha256').fetchall()
+    assert len(gespeichert) == 2
+    assert any(z[0]['markdown_full'] == '<![foo]>\n\n<b>Erstes</b>' for z in gespeichert)
+    assert db_conn.execute('SELECT count(*) FROM procrastinate_jobs').fetchone() == (0,)
+
+
 @pytest.mark.parametrize("option", ["--ra", "--re"])
 @pytest.mark.parametrize("status,code", [("empty", 0), ("failed", 3), ("input_error", 3)])
 def test_ausgabemodi_behalten_endzustaende_und_exitcodes(

@@ -2,6 +2,9 @@
 
 from datetime import datetime, timezone
 
+import pytest
+from markdown_it import MarkdownIt
+
 from mineru_ocr import DocumentRow, DocumentStatus, OCRWrapper
 
 
@@ -94,3 +97,127 @@ def test_offener_codezaun_endet_mit_seinem_markdown_container() -> None:
     for code in ('> ~~~html\n> <b>literal</b>\n', '- ~~~html\n  <b>literal</b>\n'):
         assert huelle(code + '\n' + tabelle).readable_markdown == code + '\n| A |\n| --- |'
     assert huelle('~~~html\n' + tabelle).readable_markdown == '~~~html\n' + tabelle
+
+
+@pytest.mark.parametrize('davor,danach', [
+    ('` offen\n\n', '\n\n` spaeter'),
+    (r'\`', '`'),
+    ('``', '`'),
+    ('`', '``'),
+])
+def test_nur_commonmark_codespannen_schuetzen_html(davor: str, danach: str) -> None:
+    html = '<b>echt</b>'
+    assert huelle(davor + html + danach).readable_markdown == davor + '**echt**' + danach
+    tabelle = '<table><tr><th>A</th></tr></table>'
+    assert '<table>' not in huelle(davor + tabelle + danach).readable_markdown
+
+
+@pytest.mark.parametrize('text', [
+    '`<b>Code</b>`',
+    '``<b>`Code`</b>``',
+    '`<b>Code\nweiter</b>`',
+    '> `<b>Code\n> weiter</b>`',
+    '- `<b>Code\n  weiter</b>`',
+    '# `<b>Code</b>` #',
+    '`<b>Code\r\nweiter</b>`',
+    '`<b>Code\rweiter</b>`',
+])
+def test_echte_codespannen_bleiben_zeichengetreu(text: str) -> None:
+    assert huelle(text + '\n\n<b>echt</b>').readable_markdown == text + '\n\n**echt**'
+
+
+@pytest.mark.parametrize('bild', [
+    '![`<b>Code</b>`](x)',
+    '![alt `<b>Code</b>`](x)',
+    '![![`<b>Code</b>`](x)](y)',
+    '![`<b>Code</b>`][ref]\n\n[ref]: image.png',
+])
+def test_codespannen_in_bildlabels_schuetzen_nur_ihren_quellausschnitt(bild: str) -> None:
+    text = '<b>echt</b> ' + bild + '\n\n<b>danach</b>'
+    assert huelle(text).readable_markdown == '**echt** ' + bild + '\n\n**danach**'
+
+
+@pytest.mark.parametrize('deklaration', ['<![foo]>', '<![!]>', '<![]>', '<![foo', '<![123]>'])
+def test_kaputte_deklarationen_bleiben_literal_und_html_wird_weiter_umgesetzt(
+    deklaration: str,
+) -> None:
+    text = deklaration + '\n\n<b>echt</b>'
+    assert huelle(text).readable_markdown == deklaration + '\n\n**echt**'
+
+
+def test_kaputte_deklaration_in_html_bleibt_literal() -> None:
+    assert huelle('<b><![foo]></b>').readable_markdown == '**<![foo]>**'
+
+
+def test_zitatpraefix_ohne_leerzeichen_gehoert_nicht_zum_html_inhalt() -> None:
+    assert huelle('> <div>one\n>two</div>').readable_markdown == '> one\n> two'
+    assert huelle('> <table><tr><td>A\n>B</td></tr></table>').readable_markdown == (
+        '> | A<br>B |\n> | --- |'
+    )
+    assert huelle('> > <div>one\n>>two</div>').readable_markdown == '> > one\n> > two'
+
+
+@pytest.mark.parametrize('anfang,folge,erwartet', [
+    ('>> ', '> > ', '>> '),
+    ('>>', '> > ', '>>'),
+    ('> ', '  >', '> '),
+    ('>> ', '>  > ', '>> '),
+    ('- > ', '\t> ', '  > '),
+    ('> - ', '>\t', '>   '),
+])
+def test_container_praefixe_duerfen_abstaende_und_tabs_wechseln(
+    anfang: str, folge: str, erwartet: str,
+) -> None:
+    text = anfang + '<div>one\n' + folge + 'two</div>'
+    assert huelle(text).readable_markdown == anfang + 'one\n' + erwartet + 'two'
+    text = anfang + '<table><tr><td>A\n' + folge + 'B</td></tr></table>'
+    assert huelle(text).readable_markdown == anfang + '| A<br>B |\n' + erwartet + '| --- |'
+
+
+@pytest.mark.parametrize('umbruch', ['\n', '\r\n', '\r'])
+def test_container_erkennen_alle_commonmark_zeilenenden(umbruch: str) -> None:
+    assert huelle('> <b>one' + umbruch + '> two</b>').readable_markdown == (
+        '> **one\n> two**'
+    )
+    assert huelle('> <div>one' + umbruch + '> two</div>').readable_markdown == '> one\n> two'
+    assert huelle('> <table><tr><td>A' + umbruch + '>B</td></tr></table>').readable_markdown == (
+        '> | A<br>B |\n> | --- |'
+    )
+    assert huelle('Davor' + umbruch + '> <table><tr><th>A</th></tr></table>').readable_markdown == (
+        'Davor' + umbruch + '> | A |\n> | --- |'
+    )
+    assert huelle('> - <div>one' + umbruch + '>\ttwo</div>').readable_markdown == '> - one\n>   two'
+
+
+@pytest.mark.parametrize('anfang,fortsetzung', [
+    ('> ', '> '), ('> > ', '> > '), ('- ', '  '), ('10. ', '    '),
+    ('> - ', '>   '), ('- > ', '  > '), ('  - ', '    '),
+])
+@pytest.mark.parametrize('mehrzeilig', [False, True])
+@pytest.mark.parametrize('vorspann', ['', 'Davor '])
+def test_tabellen_bleiben_in_ihren_markdown_containern(
+    anfang: str, fortsetzung: str, mehrzeilig: bool, vorspann: str,
+) -> None:
+    tabelle = '<table><tr><th>A</th></tr><tr><td>2</td></tr></table>'
+    if mehrzeilig:
+        tabelle = tabelle.replace('><tr>', '>\n' + fortsetzung + '<tr>')
+    text = anfang + vorspann + tabelle + ' Danach\n' + fortsetzung + 'Weiter'
+    lesbar = huelle(text).readable_markdown
+    assert '<table>' not in lesbar
+    assert '| 2 |' in lesbar
+    assert 'Danach' in lesbar and 'Weiter' in lesbar
+    # Nicht nur Praefixe pruefen: Ein GFM-Leser muss die Tabelle innerhalb
+    # derselben Zitate und Listeneintraege sehen, auch bei leerem Vorspann.
+    parser = MarkdownIt('commonmark').enable('table')
+    original = parser.parse(text)
+    erwartet = [t.type for t in original if t.type in {'blockquote_open', 'list_item_open'}]
+    container: list[str] = []
+    gesehen: list[str] | None = None
+    for token in parser.parse(lesbar):
+        if token.type in {'blockquote_open', 'list_item_open'}:
+            container.append(token.type)
+        elif token.type in {'blockquote_close', 'list_item_close'}:
+            container.pop()
+        elif token.type == 'table_open':
+            gesehen = container.copy()
+    assert gesehen == erwartet
