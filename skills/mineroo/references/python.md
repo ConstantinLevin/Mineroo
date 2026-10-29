@@ -90,9 +90,12 @@ Seitenfußnoten in Lesereihenfolge sowie Modell-Deutungen hinter Bildern als
 Darstellung `IncompleteResultError`; verwende dann `.raw` zur Diagnose.
 
 Synchrone Hüllen laden `raw` bei Bedarf über die Client-Verbindung: Verarbeite
-oder exportiere sie innerhalb von `with`. Asynchrone Hüllen haben `raw` bereits
-geladen; hole sie bei Bedarf mit `await client.get(hash)` erneut. Bei großen
-Antworten bevorzuge `as_completed` und verarbeite die Hüllen einzeln.
+oder exportiere sie innerhalb von `with`. Asynchrone Hüllen haben `raw` normalerweise
+bereits geladen. Entfernt oder ersetzt ein gleichzeitiges `retry` das gescheiterte
+Ergebnis vor dem Laden, wirft `.raw` `DocumentNotFound`. Warte dann mit
+`await client.wait(hash, timeout=600)` erneut; auch `get()` kann scheitern, solange der neue
+Lauf offen ist. Bei großen Antworten bevorzuge `as_completed` und verarbeite
+die Hüllen einzeln.
 
 Leseparameter an `ocr_start`/`ocr`: [Leseeinstellungen](technik.md#leseeinstellungen).
 `status()`, `preflight()`, `document()` und Wiederholen bei Problemen:

@@ -51,6 +51,8 @@ die offenen Hashes; warte später auf diese weiter. Bereits verarbeitete
 Ergebnisse bleiben erhalten, und kein Job wird durch die Frist abgebrochen.
 
 Beim Async-Client ist `as_completed` ein async-Generator: `async for`, ohne
-`await` am Aufruf. Seine Hüllen tragen `raw` bereits geladen; bei großen
-Antworten verarbeite jede Hülle, bevor du die nächste holst, statt alle mit
-`wait_all` zu sammeln. Details zu Clients und Hüllen: [Python](python.md).
+`await` am Aufruf. Seine Hüllen tragen `raw` normalerweise bereits geladen;
+ein gleichzeitiges `retry` beim Laden kann zu `DocumentNotFound` bei `.raw`
+führen. Warte dann erneut; Details dazu: [Python](python.md#die-ergebnishülle-ocrwrapper).
+Bei großen Antworten verarbeite jede Hülle, bevor du die nächste holst,
+statt alle mit `wait_all` zu sammeln.
