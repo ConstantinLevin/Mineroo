@@ -1,543 +1,599 @@
 # Mineroo — ein MinerU-Wrapper für OCR auf Abruf
 
-Mineroo ist eine Python-Bibliothek (das Paket `mineru_ocr`) mit einer CLI
-(`mineru-ocr`) und einem Agent-Skill, die Dokumente an **MinerU** auf einem
-warteschlangenbasierten Serverless-Endpoint bei **RunPod** schickt und die
-vollständige Antwort zurückgibt: ein Dokument oder viele, über die Bibliothek,
-die Kommandozeile oder einen Agenten.
-Die Antwort steht in Postgres; wer dasselbe Dokument noch einmal abschickt,
-bekommt sie ohne neue Kosten aus der Datenbank.
+Mineroo schickt Dokumente an **MinerU auf RunPod** und speichert die vollständige
+Antwort in Postgres: Text, Struktur, Bilder und Rohdaten. Du benutzt es über die
+Kommandozeile `mineru-ocr`, die Python-Bibliothek `mineru_ocr` oder einen
+[Agent-Skill](skills/mineroo/SKILL.md). Gleiche Bytes ergeben denselben SHA-256-Hash:
+Ein bereits gespeichertes Ergebnis kommt ohne neuen Lauf und ohne neue OCR-Kosten.
 
-Dieses Repository enthält die **lokale Seite**: Dateien hinein, Text und Struktur
-heraus. Der Worker, der MinerU auf RunPod ausführt, lebt in seinem eigenen Fork,
-`ConstantinLevin/mineru-runpod`.
+Dieses Repository enthält die lokale Seite. Der MinerU-4-Worker liegt im Fork
+[ConstantinLevin/mineru-runpod](https://github.com/ConstantinLevin/mineru-runpod).
 
-**Stand:** Das Paket spricht den Job-Vertrag des MinerU-4-Workers aus dem Fork
-(Mineroo#11) und ist gegen echte Antworten des neuen Endpoints geprüft, im
-Betriebsweg (Stufe `advanced` mit OCR) über RunPod aufgenommen und offline
-abgespielt (`artifacts/2026-10-26-mineru-4.0.12-endpoint/`). Der Umbau auf MinerU 4, einen neuen Worker und einen
-neuen Endpoint und die Behebung der bekannten Fehler sind in der Spec [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1)
-beschrieben und werden in Tickets umgesetzt. **Wo dieses README und die Spec
-auseinandergehen, gilt die Spec.** Der große Lauf über viele Dokumente hat noch
-nicht stattgefunden; er kostet Geld und ist eine Entscheidung des Eigentümers.
+**Direkt zu:** [CLI-Schnellstart](#cli-schnellstart) ·
+[Python-Schnellstart](#python-schnellstart) · [CLI-Referenz](#cli-referenz) ·
+[Python-Referenz](#python-referenz) · [Konfiguration](#konfiguration) ·
+[Daemons](#daemons) · [Tests](#tests-und-typprüfung) ·
+[Aufbau und Hintergründe](#aufbau-und-hintergründe)
 
----
+## Installieren
 
-## 1. Loslegen
+Du brauchst **Python ab 3.12**, eine erreichbare **Postgres-Instanz** und für neue
+OCR-Läufe einen eingerichteten **RunPod-Serverless-Endpoint mit dem Worker aus dem
+Fork** sowie RunPod-Guthaben. Mineroo richtet den Endpoint nicht ein.
 
-**Der Interpreter ist die Miniconda-Base, und es gibt keine virtuellen
-Umgebungen.** Das ist die Umgebung dieses Rechners, keine Vorliebe des Projekts:
-Wer hier ein venv anlegt, arbeitet an einer Installation vorbei, in der alle
-Abhängigkeiten schon liegen.
-
-### Der installierte Befehl
-
-`mineru-ocr` ist ein installierter Befehl, kein Pfad. `pyproject.toml` definiert
-ihn unter `[project.scripts]`; installiert wird er einmal, aus dem Haupt-Checkout,
-in die Miniconda-Base, in der seine Abhängigkeiten schon liegen:
+In einer eigenen Python-Umgebung aus dem Checkout installieren:
 
 ```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pip install --no-deps --no-build-isolation -e .
+git clone https://github.com/ConstantinLevin/Mineroo.git
+cd Mineroo
+python -m pip install .
+mineru-ocr --help
 ```
 
-`--no-deps` und `--no-build-isolation` sind der Grund, warum das die geteilte Base
-nicht verändert: Es wird nur dieses Paket eingetragen — keine Abhängigkeit
-installiert, aktualisiert oder entfernt, und kein Build-Werkzeug nachgeladen
-(`setuptools` liegt in der Base). Die Installation ist „editierbar": Sie zeigt auf
-den Checkout, aus dem sie gemacht wurde, und folgt dessen Änderungen. Deshalb
-nicht aus einem Arbeitsbaum installieren, der wieder verschwindet.
-
-Ohne Installation geht dasselbe aus dem Verzeichnis heraus als
-`/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m mineru_ocr.cli …`; es gibt
-keinen Build-Schritt.
-
-`mineru-ocr --help` und die Hilfeseiten aller Unterkommandos enden mit
-`mineru-ocr <Version>` fuer die aktuelle Paketversion.
-
-### Konfiguration
-
-Endpoint, Datenbank und die Sollwerte des Preflights stehen **nicht im Code**,
-sondern in einer Konfiguration. Es gibt für Endpoint und Datenbank keine
-Voreinstellung. Wer die Datenbank nirgends einstellt, bekommt beim ersten Aufruf
-eine Meldung, die alle Stellen nennt. Den Endpoint verlangt nur, wer ihn braucht
-(`daemon`, `preflight`); erst dort kommt die Meldung. Abschicken, `setup` und die
-lesenden Kommandos fragen nicht nach ihm: Den Endpoint trägt erst die
-Ergebniszeile, die der Job am Ende anlegt.
-
-Quellen, vom Stärksten: ausdrückliche Angabe (Argument oder Option) →
-Umgebungsvariable `MINERU_OCR_<NAME>` → Konfigurationsdatei → Voreinstellung. Die
-Datei ist TOML und liegt unter `~/.mineru_ocr/config.toml`; `MINERU_OCR_CONFIG`
-zeigt auf eine andere. Fehlt die Standarddatei, ist das kein Fehler; eine
-ausdrücklich genannte, die fehlt, schon. Ein Schlüssel, den die Datei nicht
-kennt, ist ein Fehler und kein stilles Ignorieren.
-
-```toml
-# ~/.mineru_ocr/config.toml
-endpoint_id = "<RunPod-Endpoint-Kennung>"
-db_dsn = "host=localhost port=5437 dbname=mineru_ocr user=<benutzer>"
-
-# Sollwerte, gegen die `preflight` vergleicht (Voreinstellung in Klammern):
-expected_image_tag = "<Tag des gebauten Images>"   # (keiner: dann "nicht prüfbar")
-workers_min = 0                                      # (0)
-workers_max = 10                                     # (10, die Kontogrenze)
-idle_timeout = 5                                     # (5, Sekunden; Eigentümerentscheidung #19)
-execution_timeout_ms = 300000                        # (300000)
-allowed_data_centers = ["EU-RO-1", "EU-CZ-1", "EUR-IS-1", "EUR-IS-2", "EUR-NO-1"]
-                                                     # (alle EWR-Rechenzentren)
-
-# Grenzen eines Teilstuecks; wirken im Daemon, der zerlegt (Mineroo#20):
-max_pages_per_chunk = 20                             # (20 Seiten)
-max_payload_bytes = 7400000                          # (7,4 MB roh; mehr passt nicht durch /run)
-job_timeout_seconds = 300                            # (300, wie executionTimeout)
-queue_timeout_seconds = 1800                         # (1800, 30 Minuten ununterbrochen IN_QUEUE)
-
-# Lesefragen im Daemon; alle Plaetze teilen Werte und Fehler:
-runpod_cache_seconds = 60                            # (60, Kontostand und Image-Herkunft)
-
-# Endpoint-Variablen, die der Preflight nach Wert prüft; was die Tabelle nicht
-# nennt, behält seinen Sollwert. Variablen, die das Image setzt (etwa
-# MINERU_MODEL_SOURCE), zeigt RunPods Worker-Umgebung nicht; sie gehören nicht hierher:
-[endpoint_env]
-MINERU_MAX_CONCURRENCY = "1"                         # (1)
-MINERU_VIRTUAL_VRAM_SIZE = "<Wert aus der Messung>"  # (offen: nur berichtet)
-```
-
-Jeder Schlüssel außer der Tabelle hat eine Umgebungsvariable, zum Beispiel
-`MINERU_OCR_ENDPOINT_ID`, `MINERU_OCR_DB_DSN`, `MINERU_OCR_EXPECTED_IMAGE_TAG`,
-`MINERU_OCR_IDLE_TIMEOUT`; die Rechenzentren stehen dort durch Kommas getrennt in
-`MINERU_OCR_ALLOWED_DATA_CENTERS`.
-
-`queue_timeout_seconds` (oder `MINERU_OCR_QUEUE_TIMEOUT_SECONDS`) begrenzt
-ununterbrochenes Warten eines RunPod-Jobs in `IN_QUEUE`; der Wert muss positiv
-und endlich sein. Nach der Frist fragt das Paket ein letztes Mal ab, übernimmt
-ein fertiges Ergebnis oder schickt `/cancel` und lässt die vorhandene
-Wiederholung greifen. Eine Bearbeitung beendet die Wartephase; kehrt der Job
-in die Schlange zurück, beginnt die Frist neu. Fehlgeschlagene Abfragen setzen
-sie nicht zurück und behalten ihre eigene Ausfallfrist. Das Budget für
-`IN_PROGRESS` bleibt davon getrennt. Beide Fristen beginnen nach einer
-Kontopause (HTTP 402) beim erneuten Warten auf denselben Job neu.
-
-Der Daemon schreibt beim Absenden jedes Teilstücks die RunPod-Job-ID mit
-Dokumenthash und null-basiertem Seitenbereich auf stderr (Log-Stufe INFO,
-standardmäßig sichtbar).
-
-Der Daemon fragt Kontostand und Image-Herkunft je höchstens einmal pro
-`runpod_cache_seconds` ab (positive, endliche Sekunden). Gleichzeitige Leser
-teilen eine laufende Abfrage; auch Fehler bleiben für dieses Intervall
-gespeichert. Nach einem vorübergehenden Kontofehler, etwa HTTP 429, erfolgt die
-nächste gemeinsame Prüfung nach Ablauf der Frist. Ohne gelesenen ausreichenden
-Kontostand wird nicht weitergearbeitet. HTTP 402 verlangt eine nach der
-Ablehnung begonnene Abfrage und wartet dafür gegebenenfalls das restliche
-Intervall ab. Bei bestätigt niedrigem Kontostand gilt weiterhin
-`balance_recheck_seconds` (900 Sekunden). Client, `status` und `preflight`
-fragen wie bisher direkt. Die Cache-Frist beginnt am Ende der Abfrage; beim
-Herunterfahren bleiben Abfragen und wartende Leser abbrechbar.
-
-Der Preflight zeigt die Werte der Variablen aus `[endpoint_env]`. Ist ein ganzer
-Namensteil (getrennt an allem außer Buchstaben und Ziffern) `KEY(S)`,
-`APIKEY(S)`, `ACCESSKEY`, `PRIVATEKEY`, `SSHKEY`, `SECRET(S)`, `SECRETKEY`,
-`TOKEN`, `PASSWORD(S)`, `PASSWD`, `PASS`, `PASSPHRASE`, `PWD`,
-`CREDENTIAL(S)`, `AUTH`, `AUTHORIZATION` oder `BEARER`, wird die Variable
-verglichen und als `***` gezeigt, im Befund wie in `repr(Settings)`. Teilwörter
-zählen nicht: `HF_TOKEN` wird verdeckt, `MAX_TOKENS` und `MONKEY` nicht.
-
-**Der RunPod-Schlüssel bleibt in `~/.runpod/config.toml`**, Feld `apikey`, und
-steht nie in dieser Konfiguration. Verlangt wird er nur, wo RunPod angesprochen
-wird: von `daemon`, den Bibliotheksmethoden `status` und `preflight` und den Lesefragen an RunPod.
-Abschicken, `get`, `wait`, `retry`, der CLI-Dateiaufruf und `setup` brauchen nur die
-Datenbank. „Nur EU" heißt EWR — EU-Staaten plus Island und
-Norwegen, denn dort gilt die DSGVO —, und die zulässige Liste ist der Sollwert
-`allowed_data_centers`.
-
-### Der übliche Ablauf
+Ist Mineroo schon installiert und konfiguriert, geht es direkt mit den
+Schnellstarts weiter. Sonst zuerst [Datenbank, Endpoint und Schlüssel
+konfigurieren](#konfiguration). Datenbank und Endpoint haben **keine
+Voreinstellung im Paket**. Die folgenden Beispiele wählen ausdrücklich eine
+Testdatenbank; dieselbe Verbindung gilt für CLI, Python und Daemon:
 
 ```bash
-mineru-ocr setup                 # Schema anlegen; mehrfach aufrufbar
-mineru-ocr daemon start 3        # drei Exekutoren im Hintergrund
-mineru-ocr daemon list           # JSON: Auslastung und Warteschlange
-mineru-ocr daemon stop 2         # zwei ordentlich beenden
-mineru-ocr dokument.pdf          # abschicken, warten, Volltext auf stdout
-mineru-ocr dokument.pdf -t       # Volltext in temporaere Datei; Pfad auf stdout
-mineru-ocr dokument.pdf -o text.md
-mineru-ocr dokument.pdf --ra      # vollstaendiges JSON in temporaere Datei
-mineru-ocr dokument.pdf --ra -o ergebnis.json
-mineru-ocr dokument.pdf --re      # HTML (auch Tabellen) als Markdown
-mineru-ocr dokument.pdf --re -o lesbar.md
-mineru-ocr ~/Scans --timeout 600  # rekursiv; Wartefrist je Dokument
+export MINERU_OCR_DB_DSN='host=localhost port=5437 dbname=mineru_ocr_test'
 ```
 
-`mineru-ocr PATH…` gibt die Vollfassung (`rendered_markdown`) aus, einschließlich
-Kopf- und Fußzeilen, Randtexten, Fußnoten und Bildbeschreibungen. Ein Treffer
-kommt direkt aus Postgres, ohne neuen Lauf und auch ohne Daemon. Die CLI fragt
-RunPod nicht ab und startet keinen Daemon. Braucht eine Datei Verarbeitung und
-läuft kein Daemon, wird sie nicht eingereiht (Exit-Code **5**). Die Meldung nennt
-`mineru-ocr daemon start X`; `mineru-ocr daemon list` zeigt die Auslastung.
+Host, Port und gegebenenfalls die Datenbankrolle an die eigene Instanz anpassen.
+Die Umgebungsvariable hat Vorrang vor der Konfigurationsdatei.
 
-Mehrere Dateien und Ordner liefern den Text in Eingabereihenfolge, in Ordnern
-rekursiv nach Pfad sortiert. Jeder Text eines Stapels beginnt mit `# Datei: PFAD`.
-`-t` und `-o PFAD` schreiben den gesamten Stapel in **eine UTF-8-Datei** und geben
-nur deren Pfad auf stdout aus; beide Optionen schließen einander aus. Eine
-Eingabedatei darf nicht das Ausgabeziel sein. Ohne diese Optionen steht der Text
-auf stdout. Meldungen und Fehler stehen immer auf stderr. Fremde oder zu große
-Dateien in Ordnern werden mit Grund übersprungen; ausdrücklich genannte
-problematische Dateien führen zu Exit-Code 1. Die übrigen Dateien laufen weiter.
+## CLI-Schnellstart
 
-`--ra` schreibt die vollständigen gespeicherten Dokumentangaben samt `raw`
-(auch Bilder und unbekannte Felder) als JSON in eine Datei: mit `-o PFAD`
-dorthin, sonst in eine temporäre `.json`-Datei. Auf stdout steht ausschließlich
-der Dateipfad. Eine einzelne Eingabe ergibt ein JSON-Objekt wie
-`OCRClient.get(h).to_dict(raw=True)`, ein Stapel ein Array solcher Objekte mit
-zusätzlichem `path` je Eingabedatei. Auch `empty`, `failed` und `input_error`
-stehen darin; ihre Meldungen und Exit-Codes bleiben erhalten.
-
-`--re` setzt HTML-Inseln im Volltext in lesbares Markdown um, Tabellen als
-GFM-Tabellen. Vorhandenes Markdown außerhalb von HTML bleibt zeichengetreu,
-auch Code und Formeln. Das gilt für stdout und mit `-t`/`-o` für die Datei.
-`--ra` und `--re` schließen einander aus (Exit-Code 2). Ohne beide Optionen
-bleibt die Ausgabe unverändert. In Python liefert `huelle.readable_markdown`
-dieselbe Darstellung; `huelle.rendered_markdown` bleibt die unveränderte
-Vollfassung. Beide prüfen, dass die Vollfassung vollständig vorliegt.
-
-| Exit-Code | Bedeutung |
-|---|---|
-| 0 | Erfolg; auch `empty` (je Datei mit Grund auf stderr, ohne Text) |
-| 1 | Betriebs-, Datei- oder Ausgabefehler; auch beschädigtes gespeichertes Ergebnis |
-| 2 | Ungültiger Aufruf oder Optionen |
-| 3 | Mindestens ein `failed` oder `input_error`, je Datei mit Grund |
-| 4 | Wartefrist abgelaufen; Job bleibt bestehen |
-| 5 | Kein Daemon mit frischem Herzschlag für eine noch offene/neue Datei |
-| 130 | Strg-C; beendet nur den CLI-Aufruf, keine eingereihten Jobs |
-
-Bei mehreren Fehlern gilt 1 vor 5 vor 4 vor 3 vor 0. Bereits erfolgreiche Texte
-werden auch bei einem Fehler ausgegeben. Ohne `--timeout` wartet die CLI
-unbegrenzt; mit `--timeout S` höchstens S Sekunden je offenem Dokument. Fällt
-der Daemon nach der Prüfung aus, schützt die Frist vor endlosem Warten.
-
-Mit `-d` (Debug) zeigt die CLI beim Warten je Datei den bekannten Stand auf
-stderr: Datenbanktreffer oder gespeicherte Eingabe, Daemon-Warteschlange bzw.
-laufender Versuch, Wiederholungen und Zeit im Schritt sowie insgesamt.
-Lokale aktuelle Daemons liefern zusätzlich den Chunk-Plan (weitere Teilung ist
-möglich), gesendete und beendete Chunks sowie RunPods `IN_QUEUE`/`IN_PROGRESS`.
-Nicht verfügbare Angaben, etwa bei älteren oder entfernten Daemons, heißen
-`unbekannt`. Treffer brauchen keine Warteanzeige. Am Terminal aktualisieren sich
-die Zeilen an Ort und Stelle; hohe Stapel wechseln alle fünf Sekunden zwischen
-fenstergroßen Ausschnitten. Auf schmalen Terminals stehen `ges` für gesendete,
-`fertig` für beendete Chunks, `W` für Wiederholungen, `S` für Schritt- und `T`
-für Gesamtsekunden. Umgeleitetes stderr enthält nur sachliche
-Änderungen als Klartextzeilen, keine Uhrenticks oder Steuerzeichen.
-Nur mit `-d` werden offene Dateien eines Stapels vor dem Warten eingereiht;
-die Ausgabe bleibt in Eingabereihenfolge. Ohne `-d` bleiben stderr, stdout und
-Exit-Codes wie bisher; mit `-d` bleiben stdout und Exit-Codes unverändert.
-Beispiel: `mineru-ocr -d scans/ --timeout 600 2>fortschritt.log`.
-
-`setup` und `daemon` bleiben Betriebskommandos. `ocr`, `status`, `show`, `wait`,
-`markdown`, `retry` und `preflight` gibt es nicht mehr als CLI-Kommandos.
-Zustände, Wiederholungen, Struktur, Bilder und vollständige Antworten sind über
-die Bibliothek erreichbar. Für den Preflight zum Beispiel:
-
-```python
-from mineru_ocr import OCRClient
-
-with OCRClient(preflight=False, strict=False, schema_check=False) as client:
-    befund = client.preflight()
+```bash
+mineru-ocr setup                         # Datenbank und Schema anlegen; mehrfach erlaubt
+mineru-ocr daemon list                   # nachsehen, was schon läuft und wartet
+mineru-ocr daemon start 1                # einen Daemon im Hintergrund starten
+mineru-ocr dokument.pdf --timeout 600     # abschicken, warten, Volltext auf stdout
+mineru-ocr dokument.pdf -o text.md        # Volltext in Datei, deren Pfad auf stdout
+mineru-ocr dokument.pdf --re -o lesbar.md  # auch HTML-Tabellen als Markdown
+mineru-ocr dokument.pdf --ra -o roh.json  # vollständiges Ergebnis samt raw als JSON
+mineru-ocr daemon stop 1                 # bis zu einen Daemon ordentlich beenden
 ```
 
-Der Preflight berichtet nur und verändert nichts; das Paket legt keine bezahlte
-Ressource an und ändert keine. Er prüft, was **tatsächlich läuft**: das Image des
-Templates und jedes Workers gegen `expected_image_tag`, die Endpoint-Variablen
-nach Wert an der Umgebung aller zuletzt gelaufenen Worker (auch der beendeten),
-dass alle Rechenzentren in der zulässigen Liste liegen, und die Sollwerte des
-Endpoints. FlashBoot wird berichtet. Was sich nicht feststellen lässt — kein
-Worker, ein Worker ohne Umgebung, keine Rechenzentren in der Antwort oder eine
-gescheiterte Abfrage danach, kein erwarteter Tag —, heißt „nicht prüfbar" und
-ausdrücklich nicht „in Ordnung". Die Rechenzentren liest er aus RunPods REST-API
-v2, alles andere aus v1; die Liste in `allowed_data_centers` muss jedes
-Rechenzentrum enthalten, auf das der Endpoint gesetzt ist.
+**Ein Daemon arbeitet die ganze Warteschlange seiner Datenbank ab.** Neue Läufe
+kosten RunPod-Guthaben. `stop 1` wählt den am wenigsten belegten lokalen Daemon;
+es bezeichnet nicht zwingend den zuvor gestarteten. Ein gespeicherter Treffer
+braucht keinen Daemon. Braucht eine Datei noch Verarbeitung und läuft keiner,
+endet der Dateiaufruf mit Code **5**, ohne diese Datei einzureihen.
 
-### Aus Python
+Mehrere Dateien und Ordner gehen ebenso:
 
-Die Bibliothek nimmt **Bytes** und gibt **Hashes**; einen Pfad kennt sie nicht.
+```bash
+mineru-ocr a.pdf b.png scans/ --timeout 600
+mineru-ocr scans/ -o stapel.md
+mineru-ocr -d scans/ --timeout 600 2>fortschritt.log
+mineru-ocr digital.pdf --tier advanced --ocr-mode txt --no-image-analysis
+```
+
+Ordner werden rekursiv nach Pfad sortiert gelesen; der Text eines Stapels folgt
+der Eingabereihenfolge. Meldungen und Gründe stehen auf stderr. `-d` zeigt dort
+den Wartefortschritt, umgeleitet als Klartextzeilen. [Alle Optionen und
+Exit-Codes](#cli-referenz) stehen weiter unten.
+
+## Python-Schnellstart
+
+Einmal `mineru-ocr setup` ausführen. Für neue Dokumente muss ein Daemon laufen
+(siehe oben); die Bibliothek startet selbst keinen. Sie nimmt **Bytes**, keine
+Pfade, und gibt **Hashes** zurück. Die Beispiele verwenden die oben gesetzte
+Verbindung ausdrücklich als `db_dsn`. `preflight=False` unterbindet die
+RunPod-Prüfung beim Öffnen; Abschicken und Lesen benötigen nur Postgres.
+
+### Ein Dokument lesen
 
 ```python
+import os
 from pathlib import Path
 from mineru_ocr import OCRClient
 
-with OCRClient() as client:
-    # Bytes rein, Hash raus; kehrt SOFORT zurueck, es laeuft noch nichts. Eines oder
-    # viele (`ocr_start([a, b, c])` gibt eine Liste). Erst werden alle geprueft,
-    # dann eingereiht.
-    h = client.ocr_start(Path("scan.pdf").read_bytes())
-    print(client.status())
-
-    fertig = client.wait(h)          # oder spaeter, auch aus einem anderen Prozess
-    # Fuer viele: `wait_all(hashes)` in Reihenfolge, `as_completed(hashes)` sobald
-    # fertig; eine Frist (`timeout=`) nennt im Fehler die noch offenen Hashes.
-    print(fertig.rendered_markdown)  # das GANZE Dokument als Markdown
-    print(fertig["markdown"])        # das nackte Markdown der Engine
-    print(fertig["middle_json"])     # je Teilstueck MinerUs Seiten mit ihren Bloecken
-    print(fertig.raw)                # die vollstaendige Antwort, ungefiltert
-
-    antwort = client.ocr(b"...")     # Abschicken und Warten in einem Zug
-    ohne_warten = client.get(h)      # holt ein Ergebnis ab, ohne zu warten
-
-    # Lese-Einstellungen je Lauf (ohne Angabe: advanced, OCR, Bildanalyse an)
-    digital = client.ocr_start(Path("digital.pdf").read_bytes(), ocr_mode="txt")
-    gelesen = client.wait(digital)
-    print(gelesen.mineru_version, gelesen.read_settings)  # womit gelesen wurde
+with OCRClient(db_dsn=os.environ["MINERU_OCR_DB_DSN"], preflight=False) as client:
+    fertig = client.ocr(Path("dokument.pdf").read_bytes(), timeout=600)
+    if fertig.success:  # done oder empty
+        print(fertig.rendered_markdown)
+    else:
+        print(fertig.status, fertig.row.error)
 ```
 
-Stufe, OCR-Modus und Bildanalyse (`tier=`, `ocr_mode=`, `image_analysis=`, auf der
-Kommandozeile `mineru-ocr PFAD --tier … --ocr-mode … --no-image-analysis`) gelten für jedes
-Dokument des Aufrufs, das neu eingereiht wird. Sie stehen an seiner Eingabe, und
-der Daemon schickt genau diese an RunPod, auch in einem großen Lauf. An jedem
-Ergebnis stehen die bestellten Einstellungen und die MinerU-Version, die der
-Worker meldet; meldet er andere Einstellungen als bestellt oder die Teilstücke
-verschiedene Versionen, steht ein Vermerk in `notes`. `show` zeigt beides, und
-`status` zählt, wie viele Dokumente mit welcher Version und welchen Einstellungen
-gelesen sind.
+`rendered_markdown` ist die Vollfassung wie beim CLI-Dateiaufruf, einschließlich
+Kopf- und Fußzeilen, Seitenzahlen, Randtexten, Fußnoten und vorhandenen
+Bildbeschreibungen. Die synchrone Hülle innerhalb des `with` benutzen: Sie lädt
+`raw` bei Bedarf über die Verbindung des Clients nach.
 
-Gelesen werden PDFs, Bilder und die **Ganzdokument-Formate**, die MinerU 4 als
-ganzes Dokument liest: Office (DOC, XLS, PPT, DOCX, XLSX, PPTX), OpenDocument
-(ODT, ODS, ODP), RTF, EPUB, OFD, HTML und MHTML (`mineru_ocr.DocumentType`).
-Erkannt wird am Inhalt, nie am Dateinamen; Text, CSV und ein beliebiges ZIP weist
-das Abschicken ab. Welcher Typ eine Datei genau ist, entscheidet MinerUs eigene
-Erkennung im Worker; was das Paket durchlässt und MinerU dann nicht liest, endet
-`input_error` mit dem Grund des Workers. Ein Ganzdokument-Format geht ungeteilt
-als ein Stück hinaus und muss deshalb unter die Größengrenze einer Anfrage
-passen; es hat keine Seitenzahl. Die Lese-Einstellungen wirken bei ihm nicht (der
-Worker liest es immer in `flash`): Am Ergebnis stehen keine, und es gibt keinen
-Vermerk über abweichende.
-
-Vor `%PDF-` sind ASCII-Leerraum und vollständige UTF-8-BOMs erlaubt. Entfernt
-wird dieser Vorspann erst im Executor für den Worker; der Hash und die
-gespeicherte Eingabe bleiben die des Originals. Fremde Bytes vor der Kennung
-bleiben abgewiesen. Steht `%PDF-` in den ersten 64 KiB, nennt die Meldung den
-null-basierten Byteversatz als Hinweis zur manuellen Prüfung.
-HTML wird auch in UTF-16LE und UTF-16BE erkannt, jeweils mit oder ohne BOM.
-Der Executor kodiert es für den Worker nach UTF-8 um; Hash, gespeicherte Eingabe
-und die am Ergebnis gemeldete Dateigröße beziehen sich weiter auf die Originalbytes.
-
-Gibt es zu den Bytes schon ein Ergebnis (auch ein `failed`), ist das ein Treffer:
-Es wird nichts angelegt und nichts eingereiht; ein gescheitertes Dokument liest
-nur `retry` neu. `client.retry(h)` bringt ein Dokument ohne gültiges Ergebnis
-wieder in Gang (ein gescheiterter Job wird zurückgesetzt, für einen abgebrochenen
-oder abgesagten ein neuer eingereiht, ein laufender bleibt, wie er ist);
-`client.retry_all()` tut das für jedes. Wiederholungen gibt es nur über die
-Bibliothek; sie kosten erneut Geld. Abschicken lädt kein `raw`; Hüllen laden es erst, wenn jemand das
-Ergebnis will.
-
-Asynchron gibt es dasselbe als `AsyncOCRClient`: dieselben Namen und dieselbe
-Bedeutung, jeweils mit `await`, und `as_completed` als async-Generator.
-`status`, `preflight`, `document` und `retry` gibt es nur synchron; der
-Async-Client fragt RunPod nie.
+### Abschicken und später abholen
 
 ```python
+import os
+from pathlib import Path
+from mineru_ocr import OCRClient
+
+with OCRClient(db_dsn=os.environ["MINERU_OCR_DB_DSN"], preflight=False) as client:
+    h = client.ocr_start(Path("dokument.pdf").read_bytes())
+    print(h, h.queued, h.status, h.is_open)
+    stand = client.document(h)              # ohne raw zu laden
+    print(stand.phase)
+    fertig = client.wait(h, timeout=600)     # auf einen Endzustand warten
+    huelle = client.get(h)                  # Ergebnis ohne Warten holen
+    print(huelle.to_dict(raw=True))         # Angaben plus vollständige Antwort
+```
+
+`h` ist ein `Submitted`: eine Zeichenkette mit dem SHA-256-Hash und Angaben zu
+diesem Abschicken. `queued` sagt, ob dieser Aufruf eingereiht hat; `status` ist
+bei einem Treffer der Endzustand, sonst `None`; `is_open` bedeutet, dass noch kein
+Ergebnis da ist. Den Hash kann ein anderer Prozess später mit `get()` oder
+`wait()` weiterverwenden. `get()` wirft `DocumentNotFound`, solange das Dokument
+noch offen ist; `document()` zeigt dagegen auch seinen Job-Zustand.
+
+### Viele Dokumente
+
+```python
+import os
+from contextlib import closing
+from pathlib import Path
+from mineru_ocr import OCRClient
+
+with OCRClient(db_dsn=os.environ["MINERU_OCR_DB_DSN"], preflight=False) as client:
+    hashes = client.ocr_start([Path(p).read_bytes() for p in ("a.pdf", "b.png")])
+    alle = client.wait_all(hashes, timeout=1800)  # Reihenfolge der Frage
+    print([huelle.status for huelle in alle])
+
+    # Alternativ direkt nach ocr_start: jedes Ergebnis, sobald es fertig ist.
+    with closing(client.as_completed(hashes, timeout=1800)) as ergebnisse:
+        for huelle in ergebnisse:
+            print(huelle.sha256, huelle.status)
+```
+
+Ein gescheitertes Dokument beendet das Warten auf die übrigen nicht: Jeder
+Endzustand ist ein Ergebnis. `timeout` gilt für den ganzen Warteaufruf bis zum Endzustand; das Laden
+fertiger Rohdaten kommt zeitlich hinzu. `WaitTimeoutError.pending` nennt die noch offenen Hashes; Jobs bleiben bestehen.
+`as_completed()` hält eine eigene Verbindung, bis der Iterator erschöpft oder
+mit `close()` geschlossen ist. `closing(...)` schließt ihn auch bei vorzeitigem
+Abbruch.
+
+### Text, Struktur und Bilder speichern
+
+```python
+import os
+from pathlib import Path
+from mineru_ocr import OCRClient
+
+with OCRClient(db_dsn=os.environ["MINERU_OCR_DB_DSN"], preflight=False) as client:
+    huelle = client.ocr(Path("dokument.pdf").read_bytes(), timeout=600)
+    if huelle.success:
+        Path("text.md").write_text(huelle.rendered_markdown, encoding="utf-8")
+        print(huelle.readable_markdown)      # wie --re: HTML als Markdown
+        print(huelle["middle_json"])         # Seiten und Blöcke je Teilstück
+        for verweis, daten in huelle.images.items():
+            ziel = Path("bilder") / verweis
+            ziel.parent.mkdir(parents=True, exist_ok=True)
+            ziel.write_bytes(daten)
+    else:
+        print(huelle.status, huelle.row.error)
+```
+
+### Asynchron
+
+```python
+import asyncio
+import os
+from pathlib import Path
 from mineru_ocr import AsyncOCRClient
 
-async with AsyncOCRClient() as client:
-    hashes = await client.ocr_start([pdf_a, pdf_b])  # Bytes, wie oben
-    async for fertig in client.as_completed(hashes, timeout=600):
-        print(fertig.sha256, fertig.status)
-    alle = await client.wait_all(hashes)
-    print(alle[0].rendered_markdown)
-    ohne_warten = await client.get(hashes[0])
+async def lesen():
+    async with AsyncOCRClient(db_dsn=os.environ["MINERU_OCR_DB_DSN"]) as client:
+        hashes = await client.ocr_start(
+            [Path(p).read_bytes() for p in ("a.pdf", "b.png")]
+        )
+        async for huelle in client.as_completed(hashes, timeout=600):
+            print(huelle.sha256, huelle.status)
+        alle = await client.wait_all(hashes, timeout=600)
+        fertig = await client.wait(hashes[0], timeout=600)
+        neu = await client.get(hashes[0])
+        direkt = await client.ocr(Path("a.pdf").read_bytes(), timeout=600)
+        print(len(alle), fertig.success, neu.success, direkt.success)
+
+asyncio.run(lesen())
 ```
 
-Seine Hüllen kommen mit geladenem `raw`, weil eine Eigenschaft nicht `await`en
-kann; sie halten keine Verbindung, und neu gelesen wird mit `await
-client.get(h)` statt `refresh()`. Läuft während des Wartens ein `retry`
-dazwischen, endet das Warten wie im Sync-Client mit dem gesehenen `failed`, und
-`raw` dieser Hülle meldet `DocumentNotFound`. Die Frist (`timeout=`) begrenzt
-das Warten auf Endzustände; das Laden fertiger Ergebnisse kommt hinzu:
-`await client.wait_all([a, b], timeout=10)` mit `a` fertig (2 GB `raw`) und `b`
-offen wirft nach etwa 10 s plus der Ladezeit von `a`. Beide Clients dürfen zugleich im selben Prozess
-laufen; jeder hält seine eigene Verbindung und, wie die Spec es verlangt, keine
-stehende Procrastinate-Verbindung.
+In einer bereits laufenden Ereignisschleife, etwa Jupyter, stattdessen
+`await lesen()` verwenden. Der Async-Client fragt RunPod nie. Seine Hüllen
+tragen `raw` bereits geladen und halten keine Verbindung; neu lesen heißt
+`await client.get(h)` statt `refresh()`. Bei vorzeitigem Abbruch eines
+Async-Iterators schließt `contextlib.aclosing(...)` ihn zuverlässig.
 
-Die Bibliothek bietet die vollständige Verwaltung. Die CLI verbindet Abschicken,
-Warten und Textausgabe zu einem Dateiaufruf; sie kennt Pfade, keine Hash-Ziele.
+## CLI-Referenz
 
-### Für Agenten: der Skill
+`mineru-ocr PATH…` verbindet Abschicken, Warten und Textausgabe. Der Dateiaufruf
+fragt RunPod nicht ab. Alle Hilfen, auch die der Unterkommandos, zeigen am Ende
+die Paketversion (derzeit `mineru-ocr 1.0`).
 
-Agenten, die Dokumente lesen lassen wollen, finden in
-[`skills/mineroo/SKILL.md`](skills/mineroo/SKILL.md), wann und wie sie Mineroo
-benutzen: über die Bibliothek oder die CLI, wie sie auf viele warten und die
-vollständige Antwort holen, warum ein Daemon laufen muss, was Lesen kostet und
-was für personenbezogene Daten gilt. Damit er überall verfügbar ist, wird er wie
-die Installation einmal aus dem Haupt-Checkout in die Skill-Verzeichnisse der
-Agenten verlinkt (Claude Code und die übrigen Agenten):
+| Option | Wirkung |
+|---|---|
+| `-t` | Volltext in eine temporäre UTF-8-Datei schreiben; nur deren Pfad auf stdout. |
+| `-o PFAD` | Gesamte Ausgabe in diese Datei schreiben; nur deren Pfad auf stdout. Kein Verzeichnis und keine Eingabedatei als Ziel. Schließt `-t` aus. |
+| `--re` | HTML-Inseln im Volltext als Markdown, Tabellen als GFM-Tabellen. Vorhandenes Markdown außerhalb von HTML, Code und Formeln bleiben zeichengetreu. |
+| `--ra` | Vollständige Dokumentangaben plus `raw` als JSON **in eine Datei**: mit `-o` dorthin, sonst temporär mit Endung `.json`. stdout enthält nur den Pfad. Schließt `--re` aus. |
+| `-d` | Bekannten Fortschritt je Datei auf stderr anzeigen. Reiht offene Dateien des Stapels vor dem Warten ein. stdout und Exit-Codes bleiben gleich. |
+| `--timeout S` | Höchstens S Sekunden je offenem Dokument warten; endliche Zahl ab null. Ohne Angabe unbegrenzt. |
+| `--tier STUFE` | `advanced` (Standard), `standard`, `basic`, `flash`; nur für neu eingereihte Dokumente. |
+| `--ocr-mode MODUS` | `ocr` (Standard), `txt` (Textebene digitaler PDFs), `auto`; nur für neu eingereihte Dokumente. |
+| `--image-analysis` / `--no-image-analysis` | Bildbeschreibungen an/aus; Standard an, wirkt nur in `advanced`. |
+| `--help` | Hilfe anzeigen. |
+
+Bei mehreren Eingaben beginnt jeder ausgegebene Text mit `# Datei: PFAD`.
+`-t` und `-o` schreiben den ganzen Stapel in **eine** Datei. Auch ein erfolgreiches
+`empty` legt eine leere Textdatei an. Nicht unterstützte oder zu große Dateien
+in Ordnern werden mit Grund übersprungen; ausdrücklich genannte problematische
+Dateien ergeben Code 1. Die übrigen laufen weiter.
+
+`--ra` liefert bei einer Eingabe ein Objekt wie `huelle.to_dict(raw=True)`,
+bei mehreren ein Array mit zusätzlichem `path` je Eintrag. Auch die Endzustände
+`empty`, `failed` und `input_error` stehen darin; deren Meldungen und Exit-Codes
+bleiben erhalten. Dateien ohne Endergebnis können keinen Ergebniseintrag liefern.
+
+Mit `-d` erscheinen Datenbanktreffer, gespeicherte Eingaben, wartende oder laufende
+Versuche, Wiederholungen und Zeit im Schritt sowie insgesamt. Lokale aktuelle
+Daemons liefern zusätzlich den Chunk-Plan, gesendete und fertige Chunks und
+RunPods `IN_QUEUE`/`IN_PROGRESS`; fehlende Angaben heißen `unbekannt`.
+Am Terminal aktualisieren sich Zeilen an Ort und Stelle; große Stapel wechseln
+alle fünf Sekunden zwischen Ausschnitten. Umgeleitetes stderr enthält nur
+sachliche Änderungen, keine Uhrenticks oder Steuerzeichen.
+
+### Exit-Codes des Dateiaufrufs
+
+| Code | Bedeutung |
+|---|---|
+| 0 | Erfolg, auch `empty` (Grund auf stderr, kein Text). |
+| 1 | Betriebs-, Datei- oder Ausgabefehler; auch beschädigtes gespeichertes Ergebnis. |
+| 2 | Ungültiger Aufruf oder Optionen, etwa `--ra --re` oder `-t -o`. |
+| 3 | Mindestens ein `failed` oder `input_error`, je Datei mit Grund. |
+| 4 | Wartefrist abgelaufen; Job bleibt bestehen. |
+| 5 | Kein Daemon mit frischem Herzschlag für eine neue/offene Datei; diese wird nicht eingereiht. |
+| 130 | Strg-C; beendet nur den CLI-Aufruf, keine eingereihten Jobs. |
+
+Bei mehreren Fehlern gilt **1 vor 5 vor 4 vor 3 vor 0**. Bereits erfolgreiche
+Texte werden trotzdem ausgegeben. Ist die Lebendigkeit des Daemons nicht lesbar,
+ist das ein Betriebsfehler (1). Eine Wartefrist schützt auch dann, wenn der Daemon
+nach der Prüfung ausfällt.
+
+### Frühere Kommandos
+
+`ocr`, `status`, `show`, `wait`, `markdown`, `retry` und `preflight` sind keine
+CLI-Kommandos mehr. Der frühere Ablauf aus Abschicken, Warten und Markdown wird
+zu `mineru-ocr PATH…`; die Vordergrundform von `daemon` wird zu
+`daemon start X`, `daemon stop X` und `daemon list`. Struktur, Bilder,
+Dokumentzustand, Wiederholungen und Preflight erreichst du über Python.
+
+## Python-Referenz
+
+### Methoden und Lese-Einstellungen
+
+| Methode | Ergebnis |
+|---|---|
+| `ocr_start(data, *, tier=None, ocr_mode=None, image_analysis=None)` | Ein `Submitted`, bei einer Liste von Bytes eine Liste. Prüft erst alle Eingaben, bevor etwas eingereiht wird. |
+| `ocr(data, timeout=None, *, tier=None, ocr_mode=None, image_analysis=None)` | Ein Dokument abschicken und seine Hülle abwarten. |
+| `wait(sha256, timeout=None)` | Hülle zu jedem Endzustand, auch `failed` und `input_error`. |
+| `wait_all(hashes, timeout=None)` | Alle Hüllen in der Reihenfolge der Frage; doppelt genannte Hashes bleiben doppelt. |
+| `as_completed(hashes, timeout=None)` | Iterator mit jeder fertigen Hülle; jeden unterschiedlichen Hash einmal. |
+| `get(sha256)` | Hülle zum gespeicherten Ergebnis, ohne Warten. |
+| `document(sha256)` | `DerivedStatus` ohne `raw`; `phase` ist `Phase.TERMINAL`, `WAITING`, `RUNNING` oder `ENDED_WITHOUT_RESULT`. |
+
+`ocr_start`, `ocr`, `wait`, `wait_all` und `get` gibt es asynchron mit `await`;
+`as_completed` liefert dort einen Async-Iterator. Verwaltungsmethoden gibt es
+nur synchron. Jeder Client gehört einem Aufrufer bzw. einer Async-Aufgabe.
+
+Die Lese-Parameter haben dieselben Werte und Standards wie die CLI. Sie gelten
+nur beim **neuen Einreihen**: Ein Treffer und eine bereits gespeicherte Eingabe
+behalten ihre Einstellungen. Beispiel im geöffneten Client:
+`client.ocr_start(daten, tier="advanced", ocr_mode="txt", image_analysis=False)`.
+Ganzdokument-Formate (Office, OpenDocument, RTF, EPUB, OFD, HTML, MHTML) liest der
+Worker immer in `flash`; am Ergebnis steht `read_settings=None`.
+
+### Was in der Hülle steckt
+
+| Zugriff auf `OCRWrapper` | Inhalt |
+|---|---|
+| `.sha256`, `.status` | Hash und Endzustand: `done`, `empty`, `failed`, `input_error`. |
+| `.success` | `True` bei `done` und `empty`. |
+| `.mime`, `.size_bytes`, `.page_count` | Vom Job bestimmte Angaben; können fehlen, Ganzdokumente haben keine Seitenzahl. |
+| `.rendered_markdown` | Ganze Vollfassung; wirft, wenn diese fehlt oder unvollständig ist. |
+| `.readable_markdown` | Vollfassung mit HTML als Markdown, wie `--re`. |
+| `huelle["markdown"]` | Gewöhnliches MinerU-Markdown, ohne die Vollfassung der Randbereiche. |
+| `huelle["middle_json"]` | Je Teilstück Seiten und Blöcke, mit Seitenzahlen des Originals. |
+| `huelle["structured_content"]`, `huelle["model_output"]` | Weitere Inhalte der zusammengesetzten Antwort. Jedes Element von `raw` ist so erreichbar; fehlt es, kommt `KeyError`. |
+| `"markdown_full" in huelle` | Prüft die Anwesenheit des Schlüssels, nicht die Vollständigkeit seines Werts. |
+| `.images` | `{verweis: bytes}` unter dem Verweis aus dem Text; `huelle["images"]` enthält dagegen die gespeicherte Base64-Kodierung. |
+| `.raw` | Vollständige gespeicherte Antwort, auch bei Fehlschlägen. |
+| `.to_dict(raw=True)` | Dokumentangaben plus `raw`, wie das JSON bei `--ra`. Ohne Argument fehlt `raw`. |
+| `.mineru_version`, `.read_settings`, `.notes` | Gemeldete Version (bei mehreren die niedrigste), **bestellte** Lese-Einstellungen und Vermerke. Tatsächlich gemeldete Einstellungen stehen je Teilstück in `raw["envelopes"]`; Abweichungen in `notes`. |
+| `.refresh()` | Im synchronen Client die Zeile neu lesen und zwischengespeicherte Darstellungen verwerfen. |
+
+### Fehlschläge und Wiederholen
+
+`failed` und `input_error` sind Endzustände. `row.error` nennt den Grund,
+`raw` bewahrt, was ankam. Ergebniszugriffe wie `huelle["markdown"]` werfen dann
+`IncompleteResultError`; auch die Schlüsselprüfung mit `in` braucht ein
+erfolgreiches Ergebnis.
+
+Erneutes Abschicken derselben Bytes ist **auch bei `failed` ein Treffer**.
+`retry(sha256)` ist der ausdrückliche Wiederanlauf; `retry_all(hashes)` liefert
+ein Dict `{hash: RetryOutcome}`. Die Ausgänge:
+
+| `RetryOutcome` | Was passiert |
+|---|---|
+| `HAS_RESULT` | Nichts: `done`, `empty` **oder `input_error`** steht bereits da. |
+| `UNDERWAY` | Nichts: Der Job wartet oder läuft. |
+| `RESET` | `failed`-Ergebnis entfernt, gescheiterten Job zurückgesetzt. |
+| `REQUEUED` | Neuen Job eingereiht, etwa nach Abbruch oder Verlust des alten Jobs; vorhandenes `failed`-Ergebnis entfernt. |
+
+**`RESET` und `REQUEUED` kosten erneut Geld:** Das Dokument wird vollständig neu
+verarbeitet. `input_error` wird mit `retry` nicht neu gelesen. Ohne Hash-Liste
+nimmt `retry_all()` jede stehende Eingabe, also gescheiterte und offene
+Dokumente; nach einem Absturz besser gezielt mit Hashes wiederholen.
+
+```python
+import os
+from pathlib import Path
+from mineru_ocr import OCRClient
+
+with OCRClient(db_dsn=os.environ["MINERU_OCR_DB_DSN"], preflight=False) as client:
+    h = client.ocr_start(Path("dokument.pdf").read_bytes())
+    print(client.retry(h))
+    print(client.retry_all([h]))
+```
+
+### Übersicht und RunPod-Prüfung
+
+| Methode (nur synchron) | Inhalt |
+|---|---|
+| `status()` | Summen unter `documents`, `readings`, `jobs`, außerdem `upgrade_cases`, `balance`, `daemon_alive`. Braucht einen RunPod-Schlüssel für die Kontofrage. |
+| `preflight()` | Endpoint, Image, EWR-Rechenzentren und Sollwerte prüfen. Braucht Endpoint und Schlüssel. Berichtet nur, verändert keine RunPod-Ressource. |
+| `credit()` | Kontostand live, braucht den Schlüssel. |
+| `account()` | Kontoangaben, braucht den Schlüssel. |
+| `workers()` | Worker des Endpoints, braucht Endpoint und Schlüssel; Geheimnisse werden maskiert. |
+
+`OCRClient()` nimmt seine Verbindung aus der Konfiguration. Beim Betreten prüft
+er das Schema und, sofern Endpoint und Schlüssel vorhanden sind, den Endpoint.
+Weitere Konstruktorparameter sind `db_dsn`, `endpoint_id`, `api_key`,
+`preflight=True`, `strict=True`, `min_balance=1.0`, `schema_check=True`.
+`strict=False` lässt den Preflight Abweichungen berichten, statt sie als Fehler
+abzubrechen. `schema_check=False` erlaubt die Prüfung vor dem Schema-Setup;
+die Datenbank selbst muss bereits existieren. Zum Lesen und Abschicken die
+Schemaprüfung eingeschaltet lassen. `AsyncOCRClient` nimmt nur
+`db_dsn` als Konstruktorparameter.
+
+### Wichtige Fehlerklassen
+
+Alle folgenden Klassen sind aus `mineru_ocr` importierbar und erben von
+`MineruOcrError`:
+
+| Klasse | Anlass |
+|---|---|
+| `ConfigurationError` | Fehlende/ungültige Einstellungen, einschließlich benötigtem Endpoint oder Schlüssel. |
+| `UnsupportedTypeError`, `TooLargeError` | Beim Abschicken: nicht unterstützter Inhalt oder Größenlimit überschritten. |
+| `DocumentNotFound` | Unbekannter Hash; bei `get()` auch ein noch offenes Dokument. |
+| `WaitTimeoutError` | Wartefrist abgelaufen; zugleich `TimeoutError`, offene Hashes unter `.pending`. |
+| `IncompleteResultError` | Ergebnis gescheitert, beschädigt oder Vollfassung fehlt. |
+| `DatabaseError` | Datenbank nicht erreichbar oder Schema fehlt/passt nicht; Schema mit `mineru-ocr setup` prüfen. |
+
+## Konfiguration
+
+Datei: `~/.mineru_ocr/config.toml`; `MINERU_OCR_CONFIG` wählt eine andere.
+Eine fehlende Standarddatei ist erlaubt, eine ausdrücklich gewählte fehlende
+Datei nicht. Unbekannte TOML-Schlüssel sind Fehler. Rangfolge:
+**ausdrückliches Argument → `MINERU_OCR_<NAME>` → Datei → Paketvoreinstellung**.
+Für Datenbank und Endpoint gibt es keine Paketvoreinstellung.
+
+Für den Einstieg in der Datei `db_dsn` setzen und `endpoint_id` mit der eigenen
+Endpoint-Kennung belegen. **Der RunPod-Schlüssel bleibt in der lokalen Datei
+`~/.runpod/config.toml`, Feld `apikey`**, nicht im Repository oder
+in die Mineroo-Konfiguration. Die Python-API erlaubt außerdem die ausdrückliche
+Übergabe als `api_key`.
+
+Folgendes TOML ist eine gültige Konfiguration für die Beispiel-Testdatenbank,
+ohne Endpoint und Schlüssel; zum Lesen gespeicherter Ergebnisse reicht es:
+
+```toml
+db_dsn = "host=localhost port=5437 dbname=mineru_ocr_test"
+max_pages_per_chunk = 20
+max_payload_bytes = 7400000
+job_timeout_seconds = 300
+queue_timeout_seconds = 1800
+runpod_cache_seconds = 60
+```
+
+`setup`, CLI-Dateiaufruf und die Python-Methoden zum Abschicken, Abholen, Warten
+und Wiederholen brauchen nur Postgres (im Sync-Client gegebenenfalls
+`preflight=False`). Erst der Daemon führt die eingereihten Jobs über RunPod aus.
+Bei `setup` sowie `daemon start/stop/list` überschreibt `--dsn` die Verbindung;
+beim Dateiaufruf gilt `MINERU_OCR_DB_DSN` bzw. die Datei.
+
+### Sollwerte und Grenzen
+
+| TOML-Schlüssel | Paketvoreinstellung / Bedeutung |
+|---|---|
+| `endpoint_id`, `db_dsn` | Keine; vom Betreiber zu setzen. |
+| `expected_image_tag` | Keiner; Image-Herkunft dann „nicht prüfbar“. |
+| `workers_min`, `workers_max` | 0 / 10. |
+| `idle_timeout` | 5 Sekunden. |
+| `execution_timeout_ms` | 300000 Millisekunden. |
+| `allowed_data_centers` | `EU-CZ-1`, `EU-FR-1`, `EU-NL-1`, `EU-RO-1`, `EU-SE-1`, `EUR-IS-1`, `EUR-IS-2`, `EUR-NO-1`. Konfigurierbare EWR-Liste. |
+| `max_pages_per_chunk`, `max_payload_bytes` | 20 Seiten / 7400000 rohe Bytes je Teilstück. |
+| `job_timeout_seconds` | 300 Sekunden Bearbeitungsbudget je Teilstück. |
+| `queue_timeout_seconds` | 1800 Sekunden ununterbrochen `IN_QUEUE`; positiv und endlich. |
+| `runpod_cache_seconds` | 60 Sekunden; gemeinsamer Cache für Kontostand und Image-Herkunft im Daemon, auch für Fehler. Positiv und endlich. |
+| `[endpoint_env]` | Tabelle der Sollwerte für Endpoint-Variablen: `MINERU_MAX_CONCURRENCY = "1"`; `MINERU_VIRTUAL_VRAM_SIZE` hat keinen Sollwert und wird nur berichtet. |
+
+Alle genannten Schlüssel außer `[endpoint_env]` haben eine Umgebungsvariable,
+etwa `MINERU_OCR_QUEUE_TIMEOUT_SECONDS`. Bei `MINERU_OCR_ALLOWED_DATA_CENTERS`
+sind die Kennungen durch Kommas getrennt. Weitere interne Einstellungen und
+ihre Herleitung stehen in [`mineru_ocr/config.py`](mineru_ocr/config.py); nicht
+jedes Feld von `Settings` ist ein TOML-Schlüssel.
+
+Der Preflight prüft Image-Herkunft, Sollwerte und die gemeldete Umgebung aller
+zuletzt gelaufenen Worker, auch beendeter. Er berichtet FlashBoot. Eine leere
+Rechenzentrumsliste aus RunPod v2 bedeutet freie Regionswahl und ist eine
+Abweichung. Fehlende Angaben heißen **„nicht prüfbar“**, nicht „in Ordnung“. Rechenzentren liest er
+über RunPods REST-API v2, andere Endpoint-Angaben über v1. Die konfigurierte
+Liste muss jedes für den Endpoint eingestellte Rechenzentrum enthalten;
+Image-eigene Variablen sind in der Worker-Umgebung nicht sichtbar. Geheimnisse
+werden als `***` gezeigt, auch in `repr(Settings)`. `KEY`, `SECRET`, `TOKEN`
+und `PASSWORD` zählen dabei auch als Teilwort (also auch in `MONKEY` und
+`MAX_TOKENS`); weitere Namensteile stehen in `config.py`. Da RunPod-Antworten
+bereits maskiert sind, ist bei solchen Variablen nur das Vorhandensein prüfbar,
+nicht die Wertgleichheit; ein vorhandener geheimer Wert gilt als „nicht prüfbar“.
+Eine eigene Serialisierung von `Settings` maskiert nicht automatisch.
+
+Nach Ablauf von `queue_timeout_seconds` fragt der Daemon ein letztes Mal ab:
+fertige Antwort übernehmen, sonst `/cancel` und die bestehende Wiederholung.
+Ein Wechsel nach `IN_PROGRESS` beendet die Wartephase; erneutes Einreihen
+beginnt sie neu. Fehlgeschlagene Abfragen setzen sie nicht zurück. Das
+Bearbeitungsbudget bleibt getrennt; nach einer Kontopause (HTTP 402) beginnen
+beide Fristen beim erneuten Warten auf denselben Job neu.
+
+Der Cache teilt laufende RunPod-Abfragen zwischen OCR-Plätzen. Ohne gelesenen
+ausreichenden Kontostand wird nicht weitergearbeitet. HTTP 402 verlangt eine
+nach der Ablehnung begonnene Kontofrage; bestätigt niedriges Guthaben wird nach
+`balance_recheck_seconds` (intern 900 Sekunden) erneut geprüft. Clientmethoden
+fragen direkt, ohne diesen Daemon-Cache.
+
+## Daemons
 
 ```bash
-mkdir -p ~/.claude/skills ~/.agents/skills
-ln -sfn "$PWD/skills/mineroo" ~/.claude/skills/mineroo
-ln -sfn "$PWD/skills/mineroo" ~/.agents/skills/mineroo
+mineru-ocr daemon start 3
+mineru-ocr daemon start 1 --concurrency 48
+mineru-ocr daemon list
+mineru-ocr daemon stop 2
+mineru-ocr daemon start --help
 ```
 
-`-n` ersetzt einen schon stehenden Link, statt ihm zu folgen; ein zweiter Lauf
-legt sonst einen Link `skills/mineroo/mineroo` im Checkout an.
+`start X` startet X vom Terminal gelöste Prozesse, jeweils mit OCR- und
+Wartungs-Worker. Vorher werden Endpoint, Schlüssel und Schema geprüft. Standard
+sind 24 OCR-Plätze je Prozess (`ocr_concurrency`); `--concurrency N` überschreibt
+das. X und N müssen ganze Zahlen ab 1 sein.
 
-### Die eine Überraschung, die jeder einmal hat
+`stop X` beendet bis zu X, die am wenigsten belegten zuerst. Laufende Dokumente
+bekommen die Nachfrist `shutdown_graceful_timeout` (intern 30 Sekunden); danach
+greift die vorhandene Wiederholungsregel. Ist das Versuchsbudget erschöpft,
+endet das Dokument `failed`. Das JSON nennt `requested`, `stopped` und
+`running_before`. Es wird bis zum Prozessende einschließlich Zombie-Zustand
+gewartet.
 
-**Der Daemon ist ein eigener Prozess.** Die Bibliothek kann mit `ocr_start`
-auch ohne Daemon einreihen; sie warnt im Logger `mineru_ocr.client`, und Jobs
-bleiben bis zum Start offen. Für Wiederholungen gilt dieselbe Bibliotheksregel.
-Die CLI wartet synchron: Fehlt für eine Datei noch ein Ergebnis, prüft sie vor
-dem Abschicken den Herzschlag und endet ohne Einreihen mit Exit-Code 5, falls
-kein Daemon läuft. Treffer brauchen keinen Daemon. Weder Bibliothek noch
-Dateiaufruf starten selbst einen. Der Betreiber startet mit
-`mineru-ocr daemon start X`, beendet mit `mineru-ocr daemon stop X` und liest
-die Auslastung mit `mineru-ocr daemon list`. Der Vordergrund-Aufruf entfällt.
+`list` zeigt die Daemons **dieses Rechners für die gewählte Datenbank**,
+die Warteschlange gilt datenbankweit:
 
-Als laufend gilt ein Worker mit einem Herzschlag jünger als 30 Sekunden, gemessen
-an der Datenbankuhr. Eine alte Zeile eines abgestürzten Daemons genügt nicht.
-Ist die Lebendigkeit nicht lesbar, endet der Dateiaufruf mit Betriebsfehler 1,
-ohne die betroffene Datei einzureihen.
+| JSON-Feld | Bedeutung |
+|---|---|
+| `count`, `daemons` | Zahl lokaler laufender Daemon-Prozesse und ihre Einträge. |
+| `daemons[].pid`, `daemons[].socket`, `daemons[].log_path`, `daemons[].stopping` | Prozessnummer, Kontrollsocket, Protokollpfad und ob er herunterfährt. |
+| `daemons[].occupied`, `daemons[].available` | Belegte OCR-Plätze / konfigurierte OCR-Kapazität; keine Wartungsplätze. |
+| `slots.occupied`, `slots.available` | Summen der Belegung / Kapazität über die lokalen Daemons. |
+| `queue.waiting`, `queue.running` | OCR-Jobs in Procrastinate (`todo`/`doing`), einschließlich später vorgemerkter Jobs. |
 
----
+**`available` ist die Kapazität, nicht die Zahl freier Plätze:** Bei sechs
+Plätzen und einem laufenden Job steht `occupied=1`, `available=6`.
 
-## 2. Tests und Typprüfung
+Ein laufender Daemon antwortet am Kontrollsocket und hat frische
+Worker-Herzschläge (jünger als 30 Sekunden, Datenbankuhr). Eine alte Socketdatei
+oder Worker-Zeile reicht nicht. Socket und eigene Logs liegen im privaten
+Verzeichnis `/tmp/mineru-<uid>-<kennung>/`; keine PID-Kartei. Die Kennung kommt
+aus PostgreSQLs Clusterkennung und Datenbank-OID, unabhängig von IPv4, IPv6 oder
+Unix-Socket. Die Rolle braucht `EXECUTE` auf `pg_control_system()`.
+
+Nach einem Rechnerneustart startet nichts von selbst. Auch Bibliothek und
+Dateiaufruf starten keine Daemons. Die Bibliothek reiht ohne Daemon trotzdem
+ein und warnt im Logger `mineru_ocr.client`; die CLI lehnt neue/offene Dateien
+ohne frischen Herzschlag ab. Beim Wechsel von der früheren adressabhängigen
+Daemon-Kennung zunächst mit der alten Version stoppen, dann mit der neuen
+starten.
+
+## Formate und Verarbeitung
+
+Unterstützt werden PDF, Bilder (PNG, JPEG, GIF, BMP, TIFF, WebP), Office (DOC,
+XLS, PPT, DOCX, XLSX, PPTX), OpenDocument (ODT, ODS, ODP), RTF, EPUB, OFD, HTML
+und MHTML. Erkannt wird **am Inhalt**, nicht am Dateinamen. Text, CSV und
+beliebige ZIPs werden abgewiesen. Mehrbild-Bilddateien enden `input_error` mit
+dem Hinweis, sie als PDF einzureichen.
+
+Ganzdokument-Formate gehen ungeteilt hinaus und müssen unter die Uploadgrenze
+passen. Bei PDFs schneidet `pypdfium2` Teilstücke; `pypdf` ist im Projekt wegen
+der gemessenen Größenaufblähung verboten. Vor `%PDF-` sind ASCII-Leerraum und
+vollständige UTF-8-BOMs erlaubt; andere Vorspänne bleiben abgewiesen. HTML in
+UTF-16LE/BE wird für den Worker nach UTF-8 umkodiert. Hash und gespeicherte
+Eingabe bleiben in beiden Fällen die Originalbytes.
+
+Zu große Antworten führen zu weiterer Teilung des betroffenen PDF-Teilstücks;
+erst eine einzelne Seite mit zu großer Antwort endet `failed`. Eine einzelne
+PDF-Seite über der Uploadgrenze wird als JPEG gerendert (200 dpi, längste Kante
+höchstens 3500 Pixel, Qualität 90). `notes` nennt solche Seiten unter
+`seiten_gerendert`, null-basiert. Passt auch das Bild nicht, endet es
+`input_error`. Bereits bezahlte Antworten werden bewahrt; erneut gesendete
+Teilstücke kosten erneut Geld.
+
+## Tests und Typprüfung
+
+Für Entwicklung in einer eigenen Umgebung: `python -m pip install -e '.[dev]'`.
+Die Offline-Suite einschließlich Datenbanktests und die Typprüfung:
 
 ```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pytest -q -m "not live" > ausgabe.txt 2>&1
-/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m mypy mineru_ocr tests
+flock /tmp/mineroo-testdb.lock python -m pytest -q -m "not live" -ra > pytest.log 2>&1
+cat pytest.log
+python -m mypy mineru_ocr tests
 ```
 
-Die Ausgabe eines Testlaufs wird immer erst ganz in eine Datei geschrieben und
-dann gelesen oder durchsucht. Zwei Kennzeichnungen ändern, was ein bestandener
-Lauf überhaupt beweist:
+`flock` muss als Systemwerkzeug verfügbar sein. Datenbanktests verwenden
+**ausschließlich `mineru_ocr_test` auf Port 5437**; die Testrolle steht in
+[`tests/conftest.py`](tests/conftest.py). Diese Tests leeren ihre Tabellen,
+deshalb Läufe mit dem gemeinsamen Lock serialisieren und niemals die
+Produktionsdatenbank als Testziel einsetzen.
 
-- **`db`** braucht die Postgres-Instanz auf Port 5437 mit der Datenbank
-  `mineru_ocr_test`. Fehlt sie, werden diese Tests **übersprungen** statt zu
-  scheitern — ein fehlender Server ist keine Aussage über den Code. Die Kehrseite:
-  Ein „alles grün" ohne laufende Instanz hat die ganze Datenbankseite nie
-  ausgeführt. Wer die Zahl der übersprungenen Tests nicht ansieht, hält einen
-  halben Lauf für einen ganzen.
-- **`live`** spricht mit dem echten Endpoint und **kostet Geld**. Nur nach
-  ausdrücklicher Zustimmung, nie beiläufig.
+Fehlt Postgres, werden die `db`-Tests übersprungen. **Den Skip-Zähler prüfen:**
+Ein grüner Lauf mit solchen Skips belegt die Datenbankseite nicht. `live`-Tests
+sprechen den echten Endpoint an und kosten Geld; nur mit ausdrücklicher
+Zustimmung. Die Typprüfung umfasst **Paket und Tests**. Zum Arbeiten aus dem
+Checkout ist auch `python -m mineru_ocr.cli --help` möglich; die editierbare
+Installation zeigt immer auf den Checkout, aus dem sie gemacht wurde.
 
-Die Typprüfung läuft über `mineru_ocr` **und** `tests`. Warum beides nötig ist,
-steht in `pyproject.toml` an der zweiten mypy-Ausnahme.
+## Aufbau und Hintergründe
 
----
+Vier Entscheidungen tragen das Paket:
 
-## 3. Wie es gebaut ist — die vier Dinge, die man nicht aus einer Datei sieht
+- **Ein Buch:** `documents` enthält ausschließlich Endzustände. Offene Eingaben
+  liegen in `inputs`; der laufende Zustand wird aus ihrem Procrastinate-Job
+  abgeleitet, nicht daneben gespeichert.
+- **`empty` ist ein eigenes, gültiges Ergebnis:** Kein Inhalt erkannt heißt
+  weder `done` mit unsichtbarem Verlust noch Fehler mit endloser Wiedervorlage.
+- **Ein Dokument hinein, ein Dokument heraus:** Teilstücke werden vor dem
+  Schreiben nach Postgres zusammengesetzt; keine Chunk-Tabelle. Fehlende Seiten
+  oder benötigte Antwortdateien führen zu `failed` statt stillem Teiltext.
+- **Alles holen, alles persistieren, nie filtern:** Unbekannte Antwortdateien
+  bleiben in `extras`. Der Transport `tarball_b64` holt alles. Die Strecke nutzt
+  `/run` und `/status`, keinen `/runsync`-Betriebsweg. Schlüssel reisen im
+  `Authorization`-Header, nie in URLs. Die Endpoint-Prüfung verlangt die
+  konfigurierten EWR-Rechenzentren.
 
-Die ausführliche Fassung steht in [`CLAUDE.md`](CLAUDE.md) und die Begründungen in
-`plans/2026-08-05-ocr-service-plan.md`, soweit die Spec sie nicht ablöst. Hier die
-vier Entscheidungen, ohne die man den Code falsch liest:
+Das Paket spricht den MinerU-4-Job-Vertrag. Aufgenommene Antworten aus dem
+Betriebsweg `advanced` mit OCR liegen unter
+[`artifacts/2026-10-26-mineru-4.0.12-endpoint/`](artifacts/2026-10-26-mineru-4.0.12-endpoint/)
+und werden offline abgespielt.
 
-**Ein Buch, nicht zwei.** Die Tabelle `documents` trägt ausschließlich
-Endzustände: `done | empty | failed | input_error`. Die Zeile legt der Job an, wenn
-er endet; offen ist ein Dokument, solange seine Eingabe in `inputs` steht. „Läuft
-gerade" wird aus dem Procrastinate-Job **gelesen**, dessen Kennung an der Eingabe
-steht (`inputs.job_id`), und nirgends gespiegelt. Wer
-das nicht weiß, sucht vergeblich nach dem Feld — oder führt es ein und erzeugt
-genau die zwei Bücher, die auseinanderlaufen.
+Weiterlesen:
 
-**`empty` ist ein gültiges Ergebnis, kein Fehler.** Der Gegenstand war leer. Als
-Erfolg geführt wäre es unsichtbarer Verlust, als Fehler geführt erzeugte es
-endlose Wiedervorlage und Doppelkosten.
+- [`skills/mineroo/SKILL.md`](skills/mineroo/SKILL.md): Einstieg für Agenten.
+- [`CLAUDE.md`](CLAUDE.md): Aufbau und Arbeitsregeln für die Entwicklung.
+- [`docs/README.md`](docs/README.md): historische Betriebserfahrung,
+  Kalibrierung und Entscheidungen bis MinerU 3.4; kein aktuelles Runbook.
+- [`plans/2026-08-05-ocr-service-plan.md`](plans/2026-08-05-ocr-service-plan.md):
+  ursprünglicher Service-Entwurf.
+- [`plans/2026-08-06-procrastinate-feature-verifikation.md`](plans/2026-08-06-procrastinate-feature-verifikation.md):
+  Belege zu Procrastinate, mit Nachtrag zur verwendeten Version.
+- [Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1): Spec des
+  MinerU-4-Umbaus; Aufgaben im [Issue-Tracker](https://github.com/ConstantinLevin/Mineroo/issues),
+  Verfahren unter [`docs/agents/`](docs/agents/).
 
-**Teilstücke sind vor Postgres vollständig abstrahiert.** Hinein geht das ganze
-Dokument, heraus kommt das ganze Dokument. Dass ein PDF unterwegs in Stücke
-zerfällt, sieht die Datenbank nie: Der Exekutor setzt die Teilergebnisse **vor**
-dem Schreiben zusammen. Es gibt keine Chunk-Tabelle. Nach jedem Teilstück
-prüft er, ob die Antwort vollständig ist: Fehlen Seiten oder eine Datei, die das
-Paket braucht, endet das Dokument `failed`, statt still `done` zu werden.
-
-Ein Teilstück hat höchstens 20 Seiten und 7,4 MB (`max_pages_per_chunk`,
-`max_payload_bytes`), und das Paket wartet je Teilstück höchstens 300 s
-Bearbeitung ab (`job_timeout_seconds`, wie `executionTimeout` am Endpoint). Die
-Grenzen sind die Antwort und die Zeit: Der Worker gibt höchstens 19,4 MB zurück,
-die dichtesten gemessenen Scans brachten 729 KB je Seite, und die langsamste
-Seite brauchte 5,0 s. Wird eine Antwort zu groß, teilt der Daemon das betroffene
-Teilstück weiter: in aufgerundet Antwortgröße/Grenze Teile, ohne Größenangaben
-in zwei Hälften. Passt ein Teil wieder nicht, wird ebenso weitergeteilt; erst
-eine zu große Antwort einer einzelnen Seite endet `failed`. Bereits bezahlte
-Teilantworten bleiben erhalten. Abgewiesene Teilstücke sind bezahlt und werden
-in Teilen erneut gelesen (Mineroo#49).
-
-Eine einzelne PDF-Seite über der Uploadgrenze wird als JPEG gerendert (200 dpi,
-längste Kante höchstens 3.500 Pixel, Qualitätsstufe 90) und als diese Seite
-geschickt. `notes` nennt die gerenderten Seiten unter `seiten_gerendert`,
-null-basiert. Passt auch das Bild nicht, bleibt es bei `input_error`. Die
-Seitenzählung des Originals und die Prüfung der vollständigen Abdeckung bleiben
-erhalten; am Client und am Datenbankschema ändert sich nichts.
-
-**Die Abruf-Regel — alles holen, alles persistieren, nie filtern — ist als
-Bauweise umgesetzt, nicht als Vorsatz.** Die Ergebnisse liegen auf der Gegenseite
-nur rund **30 Minuten**; was beim Auspacken fallengelassen wird, ist danach
-unwiederbringlich und erzeugt dabei kein Fehlersignal. Deshalb trägt jedes
-Teilstück ein Feld `extras`, in das alles Unerkannte wandert.
-
-### Harte Regeln, jede wegen eines bezahlten Fehlers
-
-- **`pypdf` ist im ganzen Projekt verboten.** Es bläht beim Schneiden auf: 360 MB
-  Quelle wurden zu 4,1 GB Einzelseiten. Geschnitten wird mit `pypdfium2`.
-- **Niemals `/runsync`.** Der Endpoint ist warteschlangenbasiert; `/runsync`
-  wartet 60 Sekunden, ein Kaltstart dauert rund 8,5 Minuten.
-- **Der API-Schlüssel steht nur im `Authorization`-Header**, nie in einer URL, und
-  wird nie ausgegeben.
-- **Was an RunPod geht, geht in ein EU-Rechenzentrum.** Ein allgemeiner Wrapper
-  weiß nicht, ob die Daten personenbezogen sind; der `s3`-Transport ist nicht die
-  Voreinstellung.
-
----
-
-## 4. Aufgaben und Dokumentation
-
-**Aufgaben sind GitHub-Issues**, nach `docs/agents/`: `ConstantinLevin/Mineroo`
-für das Paket, der Fork `ConstantinLevin/mineru-runpod` für den Worker. Die
-Spec zum laufenden Umbau ist
-[Mineroo#1](https://github.com/ConstantinLevin/Mineroo/issues/1).
-
-Unter `docs/` und `plans/` liegt die Begründungsschicht, die älter ist als der
-Umbau: was gemessen wurde, welche Entscheidung mit welcher Begründung gefallen ist
-und was davon später zurückgenommen wurde. Einstieg ist
-[`docs/README.md`](docs/README.md). Diese Dokumente sind **Geschichte** — sie
-beschreiben den Stand bis MinerU 3.4 und den alten Endpoint, tragen oben einen
-Hinweis dazu und werden nicht umgeschrieben. Aktuell gelten dieses README und die
-Spec. Eine Ausnahme: `plans/2026-08-06-procrastinate-feature-verifikation.md`
-bleibt aktuell, solange Procrastinate die Warteschlange ist.
-
-`scripts/ocr_run.py` und `scripts/ocr_pdfs.py` sind die beiden Ad-hoc-Treiber der
-früheren Läufe, mit fest verdrahteten Pfaden und mehreren benannten Fehlern. Sie
-sind **Vorlagen und Messlatte, keine Bausteine** — `mineru_ocr` wird an ihnen
-gemessen, nicht aus ihnen gepatcht. `scripts/ocr_test.py` ist der Mini-Treiber
-des Doku-Verifikationstests vom 05.08.2026; seine Belege liegen unter
-`artifacts/2026-08-05-doku-verifikationstest/`.
-
-### Kein Autostart
-
-`mineru-ocr daemon start X` startet ausdrücklich X lokale, vom Terminal gelöste
-Prozesse mit je OCR- und Wartungs-Worker. Endpoint, Schlüssel und Schema werden
-vor dem Start geprüft. `--concurrency N` stellt die OCR-Plätze je Prozess ein.
-`mineru-ocr daemon stop X` beendet bis zu X, die am wenigsten belegten zuerst,
-und wartet auf das ordentliche Ende mit `shutdown_graceful_timeout` und der
-bestehenden Wiederholungsregel. Sind weniger da, nennt das JSON `requested`,
-`stopped` und `running_before`. X muss eine ganze Zahl ab 1 sein.
-
-`mineru-ocr daemon list` liefert eingerücktes JSON: `count` zählt Prozesse,
-`daemons` nennt je Prozess `pid`, `occupied`, `available`, `log_path` und den
-Kontrollsocket; `slots` summiert belegte und verfügbare OCR-Plätze.
-`queue.waiting`/`queue.running` zählen OCR-Jobs in Procrastinate (`todo`/`doing`,
-einschließlich für später vorgemerkter Jobs). Ohne Daemon ist `count` null.
-Die Wartungsplätze zählen nicht zur OCR-Auslastung.
-
-Lebende Kontrollsockets im privaten Verzeichnis `/tmp/mineru-UID-DBKENNUNG/`
-identifizieren die lokalen Prozesse; es gibt keine PID-Kartei. Jobbelegung und
-Herzschläge kommen ausschließlich aus Postgres. Ein nicht antwortender oder
-veralteter Prozess zählt nicht; alte Socketdateien nach einem Absturz sind
-bedeutungslos. Das Verzeichnis enthält auch die eigenen `.log`-Dateien je
-Daemon. `list` und `stop` verwalten Daemons auf diesem Rechner für die gewählte
-Datenbank; die OCR-Warteschlange gilt datenbankweit. Nach einem Rechnerneustart
-startet nichts von selbst. Weder Bibliothek noch Dateiaufruf starten Daemons.
-
-Die DB-Kennung besteht aus PostgreSQLs Clusterkennung (`system_identifier`) und
-der Datenbank-OID; IPv4, IPv6 und Unix-Socket führen zum selben Verzeichnis.
-Die Datenbankrolle braucht dafür `EXECUTE` auf `pg_control_system()` (bei einer
-Superuser-Rolle bereits vorhanden). Beim Wechsel von der früheren,
-adressabhängigen Kennung zuerst die laufenden Daemons mit der alten Version
-stoppen und danach mit der neuen Version starten.
-Nach einer Stop-Bestätigung wartet `stop` auf das Prozessende (einschließlich
-Zombie-Zustand), auch wenn die Ereignisschleife keinen Socket mehr beantwortet.
+Für die Benutzung gilt die im aktuellen Code vorhandene Schnittstelle; ältere
+Pläne und historische Skripte unter `scripts/` erklären ihre Herkunft.
