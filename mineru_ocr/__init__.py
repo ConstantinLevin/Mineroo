@@ -10,8 +10,8 @@ kennt nur die Kommandozeile. Der uebliche Weg:
 
     with OCRClient() as client:
         h = client.ocr_start(Path("scan.pdf").read_bytes())
-        # kehrt SOFORT zurueck, es laeuft noch nichts; `h` ist der Hash des
-        # Dokuments, der Griff, mit dem es in jedem Prozess weitergeht.
+        # kehrt SOFORT zurueck; ein laufender Daemon verarbeitet den Job.
+        # `h` ist der Dokumenthash, mit dem es in jedem Prozess weitergeht.
         print(client.status())          # Uebersicht, jederzeit
 
         # Das Dokument abwarten und ansehen:
@@ -44,9 +44,10 @@ Dasselbe asynchron, mit denselben Namen und `await` (`status`, `preflight`,
 Und derselbe Dienst ueber die Kommandozeile, die Dateien und Ordner liest:
 
     mineru-ocr setup
-    mineru-ocr daemon                   # in einem eigenen Fenster: der Exekutor
-    mineru-ocr ocr ~/Scans
-    mineru-ocr status
+    mineru-ocr daemon start 1           # Exekutor im Hintergrund
+    mineru-ocr scans/ --timeout 600      # abschicken, warten, Volltext ausgeben
+    mineru-ocr daemon list              # lokale Daemons und Warteschlange
+    mineru-ocr daemon stop 1            # bis zu einen Daemon ordentlich beenden
 
 Was hier steht, ist die zugesicherte Flaeche. Alles andere in den Untermodulen
 ist Innenleben und kann sich aendern.
