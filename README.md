@@ -590,7 +590,9 @@ und werden offline abgespielt.
 
 Weiterlesen:
 
-- [`skills/mineroo/SKILL.md`](skills/mineroo/SKILL.md): Einstieg für Agenten.
+- [`skills/mineroo/SKILL.md`](skills/mineroo/SKILL.md): Kurzer Einstieg für Agenten
+  mit Verweisen auf fünf [Referenzen](skills/mineroo/references/): ein Dokument,
+  viele Dokumente, CLI, Python sowie Technik und Betrieb.
 - [`CLAUDE.md`](CLAUDE.md): Aufbau und Arbeitsregeln für die Entwicklung.
 - [`docs/README.md`](docs/README.md): historische Betriebserfahrung,
   Kalibrierung und Entscheidungen bis MinerU 3.4; kein aktuelles Runbook.
