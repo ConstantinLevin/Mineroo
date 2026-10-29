@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -37,10 +38,79 @@ async def test_gleichzeitige_versuche_bleiben_getrennt_und_verschwinden() -> Non
     assert {s["job_id"] for s in staende.snapshot().values()} == {1, 2}
     assert all(s["gesendet"] == 1 for s in staende.snapshot().values())
     bereit.set()
-    await asyncio.gather(a, b, return_exceptions=True)
+    ergebnisse = await asyncio.gather(a, b, return_exceptions=True)
+    assert type(ergebnisse[0]) is ValueError
+    assert str(ergebnisse[0]) == "synthetisch"
+    assert ergebnisse[1] is None
     assert staende.snapshot() == {}
     progress.gesendet()  # Ausserhalb eines Versuchs wirkungslos.
     assert staende.snapshot() == {}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("timeout", [0.0, 0.05])
+@pytest.mark.parametrize("stoerung", ["verbinden", "snapshot", "kennung"])
+def test_anzeige_haelt_die_wartefrist_trotz_blockierter_beobachtung_ein(
+    db_conn: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    timeout: float, stoerung: str,
+) -> None:
+    import psycopg
+    from mineru_ocr import db
+    from mineru_ocr.errors import WaitTimeoutError
+    from test_cli import datei
+
+    pfad = datei(tmp_path)
+    with OCRClient(preflight=False) as klient:
+        sha = str(klient.ocr_start(pfad.read_bytes()))
+        anzeige = Anzeige(klient, stream=StringIO())
+        anzeige.hinzufuegen(pfad, sha)
+        aufrufe = []
+        verbinden = psycopg.AsyncConnection.connect
+        execute = psycopg.AsyncCursor.execute
+
+        async def langsam_verbinden(*args: Any, **kwargs: Any) -> Any:
+            aufrufe.append("verbinden")
+            if stoerung == "verbinden":
+                await asyncio.sleep(0.3)
+            return await verbinden(*args, **kwargs)
+
+        async def langsam_lesen(self: Any, query: Any, *args: Any, **kwargs: Any) -> Any:
+            if ((stoerung == "snapshot" and query == db._WARTE_SNAPSHOT_SQL)
+                    or (stoerung == "kennung" and "pg_control_system()" in str(query))):
+                aufrufe.append(stoerung)
+                # Echte laufende Serverabfrage: Abbrechen darf nicht auf eine
+                # Cancel-Bestaetigung des Servers warten.
+                return await execute(self, "SELECT pg_sleep(0.3)")
+            return await execute(self, query, *args, **kwargs)
+
+        async def kein_cancel(self: Any, **kwargs: Any) -> None:
+            raise AssertionError("Beobachtung wartet auf Query-Cancel")
+
+        def kein_zweites_verbinden(dsn: str) -> Any:
+            raise AssertionError("Unbegrenzte zusaetzliche Discovery-Verbindung")
+
+        monkeypatch.setattr(psycopg.AsyncConnection, "connect", langsam_verbinden)
+        monkeypatch.setattr(psycopg.AsyncCursor, "execute", langsam_lesen)
+        monkeypatch.setattr(psycopg.AsyncConnection, "_try_cancel", kein_cancel)
+        monkeypatch.setattr(db, "connect", kein_zweites_verbinden)
+        beginn = time.monotonic()
+        with pytest.raises(WaitTimeoutError) as fehler:
+            anzeige.wait(sha, timeout)
+        dauer = time.monotonic() - beginn
+        assert fehler.value.timeout == timeout
+        assert dauer < timeout + 0.1, (stoerung, dauer)
+        assert bool(aufrufe) == (timeout > 0)
+        if timeout > 0:
+            assert stoerung in aufrufe
+        assert db_conn.execute("SELECT count(*) FROM inputs").fetchone() == (1,)
+        # Der Server bemerkt das lokale Schliessen asynchron. Auch dort
+        # begrenzt statement_timeout die Beobachtung; kein Backend bleibt haengen.
+        aufraeumfrist = time.monotonic() + 0.4
+        while db_conn.execute(
+            "SELECT count(*) FROM pg_stat_activity WHERE application_name='mineru-ocr progress'"
+        ).fetchone() != (0,):
+            assert time.monotonic() < aufraeumfrist
+            time.sleep(0.01)
 
 
 async def test_runpod_meldet_nur_tatsaechlich_gelesene_zustaende(settings: Any) -> None:
@@ -91,7 +161,9 @@ def test_debug_reiht_stapel_ein_und_zeigt_dateien_ohne_steuerzeichen(
     b = datei(tmp_path, "b.png")
     db_conn.execute("INSERT INTO procrastinate_workers DEFAULT VALUES")
     args = [str(tmp_path)] if ordner else [str(a), str(b)]
-    lauf = CliRunner().invoke(app, [*args, "-d", "--timeout", "0"])
+    # Inhalt und Stapel werden hier geprueft; sehr kurze Fristen prueft der
+    # separate Test mit blockierter Beobachtung, ohne Anzeigepflicht.
+    lauf = CliRunner().invoke(app, [*args, "-d", "--timeout", "1"])
     assert lauf.exit_code == 4, lauf.output
     assert lauf.stdout == ""
     assert "a.png: wartet auf Daemon-Platz" in lauf.stderr
@@ -120,24 +192,24 @@ def test_protokoll_aendert_sich_nicht_durch_uhren_und_fremde_snapshots(
         anzeige = Anzeige(klient, stream=ausgabe)
         anzeige.hinzufuegen(pfad, sha)
         anzeige.gesucht = True
-        anzeige.refresh(klient.conn)
+        anzeige.refresh()
         vorher = ausgabe.getvalue()
-        anzeige.refresh(klient.conn)
+        anzeige.refresh()
         if not tty:
             assert ausgabe.getvalue() == vorher
         job, worker = db_conn.execute("SELECT id, (SELECT id FROM procrastinate_workers LIMIT 1) FROM procrastinate_jobs WHERE queue_name='ocr'").fetchone()
         db_conn.execute("UPDATE procrastinate_jobs SET status='doing', worker_id=%s WHERE id=%s", (worker, job))
-        def snapshot() -> dict[str, Any]:
+        def snapshot(identitaet: Any, ende: float) -> dict[str, Any]:
             return {sha: {"job_id": job + 1, "worker_ids": [worker], "schritt": "FALSCH", "runpod": "FALSCH", "gesendet": 88}}
         monkeypatch.setattr(anzeige, "_fortschritte", snapshot)
-        anzeige.refresh(klient.conn)
+        anzeige.refresh()
         assert "FALSCH" not in ausgabe.getvalue()
         assert "Daemon verarbeitet" in ausgabe.getvalue()
-        monkeypatch.setattr(anzeige, "_fortschritte", lambda: {sha: {
+        monkeypatch.setattr(anzeige, "_fortschritte", lambda identitaet, ende: {sha: {
             "job_id": job, "worker_ids": [worker], "schritt": "RunPod IN_QUEUE",
             "runpod": "IN_QUEUE", "gesendet": 1, "fertig": 0, "geplant": 2,
         }})
-        anzeige.refresh(klient.conn)
+        anzeige.refresh()
         erwartet = "ges:1 fertig:0 Plan:2" if tty else "Chunks gesendet 1, beendet 0, Plan 2"
         assert erwartet in ausgabe.getvalue()
         assert "IN_QUEUE" in ausgabe.getvalue()
@@ -146,6 +218,46 @@ def test_protokoll_aendert_sich_nicht_durch_uhren_und_fremde_snapshots(
 def test_terminalzeile_zaehlt_breite_unicodezeichen() -> None:
     assert _kuerzen("ab界界cd", 5) == "ab~"
     assert _kuerzen("ab界", 4) == "ab界"
+
+
+def test_socketfrist_gilt_fuer_die_ganze_antwort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mineru_ocr import daemons
+
+    jetzt = [0.0]
+    fristen: list[float] = []
+    teile = iter([b'{"a"', b':1', b'}\n'])
+
+    class Kanal:
+        def __enter__(self) -> Kanal:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+        def settimeout(self, timeout: float) -> None:
+            fristen.append(timeout)
+
+        def connect(self, pfad: str) -> None:
+            jetzt[0] += 0.01
+
+        def sendall(self, daten: bytes) -> None:
+            jetzt[0] += 0.01
+
+        def recv(self, groesse: int) -> bytes:
+            # Jedes einzelne Paket kaeme innerhalb der urspruenglichen
+            # Socketfrist an, die ganze Antwort aber erst nach deren Ablauf.
+            jetzt[0] += min(0.02, fristen[-1])
+            if fristen[-1] < 0.02:
+                raise TimeoutError
+            return next(teile)
+
+    monkeypatch.setattr("mineru_ocr.daemons.time.monotonic", lambda: jetzt[0])
+    monkeypatch.setattr("mineru_ocr.daemons.socket.socket", lambda *args: Kanal())
+    assert daemons.fragen(Path("/nicht-geoeffnet.sock"), timeout=0.05) is None
+    assert jetzt[0] == pytest.approx(0.05)
+    assert fristen[-1] == pytest.approx(0.01)
 
 
 async def test_kontrollsocket_liefert_nur_lebenden_fortschritt(
@@ -243,12 +355,12 @@ def test_terminalblock_bleibt_kleiner_als_das_fenster(
         for nr in range(25):
             pfad = datei(tmp_path, f"{nr}.png")
             anzeige.hinzufuegen(pfad, str(klient.ocr_start(pfad.read_bytes())))
-        anzeige.refresh(klient.conn)
+        anzeige.refresh()
         assert ausgabe.getvalue().count('\n') <= 22
         assert "Dateien" in ausgabe.getvalue()
         ausgabe.seek(0)
         ausgabe.truncate(0)
-        anzeige.refresh(klient.conn)
+        anzeige.refresh()
         assert all(int(nr) <= 22 for nr in re.findall(r'\x1b\[(\d+)A', ausgabe.getvalue()))
 
 
@@ -275,13 +387,13 @@ def test_terminalgroesse_folgt_stderr_und_resize(
         anzeige = Anzeige(klient, stream=ausgabe)
         anzeige.gesucht = True
         anzeige.hinzufuegen(pfad, str(klient.ocr_start(pfad.read_bytes())))
-        anzeige.refresh(klient.conn)
+        anzeige.refresh()
         alte_zeile = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', ausgabe.getvalue()).strip()
         assert len(alte_zeile) > 80
         ausgabe.seek(0)
         ausgabe.truncate(0)
         breite[0] = 80
-        anzeige.refresh(klient.conn)
+        anzeige.refresh()
         zeilen = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', ausgabe.getvalue()).splitlines()
         assert all(len(z) <= 79 for z in zeilen)
         assert "S:" in ausgabe.getvalue() and "T:" in ausgabe.getvalue()

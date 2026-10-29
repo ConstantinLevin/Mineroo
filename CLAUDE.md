@@ -368,6 +368,12 @@ aktuellen DB-Zeile passen. Die Debuganzeige liest Eingabe, Ergebnis, Job und
 Ereigniszeiten in einem Snapshot, ohne `content` oder `raw`; nach einem Absturz
 bleiben Chunk-Angaben unbekannt. Der optionale Beobachter der synchronen
 DB-Warteschleife ist nur für die CLI, ohne Änderung der Bibliotheksausgabe.
+Seine Frist gilt auch fuer die Anzeige: `db.read_wait_snapshot` besitzt eine
+kurzlebige asynchrone Beobachtungsverbindung, deren Verbinden und Abfragen im
+Restbudget (hoechstens 0,2 s) liegen. Nur die synchrone CLI-Anzeige fuehrt diese
+Beobachtung mit `asyncio.run` aus; die Warte-Verbindung bleibt davon getrennt.
+Die mitgelesene DB-Kennung erspart eine zweite Discovery-Verbindung. Ohne
+Restbudget, auch bei `--timeout 0`, wird keine Anzeigeabfrage gestartet.
 
 Jede Tatsache steht an genau einer Stelle: das Ergebnis in `documents`, die
 offene Eingabe in `inputs`, was wartet oder läuft in Procrastinates Job-Tabelle.

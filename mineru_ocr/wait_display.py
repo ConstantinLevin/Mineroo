@@ -1,6 +1,7 @@
 """CLI-Debuganzeige: dauerhafte Fakten lesen, fluechtige Fakten nur beobachten."""
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -13,28 +14,11 @@ from typing import Any, TextIO
 import unicodedata
 
 import psycopg
-from psycopg.rows import dict_row
 
 from . import daemons, db
 from .client import OCRClient
 from .errors import MineruOcrError
 from .wrapper import OCRWrapper
-
-
-_SQL = """
-SELECT h.sha256, d.status::text AS final, d.updated_at,
-       i.sha256 IS NOT NULL AS stored, j.id, j.status::text AS job_status,
-       j.attempts, j.worker_id, j.scheduled_at,
-       e.beginn, e.schritt, extract(epoch FROM clock_timestamp()) AS jetzt
-FROM unnest(%s::text[]) h(sha256)
-LEFT JOIN documents d ON d.sha256 = h.sha256
-LEFT JOIN inputs i ON i.sha256 = h.sha256
-LEFT JOIN procrastinate_jobs j ON j.id = i.job_id
-LEFT JOIN LATERAL (
-    SELECT min(at) AS beginn, max(at) AS schritt
-    FROM procrastinate_events WHERE job_id = j.id
-) e ON true
-"""
 
 
 def _sicher(text: str) -> str:
@@ -87,17 +71,18 @@ class Anzeige:
         self.stream.write(f"{_sicher(str(pfad))}: Datenbanktreffer ({huelle.status.value})\n")
         self.stream.flush()
 
-    def _fortschritte(self) -> dict[str, Any]:
-        if not self.gesucht:
+    def _fortschritte(
+        self, identitaet: tuple[Any, ...] | None, ende: float,
+    ) -> dict[str, Any]:
+        if not self.gesucht and identitaet is not None:
             self.gesucht = True
             try:
-                self.ordner = daemons.verzeichnis(self.klient.settings)
+                self.ordner = daemons.verzeichnis(self.klient.settings, identitaet=identitaet)
             except (MineruOcrError, psycopg.Error, OSError):
                 pass
         daten: dict[str, Any] = {}
         if self.ordner is not None:
             # Ein fremder oder alter Daemon darf die Anzeige nicht aufhalten.
-            ende = time.monotonic() + 0.2
             for pfad in sorted(self.ordner.glob("*.sock")):
                 rest = ende - time.monotonic()
                 if rest <= 0:
@@ -109,18 +94,32 @@ class Anzeige:
                             daten[sha] = {**stand, "worker_ids": antwort.get("worker_ids", [])}
         return daten
 
-    def refresh(self, conn: psycopg.Connection[Any]) -> None:
+    def refresh(self, ende: float | None = None) -> None:
+        # Das Budget beginnt in der Warteschleife, vor jeder Beobachtung.
+        ende = min(time.monotonic() + 0.2, ende) if ende is not None else time.monotonic() + 0.2
+        if time.monotonic() >= ende:
+            return
         try:
-            self._refresh(conn)
-        except (MineruOcrError, psycopg.Error, OSError, ValueError, TypeError, KeyError):
+            self._refresh(ende)
+        except (MineruOcrError, psycopg.Error, OSError, ValueError, TypeError, KeyError, TimeoutError):
             # Alte oder unvollstaendige Socket-Antworten sind keine OCR-Fehler.
             self.schliessen()
 
-    def _refresh(self, conn: psycopg.Connection[Any]) -> None:
+    def _refresh(self, ende: float) -> None:
         try:
-            with conn.cursor(row_factory=dict_row) as cur:
-                staende = cur.execute(_SQL, ([d.sha256 for d in self.dateien],)).fetchall()
-            fortschritte = self._fortschritte()
+            # Die Client-Verbindung kennt den ausgewaehlten Server bereits.
+            # hostaddr erspart DNS im Beobachter und damit auch das Warten auf
+            # einen blockierten Resolver beim Schliessen von asyncio.run.
+            info = self.klient.conn.info
+            dsn = psycopg.conninfo.make_conninfo(
+                self.klient.settings.db_dsn,
+                host=info.host, hostaddr=info.hostaddr, port=info.port,
+            )
+            staende, identitaet = asyncio.run(db.read_wait_snapshot(
+                dsn, [d.sha256 for d in self.dateien],
+                timeout=max(0, ende - time.monotonic()),
+            ))
+            fortschritte = self._fortschritte(identitaet, ende)
         except (MineruOcrError, psycopg.Error, OSError):
             # Beobachtung darf Erfolg, Wartefrist und Exit-Code nicht aendern.
             self.schliessen()
@@ -229,13 +228,11 @@ class Anzeige:
 
     def wait(self, sha256: str, timeout: float | None) -> OCRWrapper:
         try:
-            self.refresh(self.klient.conn)
             with closing(db.wait_for_terminal(
                 self.klient.settings.db_dsn, [sha256], timeout=timeout,
                 poll_seconds=1, _on_poll=self.refresh,
             )) as ergebnisse:
                 zeile = next(ergebnisse)
-            self.refresh(self.klient.conn)
             return OCRWrapper.from_row(zeile, self.klient.conn)
         finally:
             self.schliessen()

@@ -25,15 +25,18 @@ from .config import Settings
 from .errors import DatabaseError
 
 
-def verzeichnis(settings: Settings) -> Path:
+def verzeichnis(
+    settings: Settings, *, identitaet: tuple[Any, ...] | None = None,
+) -> Path:
     """Gleiche Datenbank auf diesem Rechner bedeutet gleiche Kontrollsockets."""
     try:
-        with db.connect(settings.db_dsn) as conn:
-            identitaet = conn.execute(
-                # Clusterkennung und Datenbank-OID haengen nicht vom Zugangsweg ab.
-                "SELECT system_identifier, oid FROM pg_control_system(), pg_database "
-                "WHERE datname = current_database()"
-            ).fetchone()
+        if identitaet is None:
+            with db.connect(settings.db_dsn) as conn:
+                identitaet = conn.execute(
+                    # Clusterkennung und Datenbank-OID haengen nicht vom Zugangsweg ab.
+                    "SELECT system_identifier, oid FROM pg_control_system(), pg_database "
+                    "WHERE datname = current_database()"
+                ).fetchone()
     except psycopg.Error as fehler:
         raise DatabaseError(
             "Datenbankkennung nicht lesbar; die Datenbankrolle braucht "
@@ -50,12 +53,21 @@ def verzeichnis(settings: Settings) -> Path:
 def fragen(pfad: Path, befehl: str = "status", *, timeout: float = 2) -> dict[str, Any] | None:
     """Fragt den Prozess selbst, mit Frist; ein totes Socket zaehlt nicht."""
     try:
+        ende = time.monotonic() + timeout
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as kanal:
             kanal.settimeout(timeout)
             kanal.connect(str(pfad))
+            rest = ende - time.monotonic()
+            if rest <= 0:
+                return None
+            kanal.settimeout(rest)
             kanal.sendall((befehl + "\n").encode())
             daten = bytearray()
             while b"\n" not in daten:
+                rest = ende - time.monotonic()
+                if rest <= 0:
+                    return None
+                kanal.settimeout(rest)
                 teil = kanal.recv(65536)
                 if not teil:
                     return None
