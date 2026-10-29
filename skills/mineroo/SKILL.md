@@ -13,7 +13,8 @@ Mehrere Agenten dürfen gleichzeitig abschicken und warten, auch während ein
 großer Lauf läuft; kein Dokument läuft dabei doppelt.
 
 Optionen, Exit-Codes und Ausgabeformen stehen in `mineru-ocr --help` und
-`mineru-ocr <kommando> --help`, die Bibliothek in ihren Docstrings
+`mineru-ocr <kommando> --help`; jede Hilfeseite endet mit `mineru-ocr <Version>`.
+Die Bibliothek steht in ihren Docstrings
 (`help(mineru_ocr.OCRClient)`, `help(mineru_ocr.AsyncOCRClient)`). Welche
 Dateitypen gelesen werden, steht in `mineru_ocr.DocumentType`: PDFs, Bilder und
 Dateien, die MinerU als ganzes Dokument liest (Office auch im alten Format,

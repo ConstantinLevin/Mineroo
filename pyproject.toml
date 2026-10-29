@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mineru-ocr"
-version = "0.1.0"
+version = "1.0"
 description = "Lokale Seite der MinerU-OCR-Strecke: Dokumente rein, Text und Struktur raus — ueber Postgres und Procrastinate."
 requires-python = ">=3.12"
 
