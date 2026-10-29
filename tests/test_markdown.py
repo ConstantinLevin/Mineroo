@@ -46,3 +46,19 @@ def test_html_bloecke_inline_tags_und_zeilenumbrueche_werden_lesbar() -> None:
     lesbar = huelle(text).readable_markdown
     assert lesbar.startswith('Vor **fett** und *kursiv*  \nweiter\n\n**Bild**\n\nBeschreibung.\n\n')
     assert 'Tabelle:\n\n| A  <br>B | Übung |\n| --- | --- |\n\nEnde' in lesbar
+
+
+def test_markdown_linkziele_und_titel_bleiben_auch_neben_html_erhalten() -> None:
+    texte = [
+        '[link](https://example.org "<b>literal title</b>")',
+        '![alt](image.png "<b>literal title</b>")',
+        '[ref]: https://example.org "<b>literal title</b>"\n',
+        "[link](https://example.org 'Titel ) <b>literal</b>')",
+        '[link](https://example.org/a_(b) "Titel <b>literal</b>")',
+        '[ref]: https://example.org\n  "Titel <b>literal</b>"\n',
+    ]
+    for text in texte:
+        assert huelle(text + '\n\n<b>echt</b>').readable_markdown == text + '\n\n**echt**'
+    assert huelle('[<b>Label</b>](https://example.org "<b>Titel</b>")').readable_markdown == (
+        '[**Label**](https://example.org "<b>Titel</b>")'
+    )

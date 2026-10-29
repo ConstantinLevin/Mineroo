@@ -91,6 +91,44 @@ def _markdown_schuetzen(text: str) -> str:
     ):
         for treffer in re.finditer(muster, "".join(maskiert)):
             schuetzen(treffer.start(), treffer.end())
+    # Ziele und Titel sind Markdown-Syntax, kein Inline-HTML. Das Label
+    # bleibt frei: [<b>Text</b>](ziel) enthaelt dagegen echtes Inline-HTML.
+    for treffer in re.finditer(r"\]\(", "".join(maskiert)):
+        tiefe = 1
+        zitat = ""
+        winkel = False
+        escaped = False
+        for i in range(treffer.end(), len(text)):
+            zeichen = text[i]
+            if escaped:
+                escaped = False
+            elif zeichen == "\\":
+                escaped = True
+            elif zitat:
+                if zeichen == zitat:
+                    zitat = ""
+            elif winkel:
+                if zeichen == ">":
+                    winkel = False
+            elif zeichen in {"'", '"'} and text[i - 1].isspace():
+                zitat = zeichen
+            elif zeichen == "<":
+                winkel = True
+            elif zeichen == "(":
+                tiefe += 1
+            elif zeichen == ")":
+                tiefe -= 1
+                if tiefe == 0:
+                    schuetzen(treffer.start(), i + 1)
+                    break
+    for treffer in re.finditer(
+        r"""(?mx)^\ {0,3}\[[^\]\n]+\]:[\t ]*\S+
+        (?:[\t ]*(?:\n[\t ]*)?
+            (?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\((?:\\.|[^)\\])*\)))?
+        """,
+        "".join(maskiert),
+    ):
+        schuetzen(treffer.start(), treffer.end())
     # Ein maskiertes Startzeichen verhindert, dass ein escaptes Tag beginnt.
     for treffer in re.finditer(r"(\\+)<", text):
         if len(treffer[1]) % 2:
