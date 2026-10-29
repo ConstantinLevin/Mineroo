@@ -1146,8 +1146,8 @@ def test_abschicken_legt_eingabe_und_job_in_einer_transaktion_an_und_merkt_die_k
     echtes_einreihen = tasks.enqueue_document
     gesehen: list[tuple[object, object]] = []
 
-    def beobachtet(app: Any, conn: Any, sha256: str) -> int:
-        kennung = echtes_einreihen(app, conn, sha256)
+    def beobachtet(app: Any, conn: Any, sha256: str, **kwargs: Any) -> int:
+        kennung = echtes_einreihen(app, conn, sha256, **kwargs)
         with psycopg.connect(int_settings.db_dsn, autocommit=True) as andere:
             gesehen.append(
                 (
@@ -1233,7 +1233,7 @@ def test_gleichzeitiges_abschicken_derselben_bytes_legt_einen_job_an(
     erster_haelt = threading.Event()
     zweiter_wartete: list[bool] = []
 
-    def langsam(app: Any, conn: Any, sha256: str) -> int:
+    def langsam(app: Any, conn: Any, sha256: str, **kwargs: Any) -> int:
         # Die Eingabe ist abgelegt, aber nicht festgeschrieben. Gehalten wird,
         # bis Postgres den zweiten am Primaerschluessel warten laesst — keine
         # feste Pause, die auf einer langsamen Maschine still verstriche und
@@ -1252,7 +1252,7 @@ def test_gleichzeitiges_abschicken_derselben_bytes_legt_einen_job_an(
                     zweiter_wartete.append(True)
                     break
                 time.sleep(0.01)
-        return echtes_einreihen(app, conn, sha256)
+        return echtes_einreihen(app, conn, sha256, **kwargs)
 
     monkeypatch.setattr(tasks, "enqueue_document", langsam)
     ergebnisse: dict[str, Any] = {}
@@ -1770,12 +1770,12 @@ def test_zwei_prozess_rueckfall_ist_wirklich_vorbereitet(
     from mineru_ocr.daemon import _worker_optionen
 
     beide = _worker_optionen(int_settings, None, {"settings": int_settings})
-    assert len(beide) == 2
-    assert [o["queues"] for o in beide] == [[config.QUEUE_OCR], [config.QUEUE_MAINTENANCE]]
+    assert len(beide) == 3
+    assert [o["queues"] for o in beide] == [[config.QUEUE_OCR], [config.QUEUE_MAINTENANCE], [config.QUEUE_AUDIO]]
     # Der Waechter bekommt genau EINEN Platz; die OCR-Queue die eingestellte Zahl.
     assert beide[0]["concurrency"] == int_settings.ocr_concurrency
     assert beide[1]["concurrency"] == 1
-    # KEINER der beiden richtet Signal-Handler ein — das tut der Prozess selbst.
+    # Keiner der Worker richtet Signal-Handler ein — das tut der Prozess selbst.
     assert all(o["install_signal_handlers"] is False for o in beide)
     # Erfolgreiche Jobs loescht der Worker; gescheiterte bleiben fuer `retry`.
     assert all(o["delete_jobs"] == "successful" for o in beide)
@@ -2254,7 +2254,7 @@ def test_gleichzeitiges_retry_reiht_nur_einen_neuen_job_ein(
     erster_haelt = threading.Event()
     zweiter_wartete: list[bool] = []
 
-    def langsam(app: Any, conn: Any, sha256: str) -> int:
+    def langsam(app: Any, conn: Any, sha256: str, **kwargs: Any) -> int:
         if not erster_haelt.is_set():
             erster_haelt.set()
             frist = time.monotonic() + 10
@@ -2269,7 +2269,7 @@ def test_gleichzeitiges_retry_reiht_nur_einen_neuen_job_ein(
                         zweiter_wartete.append(True)
                         break
                     time.sleep(0.01)
-        return echtes_einreihen(app, conn, sha256)
+        return echtes_einreihen(app, conn, sha256, **kwargs)
 
     monkeypatch.setattr(tasks, "enqueue_document", langsam)
     ausgaenge: dict[str, RetryOutcome] = {}
@@ -2430,7 +2430,7 @@ def test_retry_haelt_die_eingabe_bis_zum_commit_fest(
         echtes_einreihen = tasks.enqueue_document
         blockiert: list[bool] = []
 
-        def einreihen_waehrend_eines_endschreibens(app: Any, conn: Any, sha256: str) -> int:
+        def einreihen_waehrend_eines_endschreibens(app: Any, conn: Any, sha256: str, **kwargs: Any) -> int:
             with psycopg.connect(int_settings.db_dsn, autocommit=True) as anderswo:
                 anderswo.execute("SET lock_timeout = '300ms'")
                 try:
@@ -2438,7 +2438,7 @@ def test_retry_haelt_die_eingabe_bis_zum_commit_fest(
                     blockiert.append(False)
                 except psycopg.errors.LockNotAvailable:
                     blockiert.append(True)
-            return echtes_einreihen(app, conn, sha256)
+            return echtes_einreihen(app, conn, sha256, **kwargs)
 
         monkeypatch.setattr(tasks, "enqueue_document", einreihen_waehrend_eines_endschreibens)
         ausgang = klient.retry(sha)

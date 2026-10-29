@@ -19,3 +19,4 @@ __pycache__/
 # hereinbrachte). Die Datei aendert sich bei jedem Lauf und erzeugt sonst
 # dauerhaftes Rauschen im Arbeitsbaum.
 .coverage
+.env

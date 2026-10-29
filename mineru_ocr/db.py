@@ -1160,6 +1160,17 @@ class StoredInput:
     """Wie MinerU das Dokument lesen soll; genau das schickt der Job an RunPod."""
 
 
+def read_input_head(conn: psycopg.Connection[Any], sha256: str) -> bytes:
+    """Nur den Erkennungskopf fuer die Lane eines neuen Retry-Jobs lesen (#70)."""
+    from .mime import KOPF_BYTES
+
+    zeile = conn.execute(
+        "SELECT substring(content FROM 1 FOR %s) FROM inputs WHERE sha256 = %s",
+        (KOPF_BYTES, sha256), binary=True,
+    ).fetchone()
+    return bytes(zeile[0]) if zeile is not None else b""
+
+
 async def read_input_async(dsn: str, sha256: str) -> StoredInput | None:
     """Liest die Eingabe eines Dokuments auf einer EIGENEN, kurzlebigen Verbindung.
 

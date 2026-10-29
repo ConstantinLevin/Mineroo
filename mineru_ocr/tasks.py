@@ -43,6 +43,7 @@ from .config import Settings
 from .errors import TransientRunPodError, should_run_again
 from .lesefragen import Lesefragen
 from .runpod import RunPodClient
+from .mime import DocumentType
 
 
 def build_daemon_app(settings: Settings) -> procrastinate.App:
@@ -104,6 +105,12 @@ def build_daemon_app(settings: Settings) -> procrastinate.App:
         retry=OCRRetryStrategy(settings),
         pass_context=True,
     )(ocr_document)
+    app.task(
+        name=config.TASK_AUDIO_DOCUMENT,
+        queue=config.QUEUE_AUDIO,
+        retry=OCRRetryStrategy(settings),
+        pass_context=True,
+    )(audio_document)
 
     waechter = app.task(
         name=config.TASK_RETRY_STALLED,
@@ -390,6 +397,20 @@ auseinandergelaufen. Ein Stellvertreter ist haesslicher als ein `if`, aber er
 kann nicht von der Strategie abweichen."""
 
 
+async def audio_document(context: procrastinate.JobContext, sha256: str) -> None:
+    """Audio-Adapter; wie OCR nur der Hash im Job, keine Kopie der Eingabe."""
+    from .audio_executor import process_audio
+
+    mittel = context.additional_context
+    letzter = not wird_erneut_vorgelegt(
+        _ERSCHOEPFUNGS_SONDE, context.job, mittel["settings"]
+    )
+    await process_audio(
+        sha256, settings=mittel["settings"], pool=mittel["pool"],
+        letzter_versuch=letzter,
+    )
+
+
 WORKER_ABGESTUERZT: Final = "Worker wiederholt abgestuerzt"
 """Der Grund am `failed`-Ergebnis eines Dokuments, dessen Job der Waechter bei
 erschoepftem Budget beendet: Jeder Versuch endete mit einem toten Worker."""
@@ -454,7 +475,7 @@ async def retry_stalled(context: procrastinate.JobContext, timestamp: int) -> No
         if wird_erneut_vorgelegt(_ERSCHOEPFUNGS_SONDE, job, einstellungen):
             await verwalter.retry_job(job)
             continue
-        if job.task_name == config.TASK_OCR_DOCUMENT:
+        if job.task_name in (config.TASK_OCR_DOCUMENT, config.TASK_AUDIO_DOCUMENT):
             await executor.write_failure_if_no_result(
                 str(job.task_kwargs["sha256"]),
                 settings=einstellungen,
@@ -470,7 +491,8 @@ async def retry_stalled(context: procrastinate.JobContext, timestamp: int) -> No
 
 
 def enqueue_document(
-    app: procrastinate.App, connection: Any, sha256: str
+    app: procrastinate.App, connection: Any, sha256: str,
+    *, doc_type: DocumentType = DocumentType.PDF,
 ) -> int:
     """Reiht ein Dokument ein, EINZELN, und gibt die Kennung des Jobs.
 
@@ -515,11 +537,12 @@ def enqueue_document(
 
     Kosten: keine unmittelbar — mittelbar loest der Job Verarbeitung aus.
     """
-    return _ocr_task(app, connection, sha256).defer(sha256=sha256)
+    return _document_task(app, connection, sha256, doc_type).defer(sha256=sha256)
 
 
 async def enqueue_document_async(
-    app: procrastinate.App, connection: Any, sha256: str
+    app: procrastinate.App, connection: Any, sha256: str,
+    *, doc_type: DocumentType = DocumentType.PDF,
 ) -> int:
     """Dasselbe wie `enqueue_document`, asynchron, fuer den `AsyncOCRClient`:
     Name, Queue und Sperre gleich, eingereiht mit `defer_async` auf der
@@ -535,17 +558,17 @@ async def enqueue_document_async(
 
     Kosten: keine unmittelbar — mittelbar loest der Job Verarbeitung aus.
     """
-    return await _ocr_task(app, connection, sha256).defer_async(sha256=sha256)
+    return await _document_task(app, connection, sha256, doc_type).defer_async(sha256=sha256)
 
 
-def _ocr_task(
-    app: procrastinate.App, connection: Any, sha256: str
+def _document_task(
+    app: procrastinate.App, connection: Any, sha256: str, doc_type: DocumentType,
 ) -> procrastinate.jobs.JobDeferrer:
     """Der Task des Daemons, per Namen, mit Queue, Sperre und Verbindung — die
     eine Konfiguration hinter `enqueue_document` und `enqueue_document_async`."""
     return app.configure_task(
-        name=config.TASK_OCR_DOCUMENT,
-        queue=config.QUEUE_OCR,
+        name=config.TASK_AUDIO_DOCUMENT if doc_type.is_audio else config.TASK_OCR_DOCUMENT,
+        queue=config.QUEUE_AUDIO if doc_type.is_audio else config.QUEUE_OCR,
         lock=sha256,
         connection=connection,
     )

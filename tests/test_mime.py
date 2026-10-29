@@ -661,7 +661,7 @@ def test_ganzdokument_formate_sind_alles_ausser_pdf_und_bildern() -> None:
     Seiten (Mineroo#1, Worker, „Dateitypen"): Office, OpenDocument, RTF, EPUB,
     OFD, HTML und MHTML."""
     for typ in DocumentType:
-        assert typ.is_whole_document is not (typ.is_pdf or typ.is_image), typ
+        assert typ.is_whole_document is not (typ.is_pdf or typ.is_image or typ.is_audio), typ
     assert {typ for typ in DocumentType if typ.is_whole_document} == {
         DocumentType.DOCX,
         DocumentType.PPTX,

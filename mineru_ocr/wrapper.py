@@ -324,6 +324,9 @@ class OCRWrapper:
                 Ausgabe gibt es nicht: Sie saehe vollstaendig aus. Was da ist,
                 steht unveraendert in `raw`.
         """
+        if self.row.endpoint_id == "elevenlabs":
+            from .elevenlabs import transcript
+            return transcript(self._ergebnis())
         return assembly.rendered_markdown(self._ergebnis())
 
     @property
@@ -334,6 +337,8 @@ class OCRWrapper:
         Bildbeschreibungen) werden umgesetzt. Rohantwort und Vollfassung
         bleiben unveraendert; dieselben Vollstaendigkeitspruefungen gelten.
         """
+        if self.row.endpoint_id == "elevenlabs":
+            return self.rendered_markdown
         return html_to_markdown(self.rendered_markdown)
 
     # -- Umgang -----------------------------------------------------------

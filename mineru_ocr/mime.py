@@ -179,6 +179,18 @@ class DocumentType(enum.Enum):
     OFD = "ofd"
     HTML = "html"
     MHTML = "mhtml"
+    MP3 = "mp3"
+    M4A = "m4a"
+    AAC = "aac"
+    WAV = "wav"
+    FLAC = "flac"
+    OGG = "ogg"
+    AIFF = "aiff"
+
+    @property
+    def is_audio(self) -> bool:
+        """Ob die Datei ungeteilt an ElevenLabs statt an MinerU geht (#70)."""
+        return self in _AUDIO
 
     @property
     def is_pdf(self) -> bool:
@@ -209,7 +221,7 @@ class DocumentType(enum.Enum):
     def is_whole_document(self) -> bool:
         """Ob MinerU 4 diesen Typ als ganzes Dokument liest, ohne Seiten.
 
-        Alles ausser PDF und Bildern (Mineroo#1, Worker, „Dateitypen": „local Flash
+        Die OCR-Formate ausser PDF und Bildern (Mineroo#1, „Dateitypen": „local Flash
         and whole-document parsing"). Fuer diese Ganzdokument-Formate gelten die
         Ausnahmen aus Mineroo#17: Sie gehen ungeteilt als ein Stueck hinaus, unter
         der Groessengrenze einer Anfrage; der Seitenvergleich entfaellt, denn sie
@@ -217,7 +229,7 @@ class DocumentType(enum.Enum):
         Worker liest sie immer in `flash`. Gespeichert werden fuer sie deshalb
         keine, und es gibt keinen Vermerk ueber abweichende.
         """
-        return not (self.is_pdf or self.is_image)
+        return not (self.is_pdf or self.is_image or self.is_audio)
 
     @property
     def can_hold_several_images(self) -> bool:
@@ -243,6 +255,11 @@ class DocumentType(enum.Enum):
         return _TABELLE[self][1]
 
 
+_AUDIO: Final = frozenset({
+    DocumentType.MP3, DocumentType.M4A, DocumentType.AAC, DocumentType.WAV,
+    DocumentType.FLAC, DocumentType.OGG, DocumentType.AIFF,
+})
+
 _BILDER: Final[frozenset[DocumentType]] = frozenset(
     {
         DocumentType.PNG,
@@ -264,6 +281,13 @@ _BILDFOLGEN: Final[frozenset[DocumentType]] = frozenset(
 )
 
 _TABELLE: Final[dict[DocumentType, tuple[str, str]]] = {
+    DocumentType.MP3: ("audio/mpeg", ".mp3"),
+    DocumentType.M4A: ("audio/mp4", ".m4a"),
+    DocumentType.AAC: ("audio/aac", ".aac"),
+    DocumentType.WAV: ("audio/wav", ".wav"),
+    DocumentType.FLAC: ("audio/flac", ".flac"),
+    DocumentType.OGG: ("audio/ogg", ".ogg"),
+    DocumentType.AIFF: ("audio/aiff", ".aiff"),
     DocumentType.PDF: ("application/pdf", ".pdf"),
     DocumentType.PNG: ("image/png", ".png"),
     DocumentType.JPEG: ("image/jpeg", ".jpg"),
@@ -451,6 +475,29 @@ def _typ_aus_kopf(kopf: bytes) -> DocumentType | None:
     """
     if _PDF_ANFANG.match(kopf):
         return DocumentType.PDF
+    if kopf.startswith(b"RIFF") and kopf[8:12] == b"WAVE":
+        return DocumentType.WAV
+    if kopf.startswith(b"FORM") and kopf[8:12] in (b"AIFF", b"AIFC"):
+        return DocumentType.AIFF
+    if kopf.startswith(b"fLaC"):
+        return DocumentType.FLAC
+    if kopf.startswith(b"OggS") and any(
+        kennung in kopf for kennung in (b"OpusHead", b"\x01vorbis", b"Speex   ", b"\x7fFLAC")
+    ):
+        return DocumentType.OGG
+    # Nur Audio-Marken, kein allgemeines MP4/isom: Video ist nicht Teil von #70.
+    if kopf[4:8] == b"ftyp" and kopf[8:12] in (b"M4A ", b"M4B "):
+        return DocumentType.M4A
+    if len(kopf) >= 7 and kopf[0] == 0xff and kopf[1] & 0xf6 == 0xf0:
+        return DocumentType.AAC  # ADTS, kein MPEG-Audio-Layer
+    if kopf.startswith(b"ADIF"):
+        return DocumentType.AAC
+    if kopf.startswith(b"ID3") or (
+        len(kopf) >= 4 and kopf[0] == 0xff and kopf[1] & 0xe0 == 0xe0
+        and kopf[1] & 0x18 != 0x08 and kopf[1] & 0x06 == 0x02
+        and kopf[2] >> 4 not in (0, 15) and kopf[2] & 0x0c != 0x0c
+    ):
+        return DocumentType.MP3
     if kopf.startswith(b"\x89PNG\r\n\x1a\n"):
         return DocumentType.PNG
     if kopf.startswith(b"\xff\xd8\xff"):

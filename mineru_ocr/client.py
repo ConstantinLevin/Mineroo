@@ -44,7 +44,7 @@ from procrastinate import utils
 from procrastinate.jobs import Job
 from psycopg_pool import AsyncNullConnectionPool, NullConnectionPool
 
-from . import core, db, tasks
+from . import core, db, mime, tasks
 from .config import (
     DAEMON_HEARTBEAT_MAX_AGE_SECONDS,
     MASKE,
@@ -59,6 +59,7 @@ from .errors import (
     ConfigurationError,
     DatabaseError,
     DocumentNotFound,
+    UnsupportedTypeError,
 )
 from .runpod import RunPodClient
 from .wrapper import OCRWrapper
@@ -958,7 +959,9 @@ class OCRClient:
                 # EINZELN und in dieser Transaktion: Das Signal an die Worker geht
                 # erst beim Commit hinaus. Die Kennung kommt an die Eingabe, ueber
                 # sie finden `document()` und `retry` den Job.
-                kennung = tasks.enqueue_document(self._procrastinate, self.conn, sha256)
+                kennung = tasks.enqueue_document(
+                    self._procrastinate, self.conn, sha256, doc_type=bereit.doc_type
+                )
                 db.set_input_job(self.conn, sha256=sha256, job_id=kennung)
         except _SchonUnterwegs:
             # Steht inzwischen ein Ergebnis da (der Job des anderen endete eben),
@@ -1281,7 +1284,12 @@ class OCRClient:
                 # fertig, und sein Ergebnis loeschte sie. Nichts einzureihen.
                 return RetryOutcome.HAS_RESULT
             db.delete_failed_result(self.conn, sha256)
-            kennung = tasks.enqueue_document(self._procrastinate, self.conn, sha256)
+            kopf = db.read_input_head(self.conn, sha256)
+            try:
+                typ = mime.sniff_bytes(kopf)
+            except UnsupportedTypeError:
+                typ = mime.DocumentType.PDF  # ZIP-Kopf reicht nicht; bleibt in OCR.
+            kennung = tasks.enqueue_document(self._procrastinate, self.conn, sha256, doc_type=typ)
             db.set_input_job(self.conn, sha256=sha256, job_id=kennung)
         return RetryOutcome.REQUEUED
 
@@ -1933,7 +1941,7 @@ class AsyncOCRClient:
                 ):
                     raise _SchonUnterwegs
                 kennung = await tasks.enqueue_document_async(
-                    self._procrastinate, conn, sha256
+                    self._procrastinate, conn, sha256, doc_type=bereit.doc_type
                 )
                 await db.set_input_job_async(conn, sha256=sha256, job_id=kennung)
         except _SchonUnterwegs:

@@ -1,4 +1,4 @@
-"""Der Exekutor als eigener Prozess: zwei Worker in einem, sauberes Herunterfahren.
+"""Der Exekutor als eigener Prozess: OCR-, Audio- und Wartungs-Worker, sauberes Herunterfahren.
 
 Dies ist der einzige Prozess, der mit RunPod spricht, und der einzige mit
 Nebenlaeufigkeit. Alles andere — Fassade und Kommandozeile — legt Zeilen an
@@ -78,15 +78,15 @@ async def _run(
 ) -> None:
     """Startet die Worker und laeuft, bis ein Beendigungssignal kommt.
 
-    Im Normalfall startet die Funktion ZWEI Worker-Koroutinen im selben Prozess:
-    einen fuer die OCR-Queue mit `settings.ocr_concurrency` Plaetzen, einen fuer
-    die Wartungs-Queue mit einem Platz.
+    Im Normalfall startet die Funktion drei Worker-Koroutinen im selben Prozess:
+    OCR mit `settings.ocr_concurrency` Plaetzen, Wartung mit einem Platz und Audio
+    mit `settings.audio_concurrency` eigenen Plaetzen.
 
     Beide laufen mit `install_signal_handlers=False`, und das ist keine Feinheit:
     Zwei Worker duerfen nicht beide Signal-Handler einrichten — der zweite
     ueberschriebe den ersten, und beim Beenden wuerde einer der beiden nie
     benachrichtigt. Stattdessen faengt dieser Prozess SIGTERM und SIGINT selbst
-    und bricht beide Koroutinen ab. Das ist genau das dokumentierte Muster
+    und bricht alle Worker-Koroutinen ab. Das ist genau das dokumentierte Muster
     „Worker in einer groesseren Anwendung" (Feature-Verifikation Punkt 1).
 
     Beide laufen ausserdem mit `delete_jobs` aus der Einstellung, voreingestellt
@@ -96,16 +96,16 @@ async def _run(
 
     Args:
         settings: Vollstaendige Betriebseinstellung.
-        queues: Welche Queues bedient werden. None heisst beide, jede mit ihrem
+        queues: Welche Queues bedient werden. None heisst alle drei, jede mit ihrem
             eigenen Worker — der Normalfall. Eine ausdrueckliche Auswahl startet
             genau einen Worker fuer genau diese Queues und ist der Weg fuer den
             Rueckfall auf zwei Prozesse.
 
     Returns:
-        Nichts. Kehrt zurueck, wenn beide Worker beendet sind.
+        Nichts. Kehrt zurueck, wenn alle Worker beendet sind.
 
     Herunterfahren:
-        Auf SIGTERM oder SIGINT werden beide Worker abgebrochen. Laufende
+        Auf SIGTERM oder SIGINT werden alle Worker abgebrochen. Laufende
         Dokumente werden bis zu `settings.shutdown_graceful_timeout` zu Ende
         betreut; was dann noch laeuft, wird abgebrochen (`CancelledError`).
         Procrastinate fragt dann die Retry-Strategie, und die reiht den Job neu
@@ -357,9 +357,8 @@ def _worker_optionen(
 ) -> list[dict[str, Any]]:
     """Stellt die Optionen je Worker zusammen.
 
-    Ohne ausdrueckliche Auswahl sind es ZWEI: einer fuer die OCR-Queue mit
-    `settings.ocr_concurrency` Plaetzen, einer fuer die Wartungs-Queue mit genau
-    einem. Die Trennung ist der ganze Zweck — periodische Tasks sind gewoehnliche
+    Ohne ausdrueckliche Auswahl sind es drei: OCR mit `settings.ocr_concurrency`,
+    Wartung mit genau einem und Audio mit `settings.audio_concurrency` Plaetzen. Die Trennung ist der ganze Zweck — periodische Tasks sind gewoehnliche
     Jobs und teilen den Slot-Vorrat ihres Workers; haengen alle OCR-Plaetze in
     Warteschleifen, kaeme ein Waechter auf derselben Queue nie an die Reihe.
 
@@ -387,7 +386,8 @@ def _worker_optionen(
                 **gemeinsam,
                 "name": "mineru-ocr-" + "-".join(queues),
                 "queues": list(queues),
-                "concurrency": settings.ocr_concurrency,
+                "concurrency": settings.audio_concurrency if list(queues) == [config.QUEUE_AUDIO]
+                else settings.ocr_concurrency,
             }
         ]
 
@@ -407,6 +407,12 @@ def _worker_optionen(
             # er sich selbst ueberholt — wogegen ohnehin sein `queueing_lock`
             # steht.
             "concurrency": 1,
+        },
+        {
+            **gemeinsam,
+            "name": "mineru-ocr-audio",
+            "queues": [config.QUEUE_AUDIO],
+            "concurrency": settings.audio_concurrency,
         },
     ]
 

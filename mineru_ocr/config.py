@@ -64,6 +64,8 @@ DATEI_SCHLUESSEL: Final = frozenset(
         "job_timeout_seconds",
         "queue_timeout_seconds",
         "runpod_cache_seconds",
+        "audio_concurrency",
+        "audio_region",
     }
 )
 """Die Schluessel, die die Konfigurationsdatei kennt. Ein anderer ist ein Fehler
@@ -333,6 +335,12 @@ def _sollwerte(
     Schluessel: Was die Tabelle nicht nennt, bleibt.
     """
     ergebnis: dict[str, Any] = {}
+    gefunden = _wert("audio_concurrency", umgebung, datei, pfad)
+    if gefunden is not None:
+        ergebnis["audio_concurrency"] = _zahl("audio_concurrency", *gefunden)
+    gefunden = _wert("audio_region", umgebung, datei, pfad)
+    if gefunden is not None:
+        ergebnis["audio_region"] = _zeichenkette("audio_region", *gefunden)
     for name in ZAHL_SCHLUESSEL:
         gefunden = _wert(name, umgebung, datei, pfad)
         if gefunden is not None:
@@ -414,6 +422,8 @@ def _fehlt(name: str, config_path: Path) -> str:
 # Task-Namen kennen).
 
 TASK_OCR_DOCUMENT = "mineru_ocr.ocr_document"
+TASK_AUDIO_DOCUMENT = "mineru_ocr.audio_document"
+QUEUE_AUDIO = "audio"
 """Voller Name des Dokument-Tasks. Wird explizit gesetzt statt aus dem Modulpfad
 abgeleitet, damit ein spaeteres Verschieben der Datei die laufende Warteschlange
 nicht entwertet."""
@@ -598,6 +608,22 @@ class Settings:
     (Plan 8, Regel 12). `__repr__` dieser Klasse maskiert ihn (siehe unten).
     `None` heisst „nicht gefunden": Abschicken, Lesen und `setup` brauchen nur
     die Datenbank. Wer RunPod anspricht, holt ihn ueber `require_api_key`."""
+
+    elevenlabs_api_key: str | None = None
+    """Nur aus ELEVENLABS_API_KEY; nie aus TOML, in Ausgaben immer maskiert."""
+
+    audio_concurrency: int = 2
+    """Audio-Plaetze je Daemon, unter der in #69 gemessenen Kontogrenze 8."""
+
+    audio_region: str = "us"
+    """Ausdrueckliche USA-Einstellung (#69). Eigentuemer: 'ja das passt mit er
+    verarbeitung.' RunPods EWR-Regel gilt unveraendert nur fuer OCR."""
+
+    def require_elevenlabs_api_key(self) -> str:
+        """Verlangt den nur fuer Audio benoetigten Schluessel."""
+        if self.elevenlabs_api_key is None or not self.elevenlabs_api_key.strip():
+            raise ConfigurationError("ElevenLabs-Schluessel fehlt: ELEVENLABS_API_KEY setzen.")
+        return self.elevenlabs_api_key
 
     # -- Job-Contract ------------------------------------------------------
 
@@ -970,6 +996,10 @@ class Settings:
                 oder eine Grenze eines Teilstuecks taugt nicht.
         """
         self.read_settings()
+        if type(self.audio_concurrency) is not int or self.audio_concurrency < 1:
+            raise ConfigurationError("audio_concurrency muss eine ganze Zahl ab 1 sein.")
+        if self.audio_region != "us":
+            raise ConfigurationError("audio_region muss 'us' sein (#69: Verarbeitung in den USA).")
         if not (math.isfinite(self.runpod_cache_seconds) and self.runpod_cache_seconds > 0):
             raise ConfigurationError(
                 "runpod_cache_seconds muss eine endliche Zahl groesser als null sein."
@@ -1045,7 +1075,7 @@ class Settings:
         teile = []
         for feld in dataclasses.fields(self):
             wert: Any = getattr(self, feld.name)
-            if feld.name == "api_key" and wert is not None:
+            if feld.name in ("api_key", "elevenlabs_api_key") and wert is not None:
                 wert = MASKE
             if feld.name == "endpoint_env":
                 wert = {
@@ -1152,6 +1182,7 @@ class Settings:
             db_dsn=dsn,
             endpoint_id=endpoint,
             api_key=api_key if api_key is not None else _schluessel_oder_nichts(),
+            elevenlabs_api_key=umgebung.get("ELEVENLABS_API_KEY") or None,
             strict=strict,
             config_path=config_path,
             **_sollwerte(umgebung, datei, config_path),
