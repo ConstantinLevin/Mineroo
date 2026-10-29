@@ -15,6 +15,40 @@ Docstrings (`ue`, `ae`, `oe`) — das ist die durchgehaltene Konvention des Pake
 
 ---
 
+## Audio (#70, Parent #69)
+
+Audio geht nach Inhaltserkennung ueber `tasks.enqueue_document[_async]` in
+`audio` zum Task `mineru_ocr.audio_document`, OCR bleibt in `ocr`. Jeder Daemon
+hat einen dritten Worker; `audio_concurrency` (TOML oder Umgebung) setzt dessen
+Plaetze, Vorgabe 2. Neue Retry-Jobs bestimmen die Lane aus dem Eingabekopf,
+zurueckgesetzte Jobs behalten ihre Queue. Jobs tragen weiterhin nur den Hash.
+
+`audio_executor.process_audio` prueft die gespeicherte Eingabe und schickt die
+ganze Datei ueber httpx an ElevenLabs (`elevenlabs.py`): synchrones POST
+`/v1/speech-to-text`, multipart, `scribe_v2`, `diarize=true`,
+`tag_audio_events=true`. Keine Teilstuecke oder RunPod-Anfragegrenze;
+`db.MAX_INPUT_BYTES` gilt. Ergebnisse schreibt ausschliesslich
+`db.write_terminal_async`, mit `endpoint_id=elevenlabs` und
+`store_read_settings=False`; MinerU-Felder, Image und Seitenzahl bleiben leer.
+`raw.response` ist die ganze JSON-Antwort, `raw.parameters` die gesendeten
+Parameter. Die Huelle rendert Sprecherwechsel aus `words`, ab 1 in Reihenfolge
+des Auftretens, und erhaelt Geraeusche. Ohne Wort ist das Ergebnis `empty`.
+`readable_markdown` ist bei Audio identisch, auch bei gesprochenem HTML.
+
+Der Schluessel kommt aus `ELEVENLABS_API_KEY` in `Settings.load`, nie aus TOML.
+Repr maskiert ihn; Kinder erhalten ihn wie den RunPod-Schluessel im anonymen
+Rohr. `.env` bleibt ignoriert und wird nicht automatisch geladen.
+`audio_region="us"` ist die ausdrueckliche USA-Einstellung, begruendet durch den
+Eigentuemer in #69: „ja das passt mit er verarbeitung.“ Die EWR-Pruefung betrifft
+weiterhin RunPod. Messung #69: rund 0,40 USD/Audiostunde; Treffer kosten nichts.
+EU-Verarbeitung und Abschalten der Speicherung sind Enterprise.
+
+Tests verwenden erfundene Antworten oder synthetische Aufnahmen, niemals echte
+Aufnahmen oder personenbezogene Antworten. Weiterfuehrende Fehler- und
+Kontingentbehandlung, dauerabhaengige Fristen: #71. Lane-Anzeige, Audio-Pruefung
+beim Start und Audio-Fortschritt: #72. Diese Folgeaufgaben nicht als fertig
+beschreiben; `daemon list` zaehlt derzeit nur OCR.
+
 ## Kommandos
 
 **Der Interpreter ist die Miniconda-Base, und es gibt keine virtuellen
@@ -526,7 +560,7 @@ PDFs, die der Job später in Stücke schneiden würde.
 `mime` erkennt am Inhalt, nie am Namen, und nur grob (Mineroo#17): Welcher Typ
 eine Datei genau ist, entscheidet MinerUs Erkennung im Worker (DocVortex 0.5.16,
 `guess_suffix_by_bytes`). Durch lässt `mime` PDF, die Bilder und die
-**Ganzdokument-Formate** (`DocumentType.is_whole_document`, alles außer PDF und
+**Ganzdokument-Formate** (`DocumentType.is_whole_document`, OCR-Formate außer PDF und
 Bild): jeden OLE2-Container (DOC, XLS, PPT unterscheidet es nicht, `mime` heißt
 dann `application/x-ole-storage`), ZIP mit dem Aufbau von OOXML, OpenDocument
 (nur ODT, ODS, ODP), EPUB oder OFD, RTF und MHTML an ihrem Kopf, HTML an seinem
@@ -1051,7 +1085,7 @@ Modus `auto`: Claude-Peer auf `claude-opus-5-5` mit Effort `high`, Codex-Peer mi
 ### Kein Autostart
 
 `mineru-ocr daemon start X` startet ausdrücklich X lokale, vom Terminal gelöste
-Prozesse mit je OCR- und Wartungs-Worker. Endpoint, Schlüssel und Schema werden
+Prozesse mit je OCR-, Audio- und Wartungs-Worker. Endpoint, Schlüssel und Schema werden
 vor dem Start geprüft. `--concurrency N` stellt die OCR-Plätze je Prozess ein.
 `mineru-ocr daemon stop X` beendet bis zu X, die am wenigsten belegten zuerst,
 und wartet auf das ordentliche Ende mit `shutdown_graceful_timeout` und der

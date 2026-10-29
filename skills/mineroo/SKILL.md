@@ -1,6 +1,6 @@
 ---
 name: mineroo
-description: OCR auf Abruf mit Mineroo (MinerU auf RunPod; CLI `mineru-ocr`, Bibliothek `mineru_ocr`). Nutzen, wenn Text, Struktur oder die vollständige MinerU-Antwort aus PDFs, Scans, Bildern oder Office-Dateien gebraucht wird, und wenn auf früher abgeschickte Dokumente gewartet oder ihr Ergebnis geholt werden soll.
+description: OCR und Audiotranskription mit Mineroo (CLI `mineru-ocr`, Bibliothek `mineru_ocr`). Nutzen für Text und Struktur aus Dokumenten, Transkripte mit Sprecherwechseln aus Audiodateien sowie Warten und Abholen früherer Ergebnisse.
 ---
 
 # Mineroo: Dokumente lesen lassen
@@ -9,6 +9,9 @@ Mineroo liest Dokumente mit MinerU auf RunPod und speichert die vollständige
 Antwort in Postgres. Die CLI `mineru-ocr` nimmt Dateipfade und liefert Markdown;
 die Python-Bibliothek `mineru_ocr` nimmt Bytes und bietet auch Struktur, Bilder
 und Job-Verwaltung. Identische Bytes teilen sich dasselbe gespeicherte Ergebnis.
+Audio liest ElevenLabs Scribe v2 in einer eigenen Daemon-Lane, mit Verarbeitung
+in den USA. Vor Audio-Aufträgen [Audio: Betrieb und Kosten](references/technik.md#audio)
+lesen; die EWR-Prüfung für OCR gilt weiterhin für RunPod.
 
 ## Welche Referenz brauchst du?
 

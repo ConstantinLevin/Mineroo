@@ -4,6 +4,12 @@ Für neues OCR gelten zuerst [Prüfung und Auftragsgrenze](ein-dokument.md).
 Benutze einen Python-Interpreter, in dem `mineru_ocr` installiert ist.
 Die Bibliothek nimmt vollständige Dokumentbytes; Dateipfade liest der Aufrufer.
 
+Dieselben Methoden nehmen auch Audiobytes. `rendered_markdown` und
+`readable_markdown` liefern dann Fließtext mit `Sprecher N:`-Absätzen;
+`raw.response` enthält die komplette ElevenLabs-Antwort mit Wortzeiten und
+`raw.parameters` die gesendeten Parameter. OCR-Version und Leseeinstellungen
+sind leer. Vor Audio-Aufträgen [USA-Verarbeitung und Kosten](technik.md#audio) lesen.
+
 ## Ein Dokument, synchron
 
 ```python

@@ -18,7 +18,7 @@ Feld `apikey`. Zugangsdaten bleiben in der lokalen Konfiguration.
 
 ## Daemon
 
-Nur der Daemon schickt Dokumente an RunPod. Dateiaufruf und Bibliothek starten
+Nur der Daemon schickt Dokumente an RunPod und Audio an ElevenLabs. Dateiaufruf und Bibliothek starten
 ihn nicht. Ein laufender Daemon kann eingereihte Dokumente kostenpflichtig
 abarbeiten; starte ihn im Rahmen des Betriebsauftrags.
 
@@ -41,6 +41,38 @@ Die CLI reiht ohne ihn nichts ein (Exit 5), liefert gespeicherte Ergebnisse
 aber weiter. Ist die Lebendigkeit nicht lesbar, endet sie mit Exit 1.
 Die Bibliothek (`ocr_start`, `retry`) reiht in beiden Fällen trotzdem ein und
 warnt; ohne Daemon bleiben die Dokumente offen.
+
+## Audio
+
+Audio (MP3, M4A/AAC, WAV, FLAC, OGG/Opus, AIFF) wird am Inhalt erkannt und
+ungeteilt an ElevenLabs Scribe v2 gesendet. Der Daemon hat dafür einen dritten
+Worker in der Queue `audio`, mit `audio_concurrency` Plätzen (Vorgabe 2).
+OCR-Leseeinstellungen und RunPods Uploadgrenze gelten für Audio nicht;
+`db.MAX_INPUT_BYTES` (1 GB) gilt weiterhin.
+
+Der Schlüssel kommt nur aus `ELEVENLABS_API_KEY` in der Startumgebung des
+Daemons, wird maskiert und über ein anonymes Rohr an Kinder gereicht.
+Er gehört weder in `config.toml` noch ins Repository oder Ausgaben. `.env` wird
+ignoriert und nicht automatisch geladen. Clients brauchen den Schlüssel nicht.
+`audio_region = "us"` in der Konfiguration bezeichnet die USA-Verarbeitung,
+die der Eigentümer in #69 ausdrücklich akzeptiert hat: „ja das passt mit er
+verarbeitung.“ RunPods EWR-Regel gilt weiter für OCR. EU-Verarbeitung und
+Abschalten der Speicherung sind bei ElevenLabs Enterprise-Funktionen.
+
+Die Messung in #69 (30.10.2026) ergab rund 0,40 USD je Audiostunde, über das
+Tarifkontingent; Free hatte 10.000 Credits pro Monat (etwa 2,5 Stunden), darüber
+Pay as you go. Treffer kosten nichts. Ein Verbindungsabbruch kann ein bezahltes
+Transkript verlieren, weil seine ID erst mit der Antwort ankommt; ein neuer Lauf
+kostet erneut. Es gelten dieselbe Auftragsgrenze und derselbe Schutz von
+Ergebnissen wie bei OCR. Tests verwenden nur erfundene oder synthetische Daten.
+
+Die vollständige Antwort einschließlich Wortzeiten liegt in `raw.response`,
+die gesendeten Parameter in `raw.parameters`. Sprecherwechsel und Geräusche
+liefert `rendered_markdown`; `readable_markdown` ist bei Audio identisch.
+Ohne erkanntes Wort lautet der Zustand `empty`. `retry` und `retry_all` wählen
+bei Audio wieder `audio`. Die weitere Fehler-/Kontingentbehandlung und Fristen
+gehören zu #71; Startprüfung, Lane-Anzeige und Audio-Fortschritt zu #72.
+`daemon list` zeigt derzeit weiterhin nur OCR-Plätze und OCR-Warteschlange.
 
 ## Preflight und Datenschutz
 
@@ -86,7 +118,7 @@ nicht. `.read_settings` nennt die bestellten Einstellungen, `.mineru_version`
 die Version; die tatsächlichen Worker-Angaben stehen je Teilstück in `.raw`.
 
 Dateitypen erkennt Mineroo am Inhalt, nicht am Namen (`mineru_ocr.DocumentType`).
-PDF, Bilder und die genannten Ganzdokument-Formate werden unterstützt; CSV/TSV
+PDF, Bilder, Audio und die genannten Ganzdokument-Formate werden unterstützt; CSV/TSV
 werden abgewiesen. Mehrseitige Bilddateien enden `input_error` mit dem Hinweis,
 sie als PDF einzureichen.
 

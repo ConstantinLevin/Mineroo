@@ -4,6 +4,11 @@ Für neues OCR gelten zuerst [Prüfung und Auftragsgrenze](ein-dokument.md).
 `mineru-ocr PATH…` nimmt Dateien und Ordner, schickt ab, wartet und gibt Text aus.
 Der [Stapelablauf](viele-dokumente.md) beschreibt mehrere Eingaben.
 
+Für Audio gelten dieselben Aufrufe und Ausgabeoptionen, etwa
+`mineru-ocr "aufnahme.m4a" -o transkript.md`. `--ra` enthält die komplette
+ElevenLabs-Antwort samt gesendeten Parametern; `--re` lässt Audio unverändert.
+USA-Verarbeitung und Credits: [Audio](technik.md#audio).
+
 ## Ausgabe wählen
 
 | Bedarf | Aufruf nach der Prüfung |

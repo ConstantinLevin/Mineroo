@@ -3,6 +3,10 @@
 Vor dem ersten Abschicken gelten [Prüfung und Auftragsgrenze](ein-dokument.md).
 Wähle die Dateien oder Ordner aus dem Auftrag; danach genügt der passende Weg.
 
+Audio und Dokumente dürfen im selben Aufruf oder Ordner stehen: Jede Datei
+geht in ihre Lane, die Textausgabe bleibt in Eingabereihenfolge. Für Audio gelten
+[USA-Verarbeitung und Kosten](technik.md#audio); für OCR die RunPod-Prüfung.
+
 ## Dateien oder Ordner über die CLI
 
 ```bash
