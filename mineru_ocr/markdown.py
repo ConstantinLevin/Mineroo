@@ -79,6 +79,37 @@ class _HTMLInseln(HTMLParser):
             self.bereiche.append((self._anfang, ende, self._tag))
 
 
+def _linkziel_ende(text: str, anfang: int) -> int | None:
+    """Findet das Ende hinter ](; beachtet Klammern, Titel und Escapezeichen."""
+    tiefe = 1
+    zitat = ""
+    winkel = False
+    escaped = False
+    for i in range(anfang, len(text)):
+        zeichen = text[i]
+        if escaped:
+            escaped = False
+        elif zeichen == "\\":
+            escaped = True
+        elif zitat:
+            if zeichen == zitat:
+                zitat = ""
+        elif winkel:
+            if zeichen == ">":
+                winkel = False
+        elif zeichen in {"'", '"'} and text[i - 1].isspace():
+            zitat = zeichen
+        elif zeichen == "<":
+            winkel = True
+        elif zeichen == "(":
+            tiefe += 1
+        elif zeichen == ")":
+            tiefe -= 1
+            if tiefe == 0:
+                return i + 1
+    return None
+
+
 def _markdown_schuetzen(text: str) -> str:
     """Maskiert Code und Formeln laengentreu nur fuer die HTML-Erkennung."""
     maskiert = list(text)
@@ -133,33 +164,9 @@ def _markdown_schuetzen(text: str) -> str:
     # Ziele und Titel sind Markdown-Syntax, kein Inline-HTML. Das Label
     # bleibt frei: [<b>Text</b>](ziel) enthaelt dagegen echtes Inline-HTML.
     for treffer in re.finditer(r"\]\(", "".join(maskiert)):
-        tiefe = 1
-        zitat = ""
-        winkel = False
-        escaped = False
-        for i in range(treffer.end(), len(text)):
-            zeichen = text[i]
-            if escaped:
-                escaped = False
-            elif zeichen == "\\":
-                escaped = True
-            elif zitat:
-                if zeichen == zitat:
-                    zitat = ""
-            elif winkel:
-                if zeichen == ">":
-                    winkel = False
-            elif zeichen in {"'", '"'} and text[i - 1].isspace():
-                zitat = zeichen
-            elif zeichen == "<":
-                winkel = True
-            elif zeichen == "(":
-                tiefe += 1
-            elif zeichen == ")":
-                tiefe -= 1
-                if tiefe == 0:
-                    schuetzen(treffer.start(), i + 1)
-                    break
+        ende = _linkziel_ende(text, treffer.end())
+        if ende is not None:
+            schuetzen(treffer.start(), ende)
     # Ein maskiertes Startzeichen verhindert, dass ein escaptes Tag beginnt.
     for treffer in re.finditer(r"(\\+)<", text):
         if len(treffer[1]) % 2:
