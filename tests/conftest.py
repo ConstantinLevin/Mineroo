@@ -55,16 +55,19 @@ def _konfiguration_isolieren(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     zufaellig den echten Endpoint oder die echte Datenbank einstellte, waere der
     teuerste, den es gibt.
 
-    Eine vorhandene `MINERU_OCR_*`-Umgebung wird geraeumt, die Standarddatei auf
-    einen nicht vorhandenen Pfad umgebogen, und Endpoint und Datenbank zeigen auf
+    Eine vorhandene `MINERU_OCR_*`-Umgebung wird geraeumt, TOML und feste .env
+    auf nicht vorhandene Pfade umgebogen. Endpoint und Datenbank zeigen auf
     erfundene bzw. die Test-Datenbank. Tests, die die Quellen selbst pruefen,
-    uebergeben `environ=` und `config_path=` ausdruecklich.
+    uebergeben `environ=`, `config_path=` bzw. `env_path=` ausdruecklich.
     """
     for name in [n for n in os.environ if n.startswith("MINERU_OCR_")]:
         monkeypatch.delenv(name)
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     monkeypatch.setattr(
         "mineru_ocr.config.DEFAULT_CONFIG_PATH", tmp_path / "keine-konfiguration.toml"
+    )
+    monkeypatch.setattr(
+        "mineru_ocr.config.DEFAULT_ENV_PATH", tmp_path / "keine-umgebung.env"
     )
     monkeypatch.setenv("MINERU_OCR_ENDPOINT_ID", "testendpoint")
     monkeypatch.setenv("MINERU_OCR_DB_DSN", TEST_DSN)

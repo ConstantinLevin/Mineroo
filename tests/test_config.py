@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 from pathlib import Path
 
 import pytest
@@ -81,6 +82,123 @@ def test_dataclass_ueberschreibt_repr_nicht() -> None:
 
 
 # --- Quellen --------------------------------------------------------------
+
+
+def test_env_datei_liefert_elevenlabs_und_settings_ohne_export(tmp_path: Path) -> None:
+    datei = tmp_path / ".env"
+    datei.write_text(
+        f'ELEVENLABS_API_KEY="{GEHEIM}"\n'
+        'MINERU_OCR_DB_DSN="host=aus-env-datei"\n'
+        'MINERU_OCR_ENDPOINT_ID=aus-env-datei\n'
+        'MINERU_OCR_AUDIO_CONCURRENCY=3\n'
+    )
+    einstellung = Settings.load(environ={}, env_path=datei)
+    assert einstellung.require_elevenlabs_api_key() == GEHEIM
+    assert einstellung.db_dsn == "host=aus-env-datei"
+    assert einstellung.endpoint_id == "aus-env-datei"
+    assert einstellung.audio_concurrency == 3
+    assert GEHEIM not in repr(einstellung)
+
+
+@pytest.mark.parametrize("inhalt", [f'ELEVENLABS_API_KEY="{GEHEIM}', f'{GEHEIM} ungueltig'])
+def test_kaputte_env_datei_nennt_pfad_und_zeile_ohne_inhalt(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, inhalt: str,
+) -> None:
+    datei = tmp_path / ".env"
+    datei.write_text(f"# Kopf\n{inhalt}\n")
+    with pytest.raises(ConfigurationError) as fehler:
+        _einstellung(env_path=datei)
+    assert str(datei) in str(fehler.value)
+    assert "Zeile 2" in str(fehler.value)
+    assert GEHEIM not in str(fehler.value)
+    assert GEHEIM not in caplog.text
+
+
+@pytest.mark.parametrize("art", ["verzeichnis", "utf8", "zugriff"])
+def test_unlesbare_env_datei_wirft_nur_mit_pfad(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, art: str,
+) -> None:
+    datei = tmp_path / ".env"
+    if art == "verzeichnis":
+        datei.mkdir()
+    elif art == "utf8":
+        datei.write_bytes(GEHEIM.encode() + b"\xff")
+    else:
+        def verweigern(*args: object, **kwargs: object) -> str:
+            raise PermissionError(GEHEIM)
+        monkeypatch.setattr(Path, "read_text", verweigern)
+    with pytest.raises(ConfigurationError) as fehler:
+        _einstellung(env_path=datei)
+    assert str(datei) in str(fehler.value)
+    assert GEHEIM not in str(fehler.value)
+    assert fehler.value.__context__ is None
+    assert fehler.value.__cause__ is None
+
+
+def test_env_datei_ist_fallback_vor_toml_umgebung_und_angabe_gewinnen(tmp_path: Path) -> None:
+    datei = tmp_path / ".env"
+    datei.write_text(
+        f"ELEVENLABS_API_KEY={GEHEIM}\nMINERU_OCR_ENDPOINT_ID=env-datei\n"
+        'MINERU_OCR_DB_DSN="host=env-datei"\nMINERU_OCR_WORKERS_MAX=4\n'
+    )
+    toml = tmp_path / "config.toml"
+    toml.write_text('endpoint_id="toml"\ndb_dsn="host=toml"\nworkers_max=2\n')
+    umgebung = {"ELEVENLABS_API_KEY": "erfundene-umgebung", "MINERU_OCR_ENDPOINT_ID": "umgebung"}
+    einstellung = Settings.load(environ=umgebung, env_path=datei, config_path=toml)
+    assert einstellung.elevenlabs_api_key == "erfundene-umgebung"
+    assert einstellung.endpoint_id == "umgebung"
+    assert einstellung.db_dsn == "host=env-datei"
+    assert einstellung.workers_max == 4
+    assert Settings.load(
+        environ=umgebung, env_path=datei, config_path=toml, endpoint_id="angabe",
+    ).endpoint_id == "angabe"
+    assert umgebung == {"ELEVENLABS_API_KEY": "erfundene-umgebung", "MINERU_OCR_ENDPOINT_ID": "umgebung"}
+
+
+def test_env_datei_bleibt_lokal_ohne_interpolation_oder_neue_settings_quellen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    datei = tmp_path / ".env"
+    datei.write_text(
+        'export ELEVENLABS_API_KEY="erfunden-${NUR_IM_TEST}" # Kommentar\n'
+        "NUR_IM_TEST=dateiwert\nMINERU_OCR_API_KEY=kein-runpod-schluessel\n"
+        "MINERU_OCR_STRICT=false\nMINERU_OCR_IDLE_TIMEOUT\n"
+    )
+    monkeypatch.setenv("NUR_IM_TEST", "umgebungswert")
+    vorher = dict(os.environ)
+    einstellung = Settings.load(db_dsn=DSN, environ={}, env_path=datei)
+    assert einstellung.elevenlabs_api_key == "erfunden-${NUR_IM_TEST}"
+    assert einstellung.api_key is None
+    assert einstellung.strict is True
+    assert einstellung.idle_timeout == Settings.idle_timeout
+    assert dict(os.environ) == vorher
+
+
+def test_fehlende_env_datei_ist_still_auch_explizit(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    assert _einstellung(env_path=tmp_path / "fehlt.env").elevenlabs_api_key is None
+    assert caplog.text == ""
+
+
+def test_leere_umgebung_verdeckt_env_datei_und_behaelt_bisherige_semantik(tmp_path: Path) -> None:
+    datei = tmp_path / ".env"
+    datei.write_text(f"ELEVENLABS_API_KEY={GEHEIM}\nMINERU_OCR_ENDPOINT_ID=env-datei\n")
+    einstellung = Settings.load(
+        db_dsn=DSN, env_path=datei,
+        environ={"ELEVENLABS_API_KEY": "", "MINERU_OCR_ENDPOINT_ID": " "},
+    )
+    assert einstellung.elevenlabs_api_key is None
+    assert einstellung.endpoint_id is None
+
+
+def test_env_datei_wird_nicht_im_arbeitsverzeichnis_gesucht(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / ".env").write_text(f"ELEVENLABS_API_KEY={GEHEIM}\n")
+    unterordner = tmp_path / "unterordner"
+    unterordner.mkdir()
+    for ordner in (tmp_path, unterordner):
+        monkeypatch.chdir(ordner)
+        assert _einstellung(env_path=tmp_path / "standard-fehlt.env").elevenlabs_api_key is None
 
 
 def test_uebergabe_schlaegt_voreinstellung() -> None:

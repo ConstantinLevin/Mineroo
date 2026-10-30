@@ -21,14 +21,21 @@ import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from typing import Any, Final
+
+from dotenv import dotenv_values
+from dotenv.parser import parse_stream
 
 from .errors import ConfigurationError
 
 DEFAULT_CONFIG_PATH: Final = Path.home() / ".mineru_ocr" / "config.toml"
 """Die Konfigurationsdatei, wenn nichts anderes gesagt ist. Fehlt sie, ist das
 kein Fehler: Wer alles ueber Umgebungsvariablen einstellt, braucht keine."""
+
+DEFAULT_ENV_PATH: Final = Path.home() / ".mineru_ocr" / ".env"
+"""Feste Ersatz-Umgebung, unabhaengig vom Arbeitsverzeichnis und TOML-Pfad."""
 
 ENV_PREFIX: Final = "MINERU_OCR_"
 """Vorsatz der Umgebungsvariablen. Jeder Schluessel der Konfigurationsdatei hat
@@ -234,6 +241,38 @@ def _konfigurationsdatei(pfad: Path, *, ausdruecklich: bool) -> dict[str, Any]:
             f"sondern in {RUNPOD_CONFIG_PATH}."
         )
     return daten
+
+
+def _env_datei(pfad: Path) -> dict[str, str]:
+    """Liest nur diese Datei; keine Werte in Fehlern, Logs oder os.environ.
+
+    Interpolation ist aus: ${NAME} bleibt wortwoertlich und greift insbesondere
+    nicht an `environ=` vorbei auf die echte Prozessumgebung zu.
+    """
+    lesefehler = None
+    try:
+        inhalt = pfad.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except UnicodeError:
+        lesefehler = "kein gueltiges UTF-8"
+    except OSError:
+        lesefehler = "nicht lesbar"
+    if lesefehler is not None:
+        # Ausserhalb von except: Auch __context__ darf keinen Dateiinhalt tragen.
+        raise ConfigurationError(f"{pfad}: {lesefehler}.")
+    # dotenv_values warnt bei Syntaxfehlern nur und wuerde Teile uebergehen.
+    # Der Bibliotheksparser liefert sichere Zeilennummern ohne Log-Ausgabe.
+    for bindung in parse_stream(StringIO(inhalt)):
+        if bindung.error:
+            raise ConfigurationError(
+                f"{pfad}: ungueltige .env-Syntax ab Zeile {bindung.original.line}."
+            )
+    return {
+        name: wert
+        for name, wert in dotenv_values(stream=StringIO(inhalt), interpolate=False).items()
+        if wert is not None
+    }
 
 
 def _wert(
@@ -610,7 +649,7 @@ class Settings:
     die Datenbank. Wer RunPod anspricht, holt ihn ueber `require_api_key`."""
 
     elevenlabs_api_key: str | None = None
-    """Nur aus ELEVENLABS_API_KEY; nie aus TOML, in Ausgaben immer maskiert."""
+    """ELEVENLABS_API_KEY aus Umgebung oder fester .env; nie TOML, immer maskiert."""
 
     audio_concurrency: int = 2
     """Audio-Plaetze je Daemon, unter der in #69 gemessenen Kontogrenze 8."""
@@ -622,7 +661,10 @@ class Settings:
     def require_elevenlabs_api_key(self) -> str:
         """Verlangt den nur fuer Audio benoetigten Schluessel."""
         if self.elevenlabs_api_key is None or not self.elevenlabs_api_key.strip():
-            raise ConfigurationError("ElevenLabs-Schluessel fehlt: ELEVENLABS_API_KEY setzen.")
+            raise ConfigurationError(
+                "ElevenLabs-Schluessel fehlt: ELEVENLABS_API_KEY in der Umgebung "
+                f"oder in {DEFAULT_ENV_PATH} setzen."
+            )
         return self.elevenlabs_api_key
 
     # -- Job-Contract ------------------------------------------------------
@@ -1097,12 +1139,22 @@ class Settings:
         ocr_concurrency: int | None = None,
         environ: Mapping[str, str] | None = None,
         config_path: Path | None = None,
+        env_path: Path | None = None,
     ) -> Settings:
-        """Bildet die Einstellung aus Angabe, Umgebung, Datei und Voreinstellung.
+        """Bildet die Einstellung aus Angabe, Umgebung, .env, TOML und Vorgabe.
 
         Rangfolge, vom Staerksten: ausdrueckliche Angabe → Umgebungsvariable
-        `MINERU_OCR_<NAME>` → Konfigurationsdatei → Feld-Voreinstellung. Wer
-        gerade aufruft, hat das letzte Wort; die Datei ist der Grundzustand.
+        `MINERU_OCR_<NAME>` → `~/.mineru_ocr/.env` → Konfigurationsdatei →
+        Feld-Voreinstellung. Wer gerade aufruft, hat das letzte Wort.
+
+        Die feste .env ergaenzt nur die bereits gelesenen Umgebungsvariablen,
+        einschliesslich `ELEVENLABS_API_KEY` und `MINERU_OCR_CONFIG`. Keine Suche
+        im Arbeitsverzeichnis oder seinen Eltern, auch nicht neben einer anderen
+        TOML-Datei. Fehlend ist in Ordnung; unlesbar oder syntaktisch kaputt ist
+        ein Fehler. Quoting und Kommentare folgen python-dotenv, ${NAME} bleibt
+        wortwoertlich (keine Interpolation). Die echte Umgebung gewinnt auch mit
+        leeren Werten; deren bisherige Behandlung bleibt erhalten. `os.environ`
+        wird nie veraendert, Kinder erhalten Geheimnisse weiter nur im Startrohr.
 
         Die Datei ist TOML und liegt standardmaessig unter
         `~/.mineru_ocr/config.toml`; `MINERU_OCR_CONFIG` oder `config_path`
@@ -1139,26 +1191,30 @@ class Settings:
                 `os.environ`; ein Test uebergibt eine eigene, damit sein Ergebnis
                 nicht davon abhaengt, was zufaellig in der Shell steht.
             config_path: Die Konfigurationsdatei. Voreinstellung siehe oben.
+            env_path: Ersatz-Umgebung. Ohne Angabe immer DEFAULT_ENV_PATH;
+                ausdruecklicher Pfad fuer isolierte Aufrufer und Tests.
 
         Returns:
             Die vollstaendige, unveraenderliche Einstellung.
 
         Zusicherung:
             Wirft, statt mit einer halben Einstellung weiterzulaufen. Legt NICHTS
-            an; `load` ist frei von Seiteneffekten ausser dem Lesen der beiden
+            an; `load` ist frei von Seiteneffekten ausser dem Lesen der drei
             Dateien.
 
         Raises:
             ConfigurationError: Die Datenbank ist nirgends eingestellt; die
                 Konfigurationsdatei ist unlesbar, kein gueltiges TOML oder kennt
                 einen Schluessel nicht; eine ausdruecklich genannte Datei fehlt.
+                Die .env ist unlesbar, kein UTF-8 oder syntaktisch ungueltig.
 
         Kosten: keine. Spricht weder mit RunPod noch mit der Datenbank —
         insbesondere prueft `load` NICHT, ob die Datenbank erreichbar oder der
         Schluessel gueltig ist. Das ist Sache des Preflights, und die Trennung ist
         Absicht: Eine Einstellung zu bilden muss auch offline gehen.
         """
-        umgebung = os.environ if environ is None else environ
+        umgebung = _env_datei(DEFAULT_ENV_PATH if env_path is None else env_path)
+        umgebung.update(os.environ if environ is None else environ)
         # Eine leere `MINERU_OCR_CONFIG` nennt keine Datei (wie in `_wert`).
         aus_umgebung = umgebung.get(ENV_CONFIG_PATH, "").strip()
         ausdruecklich = config_path is not None or bool(aus_umgebung)
