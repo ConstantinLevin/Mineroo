@@ -22,6 +22,8 @@ dependencies = [
     "procrastinate>=3.10.0",
     "psycopg[binary,pool]>=3.3.3",
     "httpx>=0.28.1",
+    # Ersatz-Umgebung ohne os.environ zu veraendern; vorhandene Base, 30.10.2026.
+    "python-dotenv>=1.2.1",
     # HTML-Inseln in der Vollfassung; gegen die vorhandene Base geprueft (#61).
     "html-to-markdown>=2.19.5",
     # Erkennt Code- und Referenzbloecke, ohne Markdown neu zu schreiben.

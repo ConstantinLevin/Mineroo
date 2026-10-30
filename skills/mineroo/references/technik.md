@@ -63,10 +63,18 @@ Worker in der Queue `audio`, mit `audio_concurrency` Plätzen (Vorgabe 2).
 OCR-Leseeinstellungen und RunPods Uploadgrenze gelten für Audio nicht;
 `db.MAX_INPUT_BYTES` (1 GB) gilt weiterhin.
 
-Der Schlüssel kommt nur aus `ELEVENLABS_API_KEY` in der Startumgebung des
-Daemons, wird maskiert und über ein anonymes Rohr an Kinder gereicht.
-Er gehört weder in `config.toml` noch ins Repository oder Ausgaben. `.env` wird
-ignoriert und nicht automatisch geladen. Clients brauchen den Schlüssel nicht.
+Der Schlüssel kommt aus `ELEVENLABS_API_KEY` in der Startumgebung oder als
+Rückfall aus `~/.mineru_ocr/.env` neben `config.toml`, wird maskiert und über
+ein anonymes Rohr an Kinder gereicht. Er gehört weder in `config.toml` noch ins
+Repository oder Ausgaben. `.env` bleibt in `.gitignore`; die feste Datei wird
+automatisch geladen, unabhängig vom Arbeitsverzeichnis und TOML-Pfad, ohne
+Suche in Elternverzeichnissen und ohne `os.environ` zu verändern. Sie ergänzt
+genau die bereits gelesenen Variablen (`MINERU_OCR_<NAME>`, einschließlich
+`MINERU_OCR_CONFIG`, und `ELEVENLABS_API_KEY`). Vorrang: ausdrückliche Angabe →
+echte Umgebung (auch leer) → feste `.env` → TOML → Voreinstellung.
+Quoting und Kommentare folgen python-dotenv, Interpolation ist aus. Fehlend ist
+in Ordnung; unlesbar oder syntaktisch kaputt ist ein Konfigurationsfehler mit
+Pfad und möglichst Zeile, ohne Werte. Clients brauchen den Schlüssel nicht.
 `audio_region = "us"` in der Konfiguration bezeichnet die USA-Verarbeitung,
 die der Eigentümer in #69 ausdrücklich akzeptiert hat: „ja das passt mit er
 verarbeitung.“ RunPods EWR-Regel gilt weiter für OCR. EU-Verarbeitung und

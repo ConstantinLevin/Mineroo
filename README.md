@@ -396,7 +396,12 @@ Alle folgenden Klassen sind aus `mineru_ocr` importierbar und erben von
 Datei: `~/.mineru_ocr/config.toml`; `MINERU_OCR_CONFIG` wählt eine andere.
 Eine fehlende Standarddatei ist erlaubt, eine ausdrücklich gewählte fehlende
 Datei nicht. Unbekannte TOML-Schlüssel sind Fehler. Rangfolge:
-**ausdrückliches Argument → `MINERU_OCR_<NAME>` → Datei → Paketvoreinstellung**.
+**ausdrückliches Argument → `MINERU_OCR_<NAME>` in der echten Umgebung →
+`~/.mineru_ocr/.env` → TOML-Datei → Paketvoreinstellung**.
+
+Die feste `.env` ergänzt die von `Settings.load` gelesenen Umgebungsvariablen
+auch bei Aufrufen aus anderen Verzeichnissen; Regeln und Beispiel stehen im
+[Audio-Abschnitt](#audio). `MINERU_OCR_CONFIG` verschiebt nur die TOML-Datei.
 Für Datenbank und Endpoint gibt es keine Paketvoreinstellung.
 
 Für den Einstieg in der Datei `db_dsn` setzen und `endpoint_id` mit der eigenen
@@ -484,7 +489,8 @@ mineru-ocr daemon start --help
 
 `start X` startet X vom Terminal gelöste Prozesse, jeweils mit OCR-, Audio- und
 Wartungs-Worker. Vorher werden Endpoint, Schlüssel und Schema geprüft.
-`ELEVENLABS_API_KEY` muss gesetzt sein; ein kostenfreies `GET /v1/user`
+`ELEVENLABS_API_KEY` muss in der Umgebung oder in `~/.mineru_ocr/.env`
+stehen, unabhaengig vom Verzeichnis des Aufrufs; ein kostenfreies `GET /v1/user`
 prüft den ElevenLabs-Zugang vor dem ersten Kindprozess. Der Schlüssel braucht
 Lesezugriff auf diese Route. Bei ungültigem Schlüssel, fehlendem Zugriff oder
 Unerreichbarkeit startet kein Kind; ein Timeout wird einmal wiederholt.
@@ -554,10 +560,27 @@ steht ein Absatz `Sprecher N:`, ab 1 in Reihenfolge des ersten Auftretens;
 Datei `empty`. Gleiche Bytes lesen den Cache. Gemischte Stapel bleiben in
 Eingabereihenfolge.
 
-Der Daemon liest den Schlüssel aus `ELEVENLABS_API_KEY` und reicht ihn über sein
+Der Daemon liest `ELEVENLABS_API_KEY` aus der Umgebung oder, als Rückfall,
+aus der festen Datei `~/.mineru_ocr/.env` neben `config.toml` und reicht ihn über sein
 anonymes Startrohr weiter. Der Schlüssel gehört weder in `config.toml` noch in
-Ausgaben, Protokolle oder das Repository. `.env` ist ignoriert und wird von
-Mineroo nicht automatisch geladen. Abschicken und Abholen brauchen ihn nicht.
+Ausgaben, Protokolle oder das Repository. `.env` bleibt in `.gitignore`.
+Die feste Datei wird automatisch geladen, ohne Suche im Arbeitsverzeichnis oder
+dessen Eltern und ohne `os.environ` zu verändern. Sie ergänzt alle Variablen,
+die `Settings.load` bereits liest (`MINERU_OCR_<NAME>`, einschließlich
+`MINERU_OCR_CONFIG`, und `ELEVENLABS_API_KEY`). Es gilt: ausdrückliche Angabe →
+echte Umgebung → feste `.env` → TOML → Voreinstellung. Auch eine leere echte
+Umgebungsvariable verdeckt den Dateieintrag; ihre bisherige Behandlung gilt weiter.
+Quoting, `export` und Kommentare folgen python-dotenv; `${NAME}` bleibt wörtlich,
+ohne Interpolation. Eine fehlende Datei ist in Ordnung; eine unlesbare oder
+syntaktisch kaputte Datei meldet einen Konfigurationsfehler mit Pfad und, soweit
+möglich, Zeile, ohne Werte auszugeben. Beispiel mit erfundenem Schlüssel:
+
+```dotenv
+# ~/.mineru_ocr/.env
+ELEVENLABS_API_KEY=erfundener-schluessel-hier-ersetzen
+```
+
+Abschicken und Abholen brauchen den Schlüssel nicht.
 Diese Felder ergänzen die bestehende Mineroo-Konfiguration:
 
 ```toml

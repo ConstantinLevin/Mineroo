@@ -42,7 +42,8 @@ des Auftretens, und erhaelt Geraeusche. Ohne Wort ist das Ergebnis `empty`.
 
 Der Schluessel kommt aus `ELEVENLABS_API_KEY` in `Settings.load`, nie aus TOML.
 Repr maskiert ihn; Kinder erhalten ihn wie den RunPod-Schluessel im anonymen
-Rohr. `.env` bleibt ignoriert und wird nicht automatisch geladen.
+Rohr. `~/.mineru_ocr/.env` wird als Rückfall für `ELEVENLABS_API_KEY` automatisch
+geladen; die echte Umgebung gewinnt. `.env` bleibt in `.gitignore`.
 `audio_region="us"` ist die ausdrueckliche USA-Einstellung, begruendet durch den
 Eigentuemer in #69: „ja das passt mit er verarbeitung.“ Die EWR-Pruefung betrifft
 weiterhin RunPod. Messung #69: rund 0,40 USD/Audiostunde; Treffer kosten nichts.
@@ -253,9 +254,19 @@ einander aus; eine Eingabedatei darf nicht überschrieben werden.
 ### Konfiguration — Endpoint, Datenbank und Sollwerte stehen nicht im Code
 
 `config.Settings.load` liest sie aus (stärkste Quelle zuerst) ausdrücklicher
-Angabe → Umgebungsvariable `MINERU_OCR_<NAME>` → TOML-Datei
+Angabe → Umgebungsvariable `MINERU_OCR_<NAME>` → feste Datei
+`~/.mineru_ocr/.env` → TOML-Datei
 `~/.mineru_ocr/config.toml` (`MINERU_OCR_CONFIG` oder `config_path` nennen eine
-andere) → Feld-Voreinstellung. Für `endpoint_id` und `db_dsn` gibt es **keine**
+andere) → Feld-Voreinstellung. Die feste `.env` ergänzt genau die bisher
+gelesenen Umgebungsvariablen, einschließlich `ELEVENLABS_API_KEY` und
+`MINERU_OCR_CONFIG`. Ihr Ort bleibt auch bei anderem TOML-Pfad gleich; keine
+Suche im Arbeitsverzeichnis oder seinen Eltern. `dotenv_values` verändert
+`os.environ` nicht; Interpolation ist aus (`${NAME}` bleibt wörtlich). Auch leere
+echte Umgebungswerte gewinnen und werden wie bisher behandelt. Fehlend ist
+still in Ordnung, unlesbar oder syntaktisch kaputt ist eine `ConfigurationError`
+mit Pfad und möglichst Zeile, niemals Werten. Tests biegen `DEFAULT_ENV_PATH`
+wie die anderen Standardpfade um und übergeben für eigene Dateien `env_path=`.
+Für `endpoint_id` und `db_dsn` gibt es **keine**
 Voreinstellung. Fehlt `db_dsn`, wirft `load` eine `ConfigurationError`, die alle
 Stellen nennt. `endpoint_id` und der RunPod-Schlüssel dürfen beim Laden fehlen
 (`None`); verlangt werden sie erst dort, wo sie gebraucht werden, mit
