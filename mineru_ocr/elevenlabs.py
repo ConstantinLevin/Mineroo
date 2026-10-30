@@ -62,10 +62,10 @@ def _anfragefrist(data: bytes, doc_type: DocumentType) -> float:
     dauer = len(data) / 1000.0
     programm = shutil.which("ffprobe")
     if programm is not None:
-        with tempfile.NamedTemporaryFile(suffix=doc_type.suffix) as datei:
-            datei.write(data)
-            datei.flush()
-            try:
+        try:
+            with tempfile.NamedTemporaryFile(suffix=doc_type.suffix) as datei:
+                datei.write(data)
+                datei.flush()
                 ergebnis = subprocess.run(
                     [programm, "-v", "error", "-protocol_whitelist", "file,pipe",
                      "-show_entries", "format=duration", "-of",
@@ -76,8 +76,8 @@ def _anfragefrist(data: bytes, doc_type: DocumentType) -> float:
                 gemessen = float(ergebnis.stdout)
                 if ergebnis.returncode == 0 and math.isfinite(gemessen) and gemessen > 0:
                     dauer = gemessen
-            except (OSError, ValueError, subprocess.TimeoutExpired):
-                pass
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
     return 300.0 + dauer / 10.0
 
 

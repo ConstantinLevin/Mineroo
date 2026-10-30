@@ -19,6 +19,7 @@ import os
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -121,6 +122,19 @@ def settings() -> Settings:
         endpoint_id="testendpoint",
         api_key="erfundener-schluessel-nicht-echt",
     )
+
+
+@pytest.fixture
+def audio_dauerprobe(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Erfundene ffprobe-Antwort; Fristtests brauchen kein lokales Programm."""
+    import subprocess
+
+    probe = Mock(return_value=subprocess.CompletedProcess(
+        args=[], returncode=0, stdout=b'3600\n',
+    ))
+    monkeypatch.setattr('mineru_ocr.elevenlabs.shutil.which', lambda name: '/erfunden/ffprobe')
+    monkeypatch.setattr('mineru_ocr.elevenlabs.subprocess.run', probe)
+    return probe
 
 
 @pytest.fixture(scope="session")

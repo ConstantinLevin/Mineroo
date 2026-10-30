@@ -1,7 +1,9 @@
 """Audio-Vertrag (#70), ausschliesslich erfundene Bytes und Antworten."""
 from __future__ import annotations
 
+import errno
 import io
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -367,13 +369,20 @@ async def test_audio_fehler_geht_durch_die_zentrale_einordnung(
         assert grund in str(fehler)
 
 
-async def test_audio_frist_waechst_mit_dauer_und_timeout_bleibt_wiederholbar(settings: Settings) -> None:
+async def test_audio_frist_waechst_mit_dauer_und_timeout_bleibt_wiederholbar(
+    settings: Settings, audio_dauerprobe: Mock,
+) -> None:
     """Gleich grosse synthetische WAVs mit 14 s und 1 h brauchen andere Fristen."""
     import dataclasses
+    import subprocess
     import wave
     import httpx
     from mineru_ocr.elevenlabs import transcribe
     from mineru_ocr.errors import classify_failure, FailureKind
+    audio_dauerprobe.side_effect = [
+        subprocess.CompletedProcess(args=[], returncode=0, stdout=dauer)
+        for dauer in (b'14\n', b'3600\n')
+    ]
     fristen: list[float] = []
     def zeitueberschreitung(request: httpx.Request) -> httpx.Response:
         fristen.append(request.extensions['timeout']['read'])
@@ -391,8 +400,55 @@ async def test_audio_frist_waechst_mit_dauer_und_timeout_bleibt_wiederholbar(set
                                  settings=dataclasses.replace(settings, elevenlabs_api_key='erfundenes-geheimnis'), http=http)
             assert classify_failure(gefangen.value) is FailureKind.RETRYABLE
             assert 'erfundenes-geheimnis' not in str(gefangen.value)
-    assert 300 < fristen[0] < fristen[1]
-    assert fristen[1] >= 600
+    assert fristen == [301.4, 660.0]
+    assert audio_dauerprobe.call_count == 2
+
+
+def test_audio_frist_ohne_ffprobe_schaetzt_nach_bytezahl(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mineru_ocr.elevenlabs import _anfragefrist
+    monkeypatch.setattr('mineru_ocr.elevenlabs.shutil.which', lambda name: None)
+    probe = Mock(side_effect=AssertionError('Ohne ffprobe darf keine Probe starten.'))
+    monkeypatch.setattr('mineru_ocr.elevenlabs.subprocess.run', probe)
+    assert _anfragefrist(bytes(50444), mime.DocumentType.WAV) == 305.0444
+    assert _anfragefrist(bytes(100000), mime.DocumentType.WAV) == 310.0
+    probe.assert_not_called()
+
+
+@pytest.mark.parametrize('stelle', ['anlegen', 'schreiben', 'flush'])
+@pytest.mark.parametrize('fehlernummer', [errno.ENOSPC, errno.EACCES], ids=['ENOSPC', 'EACCES'])
+async def test_audio_temporaerfehler_verhindert_keine_transkription(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, audio_dauerprobe: Mock,
+    stelle: str, fehlernummer: int,
+) -> None:
+    """Optionale Metadaten duerfen gueltige Audio-Bytes nicht endgueltig ablehnen."""
+    import dataclasses
+    import httpx
+    from mineru_ocr.elevenlabs import transcribe
+    datei = MagicMock()
+    temporaer = Mock(return_value=datei)
+    fehler = OSError(fehlernummer, 'erfundener Speicherfehler')
+    if stelle == 'anlegen':
+        temporaer.side_effect = fehler
+    else:
+        getattr(datei.__enter__.return_value, 'write' if stelle == 'schreiben' else 'flush').side_effect = fehler
+    monkeypatch.setattr('mineru_ocr.elevenlabs.tempfile.NamedTemporaryFile', temporaer)
+    daten = b'fLaC' + bytes(50440)
+    kontakte: list[httpx.Request] = []
+    antwort = {'words': [{'type': 'word', 'text': 'Erfunden.', 'speaker_id': 's'}]}
+    def antworten(request: httpx.Request) -> httpx.Response:
+        kontakte.append(request)
+        assert daten in request.content
+        assert request.extensions['timeout']['read'] == 305.0444
+        return httpx.Response(200, json=antwort)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(antworten)) as http:
+        roh = await transcribe(daten, mime.DocumentType.FLAC, settings=dataclasses.replace(
+            settings, elevenlabs_api_key='erfunden-audio',
+        ), http=http)
+    assert roh['response'] == antwort
+    assert len(kontakte) == 1
+    audio_dauerprobe.assert_not_called()
+    if stelle != 'anlegen':
+        datei.__exit__.assert_called_once()
 
 
 @pytest.mark.db

@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import httpx
 import psycopg
@@ -89,7 +90,7 @@ async def bis_ergebnis(
 ])
 async def test_audio_job_schreibt_genau_dann_terminal_wenn_er_nicht_wiederholt_wird(
     db_conn: psycopg.Connection[Any], audio_settings: Settings, monkeypatch: pytest.MonkeyPatch,
-    fehlerart: str, zustand: str, versuche: int,
+    audio_dauerprobe: Mock, fehlerart: str, zustand: str, versuche: int,
 ) -> None:
     daten = DATEN
     if fehlerart == 'timeout':
@@ -106,7 +107,7 @@ async def test_audio_job_schreibt_genau_dann_terminal_wenn_er_nicht_wiederholt_w
         kontakte += 1
         assert db.get_document(db_conn, str(sha)) is None
         if fehlerart == 'timeout':
-            assert request.extensions['timeout']['read'] >= 600
+            assert request.extensions['timeout']['read'] == 660.0
             raise httpx.ReadTimeout('erfundener Timeout')
         if fehlerart == 'verbindung':
             raise httpx.RemoteProtocolError('erfundener Verbindungsabbruch')
@@ -124,6 +125,7 @@ async def test_audio_job_schreibt_genau_dann_terminal_wenn_er_nicht_wiederholt_w
             assert 'Audiospur fehlt' in (huelle.row.error or '')
         assert huelle.to_dict()['endpoint_id'] == 'elevenlabs'
         assert kontakte == versuche
+        assert audio_dauerprobe.call_count == versuche
         assert db_conn.execute('SELECT queue_name, status, attempts FROM procrastinate_jobs WHERE queue_name = \'audio\'').fetchone() == (
             'audio', 'failed', max(1, versuche),
         )
