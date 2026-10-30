@@ -584,7 +584,24 @@ Tabelle mit `endpoint_id = "elevenlabs"`; Seitenzahl, MinerU-Version und
 OCR-Leseeinstellungen bleiben leer. Die Grenze ist `db.MAX_INPUT_BYTES` (1 GB),
 RunPods Anfragegrenze gilt nicht für Audio. Video ist nicht unterstützt.
 
-Weitere Fehler- und Kontingentbehandlung ist Ticket #71. `daemon list` zeigt
+Audio nutzt dieselbe zentrale Fehler- und Wiederholungsregel wie OCR: Ein
+fehlender oder ungültiger Schlüssel endet als Konfigurationsfehler (`failed`),
+eine unlesbare Datei (HTTP 422) als `input_error` mit dem maskierten Grund aus
+der Antwort. HTTP 429/5xx, Verbindungsabbruch und Zeitüberschreitung werden bis
+zum Versuchsbudget wiederholt; danach steht `failed`. Bei erschöpftem
+Kontingent wartet der laufende Versuch und fragt nach `balance_recheck_seconds`
+(intern 900 s) erneut an, ohne einen Versuch zu verbrauchen. `retry` und
+`retry_all` lesen gescheitertes Audio wieder in der Queue `audio`. Beim
+Herunterfahren wird neu eingereiht, solange Versuche übrig sind; im letzten
+Versuch steht `failed` mit Abbruchvermerk.
+
+Die Anfragefrist beträgt 300 Sekunden plus ein Zehntel der Aufnahmedauer.
+`ffprobe` ermittelt die Dauer lokal mit einer Frist von zehn Sekunden. Fehlt es
+oder lässt sich die Dauer nicht lesen, wird mit 8 kbit/s geschätzt;
+die endgültige Datei-Abweisung kommt von ElevenLabs. Bei einer Stunde Audio
+sind es mit gelesener Dauer 660 Sekunden (Messung #69: 59 Minuten in 43 Sekunden).
+
+`daemon list` zeigt
 OCR und Audio getrennt; `daemon start` prüft den ElevenLabs-Zugang kostenfrei.
 Mit `-d` zeigt Audio auf stderr das Warten auf einen Daemon-Platz, beim lokalen
 aktuellen Daemon `ElevenLabs verarbeitet` mit Schritt- und Gesamtzeit sowie den

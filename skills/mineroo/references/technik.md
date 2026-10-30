@@ -79,8 +79,21 @@ Die vollständige Antwort einschließlich Wortzeiten liegt in `raw.response`,
 die gesendeten Parameter in `raw.parameters`. Sprecherwechsel und Geräusche
 liefert `rendered_markdown`; `readable_markdown` ist bei Audio identisch.
 Ohne erkanntes Wort lautet der Zustand `empty`. `retry` und `retry_all` wählen
-bei Audio wieder `audio`. Die weitere Fehler-/Kontingentbehandlung und Fristen
-gehören zu #71. `daemon list` zeigt beide Lanes; die kostenfreie Startprüfung
+bei Audio wieder `audio`. Fehlender/ungültiger Schlüssel ergibt `failed`
+(Konfigurationsfehler), HTTP 422 `input_error` mit dem maskierten Antwortgrund.
+429/5xx, Verbindungsabbruch und Zeitüberschreitung werden über die zentrale
+Einordnung bis zum Versuchsbudget wiederholt, danach steht `failed`.
+`quota_exceeded` (auch HTTP 400/401) bzw. HTTP 402 pausiert im laufenden Versuch:
+erneute Anfrage nach `balance_recheck_seconds` (intern 900 s), ohne Retry-Verbrauch.
+Beim Herunterfahren wird bis zur Budgetgrenze neu eingereiht, im letzten
+Versuch `failed` mit Abbruchvermerk geschrieben.
+
+Die Anfragefrist wächst mit der Dauer: 300 s plus Dauer/10; eine Stunde erhält
+660 s (gemessen in #69: 59 Minuten in 43 Sekunden). `ffprobe` liest die Dauer
+lokal mit maximal zehn Sekunden; fehlt es oder ist die Dauer nicht lesbar,
+gilt eine Schätzung mit 8 kbit/s. Die Datei-Abweisung übernimmt weiterhin ElevenLabs.
+
+`daemon list` zeigt beide Lanes; die kostenfreie Startprüfung
 und Audio-Fortschritt mit `-d` sind umgesetzt (#72).
 
 ## Preflight und Datenschutz

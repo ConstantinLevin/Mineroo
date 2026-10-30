@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import httpx
@@ -10,9 +11,34 @@ from psycopg_pool import AsyncConnectionPool
 from . import core, db, elevenlabs, progress
 from .abbruch import abwarten_bis_zum_zweiten_abbruch
 from .config import Settings
-from .errors import CorruptDocumentError, InputError, UnstorableResultError, should_run_again
+from .errors import (
+    CorruptDocumentError, FailureKind, InputError, UnstorableResultError,
+    classify_failure, should_run_again,
+)
 from .executor import ABBRUCH_IM_LETZTEN_VERSUCH, _text_speicherbar
-from .mime import sniff_bytes
+from .mime import DocumentType, sniff_bytes
+
+log = logging.getLogger("mineru_ocr.audio_executor")
+
+
+async def _mit_kontingentpause(
+    data: bytes, typ: DocumentType, *, settings: Settings, http: httpx.AsyncClient,
+) -> dict[str, Any]:
+    """Kontingentpausen halten den Versuch offen, auch den letzten.
+
+    Die zentrale Einordnung entscheidet; weder Statuscodes noch Anbietertexte
+    werden hier erneut ausgelegt. Eine abgewiesene Anfrage wird nach derselben
+    Pause wie bei RunPod erneut gestellt. Abbruch bleibt jederzeit moeglich.
+    """
+    while True:
+        try:
+            return await elevenlabs.transcribe(data, typ, settings=settings, http=http)
+        except Exception as fehler:
+            if classify_failure(fehler) is not FailureKind.BALANCE_PAUSE:
+                raise
+            log.info("ElevenLabs-Kontingent erschoepft. Erneute Anfrage in %.0f s.",
+                     settings.balance_recheck_seconds)
+            await asyncio.sleep(settings.balance_recheck_seconds)
 
 
 async def process_audio(
@@ -54,9 +80,9 @@ async def process_audio(
         progress.melden("ElevenLabs verarbeitet")
         if http is None:
             async with httpx.AsyncClient() as zugang:
-                roh = await elevenlabs.transcribe(eingabe.content, typ, settings=settings, http=zugang)
+                roh = await _mit_kontingentpause(eingabe.content, typ, settings=settings, http=zugang)
         else:
-            roh = await elevenlabs.transcribe(eingabe.content, typ, settings=settings, http=http)
+            roh = await _mit_kontingentpause(eingabe.content, typ, settings=settings, http=http)
         progress.melden("Antwort verarbeiten")
         text = elevenlabs.transcript(roh)
         status = db.DocumentStatus.DONE if text else db.DocumentStatus.EMPTY
