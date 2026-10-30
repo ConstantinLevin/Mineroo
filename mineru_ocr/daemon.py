@@ -318,6 +318,10 @@ async def _kontrollserver_starten(
             antwort = {
                 "pid": os.getpid(),
                 "available": settings.ocr_concurrency,
+                "lanes": {
+                    lane: {"total": sum(w.concurrency for w in worker if lane in (w.queues or []))}
+                    for lane in (config.QUEUE_OCR, config.QUEUE_AUDIO)
+                },
                 "log_path": str(protokoll),
                 "worker_ids": [w.worker_id for w in worker],
                 "ready": all(w.worker_id is not None for w in worker),

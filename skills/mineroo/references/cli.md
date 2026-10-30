@@ -39,6 +39,10 @@ Daemons liefern auch Chunk-Plan, gesendete/beendete Chunks und RunPod-Zustände;
 fehlende Angaben heißen `unbekannt`. Am Terminal aktualisiert sich die Anzeige;
 umgeleitetes stderr enthält sachliche Änderungen ohne Steuerzeichen.
 Bei Stapeln bewirkt `-d` außerdem das Einreihen vor dem Warten.
+Bei Audio zeigt `-d` Warteschlange, beim lokalen aktuellen Daemon
+`ElevenLabs verarbeitet` mit Schritt-/Gesamtzeit und den Endzustand. Chunk- und
+RunPod-Felder entfallen, auch am schmalen Terminal. Ohne lokale Beobachtung
+bleibt es beim bekannten Datenbankstand. Ohne `-d` entsteht keine Fortschrittsausgabe.
 
 `--tier`, `--ocr-mode` und `--image-analysis`/`--no-image-analysis` wählen, wie
 neue Dokumente gelesen werden. Vorgaben, Grenzen und die Entsprechungen in

@@ -21,7 +21,7 @@ import uuid
 import psycopg
 
 from . import db
-from .config import Settings
+from .config import QUEUE_AUDIO, QUEUE_OCR, Settings
 from .errors import DatabaseError
 
 
@@ -79,8 +79,13 @@ def fragen(pfad: Path, befehl: str = "status", *, timeout: float = 2) -> dict[st
 
 
 def status(settings: Settings) -> dict[str, Any]:
-    """Ein Snapshot der lokalen Daemons und der OCR-Warteschlange."""
+    """Lokale Plaetze und datenbankweite Warteschlangen, getrennt nach Lane.
+
+    Die bisherigen Felder bleiben OCR. Alte Kontrollsockets kennen die
+    Audio-Kapazitaet nicht; dort steht null statt einer geratenen Zahl.
+    """
     daemons = []
+    lanes = (QUEUE_OCR, QUEUE_AUDIO)
     with db.connect(settings.db_dsn) as conn:
         db.check_schema(conn)
         for pfad in sorted(verzeichnis(settings).glob("*.sock")):
@@ -93,35 +98,51 @@ def status(settings: Settings) -> dict[str, Any]:
                 continue
             antwort.pop("ready")
             antwort["socket"] = str(pfad)
-            zeile = conn.execute(
-                "SELECT count(*) FROM procrastinate_jobs "
-                "WHERE worker_id = %s AND status = 'doing' AND queue_name = 'ocr'",
-                (ids[0],),
-            ).fetchone()
-            assert zeile is not None
-            antwort["occupied"] = zeile[0]
+            belegt = dict(conn.execute(
+                "SELECT queue_name, count(*) FROM procrastinate_jobs "
+                "WHERE worker_id = ANY(%s) AND status = 'doing' GROUP BY queue_name",
+                (ids,),
+            ).fetchall())
+            kapazitaet = antwort.get("lanes", {QUEUE_OCR: {"total": antwort["available"]}})
+            antwort["lanes"] = {
+                lane: {"occupied": belegt.get(lane, 0),
+                       "total": kapazitaet.get(lane, {}).get("total")}
+                for lane in lanes
+            }
+            antwort["occupied"] = belegt.get(QUEUE_OCR, 0)
             daemons.append(antwort)
-        queue = conn.execute(
-            "SELECT count(*) FILTER (WHERE status = 'todo'), "
+        queues = {lane: {"waiting": wartend, "running": laufend}
+                  for lane, wartend, laufend in conn.execute(
+            "SELECT queue_name, count(*) FILTER (WHERE status = 'todo'), "
             "count(*) FILTER (WHERE status = 'doing') "
-            "FROM procrastinate_jobs WHERE queue_name = 'ocr'"
-        ).fetchone()
-    assert queue is not None
-    wartend, laufend = queue
+            "FROM procrastinate_jobs WHERE queue_name = ANY(%s) GROUP BY queue_name",
+            (list(lanes),),
+        ).fetchall()}
+    pro_lane = {}
+    for lane in lanes:
+        gesamt = [d["lanes"][lane]["total"] for d in daemons]
+        pro_lane[lane] = {
+            "slots": {"occupied": sum(d["lanes"][lane]["occupied"] for d in daemons),
+                      "total": None if None in gesamt else sum(gesamt)},
+            "queue": queues.get(lane, {"waiting": 0, "running": 0}),
+        }
     return {
         "count": len(daemons), "daemons": daemons,
         "slots": {"occupied": sum(d["occupied"] for d in daemons),
                   "available": sum(d["available"] for d in daemons)},
-        "queue": {"waiting": wartend, "running": laufend},
+        "queue": pro_lane[QUEUE_OCR]["queue"],
+        "lanes": pro_lane,
     }
 
 
 def start(settings: Settings, anzahl: int) -> list[dict[str, Any]]:
     """Prueft vor dem ersten Kind; wartet nur auf Start, niemals auf Dokumente."""
     from .daemon import _schema_pruefen
+    from .elevenlabs import check_access
 
     settings.require_endpoint_id()
     schluessel = settings.require_api_key()
+    check_access(settings)
     _schema_pruefen(settings.db_dsn)
     if settings.ocr_concurrency < 1:
         raise ValueError("ocr_concurrency muss mindestens 1 sein.")

@@ -154,12 +154,13 @@ class Anzeige:
             block.append(f"Dateien {erste + 1}-{letzte} von {len(self.dateien)} (Wechsel alle 5s)")
         for nr, datei in enumerate(self.dateien):
             stand = nach_hash[datei.sha256]
+            audio = stand.get("queue_name") == "audio" or str(stand.get("mime") or "").startswith("audio/")
             jetzt = float(stand["jetzt"])
             if stand["beginn"]:
                 datei.db_beginn = stand["beginn"].timestamp()
             beginn = datei.db_beginn if datei.db_beginn is not None else datei.beginn
             seit = stand["schritt"].timestamp() if stand["schritt"] else datei.beginn
-            detail = "RunPod: unbekannt"
+            detail = "" if audio else "RunPod: unbekannt"
             phase = "gespeichert; Job unbekannt"
             if stand["job_status"] == "todo":
                 phase = "wartet auf Daemon-Platz"
@@ -176,7 +177,8 @@ class Anzeige:
             if fluechtig:
                 phase = _sicher(str(fluechtig.get("schritt", phase)))
                 seit = float(fluechtig.get("seit", seit))
-                detail = (f"RunPod: {fluechtig.get('runpod') or 'Status unbekannt'}; "
+                if not audio:
+                    detail = (f"RunPod: {fluechtig.get('runpod') or 'Status unbekannt'}; "
                           f"Chunks gesendet {fluechtig.get('gesendet', 0)}, "
                           f"beendet {fluechtig.get('fertig', 0)}, "
                           f"Plan {fluechtig.get('geplant') or '?'} (Teilung moeglich)")
@@ -184,13 +186,13 @@ class Anzeige:
                 jetzt = stand["updated_at"].timestamp()
                 phase = f"final {stand['final']}"
                 seit = stand["updated_at"].timestamp()
-                detail = "RunPod: nicht mehr beobachtbar"
+                detail = "" if audio else "RunPod: nicht mehr beobachtbar"
             elif not stand["stored"]:
                 phase = "Eingabe und Ergebnis unbekannt"
             gespeichert = "Ergebnis" if stand["final"] else ("ja" if stand["stored"] else "nein")
             versuch = "" if stand["attempts"] is None else f"; Wiederholungen {stand['attempts']}"
             # Uhren zaehlen auf TTY weiter; im Protokoll entscheidet nur der Fakt.
-            fakten = f"{phase}; DB: {gespeichert}; {detail}{versuch}"
+            fakten = f"{phase}; DB: {gespeichert}" + (f"; {detail}" if detail else "") + versuch
             schrittsekunden = max(0, int(jetzt - seit))
             gesamtsekunden = max(0, int(jetzt - beginn))
             zeit = f"Schritt {schrittsekunden}s / gesamt {gesamtsekunden}s"
@@ -203,8 +205,8 @@ class Anzeige:
                         kurzphase = "Daemon-Platz" if phase == "wartet auf Daemon-Platz" else "Wiedervorlage"
                     if fluechtig.get("runpod"):
                         kurzphase = "RP:" + _sicher(str(fluechtig["runpod"]))
-                    kurz = f"{kurzphase} DB:{gespeichert} RP:?"
-                    if fluechtig.get("job_id") == stand["id"] and stand["job_status"] == "doing":
+                    kurz = f"{kurzphase} DB:{gespeichert}" + ("" if audio else " RP:?")
+                    if not audio and fluechtig.get("job_id") == stand["id"] and stand["job_status"] == "doing":
                         kurz = (f"{kurzphase} DB:{gespeichert} ges:{fluechtig.get('gesendet', 0)} "
                                 f"fertig:{fluechtig.get('fertig', 0)} Plan:{fluechtig.get('geplant') or '?'}")
                     if stand["attempts"] is not None:

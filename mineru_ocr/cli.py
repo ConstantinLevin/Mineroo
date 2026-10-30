@@ -157,7 +157,7 @@ def daemon_start(
 
 @_daemon_app.command("list", epilog=_HILFE_EPILOG)
 def daemon_list(dsn: Annotated[str | None, typer.Option()] = None) -> None:
-    """Zeigt lokale Daemons, OCR-Plaetze und die OCR-Warteschlange als JSON."""
+    """Zeigt lokale Daemons, Plaetze und Warteschlangen je Lane als JSON."""
     from . import daemons
     try:
         typer.echo(json.dumps(daemons.status(Settings.load(db_dsn=dsn)), indent=2))

@@ -31,8 +31,17 @@ mineru-ocr daemon stop X
 `X` ist eine ganze Zahl ab 1. `start X` startet X Hintergrundprozesse mit je
 eigenem Protokoll; `--concurrency N` bestimmt die OCR-Plätze je Prozess.
 `stop X` beendet bis zu X ordentlich, die am wenigsten belegten zuerst.
-`list` liefert JSON zu lokalen Daemons, belegten/verfügbaren OCR-Plätzen,
-Protokollpfaden und zur datenbankweiten OCR-Warteschlange. Die Kommandos
+Vor dem ersten Kind prüft `start` den gesetzten `ELEVENLABS_API_KEY` mit
+kostenfreiem `GET /v1/user` (Leseberechtigung nötig). Bei fehlendem/ungültigem
+Schlüssel, verweigertem Zugriff oder Unerreichbarkeit startet kein Kind;
+ein Timeout wird einmal wiederholt. Kontodaten werden nicht ausgegeben.
+`list` liefert JSON zu lokalen Daemons und Protokollpfaden. Unter
+`lanes.ocr`/`lanes.audio` stehen je `slots.occupied`/`slots.total` (lokale
+Belegung/Kapazität) und `queue.waiting`/`queue.running` (datenbankweit).
+`daemons[].lanes` zeigt `occupied`/`total` je Lane und Prozess. Die bisherigen
+Felder `slots`/`queue` und `daemons[].occupied`/`available` bleiben OCR.
+Ohne Daemons sind Kapazitäten 0, offene Jobs bleiben sichtbar. Bei älteren
+Daemons ohne Lane-Auskunft ist Audio-Kapazität JSON-`null`. Die Kommandos
 verwalten lokale Daemons der gewählten Datenbank. Nach einem Rechnerneustart
 startet nichts von selbst.
 
@@ -71,8 +80,8 @@ die gesendeten Parameter in `raw.parameters`. Sprecherwechsel und Geräusche
 liefert `rendered_markdown`; `readable_markdown` ist bei Audio identisch.
 Ohne erkanntes Wort lautet der Zustand `empty`. `retry` und `retry_all` wählen
 bei Audio wieder `audio`. Die weitere Fehler-/Kontingentbehandlung und Fristen
-gehören zu #71; Startprüfung, Lane-Anzeige und Audio-Fortschritt zu #72.
-`daemon list` zeigt derzeit weiterhin nur OCR-Plätze und OCR-Warteschlange.
+gehören zu #71. `daemon list` zeigt beide Lanes; die kostenfreie Startprüfung
+und Audio-Fortschritt mit `-d` sind umgesetzt (#72).
 
 ## Preflight und Datenschutz
 

@@ -270,7 +270,7 @@ async def test_kontrollsocket_liefert_nur_lebenden_fortschritt(
     kurz = TemporaryDirectory(prefix="m64-", dir="/tmp")
     sock = Path(kurz.name) / "control.sock"
     staende = progress.Fortschritte()
-    worker: Any = SimpleNamespace(worker_id=10)
+    worker: Any = SimpleNamespace(worker_id=10, queues=["ocr"], concurrency=2)
     server = await daemon._kontrollserver_starten(
         (sock, tmp_path / "log"), settings, [worker],
         asyncio.Event(), lambda _: None, staende,
