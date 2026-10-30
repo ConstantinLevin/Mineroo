@@ -2,7 +2,10 @@
 
 ## Vor dem Abschicken
 
-Mineroo behandelt jedes Dokument als potenziell personenbezogen. Prüfe einmal
+Mineroo behandelt jedes Dokument als potenziell personenbezogen. Für Audio
+zuerst [USA-Verarbeitung und Kosten](technik.md#audio) lesen; diese Aufnahme
+geht an ElevenLabs. Die folgende Rechenzentrumsprüfung betrifft OCR auf RunPod.
+Prüfe einmal
 je Sitzung vor dem ersten Abschicken die Rechenzentren; die CLI und der
 Async-Client erledigen das nicht. Zulässig sind die konfigurierten
 EWR-Rechenzentren in EU-Staaten, Island und Norwegen.
@@ -37,7 +40,10 @@ mineru-ocr "dokument.pdf" --timeout 600
 
 Die CLI wartet und liefert den vollständigen Markdown-Text auf stdout; Meldungen
 stehen auf stderr. Lies den ausgegebenen Text und bearbeite damit den Auftrag.
-Ein gespeichertes Ergebnis kommt ohne erneute OCR, auch ohne Daemon.
+Ein gespeichertes Ergebnis kommt ohne erneute Verarbeitung, auch ohne Daemon.
+Für Audio denselben Aufruf mit der Audiodatei verwenden, etwa
+`mineru-ocr "aufnahme.m4a" --timeout 600`. Der Text trägt `Sprecher N:` je Wechsel,
+Geräusche bleiben erhalten. Ohne erkanntes Wort ist die Aufnahme `empty`.
 
 - **Exit 0:** Erfolg; `empty` ist ein gültiges leeres Dokument, mit Grund auf stderr.
 - **Exit 4:** Nur das Warten endete; derselbe Dateiaufruf setzt es später fort.

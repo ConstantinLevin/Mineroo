@@ -2302,15 +2302,15 @@ async def test_echte_abweisung_eines_ole2_containers_ohne_word_daten_endet_input
     assert zeile.read_settings is None
 
 
-async def test_der_waechter_speichert_bei_ganzdokument_formaten_keine_einstellungen(
+async def test_der_waechter_speichert_bei_ganzdokument_und_audio_keine_einstellungen(
     db_conn: psycopg.Connection[Any],
     pool: AsyncConnectionPool,
     exec_settings: Settings,
     tmp_path: Path,
 ) -> None:
     """Auch das `failed` des Waechters (`write_failure_if_no_result`) traegt fuer
-    ein Ganzdokument-Format keine Lese-Einstellungen (Mineroo#17); fuer ein Bild
-    die bestellten, wie bisher."""
+    ein Ganzdokument-Format und Audio keine Lese-Einstellungen (#17, #70);
+    fuer ein Bild die bestellten. Audio behaelt den ElevenLabs-Endpoint."""
     bestellt = ReadSettings("basic", "txt", False)
     ganz, _ = _anlegen(
         db_conn, tmp_path, ganzdokumente.JE_TYP[DocumentType.RTF], name="d.rtf",
@@ -2319,7 +2319,11 @@ async def test_der_waechter_speichert_bei_ganzdokument_formaten_keine_einstellun
     bild, _ = _anlegen(
         db_conn, tmp_path, b"b", name="b.png", typ=DocumentType.PNG, lesen=bestellt
     )
-    for sha in (ganz, bild):
+    audio, _ = _anlegen(
+        db_conn, tmp_path, b"fLaC" + bytes(20), name="a.flac",
+        typ=DocumentType.FLAC, lesen=bestellt,
+    )
+    for sha in (ganz, bild, audio):
         assert await write_failure_if_no_result(
             sha, settings=exec_settings, pool=pool, grund="Worker wiederholt abgestuerzt"
         )
@@ -2328,6 +2332,10 @@ async def test_der_waechter_speichert_bei_ganzdokument_formaten_keine_einstellun
     assert zeile.read_settings is None
     zeile = get_document(db_conn, bild)
     assert zeile is not None and zeile.read_settings == bestellt
+    zeile = get_document(db_conn, audio)
+    assert zeile is not None and zeile.status is DocumentStatus.FAILED
+    assert zeile.endpoint_id == "elevenlabs"
+    assert zeile.read_settings is None
 
 
 async def test_ganzdokument_format_ohne_middle_json_endet_failed(

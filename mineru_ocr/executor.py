@@ -793,28 +793,26 @@ async def write_failure_if_no_result(
     # dem Pool; ein anderer Job dieses Dokuments legt dazwischen kein Ergebnis
     # an, siehe oben.
     eingabe = await db.read_input_async(settings.db_dsn, sha256)
-    ganzdokument = eingabe is not None and _ist_ganzdokument(eingabe.content)
+    ganzdokument = audio = False
+    if eingabe is not None:
+        try:
+            typ = sniff_bytes(eingabe.content)
+        except UnsupportedTypeError:
+            pass
+        else:
+            ganzdokument, audio = typ.is_whole_document, typ.is_audio
     async with pool.connection() as conn:
         await db.write_terminal_async(
             conn,
             sha256=sha256,
             status=db.DocumentStatus.FAILED,
             raw=ergebnis,
-            endpoint_id=settings.require_endpoint_id(),
+            endpoint_id="elevenlabs" if audio else settings.require_endpoint_id(),
             error=grund,
             notes=vermerke,
-            store_read_settings=not ganzdokument,
+            store_read_settings=not (ganzdokument or audio),
         )
     return True
-
-
-def _ist_ganzdokument(daten: bytes) -> bool:
-    """Ob `daten` ein Ganzdokument-Format sind; ein Typ, den das Paket nicht
-    kennt, ist keins (Mineroo#17)."""
-    try:
-        return sniff_bytes(daten).is_whole_document
-    except UnsupportedTypeError:
-        return False
 
 
 _LESE_FELDER: Final = ("tier", "ocr_mode", "image_analysis")

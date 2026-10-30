@@ -6,6 +6,10 @@ Kommandozeile `mineru-ocr`, die Python-Bibliothek `mineru_ocr` oder einen
 [Agent-Skill](skills/mineroo/SKILL.md). Gleiche Bytes ergeben denselben SHA-256-Hash:
 Ein bereits gespeichertes Ergebnis kommt ohne neuen Lauf und ohne neue OCR-Kosten.
 
+Audiodateien transkribiert Mineroo mit **ElevenLabs Scribe v2**, in einer eigenen
+Daemon-Lane. Dateiaufruf, Hash-Cache und Ausgabewege sind dieselben. Audio wird
+in den **USA** verarbeitet; Einzelheiten und Kosten stehen unter [Audio](#audio).
+
 Dieses Repository enthält die lokale Seite. Der MinerU-4-Worker liegt im Fork
 [ConstantinLevin/mineru-runpod](https://github.com/ConstantinLevin/mineru-runpod).
 
@@ -57,7 +61,7 @@ mineru-ocr daemon stop 1                 # bis zu einen Daemon ordentlich beende
 ```
 
 **Ein Daemon arbeitet die ganze Warteschlange seiner Datenbank ab.** Neue Läufe
-kosten RunPod-Guthaben. `stop 1` wählt den am wenigsten belegten lokalen Daemon;
+kosten RunPod-Guthaben bzw. für Audio ElevenLabs-Credits. `stop 1` wählt den am wenigsten belegten lokalen Daemon;
 es bezeichnet nicht zwingend den zuvor gestarteten. Ein gespeicherter Treffer
 braucht keinen Daemon. Braucht eine Datei noch Verarbeitung und läuft keiner,
 endet der Dateiaufruf mit Code **5**, ohne diese Datei einzureihen.
@@ -478,7 +482,7 @@ mineru-ocr daemon stop 2
 mineru-ocr daemon start --help
 ```
 
-`start X` startet X vom Terminal gelöste Prozesse, jeweils mit OCR- und
+`start X` startet X vom Terminal gelöste Prozesse, jeweils mit OCR-, Audio- und
 Wartungs-Worker. Vorher werden Endpoint, Schlüssel und Schema geprüft. Standard
 sind 24 OCR-Plätze je Prozess (`ocr_concurrency`); `--concurrency N` überschreibt
 das. X und N müssen ganze Zahlen ab 1 sein.
@@ -517,6 +521,61 @@ ein und warnt im Logger `mineru_ocr.client`; die CLI lehnt neue/offene Dateien
 ohne frischen Herzschlag ab. Beim Wechsel von der früheren adressabhängigen
 Daemon-Kennung zunächst mit der alten Version stoppen, dann mit der neuen
 starten.
+
+## Audio
+
+```bash
+mineru-ocr aufnahme.m4a --timeout 600
+mineru-ocr aufnahme.m4a -o transkript.md
+mineru-ocr aufnahme.m4a --ra -o antwort.json
+mineru-ocr eingang/ -o texte.md --timeout 600  # Audio und Dokumente gemischt
+```
+
+MP3, M4A/AAC, WAV, FLAC, OGG/Opus und AIFF werden am Inhalt erkannt, auch bei
+anderer Dateiendung. Jede Datei geht ungeteilt in einer synchronen Anfrage an
+Scribe v2, mit Sprechererkennung und Geräuschmarkierungen. Je Sprecherwechsel
+steht ein Absatz `Sprecher N:`, ab 1 in Reihenfolge des ersten Auftretens;
+`[lacht]` und andere Geräusche bleiben erhalten. Ohne erkanntes Wort endet die
+Datei `empty`. Gleiche Bytes lesen den Cache. Gemischte Stapel bleiben in
+Eingabereihenfolge.
+
+Der Daemon liest den Schlüssel aus `ELEVENLABS_API_KEY` und reicht ihn über sein
+anonymes Startrohr weiter. Der Schlüssel gehört weder in `config.toml` noch in
+Ausgaben, Protokolle oder das Repository. `.env` ist ignoriert und wird von
+Mineroo nicht automatisch geladen. Abschicken und Abholen brauchen ihn nicht.
+Diese Felder ergänzen die bestehende Mineroo-Konfiguration:
+
+```toml
+audio_concurrency = 2
+audio_region = "us"
+```
+
+Die Umgebung kann sie als `MINERU_OCR_AUDIO_CONCURRENCY` und
+`MINERU_OCR_AUDIO_REGION` überschreiben. Jeder Daemon hat neben OCR und Wartung
+einen Audio-Worker mit eigenen Plätzen. `audio_region = "us"` ist die ausdrückliche
+USA-Einstellung, vom Eigentümer gewollt
+([#69](https://github.com/ConstantinLevin/Mineroo/issues/69): „ja das passt mit er
+verarbeitung.“). RunPods EWR-Regel bleibt bestehen. EU-Verarbeitung und
+Abschalten der Speicherung bei ElevenLabs setzen nach #69 Enterprise voraus
+und sind hier nicht vorgesehen.
+
+Gemessen am 30.10.2026: rund **0,40 USD je Audiostunde**, über das Tarifkontingent
+(Free damals 10.000 Credits/Monat, etwa 2,5 Stunden), darüber Pay as you go.
+Das sind historische Messwerte aus #69. Neue Läufe kosten Credits, Treffer nicht.
+Ein Verbindungsabbruch nach der Berechnung kann einen erneuten bezahlten Lauf
+nötig machen, weil die Transkript-ID erst mit der Antwort kommt.
+
+Die Hülle liefert Audio über `rendered_markdown` und unverändert über
+`readable_markdown`. `--re`, `-t`, `-o` und `--ra` funktionieren wie bei Dokumenten.
+`raw.response` enthält die vollständige ElevenLabs-Antwort mit Wortzeiten,
+`raw.parameters` die gesendeten Parameter. Das Ergebnis steht in derselben
+Tabelle mit `endpoint_id = "elevenlabs"`; Seitenzahl, MinerU-Version und
+OCR-Leseeinstellungen bleiben leer. Die Grenze ist `db.MAX_INPUT_BYTES` (1 GB),
+RunPods Anfragegrenze gilt nicht für Audio. Video ist nicht unterstützt.
+
+Weitere Fehler- und Kontingentbehandlung ist Ticket #71; Lane-Anzeige,
+Audio-Startprüfung und Audio-Fortschritt sind Ticket #72. `daemon list` zeigt
+weiterhin OCR-Plätze und die OCR-Warteschlange.
 
 ## Formate und Verarbeitung
 

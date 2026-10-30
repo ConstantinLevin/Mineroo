@@ -93,7 +93,7 @@ def prepare(data: bytes, settings: Settings) -> Prepared:
     """
     typ = sniff_bytes(data)
     check_size(len(data), "die Bytes")
-    if not typ.is_pdf:
+    if not (typ.is_pdf or typ.is_audio):
         check_fits_unsplit(size_bytes=len(data), doc_type=typ, settings=settings)
     return Prepared(sha256=sha256_of(data), doc_type=typ, size_bytes=len(data))
 

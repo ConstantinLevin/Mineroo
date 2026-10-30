@@ -61,6 +61,7 @@ def _konfiguration_isolieren(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     """
     for name in [n for n in os.environ if n.startswith("MINERU_OCR_")]:
         monkeypatch.delenv(name)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     monkeypatch.setattr(
         "mineru_ocr.config.DEFAULT_CONFIG_PATH", tmp_path / "keine-konfiguration.toml"
     )
