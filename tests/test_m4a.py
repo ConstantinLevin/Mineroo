@@ -24,8 +24,8 @@ def mp4_erzeugen(tmp_path_factory: pytest.TempPathFactory) -> Callable[..., Path
         pytest.fail("M4A-Vertrag braucht ffmpeg und ffprobe fuer synthetische Medien.")
     wurzel = tmp_path_factory.mktemp("synthetische-mp4")
 
-    def erzeugen(marke: str, spuren: str = "audio", schnellstart: bool = False, dauer: int = 1, vorspann: str = "") -> Path:
-        ziel = wurzel / f"{marke.strip()}-{spuren}-{schnellstart}-{dauer}-{vorspann}.m4a"
+    def erzeugen(marke: str, spuren: str = "audio", schnellstart: bool = False, dauer: int = 1, vorspann: str = "", kapitel: bool = False) -> Path:
+        ziel = wurzel / f"{marke.strip()}-{spuren}-{schnellstart}-{dauer}-{vorspann}-{kapitel}.m4a"
         if ziel.exists():
             return ziel
         befehl = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error"]
@@ -33,6 +33,14 @@ def mp4_erzeugen(tmp_path_factory: pytest.TempPathFactory) -> Callable[..., Path
             befehl += ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100"]
         if "video" in spuren:
             befehl += ["-f", "lavfi", "-i", "color=c=blue:s=32x32:r=5"]
+        if kapitel:
+            metadaten = wurzel / "kapitel.ffmetadata"
+            metadaten.write_text(
+                ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1000\ntitle=Erfundenes Kapitel\n",
+                encoding="utf-8",
+            )
+            eingang = str(int("audio" in spuren) + int("video" in spuren))
+            befehl += ["-f", "ffmetadata", "-i", str(metadaten), "-map_metadata", eingang, "-map_chapters", eingang]
         if spuren == "audio-video":
             befehl += ["-map", "0:a", "-map", "1:v"]
         befehl += ["-t", str(dauer), "-c:a", "aac", "-c:v", "mpeg4"]
@@ -53,6 +61,7 @@ def mp4_erzeugen(tmp_path_factory: pytest.TempPathFactory) -> Callable[..., Path
                     daten[offset:offset + 4] = (wert + 8).to_bytes(4, "big")
                 stelle += 4
             ziel.write_bytes((8).to_bytes(4, "big") + vorspann.encode("ascii") + daten)
+        if vorspann or kapitel:
             dekodiert = subprocess.run(
                 [ffmpeg, "-nostdin", "-v", "error", "-i", str(ziel), "-f", "null", "-"],
                 check=True, capture_output=True, timeout=15,
@@ -64,6 +73,9 @@ def mp4_erzeugen(tmp_path_factory: pytest.TempPathFactory) -> Callable[..., Path
         )
         inhalt: dict[str, Any] = json.loads(probe.stdout)
         erwartet = {"audio": ["audio"], "video": ["video"], "audio-video": ["audio", "video"]}[spuren]
+        if kapitel:
+            erwartet = sorted([*erwartet, "data"])
+            assert [s["codec_tag_string"] for s in inhalt["streams"] if s["codec_type"] == "data"] == ["text"]
         assert sorted(s["codec_type"] for s in inhalt["streams"]) == erwartet
         assert inhalt["format"]["tags"]["major_brand"] == marke
         if "audio" in spuren:
@@ -75,11 +87,12 @@ def mp4_erzeugen(tmp_path_factory: pytest.TempPathFactory) -> Callable[..., Path
 
 @pytest.mark.parametrize("marke", ["mp42", "isom", "M4A ", "M4B "])
 @pytest.mark.parametrize("schnellstart", [False, True])
+@pytest.mark.parametrize("kapitel", [False, True])
 def test_m4a_audio_unabhaengig_von_marke_und_name(
     mp4_erzeugen: Callable[..., Path], tmp_path: Path, settings: Settings,
-    marke: str, schnellstart: bool,
+    marke: str, schnellstart: bool, kapitel: bool,
 ) -> None:
-    daten = mp4_erzeugen(marke, schnellstart=schnellstart).read_bytes()
+    daten = mp4_erzeugen(marke, schnellstart=schnellstart, kapitel=kapitel).read_bytes()
     falsch_benannt = tmp_path / "inhalt.pdf"
     falsch_benannt.write_bytes(daten)
     assert mime.sniff_bytes(daten) is mime.DocumentType.M4A
@@ -91,13 +104,14 @@ def test_m4a_audio_unabhaengig_von_marke_und_name(
 @pytest.mark.parametrize("marke", ["mp42", "isom", "M4A ", "M4B "])
 @pytest.mark.parametrize("spuren", ["video", "audio-video"])
 @pytest.mark.parametrize("schnellstart", [False, True])
+@pytest.mark.parametrize("kapitel", [False, True])
 def test_keine_marke_laesst_video_durch(
     mp4_erzeugen: Callable[..., Path], tmp_path: Path, settings: Settings,
-    marke: str, spuren: str, schnellstart: bool,
+    marke: str, spuren: str, schnellstart: bool, kapitel: bool,
 ) -> None:
     from mineru_ocr.errors import UnsupportedTypeError
 
-    daten = mp4_erzeugen(marke, spuren, schnellstart).read_bytes()
+    daten = mp4_erzeugen(marke, spuren, schnellstart, kapitel=kapitel).read_bytes()
     with pytest.raises(UnsupportedTypeError):
         mime.sniff_bytes(daten)
     for name in ("video.m4a", "video.pdf"):
@@ -111,13 +125,14 @@ def test_keine_marke_laesst_video_durch(
 
 @pytest.mark.db
 @pytest.mark.parametrize("marke", ["mp42", "isom", "M4A ", "M4B "])
+@pytest.mark.parametrize("kapitel", [False, True])
 async def test_m4a_abschicken_und_retry_waehlen_audio(
-    mp4_erzeugen: Callable[..., Path], db_conn: Any, settings: Settings, marke: str,
+    mp4_erzeugen: Callable[..., Path], db_conn: Any, settings: Settings, marke: str, kapitel: bool,
 ) -> None:
     from mineru_ocr.client import OCRClient, AsyncOCRClient
     from mineru_ocr.core import RetryOutcome
 
-    daten = mp4_erzeugen(marke, dauer=10).read_bytes()
+    daten = mp4_erzeugen(marke, dauer=10, kapitel=kapitel).read_bytes()
     assert daten.index(b"moov") > mime.KOPF_BYTES
     with OCRClient(db_dsn=settings.db_dsn, preflight=False) as klient:
         sha = klient.ocr_start(daten)
@@ -145,14 +160,15 @@ async def test_m4a_abschicken_und_retry_waehlen_audio(
 @pytest.mark.db
 @pytest.mark.parametrize("marke", ["mp42", "isom", "M4A ", "M4B "])
 @pytest.mark.parametrize("spuren", ["video", "audio-video"])
+@pytest.mark.parametrize("kapitel", [False, True])
 async def test_video_wird_ohne_eingabe_oder_job_abgewiesen(
     mp4_erzeugen: Callable[..., Path], db_conn: Any, settings: Settings,
-    marke: str, spuren: str,
+    marke: str, spuren: str, kapitel: bool,
 ) -> None:
     from mineru_ocr.client import OCRClient, AsyncOCRClient
     from mineru_ocr.errors import UnsupportedTypeError
 
-    daten = mp4_erzeugen(marke, spuren).read_bytes()
+    daten = mp4_erzeugen(marke, spuren, kapitel=kapitel).read_bytes()
     with OCRClient(db_dsn=settings.db_dsn, preflight=False) as klient:
         with pytest.raises(UnsupportedTypeError):
             klient.ocr_start(daten)
@@ -163,7 +179,7 @@ async def test_video_wird_ohne_eingabe_oder_job_abgewiesen(
     assert db_conn.execute("SELECT count(*) FROM procrastinate_jobs").fetchone() == (0,)
 
 
-@pytest.mark.parametrize("schaden", ["abgeschnitten", "kurzer-kopf", "kleine-box", "ueberlauf", "ohne-spur", "kurzer-handler"])
+@pytest.mark.parametrize("schaden", ["abgeschnitten", "kurzer-kopf", "kleine-box", "ueberlauf", "ohne-spur", "kurzer-handler", "nur-text", "unbekannter-handler", "ohne-handler"])
 def test_beschaedigtes_m4a_wird_ohne_markenbonus_abgewiesen(
     mp4_erzeugen: Callable[..., Path], schaden: str,
 ) -> None:
@@ -183,6 +199,12 @@ def test_beschaedigtes_m4a_wird_ohne_markenbonus_abgewiesen(
     elif schaden == "kurzer-handler":
         stelle = daten.index(b"hdlr") - 4
         daten = daten[:stelle] + (16).to_bytes(4, "big") + daten[stelle + 4:]
+    elif schaden == "nur-text":
+        daten = daten.replace(b"soun", b"text")
+    elif schaden == "unbekannter-handler":
+        daten = daten.replace(b"soun", b"frem")
+    elif schaden == "ohne-handler":
+        daten = daten.replace(b"hdlr", b"free")
     with pytest.raises(UnsupportedTypeError):
         mime.sniff_bytes(daten)
     with pytest.raises(UnsupportedTypeError):

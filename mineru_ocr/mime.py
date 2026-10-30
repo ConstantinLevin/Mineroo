@@ -499,7 +499,7 @@ def _mp4_boxen(file: BinaryIO, anfang: int, ende: int) -> Iterator[tuple[bytes, 
 
 
 def _m4a_typ(file: BinaryIO) -> DocumentType:
-    """Nur Tonspuren zulassen, unabhaengig von ftyp-Marke und Dateiname (#76).
+    """Audio mit optionalen Textkapiteln, ohne Video; Marke und Name sind egal (#76).
 
     moov/trak/mdia/hdlr beschreibt jede Spur, auch wenn moov hinter mdat liegt.
     Der Handler steht nach Version/Flags und pre_defined (je vier Bytes).
@@ -528,9 +528,11 @@ def _m4a_typ(file: BinaryIO) -> DocumentType:
                             raise UnsupportedTypeError("MP4: unvollstaendiger Medienhandler.")
                         file.seek(anfang + 8)
                         handler.append(file.read(4))
-            if handler != [b"soun"]:
+            if handler == [b"soun"]:
+                spuren += 1
+            elif handler != [b"text"]:
                 raise UnsupportedTypeError("MP4 enthaelt keine reine Audiospur; Video ist nicht unterstuetzt.")
-            spuren += 1
+            # Hoerbuecher tragen Kapitel als Textspur; sie ersetzt keine Tonspur.
     if not dateityp or not spuren:
         raise UnsupportedTypeError("MP4 enthaelt keine erkennbare Audiospur.")
     return DocumentType.M4A
