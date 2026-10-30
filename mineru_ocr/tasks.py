@@ -405,10 +405,11 @@ async def audio_document(context: procrastinate.JobContext, sha256: str) -> None
     letzter = not wird_erneut_vorgelegt(
         _ERSCHOEPFUNGS_SONDE, context.job, mittel["settings"]
     )
-    await process_audio(
-        sha256, settings=mittel["settings"], pool=mittel["pool"],
-        letzter_versuch=letzter,
-    )
+    with mittel["fortschritte"].versuch(sha256, context.job.id):
+        await process_audio(
+            sha256, settings=mittel["settings"], pool=mittel["pool"],
+            letzter_versuch=letzter,
+        )
 
 
 WORKER_ABGESTUERZT: Final = "Worker wiederholt abgestuerzt"

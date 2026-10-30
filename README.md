@@ -483,7 +483,12 @@ mineru-ocr daemon start --help
 ```
 
 `start X` startet X vom Terminal gelöste Prozesse, jeweils mit OCR-, Audio- und
-Wartungs-Worker. Vorher werden Endpoint, Schlüssel und Schema geprüft. Standard
+Wartungs-Worker. Vorher werden Endpoint, Schlüssel und Schema geprüft.
+`ELEVENLABS_API_KEY` muss gesetzt sein; ein kostenfreies `GET /v1/user`
+prüft den ElevenLabs-Zugang vor dem ersten Kindprozess. Der Schlüssel braucht
+Lesezugriff auf diese Route. Bei ungültigem Schlüssel, fehlendem Zugriff oder
+Unerreichbarkeit startet kein Kind; ein Timeout wird einmal wiederholt.
+Kontodaten und Antworttexte werden nicht ausgegeben. Standard
 sind 24 OCR-Plätze je Prozess (`ocr_concurrency`); `--concurrency N` überschreibt
 das. X und N müssen ganze Zahlen ab 1 sein.
 
@@ -504,9 +509,15 @@ die Warteschlange gilt datenbankweit:
 | `daemons[].occupied`, `daemons[].available` | Belegte OCR-Plätze / konfigurierte OCR-Kapazität; keine Wartungsplätze. |
 | `slots.occupied`, `slots.available` | Summen der Belegung / Kapazität über die lokalen Daemons. |
 | `queue.waiting`, `queue.running` | OCR-Jobs in Procrastinate (`todo`/`doing`), einschließlich später vorgemerkter Jobs. |
+| `lanes.ocr`, `lanes.audio` | Je Lane `slots.occupied` / `slots.total` für lokale belegte Plätze / gesamte Kapazität sowie `queue.waiting` / `queue.running` für die datenbankweite Warteschlange. |
+| `daemons[].lanes.ocr`, `daemons[].lanes.audio` | `occupied` / `total` je Lane dieses Prozesses, ohne Wartungsplätze. |
 
 **`available` ist die Kapazität, nicht die Zahl freier Plätze:** Bei sechs
 Plätzen und einem laufenden Job steht `occupied=1`, `available=6`.
+Die bisherigen Felder `slots`, `queue`, `occupied` und `available` beziehen sich
+weiter auf OCR. Ohne Daemons sind die Lane-Kapazitäten null; offene Jobs bleiben
+in ihrer Warteschlange sichtbar. Bei älteren Daemons ohne Lane-Auskunft steht
+die unbekannte Audio-Kapazität als JSON-`null`; nach Neustart ist sie bekannt.
 
 Ein laufender Daemon antwortet am Kontrollsocket und hat frische
 Worker-Herzschläge (jünger als 30 Sekunden, Datenbankuhr). Eine alte Socketdatei
@@ -573,9 +584,13 @@ Tabelle mit `endpoint_id = "elevenlabs"`; Seitenzahl, MinerU-Version und
 OCR-Leseeinstellungen bleiben leer. Die Grenze ist `db.MAX_INPUT_BYTES` (1 GB),
 RunPods Anfragegrenze gilt nicht für Audio. Video ist nicht unterstützt.
 
-Weitere Fehler- und Kontingentbehandlung ist Ticket #71; Lane-Anzeige,
-Audio-Startprüfung und Audio-Fortschritt sind Ticket #72. `daemon list` zeigt
-weiterhin OCR-Plätze und die OCR-Warteschlange.
+Weitere Fehler- und Kontingentbehandlung ist Ticket #71. `daemon list` zeigt
+OCR und Audio getrennt; `daemon start` prüft den ElevenLabs-Zugang kostenfrei.
+Mit `-d` zeigt Audio auf stderr das Warten auf einen Daemon-Platz, beim lokalen
+aktuellen Daemon `ElevenLabs verarbeitet` mit Schritt- und Gesamtzeit sowie den
+Endzustand. Chunk- und RunPod-Angaben entfallen für Audio, auch am schmalen
+Terminal. Bei älteren oder entfernten Daemons ist nur der Datenbankstand bekannt.
+Ohne `-d` bleiben Textausgabe und Exit-Codes unverändert.
 
 ## Formate und Verarbeitung
 

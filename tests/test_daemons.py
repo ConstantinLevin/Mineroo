@@ -4,12 +4,21 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
 from mineru_ocr.cli import app
 
 pytestmark = pytest.mark.db
+
+
+@pytest.fixture(autouse=True)
+def _audio_startpruefung(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nur die kostenlose HTTP-Grenze ersetzen, nie echte Zugangsdaten laden."""
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "erfundener-audio-schluessel")
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", lambda self, request:
+                        httpx.Response(200, json={"user_id": "erfundener-benutzer"}))
 
 
 @pytest.mark.parametrize("startfehler", [True, False])
@@ -32,6 +41,8 @@ def test_teilstart_raeumt_alle_kinder_auf(
     monkeypatch.setattr(daemons, "fragen", fragen)
     monkeypatch.setattr(daemons, "verzeichnis", lambda _: tmp_path)
     monkeypatch.setattr("mineru_ocr.daemon._schema_pruefen", lambda _: None)
+    import dataclasses
+    settings = dataclasses.replace(settings, elevenlabs_api_key="erfundener-audio-schluessel")
 
     with pytest.raises((OSError, RuntimeError), match="fehler"):
         daemons.start(settings, 2)
@@ -173,6 +184,10 @@ def test_liste_ohne_daemon(db_conn: Any) -> None:
     assert daten == {
         "count": 0, "daemons": [], "slots": {"occupied": 0, "available": 0},
         "queue": {"waiting": 0, "running": 0},
+        "lanes": {
+            "ocr": {"slots": {"occupied": 0, "total": 0}, "queue": {"waiting": 0, "running": 0}},
+            "audio": {"slots": {"occupied": 0, "total": 0}, "queue": {"waiting": 0, "running": 0}},
+        },
     }
     assert '\n  "count"' in lauf.stdout
 
@@ -201,6 +216,7 @@ def test_drei_hintergrundprozesse_stoppen_und_absturz(
     key.write_text('apikey = "erfundener-schluessel-nicht-echt"\n')
     monkeypatch.setenv("MINERU_OCR_CONFIG", str(konfig))
     monkeypatch.setattr("mineru_ocr.config.RUNPOD_CONFIG_PATH", key)
+    monkeypatch.setenv("MINERU_OCR_AUDIO_CONCURRENCY", "3")
     einstellung = Settings.load(ocr_concurrency=2)
     assert einstellung.db_dsn == TEST_DSN
     assert einstellung.endpoint_id == "testendpoint"
@@ -216,6 +232,8 @@ def test_drei_hintergrundprozesse_stoppen_und_absturz(
         daten = json.loads(liste.stdout)
         assert daten["count"] == 3
         assert daten["slots"] == {"occupied": 0, "available": 6}
+        assert daten["lanes"]["audio"]["slots"] == {"occupied": 0, "total": 9}
+        assert daten["lanes"]["ocr"]["slots"] == {"occupied": 0, "total": 6}
         assert len({d["log_path"] for d in daten["daemons"]}) == 3
         assert all(Path(d["log_path"]).is_file() for d in daten["daemons"])
         # Echte Procrastinate-Zeilen, synthetisch und ohne ausfuehrbaren OCR-Aufruf.
@@ -229,9 +247,27 @@ def test_drei_hintergrundprozesse_stoppen_und_absturz(
             "INSERT INTO procrastinate_jobs (queue_name, task_name, scheduled_at) "
             "VALUES ('ocr', 'synthetisch', now() + interval '1 day')"
         )
+        audio_worker_id = gestartet[-1]["worker_ids"][2]
+        db_conn.execute(
+            "INSERT INTO procrastinate_jobs (queue_name, task_name, status, worker_id) "
+            "VALUES ('audio', 'synthetisch', 'doing', %s)", (audio_worker_id,),
+        )
+        db_conn.execute(
+            "INSERT INTO procrastinate_jobs (queue_name, task_name, scheduled_at) "
+            "VALUES ('audio', 'synthetisch', now() + interval '1 day'), "
+            "('audio', 'synthetisch', now() + interval '1 day'), "
+            "('maintenance', 'synthetisch', now() + interval '1 day')"
+        )
         daten = json.loads(CliRunner().invoke(app, ["daemon", "list", "--dsn", TEST_DSN]).stdout)
         assert daten["slots"] == {"occupied": 1, "available": 6}
         assert daten["queue"] == {"waiting": 1, "running": 1}
+        assert daten["lanes"] == {
+            "ocr": {"slots": {"occupied": 1, "total": 6}, "queue": {"waiting": 1, "running": 1}},
+            "audio": {"slots": {"occupied": 1, "total": 9}, "queue": {"waiting": 2, "running": 1}},
+        }
+        belegt = next(d for d in daten["daemons"] if d["pid"] == pids[-1])
+        assert belegt["lanes"] == {"ocr": {"occupied": 1, "total": 2},
+                                    "audio": {"occupied": 1, "total": 3}}
         stop = CliRunner().invoke(app, ["daemon", "stop", "2", "--dsn", TEST_DSN])
         assert stop.exit_code == 0, stop.output
         daten = json.loads(CliRunner().invoke(app, ["daemon", "list", "--dsn", TEST_DSN]).stdout)

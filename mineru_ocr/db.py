@@ -1465,7 +1465,7 @@ def _stand_aus_zeilen(zeilen: Sequence[dict[str, Any]]) -> list[DocumentState]:
 _WARTE_SNAPSHOT_SQL = """
 SELECT h.sha256, d.status::text AS final, d.updated_at,
        i.sha256 IS NOT NULL AS stored, j.id, j.status::text AS job_status,
-       j.attempts, j.worker_id, j.scheduled_at,
+       j.attempts, j.worker_id, j.scheduled_at, j.queue_name, d.mime,
        e.beginn, e.schritt, extract(epoch FROM clock_timestamp()) AS jetzt
 FROM unnest(%s::text[]) h(sha256)
 LEFT JOIN documents d ON d.sha256 = h.sha256

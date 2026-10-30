@@ -45,9 +45,13 @@ EU-Verarbeitung und Abschalten der Speicherung sind Enterprise.
 
 Tests verwenden erfundene Antworten oder synthetische Aufnahmen, niemals echte
 Aufnahmen oder personenbezogene Antworten. Weiterfuehrende Fehler- und
-Kontingentbehandlung, dauerabhaengige Fristen: #71. Lane-Anzeige, Audio-Pruefung
-beim Start und Audio-Fortschritt: #72. Diese Folgeaufgaben nicht als fertig
-beschreiben; `daemon list` zaehlt derzeit nur OCR.
+Kontingentbehandlung, dauerabhaengige Fristen: #71. Diese Folgeaufgabe nicht als
+fertig beschreiben. #72 zeigt beide Lanes und prueft den Audio-Zugang beim Start.
+`audio_document` besitzt wie OCR einen fluechtigen Fortschrittsversuch;
+`audio_executor` meldet ElevenLabs-Verarbeitung, Antwort und Speichern.
+Der Warte-Snapshot liefert Queue und Ergebnis-MIME; die Anzeige entscheidet
+daran, dass bei Audio auch ohne lokalen Fortschritt alle Chunk-/RunPod-Felder
+entfallen. Dateiendungen sind dafuer ungeeignet.
 
 ## Kommandos
 
@@ -1086,7 +1090,12 @@ Modus `auto`: Claude-Peer auf `claude-opus-5-5` mit Effort `high`, Codex-Peer mi
 
 `mineru-ocr daemon start X` startet ausdrücklich X lokale, vom Terminal gelöste
 Prozesse mit je OCR-, Audio- und Wartungs-Worker. Endpoint, Schlüssel und Schema werden
-vor dem Start geprüft. `--concurrency N` stellt die OCR-Plätze je Prozess ein.
+vor dem Start geprüft. Vor dem ersten Kind prueft `elevenlabs.check_access`
+`ELEVENLABS_API_KEY` mit kostenfreiem `GET /v1/user` (Leseberechtigung noetig).
+Fehlender/ungueltiger Schluessel, verweigerter Zugriff und Erreichbarkeitsfehler
+verhindern den Start aller Kinder. Frist 10 s, Verbinden 5 s; Timeout einmal
+wiederholen. Keine Kontodaten oder fremden Fehlertexte ausgeben.
+`--concurrency N` stellt die OCR-Plätze je Prozess ein.
 `mineru-ocr daemon stop X` beendet bis zu X, die am wenigsten belegten zuerst,
 und wartet auf das ordentliche Ende mit `shutdown_graceful_timeout` und der
 bestehenden Wiederholungsregel. Sind weniger da, nennt das JSON `requested`,
@@ -1098,6 +1107,12 @@ Kontrollsocket; `slots` summiert belegte und verfügbare OCR-Plätze.
 `queue.waiting`/`queue.running` zählen OCR-Jobs in Procrastinate (`todo`/`doing`,
 einschließlich für später vorgemerkter Jobs). Ohne Daemon ist `count` null.
 Die Wartungsplätze zählen nicht zur OCR-Auslastung.
+Zusaetzlich liefert `lanes.ocr`/`lanes.audio` je `slots.occupied`, `slots.total`
+und `queue.waiting`/`queue.running`; `daemons[].lanes` zeigt `occupied`/`total`
+je Prozess. Kapazitaeten kommen aus den tatsaechlichen Workern am Kontrollsocket,
+Belegung und Queues aus Postgres. Ohne Daemons ist die Kapazitaet 0; offene Jobs
+bleiben sichtbar. Alte Sockets ohne Lane-Daten: Audio-Kapazitaet JSON-`null`,
+auch in der Summe. Die bisherigen OCR-Felder bleiben erhalten.
 
 Lebende Kontrollsockets im privaten Verzeichnis `/tmp/mineru-UID-DBKENNUNG/`
 identifizieren die lokalen Prozesse; es gibt keine PID-Kartei. Jobbelegung und

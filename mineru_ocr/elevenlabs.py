@@ -19,6 +19,33 @@ PARAMETER: Final = {
 }
 
 
+def check_access(settings: Settings) -> None:
+    """Kostenfreie Startpruefung; Kontodaten und fremde Fehlertexte bleiben intern.
+
+    GET /v1/user: https://elevenlabs.io/docs/api-reference/user/get
+    Eine kurze Frist und genau eine Wiederholung bei Timeout; keine Transkription.
+    """
+    schluessel = settings.require_elevenlabs_api_key()
+    with httpx.Client(timeout=httpx.Timeout(10.0, connect=5.0)) as http:
+        for versuch in range(2):
+            try:
+                antwort = http.get(
+                    "https://api.elevenlabs.io/v1/user", headers={"xi-api-key": schluessel},
+                )
+                break
+            except httpx.TimeoutException:
+                if versuch == 1:
+                    raise ConfigurationError("ElevenLabs: Startpruefung hat die Zeitfrist ueberschritten.") from None
+            except httpx.TransportError:
+                raise ConfigurationError("ElevenLabs: Startpruefung nicht erreichbar (Transportfehler).") from None
+        if antwort.status_code in (401, 403):
+            raise ConfigurationError(
+                "ElevenLabs: Schluessel ungueltig oder Zugriff auf GET /v1/user verweigert."
+            )
+        if not antwort.is_success:
+            raise ConfigurationError(f"ElevenLabs: Startpruefung fehlgeschlagen (HTTP {antwort.status_code}).")
+
+
 async def transcribe(
     data: bytes, doc_type: DocumentType, *, settings: Settings, http: httpx.AsyncClient,
 ) -> dict[str, Any]:

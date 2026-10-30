@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 from psycopg_pool import AsyncConnectionPool
 
-from . import core, db, elevenlabs
+from . import core, db, elevenlabs, progress
 from .abbruch import abwarten_bis_zum_zweiten_abbruch
 from .config import Settings
 from .errors import CorruptDocumentError, InputError, UnstorableResultError, should_run_again
@@ -51,13 +51,16 @@ async def process_audio(
             raise CorruptDocumentError("Audio-Task erhielt eine Eingabe ohne Audiokennung.")
         art, groesse = typ.mime, len(eingabe.content)
         core.check_size(groesse, "die Audio-Eingabe")
+        progress.melden("ElevenLabs verarbeitet")
         if http is None:
             async with httpx.AsyncClient() as zugang:
                 roh = await elevenlabs.transcribe(eingabe.content, typ, settings=settings, http=zugang)
         else:
             roh = await elevenlabs.transcribe(eingabe.content, typ, settings=settings, http=http)
+        progress.melden("Antwort verarbeiten")
         text = elevenlabs.transcript(roh)
         status = db.DocumentStatus.DONE if text else db.DocumentStatus.EMPTY
+        progress.melden("Ergebnis speichern")
         await abwarten_bis_zum_zweiten_abbruch(schreiben(status))
     except (Exception, asyncio.CancelledError) as fehler:
         if should_run_again(fehler) and not letzter_versuch:
