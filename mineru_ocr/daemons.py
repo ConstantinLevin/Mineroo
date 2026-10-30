@@ -192,13 +192,16 @@ def start(settings: Settings, anzahl: int) -> list[dict[str, Any]]:
 
 
 def stop(settings: Settings, anzahl: int) -> dict[str, int]:
-    """Stoppt die am wenigsten belegten; der Socket ersetzt unsichere PID-Signale."""
+    """Stoppt nach OCR- plus Audio-Belegung, bei Gleichstand nach PID."""
     import fcntl
 
     # Zwei gleichzeitige stop-Aufrufe duerfen nicht dieselben Prozesse waehlen.
     with (verzeichnis(settings) / "stop.lock").open("a") as sperre:
         fcntl.flock(sperre, fcntl.LOCK_EX)
-        kandidaten = sorted(status(settings)["daemons"], key=lambda d: (d["occupied"], d["pid"]))
+        kandidaten = sorted(status(settings)["daemons"], key=lambda d: (
+            sum(d["lanes"][lane]["occupied"] for lane in (QUEUE_OCR, QUEUE_AUDIO)),
+            d["pid"],
+        ))
         ausgewaehlt: list[int] = []
         for kandidat in kandidaten:
             if len(ausgewaehlt) == anzahl:

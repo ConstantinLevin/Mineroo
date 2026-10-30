@@ -1104,8 +1104,10 @@ Fehlender/ungueltiger Schluessel, verweigerter Zugriff und Erreichbarkeitsfehler
 verhindern den Start aller Kinder. Frist 10 s, Verbinden 5 s; Timeout einmal
 wiederholen. Keine Kontodaten oder fremden Fehlertexte ausgeben.
 `--concurrency N` stellt die OCR-Plätze je Prozess ein.
-`mineru-ocr daemon stop X` beendet bis zu X, die am wenigsten belegten zuerst,
-und wartet auf das ordentliche Ende mit `shutdown_graceful_timeout` und der
+`mineru-ocr daemon stop X` beendet bis zu X nach der Summe laufender OCR- und
+Audio-Jobs, die am wenigsten belegten zuerst, bei Gleichstand nach aufsteigender
+PID; Wartung und wartende Jobs zaehlen nicht mit. Es
+wartet auf das ordentliche Ende mit `shutdown_graceful_timeout` und der
 bestehenden Wiederholungsregel. Sind weniger da, nennt das JSON `requested`,
 `stopped` und `running_before`. X muss eine ganze Zahl ab 1 sein.
 

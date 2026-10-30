@@ -30,7 +30,9 @@ mineru-ocr daemon stop X
 
 `X` ist eine ganze Zahl ab 1. `start X` startet X Hintergrundprozesse mit je
 eigenem Protokoll; `--concurrency N` bestimmt die OCR-Plätze je Prozess.
-`stop X` beendet bis zu X ordentlich, die am wenigsten belegten zuerst.
+`stop X` beendet bis zu X ordentlich nach der Summe laufender OCR- und Audio-Jobs,
+die am wenigsten belegten zuerst, bei Gleichstand nach aufsteigender PID.
+Wartungs-Jobs und wartende Jobs zählen nicht mit.
 Vor dem ersten Kind prüft `start` den gesetzten `ELEVENLABS_API_KEY` mit
 kostenfreiem `GET /v1/user` (Leseberechtigung nötig). Bei fehlendem/ungültigem
 Schlüssel, verweigertem Zugriff oder Unerreichbarkeit startet kein Kind;
