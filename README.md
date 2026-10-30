@@ -545,7 +545,9 @@ mineru-ocr eingang/ -o texte.md --timeout 600  # Audio und Dokumente gemischt
 ```
 
 MP3, M4A/AAC, WAV, FLAC, OGG/Opus und AIFF werden am Inhalt erkannt, auch bei
-anderer Dateiendung. Jede Datei geht ungeteilt in einer synchronen Anfrage an
+anderer Dateiendung. Bei M4A zählen die tatsächlichen Spuren: Auch allgemeine
+MP4-Marken wie `mp42` und `isom` sind erlaubt, eine Videospur bleibt bei jeder
+Marke und Dateiendung ausgeschlossen. Jede Datei geht ungeteilt in einer synchronen Anfrage an
 Scribe v2, mit Sprechererkennung und Geräuschmarkierungen. Je Sprecherwechsel
 steht ein Absatz `Sprecher N:`, ab 1 in Reihenfolge des ersten Auftretens;
 `[lacht]` und andere Geräusche bleiben erhalten. Ohne erkanntes Wort endet die

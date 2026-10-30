@@ -56,7 +56,9 @@ warnt; ohne Daemon bleiben die Dokumente offen.
 ## Audio
 
 Audio (MP3, M4A/AAC, WAV, FLAC, OGG/Opus, AIFF) wird am Inhalt erkannt und
-ungeteilt an ElevenLabs Scribe v2 gesendet. Der Daemon hat dafür einen dritten
+ungeteilt an ElevenLabs Scribe v2 gesendet. M4A mit allgemeinen MP4-Marken
+(`mp42`, `isom`) ist bei reinen Audiospuren erlaubt; eine Videospur bleibt
+unabhängig von Marke und Endung ausgeschlossen. Der Daemon hat dafür einen dritten
 Worker in der Queue `audio`, mit `audio_concurrency` Plätzen (Vorgabe 2).
 OCR-Leseeinstellungen und RunPods Uploadgrenze gelten für Audio nicht;
 `db.MAX_INPUT_BYTES` (1 GB) gilt weiterhin.

@@ -1160,13 +1160,18 @@ class StoredInput:
     """Wie MinerU das Dokument lesen soll; genau das schickt der Job an RunPod."""
 
 
-def read_input_head(conn: psycopg.Connection[Any], sha256: str) -> bytes:
-    """Nur den Erkennungskopf fuer die Lane eines neuen Retry-Jobs lesen (#70)."""
-    from .mime import KOPF_BYTES
+def read_input_for_detection(conn: psycopg.Connection[Any], sha256: str) -> bytes:
+    """Erkennung fuer neue Retry-Jobs: Kopf, bei MP4 auch Spuren am Ende (#76).
+
+    Nur MP4 braucht hier die ganzen Bytes; andere Formate bleiben bei 64 KiB.
+    ZIP ohne lesbares Verzeichnis bleibt im Aufrufer wie bisher in OCR.
+    """
+    from .mime import KOPF_BYTES, MP4_ANFANGSBOXEN
 
     zeile = conn.execute(
-        "SELECT substring(content FROM 1 FOR %s) FROM inputs WHERE sha256 = %s",
-        (KOPF_BYTES, sha256), binary=True,
+        "SELECT CASE WHEN substring(content FROM 5 FOR 4) = ANY(%s) THEN content "
+        "ELSE substring(content FROM 1 FOR %s) END FROM inputs WHERE sha256 = %s",
+        (list(MP4_ANFANGSBOXEN), KOPF_BYTES, sha256), binary=True,
     ).fetchone()
     return bytes(zeile[0]) if zeile is not None else b""
 

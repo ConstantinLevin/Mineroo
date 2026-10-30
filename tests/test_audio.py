@@ -14,7 +14,6 @@ from mineru_ocr.config import Settings
 @pytest.mark.parametrize(('daten', 'name'), [
     (b'ID3\x04\x00\x00\x00\x00\x00\x00', 'MP3'),
     (b'\xff\xfb\x90\x64' + bytes(20), 'MP3'),
-    (b'\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A isom', 'M4A'),
     (b'\xff\xf1\x50\x80\x01\x7f\xfc', 'AAC'),
     (b'RIFF' + bytes(4) + b'WAVEfmt ', 'WAV'),
     (b'fLaC' + bytes(20), 'FLAC'),

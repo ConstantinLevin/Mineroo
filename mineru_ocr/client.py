@@ -1284,9 +1284,9 @@ class OCRClient:
                 # fertig, und sein Ergebnis loeschte sie. Nichts einzureihen.
                 return RetryOutcome.HAS_RESULT
             db.delete_failed_result(self.conn, sha256)
-            kopf = db.read_input_head(self.conn, sha256)
+            daten = db.read_input_for_detection(self.conn, sha256)
             try:
-                typ = mime.sniff_bytes(kopf)
+                typ = mime.sniff_bytes(daten)
             except UnsupportedTypeError:
                 typ = mime.DocumentType.PDF  # ZIP-Kopf reicht nicht; bleibt in OCR.
             kennung = tasks.enqueue_document(self._procrastinate, self.conn, sha256, doc_type=typ)
