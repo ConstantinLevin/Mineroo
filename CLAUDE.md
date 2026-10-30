@@ -44,9 +44,17 @@ weiterhin RunPod. Messung #69: rund 0,40 USD/Audiostunde; Treffer kosten nichts.
 EU-Verarbeitung und Abschalten der Speicherung sind Enterprise.
 
 Tests verwenden erfundene Antworten oder synthetische Aufnahmen, niemals echte
-Aufnahmen oder personenbezogene Antworten. Weiterfuehrende Fehler- und
-Kontingentbehandlung, dauerabhaengige Fristen: #71. Diese Folgeaufgabe nicht als
-fertig beschreiben. #72 zeigt beide Lanes und prueft den Audio-Zugang beim Start.
+Aufnahmen oder personenbezogene Antworten. `errors.elevenlabs_failure` bildet
+HTTP-Abweisungen auf die gemeinsamen Fehlertypen ab; `quota_exceeded` hat vor
+HTTP 400/401 Vorrang. 422 behaelt den maskierten Grund, 429/5xx sind zentral
+wiederholbar. Der Audio-Exekutor wartet bei `BALANCE_PAUSE` im selben Versuch
+(`balance_recheck_seconds`), auch im letzten; Abbruch und Endschreiben folgen
+`should_run_again` und `tasks.wird_erneut_vorgelegt` wie OCR. Jeder nicht erneut
+vorgelegte Job schreibt ein Ergebnis. `retry`/`retry_all` behalten `audio`.
+Die Anfragefrist ist 300 s plus Dauer/10. `ffprobe` liest lokal die Dauer
+(maximal 10 s, im Faden); ohne lesbare Dauer gilt eine Schaetzung mit 8 kbit/s.
+
+#72 zeigt beide Lanes und prueft den Audio-Zugang beim Start.
 `audio_document` besitzt wie OCR einen fluechtigen Fortschrittsversuch;
 `audio_executor` meldet ElevenLabs-Verarbeitung, Antwort und Speichern.
 Der Warte-Snapshot liefert Queue und Ergebnis-MIME; die Anzeige entscheidet

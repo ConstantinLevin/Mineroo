@@ -327,3 +327,105 @@ async def test_audio_schreibt_endzustand_auch_bei_unverwertbarer_antwort(
     assert conn.execute('SELECT count(*) FROM inputs').fetchone() == ((0 if endzustand == 'input_error' else 1),)
     with OCRClient(db_dsn=settings.db_dsn, preflight=False) as klient:
         assert klient.ocr_start(daten).status is zeile.status
+
+
+@pytest.mark.parametrize(('code', 'detail', 'klasse', 'art', 'grund'), [
+    (401, {'status': 'invalid_api_key', 'message': 'falscher Schluessel'}, 'ConfigurationError', 'terminal', None),
+    (403, 'Zugriff verweigert', 'ConfigurationError', 'terminal', None),
+    (422, {'status': 'invalid_audio', 'message': 'Audiospur fehlt: erfundenes-geheimnis'}, 'WorkerRejectedError', 'terminal', 'Audiospur fehlt'),
+    (422, [{'loc': ['body', 'file'], 'msg': 'Datei ist abgeschnitten', 'type': 'value_error'}], 'WorkerRejectedError', 'terminal', 'Datei ist abgeschnitten'),
+    (429, {'status': 'too_many_concurrent_requests'}, 'HTTPStatusError', 'retryable', None),
+    (500, 'interner Fehler', 'HTTPStatusError', 'retryable', None),
+    (503, 'nicht erreichbar', 'HTTPStatusError', 'retryable', None),
+    (401, {'status': 'quota_exceeded', 'message': 'Kontingent erschoepft'}, 'InsufficientBalanceError', 'balance_pause', None),
+    (400, {'status': 'quota_exceeded'}, 'InsufficientBalanceError', 'balance_pause', None),
+    (402, 'Kontingent erschoepft', 'InsufficientBalanceError', 'balance_pause', None),
+    (400, 'andere Ablehnung', 'HTTPStatusError', 'terminal', None),
+])
+async def test_audio_fehler_geht_durch_die_zentrale_einordnung(
+    settings: Settings, code: int, detail: object, klasse: str, art: str, grund: str | None,
+) -> None:
+    """429/5xx duerfen nicht endgueltig werden; 422 behaelt seinen Grund."""
+    import dataclasses
+    import httpx
+    from mineru_ocr import errors
+    from mineru_ocr.elevenlabs import transcribe
+    from mineru_ocr.mime import DocumentType
+    schluessel = 'erfundenes-geheimnis'
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(code, json={'detail': detail}),
+    )) as http:
+        with pytest.raises(Exception) as gefangen:
+            await transcribe(b'fLaC' + bytes(43), DocumentType.FLAC,
+                             settings=dataclasses.replace(settings, elevenlabs_api_key=schluessel), http=http)
+    fehler = gefangen.value
+    assert type(fehler).__name__ == klasse
+    assert errors.classify_failure(fehler).value == art
+    assert errors.should_run_again(fehler) is (art != 'terminal')
+    assert schluessel not in str(fehler)
+    if grund is not None:
+        assert grund in str(fehler)
+
+
+async def test_audio_frist_waechst_mit_dauer_und_timeout_bleibt_wiederholbar(settings: Settings) -> None:
+    """Gleich grosse synthetische WAVs mit 14 s und 1 h brauchen andere Fristen."""
+    import dataclasses
+    import wave
+    import httpx
+    from mineru_ocr.elevenlabs import transcribe
+    from mineru_ocr.errors import classify_failure, FailureKind
+    fristen: list[float] = []
+    def zeitueberschreitung(request: httpx.Request) -> httpx.Response:
+        fristen.append(request.extensions['timeout']['read'])
+        raise httpx.ReadTimeout('erfundenes-geheimnis')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(zeitueberschreitung)) as http:
+        for frequenz in (3600, 14):
+            ausgabe = io.BytesIO()
+            with wave.open(ausgabe, 'wb') as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(1)
+                wav.setframerate(frequenz)
+                wav.writeframes(bytes(50400))
+            with pytest.raises(httpx.TransportError) as gefangen:
+                await transcribe(ausgabe.getvalue(), mime.DocumentType.WAV,
+                                 settings=dataclasses.replace(settings, elevenlabs_api_key='erfundenes-geheimnis'), http=http)
+            assert classify_failure(gefangen.value) is FailureKind.RETRYABLE
+            assert 'erfundenes-geheimnis' not in str(gefangen.value)
+    assert 300 < fristen[0] < fristen[1]
+    assert fristen[1] >= 600
+
+
+@pytest.mark.db
+async def test_audio_kontingentpause_verbraucht_auch_im_letzten_versuch_keinen_retry(
+    db_conn: object, settings: Settings,
+) -> None:
+    import asyncio
+    import dataclasses
+    from typing import Any, cast
+    import httpx
+    from psycopg_pool import AsyncConnectionPool
+    from mineru_ocr import db
+    from mineru_ocr.audio_executor import process_audio
+    from mineru_ocr.client import OCRClient
+    conn = cast(Any, db_conn)
+    daten = b'fLaC' + bytes(44)
+    with OCRClient(db_dsn=settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(daten)
+    kontakte: list[float] = []
+    def antworten(request: httpx.Request) -> httpx.Response:
+        kontakte.append(asyncio.get_running_loop().time())
+        assert db.get_document(conn, str(sha)) is None
+        if len(kontakte) <= 3:
+            return httpx.Response(401, json={'detail': {'status': 'quota_exceeded', 'message': 'Keine Credits'}})
+        return httpx.Response(200, json={'words': [{'type': 'word', 'text': 'Erfunden.', 'speaker_id': 's'}]})
+    async with AsyncConnectionPool(settings.db_dsn, min_size=1, max_size=1, open=False) as pool:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(antworten)) as http:
+            async with asyncio.timeout(5):
+                await process_audio(str(sha), settings=dataclasses.replace(
+                    settings, elevenlabs_api_key='erfunden', balance_recheck_seconds=0.03,
+                ), pool=pool, http=http, letzter_versuch=True)
+    assert len(kontakte) == 4
+    assert kontakte[-1] - kontakte[0] >= 0.09
+    with OCRClient(db_dsn=settings.db_dsn, preflight=False) as klient:
+        assert klient.get(sha).rendered_markdown == 'Sprecher 1: Erfunden.'
+    assert conn.execute('SELECT attempts FROM procrastinate_jobs').fetchone() == (0,)

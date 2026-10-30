@@ -5,12 +5,17 @@ HTTP-Client haelt dabei die Ereignisschleife des Daemons frei.
 """
 from __future__ import annotations
 
+import asyncio
+import math
+import shutil
+import subprocess
+import tempfile
 from typing import Any, Final
 
 import httpx
 
 from .config import Settings
-from .errors import ConfigurationError, IncompleteResultError, WorkerRejectedError
+from .errors import ConfigurationError, IncompleteResultError, elevenlabs_failure
 from .mime import DocumentType
 
 STT_URL: Final = "https://api.elevenlabs.io/v1/speech-to-text"
@@ -46,6 +51,36 @@ def check_access(settings: Settings) -> None:
             raise ConfigurationError(f"ElevenLabs: Startpruefung fehlgeschlagen (HTTP {antwort.status_code}).")
 
 
+def _anfragefrist(data: bytes, doc_type: DocumentType) -> float:
+    """300 s Puffer plus ein Zehntel der Dauer (Messung #69: 59 min in 43 s).
+
+    ffprobe liest nur Metadaten; seine Protokolle sind auf lokale Dateien
+    beschraenkt. Ohne lesbare Dauer dient 8 kbit/s als vorsichtige Schaetzung,
+    damit auch eine beschaedigte Datei noch den Grund von ElevenLabs erhaelt.
+    Keine neue Paketabhaengigkeit; ohne ffprobe gilt dieselbe Schaetzung.
+    """
+    dauer = len(data) / 1000.0
+    programm = shutil.which("ffprobe")
+    if programm is not None:
+        with tempfile.NamedTemporaryFile(suffix=doc_type.suffix) as datei:
+            datei.write(data)
+            datei.flush()
+            try:
+                ergebnis = subprocess.run(
+                    [programm, "-v", "error", "-protocol_whitelist", "file,pipe",
+                     "-show_entries", "format=duration", "-of",
+                     "default=noprint_wrappers=1:nokey=1", datei.name],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    timeout=10, check=False,
+                )
+                gemessen = float(ergebnis.stdout)
+                if ergebnis.returncode == 0 and math.isfinite(gemessen) and gemessen > 0:
+                    dauer = gemessen
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                pass
+    return 300.0 + dauer / 10.0
+
+
 async def transcribe(
     data: bytes, doc_type: DocumentType, *, settings: Settings, http: httpx.AsyncClient,
 ) -> dict[str, Any]:
@@ -55,25 +90,18 @@ async def transcribe(
     bestehenden Job-Strategie. Fehlertexte enthalten nie Anfragekopfzeilen.
     """
     schluessel = settings.require_elevenlabs_api_key()
+    frist = await asyncio.to_thread(_anfragefrist, data, doc_type)
     try:
         antwort = await http.post(
             STT_URL, headers={"xi-api-key": schluessel}, data=PARAMETER,
             files={"file": ("audio" + doc_type.suffix, data, doc_type.mime)},
-            timeout=httpx.Timeout(300.0, connect=10.0),
+            timeout=httpx.Timeout(frist, connect=10.0),
         )
     except httpx.TransportError as fehler:
         # Keine fremde Fehlermeldung uebernehmen: Sie koennte den Header tragen.
         raise httpx.TransportError("ElevenLabs: Transportfehler bei der Transkription.") from None
-    if antwort.status_code in (401, 403):
-        raise ConfigurationError("ElevenLabs: Schluessel ungueltig oder Zugriff verweigert.")
-    if antwort.status_code == 422:
-        raise WorkerRejectedError("ElevenLabs: Audiodatei nicht lesbar (HTTP 422).")
     if not antwort.is_success:
-        # Die zentrale Einordnung und Kontopause werden in #71 ergaenzt.
-        raise httpx.HTTPStatusError(
-            f"ElevenLabs: HTTP {antwort.status_code} bei der Transkription.",
-            request=httpx.Request("POST", STT_URL), response=antwort,
-        )
+        raise elevenlabs_failure(antwort, api_key=schluessel) from None
     try:
         roh = antwort.json()
     except ValueError:

@@ -379,7 +379,8 @@ class ResultLostError(TransientRunPodError):
 class InsufficientBalanceError(RunPodError):
     """Das Konto reicht nicht — WEDER Fehler NOCH Retry, sondern Grund zu warten.
 
-    Ausgeloest von HTTP 402 oder vom Kontostand unter der Pausenschwelle. Der
+    Ausgeloest von HTTP 402, ElevenLabs' `quota_exceeded` oder vom Kontostand
+    unter der Pausenschwelle. Der
     Task faengt diese Ausnahme selbst und geht in eine Warteschleife (Plan 5.1);
     sie erreicht die Retry-Strategie im Normalfall gar nicht. Sie steht trotzdem
     in `classify_failure`, damit die Antwort auch dann stimmt, wenn sie doch
@@ -521,6 +522,48 @@ class IncompleteResultError(MineruOcrError):
 # --------------------------------------------------------------------------
 
 
+def elevenlabs_failure(response: httpx.Response, *, api_key: str) -> Exception:
+    """Uebersetzt die HTTP-Abweisung in die gemeinsamen Fehlertypen.
+
+    ElevenLabs meldet `quota_exceeded` auch mit HTTP 400/401; die Kennung hat
+    deshalb Vorrang vor dem HTTP-Status. Quelle: ElevenLabs, Technical FAQ,
+    `api-error-code-400-or-401`. Fremde Header und Antwortkoerper bleiben aus
+    der Ausnahme heraus; nur eine Datei-Abweisung behaelt den maskierten Grund.
+    """
+    try:
+        antwort = response.json()
+    except ValueError:
+        antwort = None
+    detail = antwort.get("detail") if isinstance(antwort, dict) else None
+    kennung = detail.get("status") if isinstance(detail, dict) else None
+    code = response.status_code
+    if kennung == "quota_exceeded" or code == 402:
+        return InsufficientBalanceError("ElevenLabs: Kontingent erschoepft.")
+    if code in (401, 403):
+        return ConfigurationError("ElevenLabs: Schluessel ungueltig oder Zugriff verweigert.")
+    if code == 422:
+        grund = "Audiodatei nicht lesbar"
+        if isinstance(detail, str):
+            grund = detail
+        elif isinstance(detail, dict) and isinstance(detail.get("message"), str):
+            grund = detail["message"]
+        elif isinstance(detail, list):
+            meldungen = [eintrag["msg"] for eintrag in detail
+                         if isinstance(eintrag, dict) and isinstance(eintrag.get("msg"), str)]
+            if meldungen:
+                grund = "; ".join(meldungen)
+        if api_key:
+            grund = grund.replace(api_key, "[maskiert]")
+        grund = grund.replace("\x00", "[NUL]")
+        return WorkerRejectedError(f"ElevenLabs: {grund} (HTTP 422).")
+    # Auch response.request darf keinen xi-api-key aus der echten Anfrage tragen.
+    anfrage = httpx.Request("POST", "https://api.elevenlabs.io/v1/speech-to-text")
+    return httpx.HTTPStatusError(
+        f"ElevenLabs: HTTP {code} bei der Transkription.", request=anfrage,
+        response=httpx.Response(code, request=anfrage),
+    )
+
+
 class FailureKind(enum.Enum):
     """Wie mit einem Fehlschlag umzugehen ist. Drei Antworten, mehr gibt es nicht."""
 
@@ -557,7 +600,8 @@ def classify_failure(exc: BaseException) -> FailureKind:
             Fall offenbleibt und der Vollstaendigkeits-Test einen Sollwert hat:
 
             WIEDERHOLBAR — `TransientRunPodError` samt `ResultLostError`;
-            `httpx.TimeoutException` und `httpx.TransportError`; `DatabaseError`
+            `httpx.TimeoutException` und `httpx.TransportError`,
+            `httpx.HTTPStatusError` bei HTTP 429/5xx; `DatabaseError`
             und seine Unterklassen ausser `DocumentNotFound`,
             `TerminalOverwriteError` und `UnstorableResultError` (die Datenbank ist
             lokal, ein Aussetzer ist fast immer voruebergehend); rohe
@@ -651,6 +695,11 @@ def classify_failure(exc: BaseException) -> FailureKind:
     # Fremd-Ausnahmen: Netz und Datenbank sind voruebergehend, sonst nichts.
     if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
         return FailureKind.RETRYABLE
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return (FailureKind.RETRYABLE if code == 429 or 500 <= code < 600
+                else FailureKind.TERMINAL)
 
     if isinstance(exc, psycopg.Error):
         return FailureKind.RETRYABLE
