@@ -492,7 +492,9 @@ Kontodaten und Antworttexte werden nicht ausgegeben. Standard
 sind 24 OCR-Plätze je Prozess (`ocr_concurrency`); `--concurrency N` überschreibt
 das. X und N müssen ganze Zahlen ab 1 sein.
 
-`stop X` beendet bis zu X, die am wenigsten belegten zuerst. Laufende Dokumente
+`stop X` beendet bis zu X nach der Summe laufender OCR- und Audio-Jobs,
+die am wenigsten belegten zuerst, bei Gleichstand nach aufsteigender PID.
+Wartungs-Jobs und wartende Jobs zählen nicht mit. Laufende Dokumente
 bekommen die Nachfrist `shutdown_graceful_timeout` (intern 30 Sekunden); danach
 greift die vorhandene Wiederholungsregel. Ist das Versuchsbudget erschöpft,
 endet das Dokument `failed`. Das JSON nennt `requested`, `stopped` und

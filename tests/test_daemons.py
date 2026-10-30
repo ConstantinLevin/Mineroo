@@ -68,7 +68,8 @@ def test_stop_wartet_auf_prozess_statt_auf_socket(
 
     monkeypatch.setattr(daemons, "verzeichnis", lambda _: tmp_path)
     monkeypatch.setattr(daemons, "status", lambda _: {
-        "daemons": [{"pid": 123, "socket": str(tmp_path / "test.sock"), "occupied": 0}],
+        "daemons": [{"pid": 123, "socket": str(tmp_path / "test.sock"), "occupied": 0,
+                     "lanes": {"ocr": {"occupied": 0}, "audio": {"occupied": 0}}}],
     })
     fragen = MagicMock(side_effect=[{"pid": 123, "stopping": True}, None])
     beendet = MagicMock(side_effect=[False, False, True])
@@ -89,7 +90,8 @@ def test_stop_meldet_frist_statt_erfolg(
 
     monkeypatch.setattr(daemons, "verzeichnis", lambda _: tmp_path)
     monkeypatch.setattr(daemons, "status", lambda _: {
-        "daemons": [{"pid": 123, "socket": str(tmp_path / "test.sock"), "occupied": 0}],
+        "daemons": [{"pid": 123, "socket": str(tmp_path / "test.sock"), "occupied": 0,
+                     "lanes": {"ocr": {"occupied": 0}, "audio": {"occupied": 0}}}],
     })
     monkeypatch.setattr(daemons, "fragen", lambda *args: {"pid": 123, "stopping": True})
     monkeypatch.setattr(daemons, "_prozesse_beendet", lambda _: False)
