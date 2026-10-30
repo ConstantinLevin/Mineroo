@@ -1166,12 +1166,12 @@ def read_input_for_detection(conn: psycopg.Connection[Any], sha256: str) -> byte
     Nur MP4 braucht hier die ganzen Bytes; andere Formate bleiben bei 64 KiB.
     ZIP ohne lesbares Verzeichnis bleibt im Aufrufer wie bisher in OCR.
     """
-    from .mime import KOPF_BYTES
+    from .mime import KOPF_BYTES, MP4_ANFANGSBOXEN
 
     zeile = conn.execute(
-        "SELECT CASE WHEN substring(content FROM 5 FOR 4) = %s THEN content "
+        "SELECT CASE WHEN substring(content FROM 5 FOR 4) = ANY(%s) THEN content "
         "ELSE substring(content FROM 1 FOR %s) END FROM inputs WHERE sha256 = %s",
-        (b"ftyp", KOPF_BYTES, sha256), binary=True,
+        (list(MP4_ANFANGSBOXEN), KOPF_BYTES, sha256), binary=True,
     ).fetchone()
     return bytes(zeile[0]) if zeile is not None else b""
 

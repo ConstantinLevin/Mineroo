@@ -24,8 +24,8 @@ def mp4_erzeugen(tmp_path_factory: pytest.TempPathFactory) -> Callable[..., Path
         pytest.fail("M4A-Vertrag braucht ffmpeg und ffprobe fuer synthetische Medien.")
     wurzel = tmp_path_factory.mktemp("synthetische-mp4")
 
-    def erzeugen(marke: str, spuren: str = "audio", schnellstart: bool = False, dauer: int = 1) -> Path:
-        ziel = wurzel / f"{marke.strip()}-{spuren}-{schnellstart}-{dauer}.m4a"
+    def erzeugen(marke: str, spuren: str = "audio", schnellstart: bool = False, dauer: int = 1, vorspann: str = "") -> Path:
+        ziel = wurzel / f"{marke.strip()}-{spuren}-{schnellstart}-{dauer}-{vorspann}.m4a"
         if ziel.exists():
             return ziel
         befehl = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error"]
@@ -40,6 +40,24 @@ def mp4_erzeugen(tmp_path_factory: pytest.TempPathFactory) -> Callable[..., Path
             befehl += ["-movflags", "+faststart"]
         befehl += ["-brand", marke, "-f", "mp4", str(ziel)]
         subprocess.run(befehl, check=True, capture_output=True, timeout=15)
+        if vorspann:
+            # Gueltige freie Box vor ftyp; Chunk-Offsets folgen den verschobenen
+            # Samples. Die vollstaendige Dekodierung belegt die Gueltigkeit.
+            daten = bytearray(ziel.read_bytes())
+            stelle = 0
+            while (stelle := daten.find(b"stco", stelle)) >= 0:
+                anzahl = int.from_bytes(daten[stelle + 8:stelle + 12], "big")
+                for nummer in range(anzahl):
+                    offset = stelle + 12 + nummer * 4
+                    wert = int.from_bytes(daten[offset:offset + 4], "big")
+                    daten[offset:offset + 4] = (wert + 8).to_bytes(4, "big")
+                stelle += 4
+            ziel.write_bytes((8).to_bytes(4, "big") + vorspann.encode("ascii") + daten)
+            dekodiert = subprocess.run(
+                [ffmpeg, "-nostdin", "-v", "error", "-i", str(ziel), "-f", "null", "-"],
+                check=True, capture_output=True, timeout=15,
+            )
+            assert dekodiert.stderr == b""
         probe = subprocess.run(
             [ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(ziel)],
             check=True, capture_output=True, timeout=10,
@@ -213,3 +231,41 @@ def test_mp4_boxgroessen_werden_gelesen(
     assert mime.sniff_bytes(daten) is mime.DocumentType.M4A
     with pfad.open("rb") as datei:
         assert mime.sniff_file(datei) is mime.DocumentType.M4A
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("marke", ["mp42", "isom"])
+@pytest.mark.parametrize("vorspann", ["free", "skip"])
+def test_m4a_mit_freier_box_vor_ftyp_bleibt_audio_auch_beim_retry(
+    mp4_erzeugen: Callable[..., Path], tmp_path: Path, db_conn: Any,
+    settings: Settings, marke: str, vorspann: str,
+) -> None:
+    from mineru_ocr.client import OCRClient
+    from mineru_ocr.core import RetryOutcome
+    from mineru_ocr.errors import UnsupportedTypeError
+
+    daten = mp4_erzeugen(marke, dauer=10, vorspann=vorspann).read_bytes()
+    assert mime.sniff_bytes(daten) is mime.DocumentType.M4A
+    pfad = tmp_path / "ton.pdf"
+    pfad.write_bytes(daten)
+    with pfad.open("rb") as datei:
+        assert mime.sniff_file(datei) is mime.DocumentType.M4A
+    with OCRClient(db_dsn=settings.db_dsn, preflight=False) as klient:
+        sha = klient.ocr_start(daten)
+        assert sha.queued
+        assert db_conn.execute("SELECT queue_name, task_name FROM procrastinate_jobs").fetchall() == [
+            ("audio", "mineru_ocr.audio_document"),
+        ]
+        db_conn.execute("DELETE FROM procrastinate_jobs")
+        assert klient.retry(sha) is RetryOutcome.REQUEUED
+        assert db_conn.execute("SELECT queue_name, task_name FROM procrastinate_jobs").fetchall() == [
+            ("audio", "mineru_ocr.audio_document"),
+        ]
+        video = mp4_erzeugen(marke, "audio-video", vorspann=vorspann).read_bytes()
+        with pytest.raises(UnsupportedTypeError):
+            klient.ocr_start(video)
+        assert db_conn.execute("SELECT count(*) FROM inputs").fetchone() == (1,)
+        assert db_conn.execute("SELECT count(*) FROM procrastinate_jobs").fetchone() == (1,)
+    ohne_dateityp = daten.replace(b"ftyp", b"free", 1)
+    with pytest.raises(UnsupportedTypeError):
+        mime.sniff_bytes(ohne_dateityp)

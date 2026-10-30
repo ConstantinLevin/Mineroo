@@ -66,6 +66,9 @@ ungekuerzt: die Kennbytes, an denen man einen Typ von Hand nachschlaegt. Nicht d
 ganzen gelesenen Kopf, der bis zu `KOPF_BYTES` gross ist und in `error` und auf
 stderr landete."""
 
+MP4_ANFANGSBOXEN: Final = (b"ftyp", b"free", b"skip")
+"""MP4 kann vor ftyp freie Boxen tragen; der Inhalt wird danach geprueft (#76)."""
+
 _OLE2_KENNUNG: Final = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 """Die acht Kennbytes eines OLE2-Containers (Compound File Binary, MS-CFB 2.2).
 DocVortex unterscheidet darin DOC, XLS und PPT an den Namen der Datenstroeme; die
@@ -506,7 +509,10 @@ def _m4a_typ(file: BinaryIO) -> DocumentType:
     file.seek(0, io.SEEK_END)
     ende = file.tell()
     spuren = 0
+    dateityp = False
     for art, anfang, boxende in _mp4_boxen(file, 0, ende):
+        if art == b"ftyp":
+            dateityp = True
         if art != b"moov":
             continue
         for art, anfang, boxende in _mp4_boxen(file, anfang, boxende):
@@ -525,7 +531,7 @@ def _m4a_typ(file: BinaryIO) -> DocumentType:
             if handler != [b"soun"]:
                 raise UnsupportedTypeError("MP4 enthaelt keine reine Audiospur; Video ist nicht unterstuetzt.")
             spuren += 1
-    if not spuren:
+    if not dateityp or not spuren:
         raise UnsupportedTypeError("MP4 enthaelt keine erkennbare Audiospur.")
     return DocumentType.M4A
 
@@ -685,7 +691,7 @@ def sniff_file(file: BinaryIO) -> DocumentType:
     if treffer is not None:
         return treffer
 
-    if kopf[4:8] == b"ftyp":
+    if kopf[4:8] in MP4_ANFANGSBOXEN:
         return _m4a_typ(file)
 
     if _ist_zip(kopf):
@@ -726,7 +732,7 @@ def sniff_bytes(data: bytes) -> DocumentType:
     if treffer is not None:
         return treffer
 
-    if kopf[4:8] == b"ftyp":
+    if kopf[4:8] in MP4_ANFANGSBOXEN:
         return _m4a_typ(io.BytesIO(data))
 
     if _ist_zip(kopf):
