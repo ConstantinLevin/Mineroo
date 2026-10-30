@@ -498,6 +498,21 @@ def _mp4_boxen(file: BinaryIO, anfang: int, ende: int) -> Iterator[tuple[bytes, 
         anfang = boxende
 
 
+def _mp4_spurhandler(file: BinaryIO, anfang: int, ende: int) -> list[bytes]:
+    """Alle Medienhandler einer trak-Box lesen, damit Mehrdeutigkeit sichtbar bleibt."""
+    handler: list[bytes] = []
+    for art, medienanfang, medienende in _mp4_boxen(file, anfang, ende):
+        if art != b"mdia":
+            continue
+        for art, handleranfang, handlerende in _mp4_boxen(file, medienanfang, medienende):
+            if art == b"hdlr":
+                if handlerende - handleranfang < 12:
+                    raise UnsupportedTypeError("MP4: unvollstaendiger Medienhandler.")
+                file.seek(handleranfang + 8)
+                handler.append(file.read(4))
+    return handler
+
+
 def _m4a_typ(file: BinaryIO) -> DocumentType:
     """Audio mit optionalen Textkapiteln, ohne Video; Marke und Name sind egal (#76).
 
@@ -518,16 +533,7 @@ def _m4a_typ(file: BinaryIO) -> DocumentType:
         for art, anfang, boxende in _mp4_boxen(file, anfang, boxende):
             if art != b"trak":
                 continue
-            handler: list[bytes] = []
-            for art, anfang, boxende in _mp4_boxen(file, anfang, boxende):
-                if art != b"mdia":
-                    continue
-                for art, anfang, boxende in _mp4_boxen(file, anfang, boxende):
-                    if art == b"hdlr":
-                        if boxende - anfang < 12:
-                            raise UnsupportedTypeError("MP4: unvollstaendiger Medienhandler.")
-                        file.seek(anfang + 8)
-                        handler.append(file.read(4))
+            handler = _mp4_spurhandler(file, anfang, boxende)
             if handler == [b"soun"]:
                 spuren += 1
             elif handler != [b"text"]:
