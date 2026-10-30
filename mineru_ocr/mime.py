@@ -40,7 +40,7 @@ import io
 import re
 import zipfile
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import BinaryIO, Final
 from xml.etree import ElementTree
 
@@ -467,8 +467,71 @@ def _ist_mhtml(kopf: bytes) -> bool:
         return False
 
 
+def _mp4_boxen(file: BinaryIO, anfang: int, ende: int) -> Iterator[tuple[bytes, int, int]]:
+    """ISO-BMFF-Boxen lesen, Nutzdaten ueberspringen; Grenzen gelten je Elternbox.
+
+    0 bedeutet bis Dateiende, 1 kuendigt eine 64-Bit-Groesse an (ISO/IEC
+    14496-12, Box). Keine Suche nach Kennungen innerhalb beliebiger Nutzdaten.
+    """
+    while anfang < ende:
+        file.seek(anfang)
+        kopf = file.read(8)
+        if len(kopf) != 8:
+            raise UnsupportedTypeError("MP4: unvollstaendiger Boxkopf.")
+        groesse = int.from_bytes(kopf[:4], "big")
+        nutzanfang = anfang + 8
+        if groesse == 1:
+            erweitert = file.read(8)
+            if len(erweitert) != 8:
+                raise UnsupportedTypeError("MP4: unvollstaendige 64-Bit-Groesse.")
+            groesse = int.from_bytes(erweitert, "big")
+            nutzanfang += 8
+        elif groesse == 0:
+            groesse = ende - anfang
+        boxende = anfang + groesse
+        if boxende < nutzanfang or boxende > ende:
+            raise UnsupportedTypeError("MP4: Boxgroesse liegt ausserhalb ihres Containers.")
+        yield kopf[4:8], nutzanfang, boxende
+        anfang = boxende
+
+
+def _m4a_typ(file: BinaryIO) -> DocumentType:
+    """Nur Tonspuren zulassen, unabhaengig von ftyp-Marke und Dateiname (#76).
+
+    moov/trak/mdia/hdlr beschreibt jede Spur, auch wenn moov hinter mdat liegt.
+    Der Handler steht nach Version/Flags und pre_defined (je vier Bytes).
+    Quelle: https://developer.apple.com/documentation/quicktime-file-format/handler_reference_atom
+    Dekodieren bleibt Aufgabe von ElevenLabs; hier werden nur Spuren bestimmt.
+    """
+    file.seek(0, io.SEEK_END)
+    ende = file.tell()
+    spuren = 0
+    for art, anfang, boxende in _mp4_boxen(file, 0, ende):
+        if art != b"moov":
+            continue
+        for art, anfang, boxende in _mp4_boxen(file, anfang, boxende):
+            if art != b"trak":
+                continue
+            handler: list[bytes] = []
+            for art, anfang, boxende in _mp4_boxen(file, anfang, boxende):
+                if art != b"mdia":
+                    continue
+                for art, anfang, boxende in _mp4_boxen(file, anfang, boxende):
+                    if art == b"hdlr":
+                        if boxende - anfang < 12:
+                            raise UnsupportedTypeError("MP4: unvollstaendiger Medienhandler.")
+                        file.seek(anfang + 8)
+                        handler.append(file.read(4))
+            if handler != [b"soun"]:
+                raise UnsupportedTypeError("MP4 enthaelt keine reine Audiospur; Video ist nicht unterstuetzt.")
+            spuren += 1
+    if not spuren:
+        raise UnsupportedTypeError("MP4 enthaelt keine erkennbare Audiospur.")
+    return DocumentType.M4A
+
+
 def _typ_aus_kopf(kopf: bytes) -> DocumentType | None:
-    """Erkennt alles ausser ZIP am Anfang der Datei. None heisst: kein Treffer.
+    """Erkennt alles ausser ZIP und MP4 am Anfang. None heisst: kein Treffer.
 
     Die festen Kennbytes zuerst, dann die Textformate in der Reihenfolge von
     DocVortex (RTF vor MHTML); HTML zuletzt, denn ein MHTML-Teil ist HTML.
@@ -485,9 +548,6 @@ def _typ_aus_kopf(kopf: bytes) -> DocumentType | None:
         kennung in kopf for kennung in (b"OpusHead", b"\x01vorbis", b"Speex   ", b"\x7fFLAC")
     ):
         return DocumentType.OGG
-    # Nur Audio-Marken, kein allgemeines MP4/isom: Video ist nicht Teil von #70.
-    if kopf[4:8] == b"ftyp" and kopf[8:12] in (b"M4A ", b"M4B "):
-        return DocumentType.M4A
     if len(kopf) >= 7 and kopf[0] == 0xff and kopf[1] & 0xf6 == 0xf0:
         return DocumentType.AAC  # ADTS, kein MPEG-Audio-Layer
     if kopf.startswith(b"ADIF"):
@@ -590,9 +650,10 @@ def sniff_file(file: BinaryIO) -> DocumentType:
 
     Der Weg fuer die Kommandozeile, die Dateien liest: Eine grosse Datei fremden
     Typs soll nicht erst ganz in den Speicher, um dann abgewiesen zu werden. Liest
-    so wenig wie noetig: fuer alle Typen ausser ZIP genuegt der Anfang
+    so wenig wie noetig: fuer alle Typen ausser ZIP und MP4 genuegt der Anfang
     (`KOPF_BYTES`); bei ZIP wird zusaetzlich das Archivverzeichnis gelesen und,
     wo das Format es verlangt, ein kleiner Eintrag (nicht das Archiv ausgepackt).
+    Bei MP4 werden Boxkoepfe und Medienhandler gelesen, Mediendaten uebersprungen.
     Die Bibliothek selbst kennt keine Pfade — wer eine Datei hat, oeffnet sie und
     reicht das Dateiobjekt herein.
 
@@ -624,6 +685,9 @@ def sniff_file(file: BinaryIO) -> DocumentType:
     if treffer is not None:
         return treffer
 
+    if kopf[4:8] == b"ftyp":
+        return _m4a_typ(file)
+
     if _ist_zip(kopf):
         try:
             with zipfile.ZipFile(file) as archiv:
@@ -644,10 +708,9 @@ def sniff_bytes(data: bytes) -> DocumentType:
     `sniff_file`, das die Kommandozeile vor dem Lesen einer Datei benutzt.
 
     Args:
-        data: Die VOLLSTAENDIGEN Bytes. Nicht nur der Anfang: Bei einem ZIP
-            braucht die Erkennung das Archivverzeichnis, und das steht am ENDE
-            der Datei. Ein abgeschnittener Puffer wuerde ein gueltiges DOCX als
-            nicht unterstuetzt abweisen.
+        data: Die VOLLSTAENDIGEN Bytes. Nicht nur der Anfang: Das ZIP-Verzeichnis
+            und die MP4-Spurbeschreibung koennen am Dateiende stehen. Ein
+            abgeschnittener Puffer wuerde gueltige Dateien abweisen.
 
     Returns:
         Der erkannte Typ.
@@ -662,6 +725,9 @@ def sniff_bytes(data: bytes) -> DocumentType:
     treffer = _typ_aus_kopf(kopf)
     if treffer is not None:
         return treffer
+
+    if kopf[4:8] == b"ftyp":
+        return _m4a_typ(io.BytesIO(data))
 
     if _ist_zip(kopf):
         try:

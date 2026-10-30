@@ -17,10 +17,15 @@ Docstrings (`ue`, `ae`, `oe`) — das ist die durchgehaltene Konvention des Pake
 
 ## Audio (#70, Parent #69)
 
+M4A wird an `moov/trak/mdia/hdlr` als reines Audio erkannt, unabhaengig von
+MP4-Marke (`mp42`, `isom`, `M4A `, `M4B `) und Endung; Video bleibt abgewiesen.
+Die Datei-Erkennung ueberspringt Mediendaten; `ffmpeg`/`ffprobe` werden nur fuer
+die synthetischen M4A-Testfixtures gebraucht, nicht fuer diese Erkennung.
 Audio geht nach Inhaltserkennung ueber `tasks.enqueue_document[_async]` in
 `audio` zum Task `mineru_ocr.audio_document`, OCR bleibt in `ocr`. Jeder Daemon
 hat einen dritten Worker; `audio_concurrency` (TOML oder Umgebung) setzt dessen
-Plaetze, Vorgabe 2. Neue Retry-Jobs bestimmen die Lane aus dem Eingabekopf,
+Plaetze, Vorgabe 2. Neue Retry-Jobs bestimmen die Lane aus dem Eingabekopf
+(bei MP4 aus der ganzen Eingabe fuer Spuren am Dateiende),
 zurueckgesetzte Jobs behalten ihre Queue. Jobs tragen weiterhin nur den Hash.
 
 `audio_executor.process_audio` prueft die gespeicherte Eingabe und schickt die
